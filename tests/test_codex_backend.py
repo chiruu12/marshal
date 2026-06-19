@@ -1,0 +1,104 @@
+"""Contract tests for CodexBackend.
+
+These exercise the PURE hooks (`map_permission`, `build_invocation`) and the JSONL
+`parse_output` — no process spawning, no network. Success-path token/message shapes are
+best-effort until a live successful Codex run confirms them.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine.backends.codex import CodexBackend
+
+
+@pytest.fixture
+def backend() -> CodexBackend:
+    return CodexBackend()
+
+
+def _opts(**kw: object) -> RunOpts:
+    kw.setdefault("cwd", Path("/tmp/wt"))
+    return RunOpts(**kw)  # type: ignore[arg-type]
+
+
+def test_map_permission(backend: CodexBackend) -> None:
+    assert backend.map_permission(PermissionMode.READ_ONLY) == ["--sandbox", "read-only"]
+    assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--sandbox", "workspace-write"]
+    assert backend.map_permission(PermissionMode.YOLO) == [
+        "--dangerously-bypass-approvals-and-sandbox"
+    ]
+
+
+def test_build_invocation_basic(backend: CodexBackend) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="do the thing"), _opts(permission=PermissionMode.SAFE_EDIT)
+    )
+    assert argv[:5] == ["codex", "exec", "--json", "--color", "never"]
+    assert "--skip-git-repo-check" in argv
+    assert "--sandbox" in argv and "workspace-write" in argv
+    assert "-C" in argv and "/tmp/wt" in argv
+    assert argv[-1] == "do the thing"  # prompt is the trailing positional
+
+
+def test_build_invocation_model_and_readonly(backend: CodexBackend) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="inspect"),
+        _opts(permission=PermissionMode.READ_ONLY, model="o3"),
+    )
+    assert "-m" in argv and "o3" in argv
+    assert "read-only" in argv
+
+
+def test_build_invocation_resume(backend: CodexBackend) -> None:
+    argv = backend.build_invocation(TaskSpec(id="t1", goal="continue"), _opts(session_id="sess-123"))
+    i = argv.index("resume")
+    assert argv[i + 1] == "sess-123"
+
+
+def test_compose_prompt_includes_context_files(backend: CodexBackend) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="fix bug", context_files=["a.py", "b.py"]), _opts()
+    )
+    assert "Relevant files:" in argv[-1]
+    assert "a.py" in argv[-1] and "b.py" in argv[-1]
+
+
+def test_parse_output_failure_captures_session_and_error(backend: CodexBackend) -> None:
+    stdout = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"abc-123"}',
+            '{"type":"turn.started"}',
+            '{"type":"error","message":"you hit your usage limit"}',
+            '{"type":"turn.failed","error":{"message":"you hit your usage limit"}}',
+        ]
+    )
+    res = backend.parse_output(stdout, "", 1)
+    assert res.status is RunStatus.FAILED
+    assert res.session_id == "abc-123"
+    assert "usage limit" in (res.error or "")
+
+
+def test_parse_output_success_best_effort(backend: CodexBackend) -> None:
+    stdout = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"abc-123"}',
+            '{"type":"agent_message","message":"pong"}',
+            '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}',
+        ]
+    )
+    res = backend.parse_output(stdout, "", 0)
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.session_id == "abc-123"
+    assert "pong" in res.text
+    assert res.usage is not None
+    assert res.usage.input_tokens == 10 and res.usage.output_tokens == 2
+
+
+def test_parse_output_nonzero_exit_is_failure(backend: CodexBackend) -> None:
+    res = backend.parse_output("", "boom on stderr", 2)
+    assert res.status is RunStatus.FAILED
+    assert res.exit_code == 2
