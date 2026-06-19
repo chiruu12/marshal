@@ -17,9 +17,10 @@ marshal/
 │   ├── types.py             # TaskSpec, RunOpts, AgentResult, UsageRecord, Capabilities, enums
 │   ├── backends/            # one adapter per backend, all derive from base.CodingAgentBackend
 │   │   ├── base.py          # the base class (cornerstone)
-│   │   ├── cursor.py        # (planned)
-│   │   ├── opencode.py      # (planned)
-│   │   └── codex.py         # (planned)
+│   │   ├── cursor.py        # Cursor CLI (cursor-agent)
+│   │   ├── opencode.py      # OpenCode (opencode run / serve)
+│   │   ├── codex.py         # OpenAI Codex (codex exec)
+│   │   └── antigravity.py   # Google Antigravity (agy)
 │   ├── worktree.py          # git worktree lifecycle (planned)
 │   ├── runner.py            # process spawning + timeouts (planned)
 │   ├── usage.py             # events.jsonl + summary.json + price table (planned)

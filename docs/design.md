@@ -249,3 +249,20 @@ benchmark). **V2** (role-routing engine, policy engine, comparison reports/dashb
 budgets) and **V3** (auto routing recommendations, historical provider scoring, org policy,
 approvals, multi-repo) are post-v0. Design the data model so V2 reporting is a *query, not a rewrite*.
 Keep V1 focused — the #1 risk is becoming "yet another agent framework."
+
+### Backends in scope (built)
+
+Four adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
+and contract tests:
+
+| Backend | Headless invocation | read-only / safe-edit / yolo | Usage in output |
+|---|---|---|---|
+| Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost estimated) |
+| Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
+| OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` |
+| Antigravity | `agy -p` (text only) | — / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
+
+Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth, needs a PTY
+wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo
+exposed. Codex account is usage-limited until ~Jul 18 2026, so its success-path JSON parsing is
+verified for the failure path only (live success run pending).

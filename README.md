@@ -5,8 +5,8 @@ review, route execution to cheaper or specialized workers, isolate each task in 
 worktree, and measure what every routing strategy actually cost.
 
 One driver agent (e.g. Claude Code) plans the work. Marshal spawns and manages a fleet of
-*headless* coding agents — **Cursor CLI, OpenCode, and Codex** today, more behind a single base
-class — each running autonomously in its own isolated git worktree, in parallel. Marshal monitors
+*headless* coding agents — **Cursor CLI, OpenCode, Codex, and Google Antigravity** today, more
+behind a single base class — each running autonomously in its own isolated git worktree, in parallel. Marshal monitors
 them, collects their diffs, tracks per-provider usage, and hands results back for integration.
 
 It plugs into your driver two ways:
@@ -40,8 +40,9 @@ Marshal MCP server  ──  fleet state (file-based)
    │
    ▼
 engine ── base class ─┬─ Cursor adapter
-                      ├─ OpenCode adapter   →  each runs headless in its own git worktree
-                      └─ Codex adapter
+                      ├─ OpenCode adapter
+                      ├─ Codex adapter        →  each runs headless in its own git worktree
+                      └─ Antigravity adapter
    │
    ▼
 usage tracking (events.jsonl + summary)
