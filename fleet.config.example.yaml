@@ -1,0 +1,27 @@
+# Marshal fleet config — declare N named clients.
+# Each client pins a backend + permission + model. Secrets are REFERENCED (env:VAR), never inlined.
+# Copy to `fleet.config.yaml` and edit.
+
+defaults:
+  permission: safe-edit        # read-only | safe-edit | yolo
+  timeout_s: 600
+
+clients:
+  # OpenCode on the Go subscription. Omit `model` and it defaults to a Go model
+  # (opencode-go/glm-5.2) — a fireworks-ai/* model here is rejected so you never burn Fireworks credits.
+  implementer:
+    backend: opencode
+    model: opencode-go/glm-5.2
+    permission: safe-edit
+    secret_ref: env:OPENCODE_API_KEY
+
+  # Cursor for read-only review passes (no edits).
+  reviewer:
+    backend: cursor
+    permission: read-only
+    secret_ref: env:CURSOR_API_KEY
+
+  # Codex (workspace-write) — usable once its account usage limit clears.
+  refactorer:
+    backend: codex
+    permission: safe-edit
