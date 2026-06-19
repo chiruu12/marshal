@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Build
+dist/
+build/
+.next/
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+
+# Claude Code
+.context/
+tmp/
+
+# Python
+.ruff_cache/
+*.egg-info/
