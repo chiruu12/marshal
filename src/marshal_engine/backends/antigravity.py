@@ -19,6 +19,10 @@ Honest gaps from research (these shape what we expose):
     `--conversation` is passed through only if the caller already has an id.
   * Only `safe-edit` and `yolo` are reliably non-prompting headless. There is no confirmed
     one-shot read-only flag (the read-only presets prompt), so READ_ONLY is unsupported here.
+  * VERIFIED 2026-06-19: reply/read works headless, but file WRITES can divert to agy's scratch
+    workspace (`~/.gemini/antigravity-cli/scratch`) instead of `cwd` when it cannot establish
+    workspace trust headlessly — so worktree-isolated edits do NOT reliably land in the target
+    dir yet. Needs a workspace-trust / PTY workaround before write use is dependable.
 
 Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-opus-4.6, gpt-oss-120b.
 """

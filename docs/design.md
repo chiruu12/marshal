@@ -266,3 +266,11 @@ Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first 
 wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo
 exposed. Codex account is usage-limited until ~Jul 18 2026, so its success-path JSON parsing is
 verified for the failure path only (live success run pending).
+
+**Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
+usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
+safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` authenticates). 
+Antigravity ⚠️ partial — CLI/auth/reply work, but headless writes divert to
+`~/.gemini/antigravity-cli/scratch` instead of the target worktree (untrusted-workspace fallback);
+worktree-isolated edits need an `agy` workspace-trust/PTY workaround (tracked). Codex ⛔ adapter
+ready, blocked by the account usage limit (~Jul 18).
