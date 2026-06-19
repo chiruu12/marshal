@@ -56,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     pu.add_argument("--dir", default=".marshal/usage")
     ps = sub.add_parser("status", help="list fleet runs")
     ps.add_argument("--state", default=".marshal/fleet.json")
+    sub.add_parser("mcp", help="run the MCP server over stdio")
     args = p.parse_args(argv)
 
     if args.version:
@@ -67,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_usage(args)
     if args.cmd == "status":
         return _cmd_status(args)
+    if args.cmd == "mcp":
+        from .mcp_server import main as serve
+
+        serve()
+        return 0
     print(f"marshal {__version__}")
     p.print_help()
     return 0
