@@ -138,6 +138,35 @@ def test_merge_aborts_an_in_progress_merge_and_reports_blocked(repo: Path) -> No
     assert not m._merge_in_progress()      # repo returned to a clean state, not left mid-merge
 
 
+def test_abort_merge_raises_when_abort_fails(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    m = WorktreeManager(repo)
+
+    def g(*a: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, text=True)
+
+    base = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    g("checkout", "-b", "sib")
+    (repo / "s.txt").write_text("s")
+    g("add", "-A")
+    g("commit", "-m", "s")
+    g("checkout", base)
+    g("merge", "--no-commit", "--no-ff", "sib")  # a real in-progress merge to abort
+    assert m._merge_in_progress()
+
+    real_git = m._git
+
+    def fake_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("merge", "--abort"):  # simulate a held index.lock / failed abort
+            return subprocess.CompletedProcess(list(args), 1, "", "fatal: index.lock exists")
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", fake_git)
+    with pytest.raises(WorktreeError):  # abort failed + still mid-merge -> honest hard error
+        m._abort_merge("marshal/whatever")
+
+
 def test_commit_all_skips_pre_commit_hook(repo: Path) -> None:
     # A prompting/failing pre-commit hook would block a headless run; commit_all passes --no-verify.
     hook = repo / ".git" / "hooks" / "pre-commit"
