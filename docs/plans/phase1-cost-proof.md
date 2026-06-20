@@ -29,15 +29,22 @@ mechanism; interpretation and policy stay out of it.
 4. Pricing honesty: a model with no price entry shows **"unpriced"**, never `$0.00`.
 5. Persist `cost_usd` / `duration_ms` / `source` on `RunRecord`, written **once** from the same
    computed object as the usage event (no drift between `fleet.json` and `events.jsonl`).
-6. Extend `usage` with cost-per-outcome (`$/run`, `$/succeeded`), source-honest.
+6. Extend `usage` with cost-per-outcome (`$/run`, `$/succeeded`), source-honest. See **Success
+   signal** below — `$/run` counts every terminal run; `$/succeeded` counts only real successes.
 7. Partial-usage recovery on timeout: best-effort parse `exc.stdout`, keep `status=timed_out`;
    swallow recovery errors (a failed recovery must never mask the timeout).
+8. **Success signal + `RunStatus.EMPTY`.** A run that exits 0 but did no work (empty final text
+   AND no changed files) is not a success — it still burned tokens. `Fleet.run` computes this
+   authoritatively (it has both the result and the worktree) and stamps `RunStatus.EMPTY`. `$/run`
+   counts EMPTY; `$/succeeded` excludes it; `AgentResult.ok` stays `SUCCEEDED`-only. This pulls the
+   Antigravity empty-success fix forward from P2 into P1.
 
 ## Honesty rules (must be tested)
 
 - `estimated` is never shown as `native` (source tag).
 - `unpriced` is never shown as free (`$0`).
 - a timed-out run keeps `timed_out` even when partial usage is recovered.
+- a no-op run (`EMPTY`) is never counted as a success in `$/succeeded`.
 
 ## Test plan (target: 100% of new paths)
 
