@@ -171,8 +171,13 @@ class WorktreeManager:
         return self._git("rev-parse", branch).stdout.strip()
 
     def merged_diff_files(self, branch: str, target: str) -> list[str]:
-        """Files `branch` would bring into `target` (names in the `target..branch` range)."""
-        proc = self._git("diff", "--name-only", "-z", f"{target}..{branch}")
+        """Files `branch` brings into `target` — the three-dot (merge-base) delta.
+
+        Three-dot `target...branch` diffs from the merge-base, so it lists only what `branch`
+        actually changed, not files the target modified independently (two-dot would over-report
+        those — they don't land from this run).
+        """
+        proc = self._git("diff", "--name-only", "-z", f"{target}...{branch}")
         return [f for f in proc.stdout.split("\0") if f]
 
     def merge(self, branch: str, *, message: str | None = None) -> MergeResult:

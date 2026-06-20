@@ -421,6 +421,23 @@ def test_integrate_reports_error_on_unrecoverable_git_failure(
     assert "no space" in (result.message or "")
 
 
+def test_integrate_retry_reports_only_branch_files_not_divergent_target(repo: Path) -> None:
+    fleet = Fleet(repo, {"patcher": _Patcher()})        # branch rewrites README.md only
+    rec = fleet.run("patcher", TaskSpec(id="d2", goal="x"))
+    (repo / "README.md").write_text("local uncommitted\n")  # collide on README -> blocked
+    assert fleet.integrate(rec.run_id).status == "blocked"
+
+    _git(repo, "checkout", "--", "README.md")           # clear the collision
+    (repo / "other.txt").write_text("target moved this\n")  # DIVERGENT target commit, separate file
+    _git(repo, "add", "other.txt")
+    _git(repo, "commit", "-m", "divergent target commit")
+
+    merged = fleet.integrate(rec.run_id)
+    assert merged.status == "merged"
+    assert "README.md" in merged.changed_files        # the file the agent actually changed
+    assert "other.txt" not in merged.changed_files    # target-only file must NOT be over-reported
+
+
 def test_integrate_blocked_on_detached_head(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="dh1", goal="x"))
