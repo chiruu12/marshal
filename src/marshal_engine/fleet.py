@@ -9,8 +9,11 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import uuid
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +71,18 @@ class IntegrateResult:
     message: str = ""
 
 
+@dataclass
+class RunRequest:
+    """One unit of work for a parallel batch (the same parameters Fleet.run takes)."""
+
+    backend_name: str
+    task: TaskSpec
+    permission: PermissionMode = PermissionMode.SAFE_EDIT
+    model: str | None = None
+    client: str | None = None
+    timeout_s: int = 600
+
+
 class Fleet:
     def __init__(
         self,
@@ -85,6 +100,9 @@ class Fleet:
         self.usage = UsageTracker(base / "usage")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()
+        # `git worktree add` is the one step that races across threads; serialize just that (it's
+        # milliseconds — the long-running agent runs still proceed fully in parallel).
+        self._create_lock = threading.Lock()
 
     def run(
         self,
@@ -106,7 +124,8 @@ class Fleet:
         # dir, or the state record. task_id stays the grouping key on RunRecord.
         run_id = f"{task.id}.{backend_name}.{uuid.uuid4().hex[:8]}"
 
-        wt = self.worktrees.create(run_id, base_branch=task.base_branch)
+        with self._create_lock:
+            wt = self.worktrees.create(run_id, base_branch=task.base_branch)
         self.state.add(
             RunRecord(
                 run_id=run_id,
@@ -155,6 +174,54 @@ class Fleet:
         if cleanup:
             self.worktrees.remove(wt)
         return record
+
+    def run_many(
+        self,
+        requests: list[RunRequest],
+        *,
+        max_concurrency: int = 4,
+        stagger_s: float = 0.1,
+    ) -> list[RunRecord]:
+        """Run a batch of requests concurrently in isolated worktrees; block until all finish.
+
+        Concurrency is capped at `max_concurrency` (each agent CLI is 150-400 MB, so an uncapped
+        fan-out OOMs the host). Submissions are spaced by `stagger_s` to ease the Cursor
+        concurrent-launch file-lock race. A single request's failure is captured as a FAILED record
+        and never aborts the batch. Records are returned in the same order as `requests`.
+        """
+        results: list[RunRecord | None] = [None] * len(requests)
+        with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
+            futures = {}
+            for i, req in enumerate(requests):
+                if stagger_s and i:
+                    time.sleep(stagger_s)
+                futures[pool.submit(self._run_request, req)] = i
+            for fut in futures:
+                results[futures[fut]] = fut.result()  # _run_request never raises
+        return [r for r in results if r is not None]
+
+    def _run_request(self, req: RunRequest) -> RunRecord:
+        """run() one request, capturing any failure as a FAILED record so a batch survives it."""
+        try:
+            return self.run(
+                req.backend_name,
+                req.task,
+                permission=req.permission,
+                model=req.model,
+                client=req.client,
+                timeout_s=req.timeout_s,
+            )
+        except Exception as exc:  # noqa: BLE001 — one job's failure must not abort the batch
+            return RunRecord(
+                run_id=f"{req.task.id}.{req.backend_name}",
+                task_id=req.task.id,
+                backend=req.backend_name,
+                client=req.client,
+                model=req.model,
+                status=RunStatus.FAILED.value,
+                ended_at=_now(),
+                error=f"run_many: {exc}",
+            )
 
     def _price_usage(self, usage: UsageRecord | None, model: str | None) -> None:
         """Normalize cost + source in place: keep native cost, else estimate, else unavailable.

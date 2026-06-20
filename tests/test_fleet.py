@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.fleet import Fleet
+from marshal_engine.fleet import Fleet, RunRequest
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.worktree import WorktreeError
 
@@ -72,6 +73,30 @@ class _Patcher(CodingAgentBackend):
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
             status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            exit_code=exit_code,
+        )
+
+
+class _Sleeper(CodingAgentBackend):
+    """Sleeps then prints — used to prove run_many actually runs concurrently."""
+
+    name = "sleeper"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "import time; time.sleep(0.5); print('done')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
             exit_code=exit_code,
         )
 
@@ -263,6 +288,29 @@ def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
     assert len(runs) == 1
     assert runs[0].status == "failed"  # not left stranded as RUNNING
     assert runs[0].error and "kaboom" in runs[0].error
+
+
+def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    reqs = [RunRequest("writer", TaskSpec(id=f"m{i}", goal="x")) for i in range(6)]
+    records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
+
+    assert [r.task_id for r in records] == [f"m{i}" for i in range(6)]  # input order preserved
+    assert all(r.status == "succeeded" for r in records)
+    assert len({r.worktree for r in records}) == 6                      # each in its own worktree
+    for r in records:
+        assert (Path(r.worktree or "") / "out.txt").read_text() == "hi"
+    assert len(fleet.state.list()) == 6                                 # all persisted, none lost
+
+
+def test_run_many_runs_concurrently(repo: Path) -> None:
+    fleet = Fleet(repo, {"sleeper": _Sleeper()})  # each run sleeps ~0.5s
+    reqs = [RunRequest("sleeper", TaskSpec(id=f"s{i}", goal="x")) for i in range(4)]
+    start = time.monotonic()
+    records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
+    elapsed = time.monotonic() - start
+    assert all(r.status == "succeeded" for r in records)
+    assert elapsed < 1.5  # 4 x 0.5s sequential = 2s; concurrent finishes in ~0.5s
 
 
 def test_run_id_unique_across_same_task_runs(repo: Path) -> None:
