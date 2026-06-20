@@ -46,6 +46,51 @@ class _Echo(CodingAgentBackend):
         )
 
 
+class _Pricey(CodingAgentBackend):
+    """A second strategy with a higher native cost — used to compare benchmark strategies."""
+
+    name = "pricey"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "print('ok')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            usage=UsageRecord(backend="pricey", cost_usd=0.05, source=UsageSource.NATIVE),
+            exit_code=exit_code,
+        )
+
+
+class _Unpriced(CodingAgentBackend):
+    """A strategy with no usage info — its cost is 'unavailable', not a real $0."""
+
+    name = "noinfo"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "print('done')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -102,6 +147,43 @@ def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     collected = svc.collect_run(rec.run_id)
     assert collected.run_id == rec.run_id
     assert collected.branch == rec.branch
+
+
+def _bench_svc(repo: Path, backends: dict[str, object], **clients: str) -> MarshalService:
+    cfg = FleetConfig(
+        clients={
+            name: ClientConfig(name=name, backend=backend, permission=PermissionMode.SAFE_EDIT)
+            for name, backend in clients.items()
+        }
+    )
+    return MarshalService(repo, cfg, backends=backends)  # type: ignore[arg-type]
+
+
+def test_benchmark_compares_strategies(repo: Path) -> None:
+    svc = _bench_svc(repo, {"echo": _Echo(), "pricey": _Pricey()}, cheap="echo", dear="pricey")
+    result = svc.benchmark("do x", ["cheap", "dear"], task_id="b1")
+
+    assert result.task_id == "b1"
+    assert {s.client for s in result.strategies} == {"cheap", "dear"}
+    assert all(s.status == "succeeded" for s in result.strategies)
+    assert result.cheapest == "cheap"          # 0.002 < 0.05, both costs native (known)
+    assert result.fastest in {"cheap", "dear"}
+    assert len({s.run_id for s in result.strategies}) == 2  # distinct runs, shared task_id
+
+
+def test_report_requeries_a_past_benchmark(repo: Path) -> None:
+    svc = _bench_svc(repo, {"echo": _Echo(), "pricey": _Pricey()}, cheap="echo", dear="pricey")
+    svc.benchmark("do x", ["cheap", "dear"], task_id="b2")
+    again = svc.report("b2")  # pure re-query from the ledger
+    assert again.cheapest == "cheap"
+    assert len(again.strategies) == 2
+
+
+def test_benchmark_cheapest_excludes_unknown_cost(repo: Path) -> None:
+    # a strategy whose cost is "unavailable" must NOT win cheapest just because it reports $0
+    svc = _bench_svc(repo, {"echo": _Echo(), "noinfo": _Unpriced()}, known="echo", mystery="noinfo")
+    result = svc.benchmark("x", ["known", "mystery"], task_id="b3")
+    assert result.cheapest == "known"  # not "mystery", despite its $0 unavailable cost
 
 
 def test_run_many_runs_each_client_job(repo: Path) -> None:

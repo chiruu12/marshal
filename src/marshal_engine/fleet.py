@@ -72,6 +72,38 @@ class IntegrateResult:
 
 
 @dataclass
+class StrategyResult:
+    """One strategy's measured outcome in a benchmark (the run's recorded facts)."""
+
+    run_id: str
+    client: str | None
+    backend: str
+    model: str | None
+    status: str
+    cost_usd: float
+    source: str | None
+    duration_ms: int
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass
+class BenchmarkResult:
+    """Same task run through N strategies, compared on measured cost/latency/outcome (derived).
+
+    `cheapest`/`fastest` name the winning client among *comparable* strategies only — succeeded,
+    and (for cheapest) with a known cost (native/estimated, never `unavailable`). None when no
+    strategy qualifies. The per-strategy rows carry `source` so an estimate is never read as truth.
+    """
+
+    task_id: str
+    goal: str
+    strategies: list[StrategyResult] = field(default_factory=list)
+    cheapest: str | None = None
+    fastest: str | None = None
+
+
+@dataclass
 class RunRequest:
     """One unit of work for a parallel batch (the same parameters Fleet.run takes)."""
 

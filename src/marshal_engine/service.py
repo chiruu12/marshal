@@ -13,7 +13,14 @@ from typing import Any
 
 from .backends.base import CodingAgentBackend
 from .config import FleetConfig, resolve_model
-from .fleet import CollectResult, Fleet, IntegrateResult, RunRequest
+from .fleet import (
+    BenchmarkResult,
+    CollectResult,
+    Fleet,
+    IntegrateResult,
+    RunRequest,
+    StrategyResult,
+)
 from .registry import make_backend
 from .state import RunRecord
 from .types import TaskSpec
@@ -98,6 +105,51 @@ class MarshalService:
             for j in jobs
         ]
         return self.fleet.run_many(requests, max_concurrency=max_concurrency)
+
+    def benchmark(
+        self,
+        goal: str,
+        clients: list[str],
+        *,
+        task_id: str | None = None,
+        max_concurrency: int = 4,
+    ) -> BenchmarkResult:
+        """Run the SAME goal through each client (a routing strategy) and compare what it cost.
+
+        All runs share one task_id (the grouping key); the comparison is derived on read by
+        `report`, so it stays an honest query over the ledger rather than a stored verdict.
+        """
+        bench_id = task_id or uuid.uuid4().hex[:8]
+        jobs = [{"client": c, "goal": goal, "task_id": bench_id} for c in clients]
+        self.run_many(jobs, max_concurrency=max_concurrency)
+        return self.report(bench_id, goal=goal)
+
+    def report(self, task_id: str, *, goal: str = "") -> BenchmarkResult:
+        """Derive a strategy comparison for one benchmark task_id from the recorded runs."""
+        rows = [
+            StrategyResult(
+                run_id=r.run_id,
+                client=r.client,
+                backend=r.backend,
+                model=r.model,
+                status=r.status,
+                cost_usd=r.cost_usd,
+                source=r.source,
+                duration_ms=r.duration_ms,
+                input_tokens=r.input_tokens,
+                output_tokens=r.output_tokens,
+            )
+            for r in self.fleet.state.list()
+            if r.task_id == task_id
+        ]
+        # cheapest: only strategies that succeeded AND have a known cost (never an "unavailable" one).
+        priced = [r for r in rows if r.status == "succeeded" and r.source in ("native", "estimated")]
+        cheapest = min(priced, key=lambda r: r.cost_usd).client if priced else None
+        timed = [r for r in rows if r.status == "succeeded" and r.duration_ms > 0]
+        fastest = min(timed, key=lambda r: r.duration_ms).client if timed else None
+        return BenchmarkResult(
+            task_id=task_id, goal=goal, strategies=rows, cheapest=cheapest, fastest=fastest
+        )
 
     def get_run(self, run_id: str) -> RunRecord | None:
         return self.fleet.state.get(run_id)

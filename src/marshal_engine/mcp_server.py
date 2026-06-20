@@ -55,6 +55,18 @@ def build_app(service: MarshalService) -> Any:
         return [asdict(r) for r in service.run_many(jobs, max_concurrency=max_concurrency)]
 
     @app.tool()
+    def benchmark(
+        goal: str, clients: list[str], task_id: str | None = None, max_concurrency: int = 4
+    ) -> dict[str, Any]:
+        """Run one goal through several clients (routing strategies) and compare cost/latency/outcome."""
+        return asdict(service.benchmark(goal, clients, task_id=task_id, max_concurrency=max_concurrency))
+
+    @app.tool()
+    def report(task_id: str) -> dict[str, Any]:
+        """Derive the strategy comparison for a past benchmark task_id from the ledger (read-only)."""
+        return asdict(service.report(task_id))
+
+    @app.tool()
     def get_run(run_id: str) -> dict[str, Any] | None:
         """Get a run record by id."""
         rec = service.get_run(run_id)
