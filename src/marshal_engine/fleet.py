@@ -53,7 +53,9 @@ class IntegrateResult:
 
     status is one of: "merged" (changes landed), "conflict" (merge aborted, resolve manually),
     "blocked" (the target checkout is dirty/colliding or detached HEAD — nothing changed, fixable
-    then retry), or "empty" (the run produced no changes to integrate).
+    then retry), "empty" (the run produced no changes to integrate), or "error" (a git operation
+    failed in a way the engine can't classify as cleanly recoverable — commit failure, repo left
+    mid-merge, op timeout; surface to a human, see `message`, don't blindly retry).
     """
 
     run_id: str
@@ -238,10 +240,11 @@ class Fleet:
                 changed = self.worktrees.merged_diff_files(wt.branch, target)
             merge = self.worktrees.merge(wt.branch)
         except WorktreeError as exc:
-            # a timed-out / locked / otherwise-failed git op: surface a structured, recoverable
-            # result instead of a raw exception (a retry can re-run once the cause is cleared).
+            # a git op failed in a way we can't classify as cleanly recoverable (commit failure,
+            # repo left mid-merge, timeout). Surface a distinct "error" status (not the recoverable
+            # "blocked") so a driver doesn't blindly retry — the cause needs a human.
             return IntegrateResult(
-                run_id=run_id, status="blocked", branch=wt.branch, merged_into=target, message=str(exc)
+                run_id=run_id, status="error", branch=wt.branch, merged_into=target, message=str(exc)
             )
         if merge.blocked:
             return IntegrateResult(

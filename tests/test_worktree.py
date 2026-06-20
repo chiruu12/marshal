@@ -112,6 +112,32 @@ def test_commit_all_and_merge_round_trip(repo: Path) -> None:
     assert (repo / "feature.txt").exists()  # landed in the main checkout
 
 
+def test_merge_aborts_an_in_progress_merge_and_reports_blocked(repo: Path) -> None:
+    m = WorktreeManager(repo)
+
+    def g(*a: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *a], check=True, capture_output=True, text=True
+        ).stdout
+
+    wt = m.create("late")
+    (wt.path / "x.txt").write_text("x")
+    m.commit_all(wt, "x")
+    # seed a real in-progress merge in the main checkout (clean, --no-commit -> MERGE_HEAD set)
+    base = g("rev-parse", "--abbrev-ref", "HEAD").strip()
+    g("checkout", "-b", "sibling")
+    (repo / "sibling.txt").write_text("s")
+    g("add", "-A")
+    g("commit", "-m", "sibling")
+    g("checkout", base)
+    g("merge", "--no-commit", "--no-ff", "sibling")
+    assert m._merge_in_progress()
+
+    result = m.merge(wt.branch)            # git refuses (merge in progress); merge() aborts it
+    assert not result.ok and result.blocked
+    assert not m._merge_in_progress()      # repo returned to a clean state, not left mid-merge
+
+
 def test_commit_all_skips_pre_commit_hook(repo: Path) -> None:
     # A prompting/failing pre-commit hook would block a headless run; commit_all passes --no-verify.
     hook = repo / ".git" / "hooks" / "pre-commit"

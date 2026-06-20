@@ -191,18 +191,32 @@ class WorktreeManager:
             return MergeResult(ok=True, message=proc.stdout.strip())
         conflicts = self._conflicted_files()
         if conflicts:
-            self._git("merge", "--abort")
+            self._abort_merge(branch)
             return MergeResult(ok=False, conflicts=conflicts, message=proc.stdout.strip())
         stderr = proc.stderr.strip()
         if self._merge_in_progress():
             # git started a merge it couldn't finish (no content conflict): abort so the repo is
             # left clean, and report blocked (recoverable on retry) rather than raising mid-merge.
-            self._git("merge", "--abort")
+            self._abort_merge(branch)
             return MergeResult(ok=False, blocked=True, message=stderr or proc.stdout.strip())
         if "overwritten by merge" in stderr or "Aborting" in stderr:
             # git refused before starting (dirty/colliding target). No merge state to abort.
             return MergeResult(ok=False, blocked=True, message=stderr)
         raise WorktreeError(f"merge of {branch!r} failed: {stderr or proc.stdout.strip()}")
+
+    def _abort_merge(self, branch: str) -> None:
+        """Abort an in-progress merge and verify the repo is clean again.
+
+        `git merge --abort` can itself fail (a held index.lock, or a `_git` timeout). If it does,
+        the checkout is left mid-merge — so we raise a hard error rather than let the caller report
+        a clean, recoverable result over a dirty repo.
+        """
+        ab = self._git("merge", "--abort")
+        if ab.returncode != 0 or self._merge_in_progress():
+            raise WorktreeError(
+                f"merge of {branch!r} left mid-merge; abort failed: "
+                f"{ab.stderr.strip() or 'still in progress'}"
+            )
 
     def _merge_in_progress(self) -> bool:
         return self._git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0

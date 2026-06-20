@@ -406,6 +406,21 @@ def test_integrate_survives_hook_rejected_merge(repo: Path) -> None:
     assert not (repo / ".git" / "MERGE_HEAD").exists()  # never left mid-merge regardless
 
 
+def test_integrate_reports_error_on_unrecoverable_git_failure(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="er1", goal="x"))
+
+    def _boom(branch: str, **kw: object) -> object:
+        raise WorktreeError("commit failed: no space left on device")
+
+    monkeypatch.setattr(fleet.worktrees, "merge", _boom)
+    result = fleet.integrate(rec.run_id)
+    assert result.status == "error"  # unrecoverable git failure -> error, NOT a retryable "blocked"
+    assert "no space" in (result.message or "")
+
+
 def test_integrate_blocked_on_detached_head(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="dh1", goal="x"))
