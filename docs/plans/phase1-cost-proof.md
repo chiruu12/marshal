@@ -29,7 +29,7 @@ mechanism; interpretation and policy stay out of it.
    one module, never in the backends (keeps adapters config-free).
 4. Pricing honesty: a model with no price entry shows **"unpriced"**, never `$0.00`.
 5. Persist `cost_usd` / `duration_ms` / `source` on `RunRecord`, written **once** from the same
-   computed object as the usage event (no drift between `fleet.json` and `events.jsonl`).
+   computed object as the usage event (no drift between the run record and `events.jsonl`).
 6. Extend `usage` with cost-per-outcome (`$/run`, `$/succeeded`), source-honest. See **Success
    signal** below — `$/run` counts every terminal run; `$/succeeded` counts only real successes.
 7. Partial-usage recovery on timeout: best-effort parse `exc.stdout`, keep `status=timed_out`;

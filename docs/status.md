@@ -15,7 +15,7 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
 | `pricing.py` | Token → cost price table (the `ESTIMATED` path) | done |
-| `state.py` | Persistent fleet state (fleet.json) | done |
+| `state.py` | Persistent fleet state (one `runs/<run_id>.json` per run) | done |
 | `fleet.py` | Orchestrator: worktree → run → price → record → persist | done |
 | `registry.py` | Construct backends by name | done |
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |

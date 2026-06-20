@@ -114,7 +114,7 @@ print(service.usage()["totals"])
 ```
 
 Each run lands in its own git worktree under `.marshal/worktrees/`, with state in
-`.marshal/fleet.json` and usage in `.marshal/usage/`.
+`.marshal/runs/<run_id>.json` (one file per run) and usage in `.marshal/usage/`.
 
 ## Collect and integrate a run
 
@@ -143,7 +143,7 @@ the worktree after a successful merge.
 ```
 .marshal/
 ├── worktrees/<task>.<backend>/   # isolated checkout per run (kept until you integrate)
-├── fleet.json                    # every run's status + cost
+├── runs/<run_id>.json            # one file per run: status + cost (single writer per run)
 └── usage/
     ├── events.jsonl              # one line per run
     └── summary.json              # rolled-up totals

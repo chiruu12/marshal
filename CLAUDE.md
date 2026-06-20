@@ -27,7 +27,7 @@ marshal/
 │   │   └── antigravity.py   # Google Antigravity (agy)
 │   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
 │   ├── usage.py             # per-provider usage: events.jsonl + summary.json
-│   ├── state.py             # persistent fleet state (fleet.json)
+│   ├── state.py             # persistent fleet state (one runs/<run_id>.json per run)
 │   ├── fleet.py             # orchestrator: worktree → run backend → record usage → persist
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard
