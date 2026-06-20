@@ -55,6 +55,11 @@ def build_app(service: MarshalService) -> Any:
         return [asdict(r) for r in service.run_many(jobs, max_concurrency=max_concurrency)]
 
     @app.tool()
+    def spawn(client: str, goal: str, task_id: str | None = None) -> dict[str, Any]:
+        """Start a run in the background; returns its RUNNING record immediately. Poll get_run/status."""
+        return asdict(service.spawn(client, goal, task_id=task_id))
+
+    @app.tool()
     def benchmark(
         goal: str, clients: list[str], task_id: str | None = None, max_concurrency: int = 4
     ) -> dict[str, Any]:

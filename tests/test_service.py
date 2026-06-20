@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -197,6 +198,24 @@ def test_run_many_runs_each_client_job(repo: Path) -> None:
     assert [r.task_id for r in records] == ["j1", "j2", "j3"]
     assert all(r.status == "succeeded" for r in records)
     assert len(svc.status()) == 3
+
+
+def test_spawn_records_running_then_finishes(repo: Path) -> None:
+    svc = _svc(repo)
+    try:
+        rec = svc.spawn("worker", "do x", task_id="sp1")
+        assert rec.run_id.startswith("sp1.echo.")
+        assert rec.status in ("running", "succeeded")  # RUNNING at spawn; may finish fast
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            got = svc.get_run(rec.run_id)
+            if got and got.status != "running":
+                break
+            time.sleep(0.05)
+        got = svc.get_run(rec.run_id)
+        assert got is not None and got.status == "succeeded"
+    finally:
+        svc.shutdown()
 
 
 def test_run_many_unknown_client_fails_fast(repo: Path) -> None:

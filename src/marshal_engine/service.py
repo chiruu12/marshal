@@ -106,6 +106,25 @@ class MarshalService:
         ]
         return self.fleet.run_many(requests, max_concurrency=max_concurrency)
 
+    def spawn(
+        self,
+        client_name: str,
+        goal: str,
+        *,
+        task_id: str | None = None,
+        files_touched: list[str] | None = None,
+    ) -> RunRecord:
+        """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
+        req = self._request_for(client_name, goal, task_id, files_touched)
+        run_id = self.fleet.spawn(req)
+        rec = self.fleet.state.get(run_id)
+        assert rec is not None  # _start just recorded it RUNNING
+        return rec
+
+    def shutdown(self) -> None:
+        """Drain background spawns (for library/test use; the long-lived MCP server rarely needs it)."""
+        self.fleet.shutdown()
+
     def benchmark(
         self,
         goal: str,

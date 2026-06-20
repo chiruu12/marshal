@@ -313,6 +313,27 @@ def test_run_many_runs_concurrently(repo: Path) -> None:
     assert elapsed < 1.5  # 4 x 0.5s sequential = 2s; concurrent finishes in ~0.5s
 
 
+def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> None:
+    fleet = Fleet(repo, {"sleeper": _Sleeper()})  # each run sleeps ~0.5s
+    try:
+        start = time.monotonic()
+        run_id = fleet.spawn(RunRequest("sleeper", TaskSpec(id="sp1", goal="x")))
+        assert time.monotonic() - start < 0.4  # returned without waiting for the 0.5s run
+
+        rec = fleet.state.get(run_id)
+        assert rec is not None and rec.status == "running"  # recorded RUNNING at once
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == "succeeded"  # finished in the background
+    finally:
+        fleet.shutdown()
+
+
 def test_run_id_unique_across_same_task_runs(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     a = fleet.run("writer", TaskSpec(id="dup", goal="x"))

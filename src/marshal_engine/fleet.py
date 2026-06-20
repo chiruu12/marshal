@@ -135,6 +135,10 @@ class Fleet:
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds — the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
+        # Persistent pool for non-blocking spawn(); lives as long as this Fleet (i.e. the long-lived
+        # MCP server) so background runs outlive the driver turn that started them.
+        self._bg: ThreadPoolExecutor | None = None
+        self._bg_max = 4
 
     def run(
         self,
@@ -148,45 +152,83 @@ class Fleet:
         ts: str | None = None,
         cleanup: bool = False,
     ) -> RunRecord:
-        if backend_name not in self.backends:
-            raise ValueError(f"no such backend: {backend_name!r}")
-        backend = self.backends[backend_name]
-        ts = ts or _now()
+        """Run one task synchronously: worktree -> backend -> usage -> persist. Blocks until done."""
+        req = RunRequest(backend_name, task, permission, model, client, timeout_s)
+        run_id, wt, started = self._start(req, ts)
+        return self._execute(req, run_id, wt, started, cleanup=cleanup)
+
+    def spawn(self, request: RunRequest, *, ts: str | None = None) -> str:
+        """Start a run in the background and return its run_id immediately (does NOT wait).
+
+        The run is recorded RUNNING synchronously (so `status()`/`get_run()` see it at once), then
+        the agent executes on a persistent pool that outlives this call — so background runs survive
+        the driver turn that started them. The driver polls for the terminal status.
+        """
+        run_id, wt, started = self._start(request, ts)
+        self._executor().submit(self._execute_bg, request, run_id, wt, started)
+        return run_id
+
+    def spawn_many(self, requests: list[RunRequest], *, ts: str | None = None) -> list[str]:
+        """Spawn several runs in the background; return their run_ids in order."""
+        return [self.spawn(req, ts=ts) for req in requests]
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Shut the background spawn pool (drains in-flight runs). A no-op if none were spawned."""
+        if self._bg is not None:
+            self._bg.shutdown(wait=wait)
+            self._bg = None
+
+    def _executor(self) -> ThreadPoolExecutor:
+        if self._bg is None:
+            self._bg = ThreadPoolExecutor(max_workers=self._bg_max, thread_name_prefix="marshal-spawn")
+        return self._bg
+
+    def _start(self, req: RunRequest, ts: str | None) -> tuple[str, Worktree, str]:
+        """Synchronous prefix: validate, create the worktree, record RUNNING -> (run_id, wt, ts)."""
+        if req.backend_name not in self.backends:
+            raise ValueError(f"no such backend: {req.backend_name!r}")
+        started = ts or _now()
         # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
         # dir, or the state record. task_id stays the grouping key on RunRecord.
-        run_id = f"{task.id}.{backend_name}.{uuid.uuid4().hex[:8]}"
-
+        run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
         with self._create_lock:
-            wt = self.worktrees.create(run_id, base_branch=task.base_branch)
+            wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
         self.state.add(
             RunRecord(
                 run_id=run_id,
-                task_id=task.id,
-                backend=backend_name,
-                client=client,
-                model=model,
+                task_id=req.task.id,
+                backend=req.backend_name,
+                client=req.client,
+                model=req.model,
                 status=RunStatus.RUNNING.value,
                 worktree=str(wt.path),
                 branch=wt.branch,
-                started_at=ts,
+                started_at=started,
             )
         )
+        return run_id, wt, started
 
+    def _execute(
+        self, req: RunRequest, run_id: str, wt: Worktree, ts: str, *, cleanup: bool = False
+    ) -> RunRecord:
+        """Execute suffix: run the backend, price + classify, persist the terminal record."""
+        backend = self.backends[req.backend_name]
         try:
             result = backend.run(
-                task, RunOpts(cwd=wt.path, permission=permission, model=model, timeout_s=timeout_s)
+                req.task,
+                RunOpts(
+                    cwd=wt.path, permission=req.permission, model=req.model, timeout_s=req.timeout_s
+                ),
             )
-
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
-            self._price_usage(usage, model)          # normalize cost + source (native/estimated/unavailable)
+            self._price_usage(usage, req.model)      # normalize cost + source
             status = self._authoritative_status(result, wt)
-
             event = UsageEvent.from_result(
-                result, run_id=run_id, backend=backend_name, ts=ts, usage=usage, client=client, model=model
+                result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
+                client=req.client, model=req.model,
             )
             event.status = status.value              # report the authoritative outcome (incl. EMPTY)
             self.usage.record(event)
-
             record = self.state.update(
                 run_id,
                 status=status.value,
@@ -206,6 +248,13 @@ class Fleet:
         if cleanup:
             self.worktrees.remove(wt)
         return record
+
+    def _execute_bg(self, req: RunRequest, run_id: str, wt: Worktree, ts: str) -> None:
+        """Background variant: the outcome (incl. failure) is already persisted; never propagate."""
+        try:
+            self._execute(req, run_id, wt, ts)
+        except Exception:  # noqa: BLE001 — _execute already terminal-stamped; the driver polls status()
+            pass
 
     def run_many(
         self,
