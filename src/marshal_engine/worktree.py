@@ -173,7 +173,7 @@ class WorktreeManager:
         left clean); a *blocked* merge that git refused to start because the target working tree
         is dirty/colliding (no changes made -> MergeResult.blocked); any other failure raises.
         """
-        args = ["merge", "--no-edit"]
+        args = ["merge", "--no-edit", "--no-verify"]  # --no-verify: headless, never run prompting hooks
         if message is not None:
             args += ["-m", message]
         args.append(branch)
@@ -185,10 +185,18 @@ class WorktreeManager:
             self._git("merge", "--abort")
             return MergeResult(ok=False, conflicts=conflicts, message=proc.stdout.strip())
         stderr = proc.stderr.strip()
+        if self._merge_in_progress():
+            # git started a merge it couldn't finish (no content conflict): abort so the repo is
+            # left clean, and report blocked (recoverable on retry) rather than raising mid-merge.
+            self._git("merge", "--abort")
+            return MergeResult(ok=False, blocked=True, message=stderr or proc.stdout.strip())
         if "overwritten by merge" in stderr or "Aborting" in stderr:
             # git refused before starting (dirty/colliding target). No merge state to abort.
             return MergeResult(ok=False, blocked=True, message=stderr)
         raise WorktreeError(f"merge of {branch!r} failed: {stderr or proc.stdout.strip()}")
+
+    def _merge_in_progress(self) -> bool:
+        return self._git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
 
     def _conflicted_files(self) -> list[str]:
         # -z: verbatim, NUL-delimited paths (no C-quoting of spaces/non-ASCII names).

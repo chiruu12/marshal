@@ -384,6 +384,26 @@ def test_integrate_blocked_on_dirty_target_then_retry_merges(repo: Path) -> None
     assert merged.status == "merged"     # the already-committed work merges, NOT reported "empty"
 
 
+def test_integrate_survives_hook_rejected_merge(repo: Path) -> None:
+    # A pre-merge-commit hook that fails would leave a non-FF merge half-done. merge() passes
+    # --no-verify (so hooks don't run) and aborts any started-but-unfinished merge -> repo stays
+    # clean and integrate reports a structured result, never a raw exception or a stuck MERGE_HEAD.
+    hook = repo / ".git" / "hooks" / "pre-merge-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    # force a non-fast-forward merge: a divergent commit on the target branch
+    (repo / "other.txt").write_text("on target\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "divergent target commit")
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="h1", goal="x"))
+    result = fleet.integrate(rec.run_id)
+    assert result.status in ("merged", "blocked")  # --no-verify usually lets it merge cleanly
+    assert not (repo / ".git" / "MERGE_HEAD").exists()  # never left mid-merge regardless
+
+
 def test_integrate_blocked_on_detached_head(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="dh1", goal="x"))

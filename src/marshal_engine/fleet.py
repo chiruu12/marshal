@@ -223,14 +223,20 @@ class Fleet:
         except WorktreeError as exc:
             return IntegrateResult(run_id=run_id, status="blocked", branch=wt.branch, message=str(exc))
 
-        changed = self.worktrees.changed_files(wt)
-        commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
-        # "empty" only when the worktree is clean AND the branch has no commits past the target.
-        # (A prior blocked/conflict already committed the work, so a retry still has something to merge.)
-        if commit is None and not self.worktrees.has_unmerged_commits(wt.branch, target):
-            return IntegrateResult(run_id=run_id, status="empty", branch=wt.branch)
-
-        merge = self.worktrees.merge(wt.branch)
+        try:
+            changed = self.worktrees.changed_files(wt)
+            commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
+            # "empty" only when the worktree is clean AND the branch has no commits past target.
+            # (A prior blocked/conflict already committed the work, so a retry still has work to merge.)
+            if commit is None and not self.worktrees.has_unmerged_commits(wt.branch, target):
+                return IntegrateResult(run_id=run_id, status="empty", branch=wt.branch)
+            merge = self.worktrees.merge(wt.branch)
+        except WorktreeError as exc:
+            # a timed-out / locked / otherwise-failed git op: surface a structured, recoverable
+            # result instead of a raw exception (a retry can re-run once the cause is cleared).
+            return IntegrateResult(
+                run_id=run_id, status="blocked", branch=wt.branch, merged_into=target, message=str(exc)
+            )
         if merge.blocked:
             return IntegrateResult(
                 run_id=run_id,
