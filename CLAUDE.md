@@ -10,9 +10,9 @@ autonomous coding system — will be built on top of Marshal. See `docs/chauffeu
 Marshal clean and embeddable.
 
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
-> **V1 core shipped**: merge-back, per-provider cost-proof, capped parallel `run_many`, and the
-> **measured savings benchmark** (`benchmark`/`report`). 10 MCP tools. OpenCode + Cursor
-> live-verified. Next: Skills layer / non-blocking spawn. See `docs/status.md`.
+> **V1 complete**: merge-back, per-provider cost-proof, capped parallel `run_many`, non-blocking
+> `spawn`, the **measured savings benchmark** (`benchmark`/`report`), and driver Skills. 11 MCP
+> tools. OpenCode + Cursor live-verified. Remaining work is coverage/polish. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -33,7 +33,7 @@ marshal/
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard
 │   ├── service.py           # MarshalService — the testable core the MCP/CLI call into
-│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/benchmark/report/get_run/collect_run/integrate/status/usage
+│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/spawn/benchmark/report/get_run/collect_run/integrate/status/usage
 │   └── cli.py               # `marshal` CLI (backends/usage/status/mcp)
 ├── .claude/skills/          # driver playbooks (marshal-orchestrate, marshal-benchmark) + imported
 ├── docs/                    # design · vision · status · usage · decisions · chauffeur-future · sources

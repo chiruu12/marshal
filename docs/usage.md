@@ -87,6 +87,7 @@ Tools exposed to the driver:
 | `list_clients` | List configured clients (name, backend, model, permission). |
 | `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
 | `run_many(jobs, max_concurrency?)` | Run several `{client, goal}` jobs in parallel, each in its own worktree; returns all records. |
+| `spawn(client, goal, task_id?)` | Start a run in the background; returns its RUNNING record at once — poll `get_run`/`status`. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
 | `get_run(run_id)` | Fetch one run record. |

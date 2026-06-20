@@ -21,7 +21,7 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
 | `service.py` | Testable core the MCP/CLI call into | done |
 | `cli.py` | `marshal backends/usage/status/mcp` | done |
-| `mcp_server.py` | 10-tool MCP surface over stdio (run/run_many/benchmark/report/collect/integrate/…) | done |
+| `mcp_server.py` | 11-tool MCP surface over stdio (run/run_many/spawn/benchmark/report/collect/integrate/…) | done |
 
 Quality gate: 107 unit tests pass; ruff and mypy (strict) clean across all source files.
 
@@ -73,6 +73,7 @@ exposed over the service and MCP. This completes the V1 core (engine + cost + be
 Shipped: the **Skills layer** — `.claude/skills/marshal-orchestrate` (decompose → spawn → monitor →
 collect → integrate) and `.claude/skills/marshal-benchmark` (compare strategies) driver playbooks,
 completing the four surfaces (engine · MCP · Skills · config).
-Remaining: optional non-blocking spawn/poll; Antigravity PTY/workspace-trust; Cursor admin-API
-usage; Codex live re-verify; a Gemini backend; PyPI publish; and eventually **Chauffeur** (see
-[`chauffeur-future.md`](chauffeur-future.md)).
+Also shipped: **non-blocking `spawn`** — start a run in the background (persistent pool on the Fleet)
+and poll `status`/`get_run`; the run is recorded RUNNING at once and survives the driver turn.
+Remaining: Antigravity PTY/workspace-trust; Cursor admin-API usage; Codex live re-verify; a Gemini
+backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
