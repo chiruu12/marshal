@@ -21,9 +21,9 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
 | `service.py` | Testable core the MCP/CLI call into | done |
 | `cli.py` | `marshal backends/usage/status/mcp` | done |
-| `mcp_server.py` | 7-tool MCP surface over stdio (incl. `collect_run` + `integrate`) | done |
+| `mcp_server.py` | 10-tool MCP surface over stdio (run/run_many/benchmark/report/collect/integrate/…) | done |
 
-Quality gate: 98 unit tests pass; ruff and mypy (strict) clean across all source files.
+Quality gate: 107 unit tests pass; ruff and mypy (strict) clean across all source files.
 
 ## Backend verification matrix
 
@@ -60,12 +60,16 @@ now returns a structured `blocked` status; conflict/blocked retries re-merge ins
 loop that terminal-stamps `failed` on any exception (no zombie RUNNING); and **process-group kill on
 timeout** (`os.killpg`), completing invariant #1 (no orphaned agent grandchildren).
 
-### Phase 3 — parallel + measured benchmark (in progress)
-Shipped: **per-run state files** (`runs/<run_id>.json`, single writer each, aggregates derived on
-read) and **usage derived on read** (append-only `events.jsonl`) for concurrency safety; **capped
-parallel `run_many`** via `ThreadPoolExecutor` behind a swappable Fleet API (worktree-create lock +
-Cursor launch stagger + per-job failure isolation), exposed over the service and MCP.
-Next: the **measured** savings report — run one task through N routing strategies and compare real
-cost/latency/outcome; optional non-blocking spawn/poll. Then the Skills layer, Antigravity
-PTY/workspace-trust, Cursor admin-API usage, Codex live re-verify, a Gemini backend, PyPI publish,
-and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
+### Phase 3 — parallel + measured benchmark (shipped)
+**Per-run state files** (`runs/<run_id>.json`, single writer each, aggregates derived on read) and
+**usage derived on read** (append-only `events.jsonl`) for concurrency safety; **capped parallel
+`run_many`** via `ThreadPoolExecutor` behind a swappable Fleet API (worktree-create lock + Cursor
+launch stagger + per-job failure isolation); and the **measured savings benchmark** — `benchmark`
+runs one goal through N clients (strategies) and `report` derives a source-honest cost/latency/
+outcome comparison from the ledger ("cheapest" only ranks strategies with a known cost). All
+exposed over the service and MCP. This completes the V1 core (engine + cost + benchmark).
+
+### Phase 4 — coverage & productization
+Optional non-blocking spawn/poll; the Skills layer (`.claude/skills/marshal-*` driver playbooks);
+Antigravity PTY/workspace-trust; Cursor admin-API usage; Codex live re-verify; a Gemini backend;
+PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

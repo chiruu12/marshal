@@ -5,8 +5,8 @@ Marshal drives a fleet of headless coding agents from one driver. You declare na
 MCP server, as a CLI, or as a Python library.
 
 > **Status:** early development. The engine, CLI, and MCP server work, including merge-back
-> (`collect_run` + `integrate`) and capped parallel fan-out (`run_many`). A measured savings
-> benchmark is on the roadmap (see [`status.md`](status.md)).
+> (`collect_run` + `integrate`), capped parallel fan-out (`run_many`), and a measured savings
+> benchmark (`benchmark`/`report`). See [`status.md`](status.md).
 
 ## Install
 
@@ -87,6 +87,8 @@ Tools exposed to the driver:
 | `list_clients` | List configured clients (name, backend, model, permission). |
 | `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
 | `run_many(jobs, max_concurrency?)` | Run several `{client, goal}` jobs in parallel, each in its own worktree; returns all records. |
+| `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
+| `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
 | `get_run(run_id)` | Fetch one run record. |
 | `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). |
 | `integrate(run_id, cleanup?)` | Merge a run's worktree branch into the current branch; reports conflicts. |
