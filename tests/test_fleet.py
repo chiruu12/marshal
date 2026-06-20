@@ -334,6 +334,25 @@ def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> N
         fleet.shutdown()
 
 
+def test_spawn_terminal_stamps_a_background_failure(repo: Path) -> None:
+    # A spawned run whose backend raises must end FAILED (never stranded RUNNING), _execute_bg must
+    # swallow the exception (no worker-thread crash), and shutdown() must drain cleanly.
+    fleet = Fleet(repo, {"boom": _Exploder()})
+    try:
+        run_id = fleet.spawn(RunRequest("boom", TaskSpec(id="bf1", goal="x")))
+        deadline = time.monotonic() + 10
+        rec = fleet.state.get(run_id)
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == "failed"  # background failure terminal-stamped
+        assert rec.error and "kaboom" in rec.error
+    finally:
+        fleet.shutdown()  # returns cleanly despite the background failure
+
+
 def test_run_id_unique_across_same_task_runs(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     a = fleet.run("writer", TaskSpec(id="dup", goal="x"))
