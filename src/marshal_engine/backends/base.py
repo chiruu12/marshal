@@ -106,18 +106,23 @@ class CodingAgentBackend(ABC):
                 duration_ms=_elapsed_ms(),
             )
 
+        # start_new_session makes the child its own group leader, so its pgid == its pid. Capture
+        # it now, while the leader is alive — resolving it later (after a fast leader exit) can race
+        # a zombie and strand the group.
+        pgid = proc.pid
+
         try:
             out, err = proc.communicate(timeout=opts.timeout_s)
         except subprocess.TimeoutExpired:
-            _kill_process_group(proc)
-            out, err = proc.communicate()  # drain pipes + reap now that the group is dead
+            _kill_process_group(pgid)
+            out, err = _drain(proc)  # bounded: a setsid-escaped survivor holding the pipe can't hang us
             return AgentResult(
                 status=RunStatus.TIMED_OUT,
                 error=f"{self.name}: timed out after {opts.timeout_s}s",
                 session_id=opts.session_id,
-                usage=self._recover_partial_usage(out or "", err or ""),
-                raw_stdout=out or "",
-                raw_stderr=err or "",
+                usage=self._recover_partial_usage(out, err),
+                raw_stdout=out,
+                raw_stderr=err,
                 duration_ms=_elapsed_ms(),
             )
 
@@ -139,23 +144,39 @@ class CodingAgentBackend(ABC):
             return None
 
 
-def _kill_process_group(proc: subprocess.Popen[str]) -> None:
-    """SIGTERM then (if needed) SIGKILL the child's whole process group.
+def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
+    """SIGTERM then unconditionally SIGKILL the child's whole process group.
 
-    The child was started with `start_new_session=True`, so it is its own group leader and
-    `os.killpg` reaches every descendant it spawned — no orphaned grandchildren after a timeout.
+    `pgid` is the leader pid (the child was started with `start_new_session=True`). After SIGTERM
+    we wait a short grace for cooperative shutdown, then SIGKILL the *whole group* regardless of
+    whether the leader itself already exited — escalation must depend on the group dying, not on the
+    leader being reaped, or a SIGTERM-ignoring grandchild survives. A grandchild that escaped the
+    session (`setsid`) cannot be reached here; the bounded drain in `run()` is what keeps such a
+    survivor from hanging the engine.
     """
     try:
-        pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:
-        return  # already exited
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pgid, sig)
-        except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=5)
-            return
-        except subprocess.TimeoutExpired:
-            continue  # ignored SIGTERM -> escalate to SIGKILL
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return  # group already gone
+    time.sleep(grace_s)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return
+
+
+def _drain(proc: subprocess.Popen[str]) -> tuple[str, str]:
+    """Collect remaining output and reap, bounded so a surviving pipe-holder can't block forever."""
+    try:
+        out, err = proc.communicate(timeout=2)
+        return out or "", err or ""
+    except subprocess.TimeoutExpired as exc:
+        return _as_text(exc.stdout), _as_text(exc.stderr)
+
+
+def _as_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)

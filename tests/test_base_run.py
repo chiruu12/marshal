@@ -95,6 +95,38 @@ def test_timeout_kills_whole_process_group(tmp_path: Path) -> None:
     assert not sentinel.exists()  # group was killed -> grandchild never wrote
 
 
+def test_timeout_sigkills_grandchild_that_ignores_sigterm(tmp_path: Path) -> None:
+    # A grandchild that ignores SIGTERM (e.g. a server doing graceful shutdown) must still be
+    # SIGKILLed — escalation must depend on the group dying, not on the leader being reaped.
+    sentinel = tmp_path / "ignored-sigterm.txt"
+    inner = (
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"time.sleep(3); open({str(sentinel)!r}, 'w').write('survived')"
+    )
+    outer = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {inner!r}]); time.sleep(30)"
+    )
+    res = _Dummy([sys.executable, "-c", outer]).run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert res.status is RunStatus.TIMED_OUT
+    time.sleep(3)
+    assert not sentinel.exists()  # SIGKILL escalation killed it despite SIG_IGN on SIGTERM
+
+
+def test_timeout_returns_even_if_grandchild_escapes_session(tmp_path: Path) -> None:
+    # A grandchild that calls setsid() escapes the group; killpg can't reach it. The bounded drain
+    # must still let run() return promptly instead of blocking on the inherited pipe it holds.
+    sentinel = tmp_path / "escaped.txt"
+    inner = f"import os, time; os.setsid(); time.sleep(6); open({str(sentinel)!r}, 'w').write('x')"
+    outer = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {inner!r}]); time.sleep(30)"
+    )
+    res = _Dummy([sys.executable, "-c", outer]).run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert res.status is RunStatus.TIMED_OUT
+    assert not sentinel.exists()  # run() returned without waiting for the escaped grandchild (+6s)
+
+
 def test_run_stdin_closed_does_not_hang(tmp_path: Path) -> None:
     # If stdin were a TTY/open pipe this would block forever; DEVNULL gives EOF immediately.
     b = _Dummy([sys.executable, "-c", "import sys; sys.stdin.read(); print('eof-ok')"])
