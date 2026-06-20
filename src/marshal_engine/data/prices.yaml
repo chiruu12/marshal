@@ -1,0 +1,26 @@
+# Marshal default price table — USD per MILLION tokens.
+#
+# STARTER VALUES — verify against current provider pricing before relying on them, and override
+# with your own file. An estimate reflects THIS table at the moment each run executes (a price
+# snapshot), so editing it never rewrites past ledger entries.
+#
+# Only backends that report tokens-but-no-cost need pricing here (e.g. Codex). OpenCode reports
+# native cost in its own output, so it does not need an entry. A model not listed below is
+# reported as "unpriced" (never silently $0).
+#
+# Keys are the model id as it appears in your fleet config / the run's usage record.
+# cache_read_per_mtok is optional (defaults to 0).
+
+models:
+  # --- examples — replace with your providers' current prices ---
+  claude-opus-4-8:
+    input_per_mtok: 15.0
+    output_per_mtok: 75.0
+    cache_read_per_mtok: 1.5
+  claude-sonnet-4-6:
+    input_per_mtok: 3.0
+    output_per_mtok: 15.0
+    cache_read_per_mtok: 0.3
+  gpt-5-codex:
+    input_per_mtok: 1.25
+    output_per_mtok: 10.0
