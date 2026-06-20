@@ -112,6 +112,18 @@ def test_commit_all_and_merge_round_trip(repo: Path) -> None:
     assert (repo / "feature.txt").exists()  # landed in the main checkout
 
 
+def test_commit_all_skips_pre_commit_hook(repo: Path) -> None:
+    # A prompting/failing pre-commit hook would block a headless run; commit_all passes --no-verify.
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")  # would fail the commit if it ran
+    hook.chmod(0o755)
+    m = WorktreeManager(repo)
+    wt = m.create("hooked")
+    (wt.path / "f.txt").write_text("x")
+    assert m.commit_all(wt, "commit despite failing hook")  # --no-verify bypassed it -> a sha
+
+
 def test_merge_conflict_aborts_and_reports(repo: Path) -> None:
     m = WorktreeManager(repo)
     wt_a = m.create("a")

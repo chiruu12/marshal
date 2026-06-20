@@ -7,6 +7,7 @@ safety boundary of the whole system — keep it boring and reliable.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,19 +41,33 @@ class WorktreeManager:
         repo_root: Path | str,
         base_dir: Path | str | None = None,
         branch_prefix: str = "marshal",
+        git_timeout_s: int = 120,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.base_dir = (
             Path(base_dir) if base_dir is not None else self.repo_root / ".marshal" / "worktrees"
         )
         self.branch_prefix = branch_prefix
+        self.git_timeout_s = git_timeout_s
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(cwd or self.repo_root), *args],
-            capture_output=True,
-            text=True,
-        )
+        # These git calls run on the driver's checkout (commit/merge/status), so they get the same
+        # headless guards as agent runs: stdin closed + a hard timeout so a credential/lock/hook
+        # prompt fails fast instead of hanging the driver. GIT_TERMINAL_PROMPT=0 turns an auth
+        # prompt into an error rather than a wait.
+        try:
+            return subprocess.run(
+                ["git", "-C", str(cwd or self.repo_root), *args],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                timeout=self.git_timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise WorktreeError(
+                f"git {' '.join(args)!r} timed out after {self.git_timeout_s}s"
+            ) from exc
 
     def create(self, task_id: str, base_branch: str | None = None) -> Worktree:
         """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch."""
