@@ -2,6 +2,22 @@
 
 Running log of non-obvious decisions and verified findings. Newest first.
 
+## 2026-06-20 — Live V1 fleet verification
+
+Smoke-tested the full V1 loop against live backends (throwaway repo, ~$0.08, **zero Fireworks** —
+all native `opencode-go/glm-5.2`; Cursor via `CURSOR_API_KEY`). Every surface fired: `run_many`
+parallel fan-out, `collect_run` + `integrate` (a live agent's docstring merged to `master`),
+`benchmark` (opencode-go vs cursor → cheapest=go; Cursor's `$0` correctly excluded as
+`unavailable`), non-blocking `spawn` (returned RUNNING, polled to succeeded), and the `usage` rollup.
+
+Findings:
+- One of two concurrent `opencode-go` runs failed — likely a Go-sub rate limit (design §8.5:
+  "rate-limit = immediate exit, no auto-retry"). The engine handled it correctly: per-job failure
+  isolation kept the batch alive. **Phase-4 hardening:** orchestrator backoff/retry for real
+  parallel fan-out on the Go sub.
+- A failed run whose backend errors on stderr (not its JSON stream) had an empty `error`. **Fixed:**
+  `base.run` now fills the error from the exit code + a stderr tail, so failures are never silent.
+
 ## 2026-06-20 — Roadmap reorder: cost-proof first; engine/report split
 
 Reviewed product + architecture after shipping `collect_run`/`integrate` and running a multi-agent
