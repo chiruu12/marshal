@@ -171,6 +171,7 @@ def _drain(proc: subprocess.Popen[str]) -> tuple[str, str]:
         out, err = proc.communicate(timeout=2)
         return out or "", err or ""
     except subprocess.TimeoutExpired as exc:
+        proc.poll()  # non-blocking: reap the killed leader now (a setsid'd survivor keeps the pipe)
         return _as_text(exc.stdout), _as_text(exc.stderr)
 
 
