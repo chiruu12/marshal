@@ -51,8 +51,9 @@ class CollectResult:
 class IntegrateResult:
     """Outcome of merging a run's worktree branch back into the current branch.
 
-    status is "merged" (changes landed), "conflict" (merge aborted, resolve manually), or
-    "empty" (the run produced no changes to integrate).
+    status is one of: "merged" (changes landed), "conflict" (merge aborted, resolve manually),
+    "blocked" (the target checkout is dirty/colliding or detached HEAD — nothing changed, fixable
+    then retry), or "empty" (the run produced no changes to integrate).
     """
 
     run_id: str
@@ -62,6 +63,7 @@ class IntegrateResult:
     changed_files: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     commit: str | None = None
+    message: str = ""
 
 
 class Fleet:
@@ -208,19 +210,36 @@ class Fleet:
         """Merge a run's worktree branch back into the current branch, handling conflicts.
 
         Commits the worktree's uncommitted work onto its branch, then merges that branch into
-        the repo's current branch. A conflict is reported and the merge aborted (repo stays
-        clean); an empty run is a no-op. On success the run is stamped `merged_into`.
+        the repo's current branch. Outcomes: "merged" (stamps `merged_into`), "conflict" (aborted,
+        repo left clean), "blocked" (target dirty/colliding or detached HEAD — fix it and retry),
+        or "empty" (nothing to integrate). The blocked/conflict commit stays on the branch, so a
+        retry after fixing the target re-merges it instead of reporting "empty".
         """
         wt = self._worktree_for(run_id)
         if not wt.branch:
             raise ValueError(f"run {run_id!r} has no branch to integrate")
+        try:
+            target = self.worktrees.current_branch()  # refuses detached HEAD before committing
+        except WorktreeError as exc:
+            return IntegrateResult(run_id=run_id, status="blocked", branch=wt.branch, message=str(exc))
+
         changed = self.worktrees.changed_files(wt)
         commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
-        if commit is None:
+        # "empty" only when the worktree is clean AND the branch has no commits past the target.
+        # (A prior blocked/conflict already committed the work, so a retry still has something to merge.)
+        if commit is None and not self.worktrees.has_unmerged_commits(wt.branch, target):
             return IntegrateResult(run_id=run_id, status="empty", branch=wt.branch)
 
-        target = self.worktrees.current_branch()
         merge = self.worktrees.merge(wt.branch)
+        if merge.blocked:
+            return IntegrateResult(
+                run_id=run_id,
+                status="blocked",
+                branch=wt.branch,
+                merged_into=target,
+                commit=commit,
+                message=merge.message,
+            )
         if not merge.ok:
             return IntegrateResult(
                 run_id=run_id,

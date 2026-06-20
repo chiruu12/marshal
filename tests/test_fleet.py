@@ -361,3 +361,34 @@ def test_integrate_reports_conflict_and_aborts(repo: Path) -> None:
     assert conflict.status == "conflict"
     assert "README.md" in conflict.conflicts
     assert (repo / "README.md").read_text() == "a"  # aborted -> main untouched
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def test_integrate_blocked_on_dirty_target_then_retry_merges(repo: Path) -> None:
+    fleet = Fleet(repo, {"patcher": _Patcher()})
+    rec = fleet.run("patcher", TaskSpec(id="d1", goal="x"))   # worktree rewrites README.md
+    (repo / "README.md").write_text("local uncommitted edit\n")  # dirty the same file in main
+
+    blocked = fleet.integrate(rec.run_id)
+    assert blocked.status == "blocked"   # structured result, not a raised exception
+    assert blocked.message               # explains the dirty/colliding target
+    assert (repo / "README.md").read_text() == "local uncommitted edit\n"  # main untouched
+
+    _git(repo, "checkout", "--", "README.md")  # clean the target, then retry
+    merged = fleet.integrate(rec.run_id)
+    assert merged.status == "merged"     # the already-committed work merges, NOT reported "empty"
+
+
+def test_integrate_blocked_on_detached_head(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="dh1", goal="x"))
+    _git(repo, "checkout", "--detach", "HEAD")  # detach the main checkout
+
+    result = fleet.integrate(rec.run_id)
+    assert result.status == "blocked"            # refuses before committing, no orphaned merge
+    assert "detached" in result.message.lower()

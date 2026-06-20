@@ -31,6 +31,7 @@ class MergeResult:
     ok: bool
     conflicts: list[str] = field(default_factory=list)
     message: str = ""
+    blocked: bool = False  # merge could not start (dirty/colliding target); nothing was changed
 
 
 class WorktreeManager:
@@ -143,17 +144,32 @@ class WorktreeManager:
         return self._git("rev-parse", "HEAD", cwd=wt.path).stdout.strip()
 
     def current_branch(self) -> str:
-        """The branch currently checked out in the main repo (the merge target)."""
+        """The branch currently checked out in the main repo (the merge target).
+
+        Raises on a detached HEAD: merging into a non-branch would leave the merge commit
+        reachable from no branch (orphaned on the next checkout), so integrate must refuse.
+        """
         proc = self._git("rev-parse", "--abbrev-ref", "HEAD")
         if proc.returncode != 0:
             raise WorktreeError(f"could not resolve current branch: {proc.stderr.strip()}")
-        return proc.stdout.strip()
+        branch = proc.stdout.strip()
+        if branch == "HEAD":
+            raise WorktreeError("repo is in detached HEAD; check out a branch before integrating")
+        return branch
+
+    def has_unmerged_commits(self, branch: str, target: str) -> bool:
+        """True if `branch` has commits not reachable from `target` (work awaiting merge)."""
+        proc = self._git("rev-list", "--count", f"{target}..{branch}")
+        if proc.returncode != 0:
+            return False
+        return proc.stdout.strip() not in ("", "0")
 
     def merge(self, branch: str, *, message: str | None = None) -> MergeResult:
-        """Merge `branch` into the repo's current branch. On conflict, abort and report files.
+        """Merge `branch` into the repo's current branch.
 
-        A conflict leaves the repo clean (the merge is aborted) so the driver can resolve it
-        deliberately rather than inheriting a half-merged tree. Non-conflict failures raise.
+        Three failure shapes are distinguished: a content conflict (abort + report files, repo
+        left clean); a *blocked* merge that git refused to start because the target working tree
+        is dirty/colliding (no changes made -> MergeResult.blocked); any other failure raises.
         """
         args = ["merge", "--no-edit"]
         if message is not None:
@@ -166,9 +182,11 @@ class WorktreeManager:
         if conflicts:
             self._git("merge", "--abort")
             return MergeResult(ok=False, conflicts=conflicts, message=proc.stdout.strip())
-        raise WorktreeError(
-            f"merge of {branch!r} failed: {proc.stderr.strip() or proc.stdout.strip()}"
-        )
+        stderr = proc.stderr.strip()
+        if "overwritten by merge" in stderr or "Aborting" in stderr:
+            # git refused before starting (dirty/colliding target). No merge state to abort.
+            return MergeResult(ok=False, blocked=True, message=stderr)
+        raise WorktreeError(f"merge of {branch!r} failed: {stderr or proc.stdout.strip()}")
 
     def _conflicted_files(self) -> list[str]:
         # -z: verbatim, NUL-delimited paths (no C-quoting of spaces/non-ASCII names).
