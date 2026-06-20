@@ -65,18 +65,28 @@ class WorktreeManager:
         return Worktree(task_id=task_id, path=path, branch=branch)
 
     def changed_files(self, wt: Worktree) -> list[str]:
-        """Paths changed inside the worktree (uncommitted), via `git status --porcelain`."""
-        proc = self._git("status", "--porcelain", cwd=wt.path)
+        """Paths changed inside the worktree (uncommitted).
+
+        Uses `git status --porcelain -z` so paths are emitted verbatim and NUL-delimited — names
+        with spaces or non-ASCII are returned as-is, not C-quoted (`"my file.txt"`). With `-z` a
+        rename/copy emits the new path in the status record followed by the old path as its own
+        NUL field, which is skipped.
+        """
+        proc = self._git("status", "--porcelain", "-z", cwd=wt.path)
         if proc.returncode != 0:
             raise WorktreeError(f"status failed for {wt.task_id!r}: {proc.stderr.strip()}")
+        tokens = proc.stdout.split("\0")
         files: list[str] = []
-        for line in proc.stdout.splitlines():
-            entry = line[3:].strip() if len(line) > 3 else line.strip()
-            if not entry:
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if not tok:
+                i += 1
                 continue
-            if " -> " in entry:  # renames: "old -> new"
-                entry = entry.split(" -> ", 1)[1]
-            files.append(entry)
+            status, path = tok[:2], tok[3:]
+            if path:
+                files.append(path)
+            i += 2 if status and status[0] in ("R", "C") else 1  # rename/copy: skip the old-path field
         return files
 
     def diff(self, wt: Worktree) -> str:
@@ -146,8 +156,9 @@ class WorktreeManager:
         )
 
     def _conflicted_files(self) -> list[str]:
-        proc = self._git("diff", "--name-only", "--diff-filter=U")
-        return [f for f in proc.stdout.splitlines() if f.strip()]
+        # -z: verbatim, NUL-delimited paths (no C-quoting of spaces/non-ASCII names).
+        proc = self._git("diff", "--name-only", "--diff-filter=U", "-z")
+        return [f for f in proc.stdout.split("\0") if f]
 
     def list(self) -> list[Worktree]:
         """All worktrees known to the repo (includes the main checkout)."""

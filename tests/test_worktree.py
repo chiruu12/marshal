@@ -46,6 +46,16 @@ def test_changed_files_detects_edits_and_additions(repo: Path) -> None:
     assert "README.md" in changed
 
 
+def test_changed_files_handles_spaces_and_unicode(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("weird")
+    (wt.path / "my file.txt").write_text("x")  # space -> would be C-quoted without -z
+    (wt.path / "café.txt").write_text("y")      # non-ASCII -> would be octal-escaped without -z
+    changed = set(m.changed_files(wt))
+    assert "my file.txt" in changed   # returned verbatim, not '"my file.txt"'
+    assert "café.txt" in changed
+
+
 def test_diff_includes_tracked_and_untracked(repo: Path) -> None:
     m = WorktreeManager(repo)
     wt = m.create("task_diff")
