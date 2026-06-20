@@ -23,7 +23,7 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `cli.py` | `marshal backends/usage/status/mcp` | done |
 | `mcp_server.py` | 7-tool MCP surface over stdio (incl. `collect_run` + `integrate`) | done |
 
-Quality gate: 97 unit tests pass; ruff and mypy (strict) clean across all source files.
+Quality gate: 98 unit tests pass; ruff and mypy (strict) clean across all source files.
 
 ## Backend verification matrix
 
