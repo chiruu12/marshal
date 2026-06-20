@@ -130,6 +130,38 @@ class _Tokened(CodingAgentBackend):
         )
 
 
+class _NativeZero(CodingAgentBackend):
+    """Backend that authoritatively reports a $0 cost with tokens (e.g. a free/local model)."""
+
+    name = "nz"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "print('done')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED,
+            text=raw_stdout.strip(),
+            usage=UsageRecord(
+                backend="nz",
+                model="m",
+                input_tokens=1_000_000,
+                output_tokens=0,
+                cost_usd=0.0,
+                source=UsageSource.NATIVE,  # the backend really did report $0
+            ),
+            exit_code=exit_code,
+        )
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -192,6 +224,14 @@ def test_tokened_run_gets_estimated_cost(repo: Path) -> None:
     assert rec.cost_usd == 10.0          # 1M input tokens @ $10/Mtok
     assert rec.source == "estimated"
     assert rec.duration_ms >= 0
+
+
+def test_native_zero_cost_is_not_repriced(repo: Path) -> None:
+    prices = PriceTable({"m": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
+    fleet = Fleet(repo, {"nz": _NativeZero()}, prices=prices)
+    rec = fleet.run("nz", TaskSpec(id="nz1", goal="x"))
+    assert rec.source == "native"   # a backend-reported $0 stays native...
+    assert rec.cost_usd == 0.0      # ...and is NOT fabricated into a $10 estimate
 
 
 def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:

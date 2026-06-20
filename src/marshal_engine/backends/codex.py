@@ -127,8 +127,9 @@ class CodexBackend(CodingAgentBackend):
                     usage.cache_read_tokens += tok["cache_read"]
                     found_tokens = True
 
-        if found_tokens:
-            usage.source = UsageSource.NATIVE
+        # Codex reports tokens but never a cost, so its source stays UNAVAILABLE; the fleet's pricing
+        # step estimates cost from these tokens (-> ESTIMATED when the model is priced). Claiming
+        # NATIVE here would assert a $0 cost the backend never reported.
 
         ok = exit_code == 0 and error_msg is None
         return AgentResult(

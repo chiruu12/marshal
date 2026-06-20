@@ -110,6 +110,7 @@ class OpenCodeBackend(CodingAgentBackend):
         error_msg: str | None = None
         usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
         found_usage = False
+        found_cost = False
 
         for ev in events:
             err = ev.get("error")
@@ -143,9 +144,12 @@ class OpenCodeBackend(CodingAgentBackend):
                 cost = part.get("cost")
                 if cost is not None:
                     usage.cost_usd += float(cost or 0)
+                    found_cost = True
                 found_usage = True
 
-        if found_usage:
+        # NATIVE only when the backend actually reported a cost (a real $0 counts); tokens without a
+        # cost stay UNAVAILABLE so the fleet prices them from the table instead of claiming $0 native.
+        if found_cost:
             usage.source = UsageSource.NATIVE
 
         ok = exit_code == 0 and error_msg is None

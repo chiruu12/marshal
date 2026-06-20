@@ -152,8 +152,8 @@ class Fleet:
         """
         if usage is None:
             return
-        if usage.source is UsageSource.NATIVE and usage.cost_usd > 0:
-            return  # backend reported real cost (e.g. OpenCode)
+        if usage.source is UsageSource.NATIVE:
+            return  # backend authoritatively reported the cost (a real $0 included) — never override
         if usage.input_tokens + usage.output_tokens <= 0:
             usage.cost_usd = 0.0
             usage.source = UsageSource.UNAVAILABLE
