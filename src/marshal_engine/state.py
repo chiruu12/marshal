@@ -31,6 +31,7 @@ class RunRecord:
     output_tokens: int = 0
     duration_ms: int = 0
     source: str | None = None  # cost provenance: native | estimated | unavailable | ...
+    text: str = ""             # the agent's final message (file edits live in the worktree diff)
     started_at: str | None = None
     ended_at: str | None = None
     error: str | None = None

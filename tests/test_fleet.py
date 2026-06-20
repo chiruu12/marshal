@@ -262,6 +262,7 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
     )
     assert rec.status == "succeeded"
     assert rec.cost_usd == 0.001
+    assert rec.text == "done"  # the agent's final message is persisted for review
     assert rec.run_id.startswith("t1.writer.")  # task.backend.<uuid> — globally unique
 
     wt = Path(rec.worktree or "")

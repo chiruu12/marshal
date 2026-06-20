@@ -237,6 +237,7 @@ class Fleet:
                 output_tokens=event.output_tokens,
                 duration_ms=result.duration_ms,
                 source=event.source,
+                text=result.text[:16000],  # the agent's final message, so reply/analysis tasks are reviewable
                 ended_at=_now(),
                 error=result.error,
             )
