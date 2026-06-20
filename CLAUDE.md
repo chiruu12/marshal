@@ -35,7 +35,7 @@ marshal/
 │   ├── service.py           # MarshalService — the testable core the MCP/CLI call into
 │   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/benchmark/report/get_run/collect_run/integrate/status/usage
 │   └── cli.py               # `marshal` CLI (backends/usage/status/mcp)
-├── .claude/skills/          # imported skills; Marshal "driver's manual" skills are planned
+├── .claude/skills/          # driver playbooks (marshal-orchestrate, marshal-benchmark) + imported
 ├── docs/                    # design · vision · status · usage · decisions · chauffeur-future · sources
 └── tests/                   # contract tests per backend + engine/service/mcp tests
 ```

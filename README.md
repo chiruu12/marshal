@@ -14,8 +14,9 @@ It plugs into your driver two ways:
 - **MCP server** — you declare N backend "clients"; the driver calls a lean tool surface. Today:
   `list_clients`, `run_agent`, `run_many`, `benchmark`, `report`, `get_run`, `collect_run`,
   `integrate`, `status`, `usage`. Planned: `cancel_run`.
-- **Skills** — orchestration playbooks that teach the driver *what* Marshal can do and *how* to
-  run a fleet (decompose → spawn → monitor → integrate). *Planned.*
+- **Skills** — orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
+  a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate) and
+  `marshal-benchmark` (compare routing strategies on a real task).
 
 > **Status: early development (private).** The V1 core works — engine, CLI, and MCP server (10
 > tools): merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel

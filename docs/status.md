@@ -69,7 +69,10 @@ runs one goal through N clients (strategies) and `report` derives a source-hones
 outcome comparison from the ledger ("cheapest" only ranks strategies with a known cost). All
 exposed over the service and MCP. This completes the V1 core (engine + cost + benchmark).
 
-### Phase 4 — coverage & productization
-Optional non-blocking spawn/poll; the Skills layer (`.claude/skills/marshal-*` driver playbooks);
-Antigravity PTY/workspace-trust; Cursor admin-API usage; Codex live re-verify; a Gemini backend;
-PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
+### Phase 4 — coverage & productization (started)
+Shipped: the **Skills layer** — `.claude/skills/marshal-orchestrate` (decompose → spawn → monitor →
+collect → integrate) and `.claude/skills/marshal-benchmark` (compare strategies) driver playbooks,
+completing the four surfaces (engine · MCP · Skills · config).
+Remaining: optional non-blocking spawn/poll; Antigravity PTY/workspace-trust; Cursor admin-API
+usage; Codex live re-verify; a Gemini backend; PyPI publish; and eventually **Chauffeur** (see
+[`chauffeur-future.md`](chauffeur-future.md)).
