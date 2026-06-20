@@ -47,6 +47,14 @@ def build_app(service: MarshalService) -> Any:
         return asdict(service.run_agent(client, goal, task_id=task_id))
 
     @app.tool()
+    def run_many(jobs: list[dict[str, Any]], max_concurrency: int = 4) -> list[dict[str, Any]]:
+        """Run several clients in parallel, each in its own worktree; returns all run records.
+
+        jobs is a list of {client, goal, task_id?}. Concurrency is capped at max_concurrency.
+        """
+        return [asdict(r) for r in service.run_many(jobs, max_concurrency=max_concurrency)]
+
+    @app.tool()
     def get_run(run_id: str) -> dict[str, Any] | None:
         """Get a run record by id."""
         rec = service.get_run(run_id)

@@ -104,6 +104,26 @@ def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     assert collected.branch == rec.branch
 
 
+def test_run_many_runs_each_client_job(repo: Path) -> None:
+    svc = _svc(repo)
+    jobs = [
+        {"client": "worker", "goal": "a", "task_id": "j1"},
+        {"client": "worker", "goal": "b", "task_id": "j2"},
+        {"client": "worker", "goal": "c", "task_id": "j3"},
+    ]
+    records = svc.run_many(jobs, max_concurrency=3)
+    assert [r.task_id for r in records] == ["j1", "j2", "j3"]
+    assert all(r.status == "succeeded" for r in records)
+    assert len(svc.status()) == 3
+
+
+def test_run_many_unknown_client_fails_fast(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError):
+        svc.run_many([{"client": "nope", "goal": "x"}])
+    assert svc.status() == []  # nothing ran — validated before launching
+
+
 def test_integrate_empty_run_is_noop(repo: Path) -> None:
     svc = _svc(repo)  # _Echo prints but writes no files
     rec = svc.run_agent("worker", "do nothing", task_id="e1")

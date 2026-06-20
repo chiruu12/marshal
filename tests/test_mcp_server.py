@@ -43,5 +43,8 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
     names = {t.name for t in asyncio.run(app.list_tools())}
-    expected = {"run_agent", "list_clients", "status", "usage", "get_run", "collect_run", "integrate"}
+    expected = {
+        "run_agent", "run_many", "list_clients", "status", "usage",
+        "get_run", "collect_run", "integrate",
+    }
     assert expected <= names
