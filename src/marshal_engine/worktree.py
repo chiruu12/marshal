@@ -8,7 +8,7 @@ safety boundary of the whole system — keep it boring and reliable.
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -21,6 +21,15 @@ class Worktree:
     task_id: str
     path: Path
     branch: str
+
+
+@dataclass
+class MergeResult:
+    """Outcome of merging a worktree branch back into the current branch."""
+
+    ok: bool
+    conflicts: list[str] = field(default_factory=list)
+    message: str = ""
 
 
 class WorktreeManager:
@@ -90,6 +99,55 @@ class WorktreeManager:
             added = self._git("diff", "--no-index", "--", "/dev/null", path, cwd=wt.path)
             parts.append(added.stdout)
         return "".join(parts)
+
+    def commit_all(self, wt: Worktree, message: str) -> str | None:
+        """Stage and commit everything in the worktree onto its branch.
+
+        Agents leave their work uncommitted; integrating it means committing it first. Returns
+        the new commit sha, or None if the worktree was clean (nothing to commit). Hooks are
+        skipped (`--no-verify`) since a prompting hook would deadlock a headless run.
+        """
+        add = self._git("add", "-A", cwd=wt.path)
+        if add.returncode != 0:
+            raise WorktreeError(f"add failed for {wt.task_id!r}: {add.stderr.strip()}")
+        if self._git("diff", "--cached", "--quiet", cwd=wt.path).returncode == 0:
+            return None  # nothing staged -> nothing to commit
+        commit = self._git("commit", "--no-verify", "-m", message, cwd=wt.path)
+        if commit.returncode != 0:
+            raise WorktreeError(f"commit failed for {wt.task_id!r}: {commit.stderr.strip()}")
+        return self._git("rev-parse", "HEAD", cwd=wt.path).stdout.strip()
+
+    def current_branch(self) -> str:
+        """The branch currently checked out in the main repo (the merge target)."""
+        proc = self._git("rev-parse", "--abbrev-ref", "HEAD")
+        if proc.returncode != 0:
+            raise WorktreeError(f"could not resolve current branch: {proc.stderr.strip()}")
+        return proc.stdout.strip()
+
+    def merge(self, branch: str, *, message: str | None = None) -> MergeResult:
+        """Merge `branch` into the repo's current branch. On conflict, abort and report files.
+
+        A conflict leaves the repo clean (the merge is aborted) so the driver can resolve it
+        deliberately rather than inheriting a half-merged tree. Non-conflict failures raise.
+        """
+        args = ["merge", "--no-edit"]
+        if message is not None:
+            args += ["-m", message]
+        args.append(branch)
+        proc = self._git(*args)
+        if proc.returncode == 0:
+            return MergeResult(ok=True, message=proc.stdout.strip())
+        conflicts = self._conflicted_files()
+        if conflicts:
+            self._git("merge", "--abort")
+            return MergeResult(ok=False, conflicts=conflicts, message=proc.stdout.strip())
+        raise WorktreeError(
+            f"merge of {branch!r} failed: {proc.stderr.strip() or proc.stdout.strip()}"
+        )
+
+    def _conflicted_files(self) -> list[str]:
+        proc = self._git("diff", "--name-only", "--diff-filter=U")
+        return [f for f in proc.stdout.splitlines() if f.strip()]
 
     def list(self) -> list[Worktree]:
         """All worktrees known to the repo (includes the main checkout)."""

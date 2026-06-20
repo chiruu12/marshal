@@ -58,6 +58,11 @@ def build_app(service: MarshalService) -> Any:
         return asdict(service.collect_run(run_id))
 
     @app.tool()
+    def integrate(run_id: str, cleanup: bool = False) -> dict[str, Any]:
+        """Merge a run's worktree branch into the current branch; reports merge conflicts."""
+        return asdict(service.integrate(run_id, cleanup=cleanup))
+
+    @app.tool()
     def status() -> list[dict[str, Any]]:
         """List all fleet runs with status and cost."""
         return [asdict(r) for r in service.status()]

@@ -9,7 +9,7 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +33,23 @@ class CollectResult:
     worktree: str | None
     changed_files: list[str]
     diff: str
+
+
+@dataclass
+class IntegrateResult:
+    """Outcome of merging a run's worktree branch back into the current branch.
+
+    status is "merged" (changes landed), "conflict" (merge aborted, resolve manually), or
+    "empty" (the run produced no changes to integrate).
+    """
+
+    run_id: str
+    status: str
+    branch: str | None = None
+    merged_into: str | None = None
+    changed_files: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+    commit: str | None = None
 
 
 class Fleet:
@@ -116,6 +133,47 @@ class Fleet:
             worktree=str(wt.path),
             changed_files=self.worktrees.changed_files(wt),
             diff=self.worktrees.diff(wt),
+        )
+
+    def integrate(
+        self, run_id: str, *, message: str | None = None, cleanup: bool = False
+    ) -> IntegrateResult:
+        """Merge a run's worktree branch back into the current branch, handling conflicts.
+
+        Commits the worktree's uncommitted work onto its branch, then merges that branch into
+        the repo's current branch. A conflict is reported and the merge aborted (repo stays
+        clean); an empty run is a no-op. On success the run is stamped `merged_into`.
+        """
+        wt = self._worktree_for(run_id)
+        if not wt.branch:
+            raise ValueError(f"run {run_id!r} has no branch to integrate")
+        changed = self.worktrees.changed_files(wt)
+        commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
+        if commit is None:
+            return IntegrateResult(run_id=run_id, status="empty", branch=wt.branch)
+
+        target = self.worktrees.current_branch()
+        merge = self.worktrees.merge(wt.branch)
+        if not merge.ok:
+            return IntegrateResult(
+                run_id=run_id,
+                status="conflict",
+                branch=wt.branch,
+                merged_into=target,
+                conflicts=merge.conflicts,
+                commit=commit,
+            )
+
+        self.state.update(run_id, merged_into=target)
+        if cleanup:
+            self.worktrees.remove(wt)
+        return IntegrateResult(
+            run_id=run_id,
+            status="merged",
+            branch=wt.branch,
+            merged_into=target,
+            changed_files=changed,
+            commit=commit,
         )
 
     def _worktree_for(self, run_id: str) -> Worktree:

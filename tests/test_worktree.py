@@ -83,3 +83,35 @@ def test_create_duplicate_raises(repo: Path) -> None:
     m.create("dup")
     with pytest.raises(WorktreeError):
         m.create("dup")
+
+
+def test_current_branch_returns_checked_out_branch(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    assert m.current_branch()  # e.g. "main" or "master"
+
+
+def test_commit_all_and_merge_round_trip(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("feat")
+    (wt.path / "feature.txt").write_text("new feature\n")
+    sha = m.commit_all(wt, "add feature")
+    assert sha  # a commit was made
+    assert m.commit_all(wt, "noop") is None  # clean worktree -> nothing to commit
+    result = m.merge(wt.branch)
+    assert result.ok
+    assert (repo / "feature.txt").exists()  # landed in the main checkout
+
+
+def test_merge_conflict_aborts_and_reports(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt_a = m.create("a")
+    (wt_a.path / "README.md").write_text("from a\n")
+    m.commit_all(wt_a, "a")
+    wt_b = m.create("b")
+    (wt_b.path / "README.md").write_text("from b\n")
+    m.commit_all(wt_b, "b")
+    assert m.merge(wt_a.branch).ok            # first lands cleanly
+    conflict = m.merge(wt_b.branch)           # second conflicts on README.md
+    assert not conflict.ok
+    assert "README.md" in conflict.conflicts
+    assert (repo / "README.md").read_text() == "from a\n"  # aborted -> main untouched

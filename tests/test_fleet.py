@@ -51,6 +51,29 @@ class _Writer(CodingAgentBackend):
         )
 
 
+class _Patcher(CodingAgentBackend):
+    """Rewrites a tracked file with task-specific content — used to force merge conflicts."""
+
+    name = "patcher"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", f"open('README.md','w').write({task.id!r})"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            exit_code=exit_code,
+        )
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -113,3 +136,26 @@ def test_collect_run_unknown_run_raises(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError):
         fleet.collect_run("nope.writer")
+
+
+def test_integrate_merges_run_into_current_branch(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.run("writer", TaskSpec(id="m1", goal="x"), ts="2026-06-19T00:00:00Z")
+    result = fleet.integrate("m1.writer")
+    assert result.status == "merged"
+    assert result.merged_into  # the repo's current branch
+    assert result.changed_files == ["out.txt"]
+    assert (repo / "out.txt").read_text() == "hi"  # work landed on the main checkout
+    rec = fleet.state.get("m1.writer")
+    assert rec is not None and rec.merged_into == result.merged_into
+
+
+def test_integrate_reports_conflict_and_aborts(repo: Path) -> None:
+    fleet = Fleet(repo, {"patcher": _Patcher()})
+    fleet.run("patcher", TaskSpec(id="a", goal="x"))
+    fleet.run("patcher", TaskSpec(id="b", goal="x"))
+    assert fleet.integrate("a.patcher").status == "merged"
+    conflict = fleet.integrate("b.patcher")
+    assert conflict.status == "conflict"
+    assert "README.md" in conflict.conflicts
+    assert (repo / "README.md").read_text() == "a"  # aborted -> main untouched

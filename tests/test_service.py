@@ -102,3 +102,10 @@ def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     collected = svc.collect_run("t1.echo")
     assert collected.run_id == "t1.echo"
     assert collected.branch == "marshal/t1.echo"
+
+
+def test_integrate_empty_run_is_noop(repo: Path) -> None:
+    svc = _svc(repo)  # _Echo prints but writes no files
+    svc.run_agent("worker", "do nothing", task_id="e1")
+    result = svc.integrate("e1.echo")
+    assert result.status == "empty"

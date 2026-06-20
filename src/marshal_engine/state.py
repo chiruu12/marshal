@@ -28,6 +28,7 @@ class RunRecord:
     started_at: str | None = None
     ended_at: str | None = None
     error: str | None = None
+    merged_into: str | None = None  # branch this run was integrated into, once merged
 
 
 class FleetState:
