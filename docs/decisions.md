@@ -2,6 +2,38 @@
 
 Running log of non-obvious decisions and verified findings. Newest first.
 
+## 2026-06-20 — Roadmap reorder: cost-proof first; engine/report split
+
+Reviewed product + architecture after shipping `collect_run`/`integrate` and running a multi-agent
+codebase analysis + adversarial review.
+
+**Reorder.** The differentiator ("prove the savings") had been sequenced last. Pulled it forward:
+- **P1 cost-proof** (single-threaded): trustworthy per-provider cost. See
+  [`plans/phase1-cost-proof.md`](plans/phase1-cost-proof.md).
+- **P2 solidify**: the 5 known `collect_run`/`integrate` bugs, a git-spawn timeout + stdin guard on
+  `WorktreeManager._git`, globally-unique `run_id`, run-loop terminal-stamp on exception.
+- **P3 parallel + measured benchmark**: `ThreadPoolExecutor` behind a swappable Fleet API; per-run
+  state files (`runs/<run_id>.json`, aggregates derived on read) for concurrency safety; then the
+  savings report done MEASURED.
+
+**Engine/report two-layer split (locked).** Engine stamps facts to an immutable ledger; the report
+layer derives interpretation on read; nothing derived is stored. Estimated cost is priced at run
+time. Keeps "engine = mechanism."
+
+**Savings-vs-baseline deferred to P3.** A P1 "what it would have cost on Opus" rests on an
+equal-token assumption that is usually false — too speculative to present as proof. The honest
+version is measured in P3 benchmarking (run the same task through multiple models, measure both).
+
+**Product model.** Marshal is self-installed beside the user's own Claude Code, against their own
+subscriptions. No per-client / multi-tenant logic; ship the engine + setup guidance, users
+configure `fleet.config.yaml`.
+
+**Known bugs to fix in P2** (from the adversarial review): quoted/unicode paths in
+`changed_files()`/`_conflicted_files()` (need `-z`); `integrate` on a dirty main raises instead of
+returning a structured status; conflict-retry returns "empty" while the branch holds an unmerged
+commit; `current_branch()` returns literal `"HEAD"` when detached; `commit_all --no-verify` has no
+test.
+
 ## 2026-06-19 — Live backend verification
 
 Installed/authed the available CLIs and ran each through its adapter end-to-end.

@@ -9,8 +9,9 @@ Marshal is the **infrastructure layer**. A future, separate product (**Chauffeur
 autonomous coding system — will be built on top of Marshal. See `docs/chauffeur-future.md`. Keep
 Marshal clean and embeddable.
 
-> **Current status:** full vertical slice built (engine → service → CLI → MCP), 57 tests green.
-> OpenCode + Cursor live-verified; merge-back and parallel fan-out are next. See `docs/status.md`.
+> **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
+> `collect_run`/`integrate` shipped. Next: **Phase 1 cost-proof** (`docs/plans/phase1-cost-proof.md`),
+> then solidify, then parallel. OpenCode + Cursor live-verified. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -31,7 +32,7 @@ marshal/
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard
 │   ├── service.py           # MarshalService — the testable core the MCP/CLI call into
-│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/get_run/status/usage
+│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/get_run/collect_run/integrate/status/usage
 │   └── cli.py               # `marshal` CLI (backends/usage/status/mcp)
 ├── .claude/skills/          # imported skills; Marshal "driver's manual" skills are planned
 ├── docs/                    # design · vision · status · usage · decisions · chauffeur-future · sources
@@ -63,6 +64,10 @@ The gate every commit must pass (single-line; `git -C`/`uv --directory` from out
   without spawning processes. Every backend ships contract tests.
 - **Tag every usage record with its `source`** (native / admin-api / estimated / scraped /
   unavailable). Never present an estimate as ground truth.
+- **Usage/cost is a two-layer split.** The engine stamps *facts* (tokens / cost / duration /
+  source) to an immutable ledger (`usage/events.jsonl`); interpretation (cost-per-outcome,
+  savings) is *derived on read* in the report layer, never stored. Estimated cost is priced at
+  run time (a snapshot), so editing the price table never rewrites history.
 - **Worktree isolation** is the safety boundary. Main branch is untouched until explicit integrate.
 - The **engine is mechanism**; planning/routing/merge judgment lives in **Skills** (and later
   Chauffeur). Don't put decomposition logic in the engine.

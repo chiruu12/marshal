@@ -39,25 +39,26 @@ untrusted workspace (`--add-dir` does not fix it). Needs a PTY / workspace-trust
 
 ## Roadmap
 
-### Tier 1 — close the core loop
-1. ~~**`collect_run` / `integrate`**~~ — *done.* `collect_run` surfaces a run's diff (including new
-   files) + changed files, read-only; `integrate` commits the worktree's work onto its branch and
-   merges it into the current branch, reporting (and aborting on) conflicts. Both exposed over MCP.
-2. **Parallel spawn + concurrency cap** — run N agents concurrently with a max-concurrency limit
-   and a non-blocking spawn/poll mode (`Fleet.run` is sequential today).
-3. **Skills layer** — `.claude/skills/marshal-*` playbooks teaching a driver to decompose →
-   spawn → monitor → integrate.
+Reordered 2026-06-20 (see [`decisions.md`](decisions.md)) to lead with the differentiator.
+`collect_run`/`integrate` are shipped.
 
-### Tier 2 — robustness
-4. Process-group kill on timeout (`os.killpg`).
-5. Stamp `usage.duration_ms` (wall-clock around the run).
-6. Antigravity PTY / workspace-trust for real worktree writes.
+### Phase 1 — cost-proof (active)
+Make per-provider cost trustworthy and honest, single-threaded. Full scope in
+[`plans/phase1-cost-proof.md`](plans/phase1-cost-proof.md): `duration_ms` on every run, wire
+`extract_usage`, a YAML price table + `ESTIMATED` tagging, persist cost/duration/source on
+`RunRecord`, cost-per-outcome in `usage`, partial-usage recovery on timeout. Architecture: the
+engine stamps facts to an immutable ledger; the report layer derives interpretation on read.
 
-### Tier 3 — coverage
-7. Cursor Admin-API usage (Team/Enterprise service-account key).
-8. Codex live success-path re-verify after the account limit clears.
-9. Richer MCP surface (diff via `get_run`/`collect_run`, `cancel_run`).
+### Phase 2 — solidify
+The 5 known `collect_run`/`integrate` bugs (quoted-path handling, dirty-main integrate,
+conflict-retry "empty", detached-HEAD, `commit_all --no-verify` test), a git-spawn timeout + stdin
+guard on `WorktreeManager._git`, globally-unique `run_id`, and a run loop that terminal-stamps state
+on any exception (no zombie RUNNING records). Plus process-group kill on timeout (`os.killpg`).
 
-### Tier 4 — productization
-PyPI publish, more backends (Gemini), then **Chauffeur** (the future product built on Marshal,
-see [`chauffeur-future.md`](chauffeur-future.md)).
+### Phase 3 — parallel + measured benchmark
+Parallel spawn via `ThreadPoolExecutor` behind a swappable Fleet API (blocking `run_many` +
+non-blocking spawn/poll, concurrency-capped); per-run state files (`runs/<run_id>.json`, aggregates
+derived on read) for concurrency safety; then the **measured** savings report — run one task through
+N routing strategies and compare real cost/latency/outcome. Then the Skills layer, Antigravity
+PTY/workspace-trust, Cursor admin-API usage, Codex live re-verify, a Gemini backend, PyPI publish,
+and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
