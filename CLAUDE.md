@@ -10,8 +10,9 @@ autonomous coding system — will be built on top of Marshal. See `docs/chauffeu
 Marshal clean and embeddable.
 
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
-> `collect_run`/`integrate`, **Phase 1 cost-proof**, and **Phase 2 solidify** shipped. Next:
-> **Phase 3 parallel + measured benchmark**. OpenCode + Cursor live-verified. See `docs/status.md`.
+> `collect_run`/`integrate`, **Phase 1 cost-proof**, **Phase 2 solidify**, and **Phase 3 parallel**
+> (per-run files + capped `run_many`) shipped. Next: the **measured savings benchmark**. OpenCode +
+> Cursor live-verified. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -32,7 +33,7 @@ marshal/
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard
 │   ├── service.py           # MarshalService — the testable core the MCP/CLI call into
-│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/get_run/collect_run/integrate/status/usage
+│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/get_run/collect_run/integrate/status/usage
 │   └── cli.py               # `marshal` CLI (backends/usage/status/mcp)
 ├── .claude/skills/          # imported skills; Marshal "driver's manual" skills are planned
 ├── docs/                    # design · vision · status · usage · decisions · chauffeur-future · sources

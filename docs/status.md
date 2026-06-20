@@ -60,10 +60,12 @@ now returns a structured `blocked` status; conflict/blocked retries re-merge ins
 loop that terminal-stamps `failed` on any exception (no zombie RUNNING); and **process-group kill on
 timeout** (`os.killpg`), completing invariant #1 (no orphaned agent grandchildren).
 
-### Phase 3 — parallel + measured benchmark
-Parallel spawn via `ThreadPoolExecutor` behind a swappable Fleet API (blocking `run_many` +
-non-blocking spawn/poll, concurrency-capped); per-run state files (`runs/<run_id>.json`, aggregates
-derived on read) for concurrency safety; then the **measured** savings report — run one task through
-N routing strategies and compare real cost/latency/outcome. Then the Skills layer, Antigravity
+### Phase 3 — parallel + measured benchmark (in progress)
+Shipped: **per-run state files** (`runs/<run_id>.json`, single writer each, aggregates derived on
+read) and **usage derived on read** (append-only `events.jsonl`) for concurrency safety; **capped
+parallel `run_many`** via `ThreadPoolExecutor` behind a swappable Fleet API (worktree-create lock +
+Cursor launch stagger + per-job failure isolation), exposed over the service and MCP.
+Next: the **measured** savings report — run one task through N routing strategies and compare real
+cost/latency/outcome; optional non-blocking spawn/poll. Then the Skills layer, Antigravity
 PTY/workspace-trust, Cursor admin-API usage, Codex live re-verify, a Gemini backend, PyPI publish,
 and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

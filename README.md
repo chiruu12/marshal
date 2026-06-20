@@ -12,14 +12,15 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 It plugs into your driver two ways:
 
 - **MCP server** — you declare N backend "clients"; the driver calls a lean tool surface. Today:
-  `list_clients`, `run_agent`, `get_run`, `collect_run`, `integrate`, `status`, `usage`. Planned:
-  `cancel_run`.
+  `list_clients`, `run_agent`, `run_many`, `get_run`, `collect_run`, `integrate`, `status`,
+  `usage`. Planned: `cancel_run`.
 - **Skills** — orchestration playbooks that teach the driver *what* Marshal can do and *how* to
   run a fleet (decompose → spawn → monitor → integrate). *Planned.*
 
-> **Status: early development (private).** The full vertical slice works — engine, CLI, and MCP
-> server (7 tools, including merge-back via `collect_run` + `integrate`) — with OpenCode and Cursor
-> live-verified. Parallel fan-out is the next milestone. See [`docs/status.md`](docs/status.md).
+> **Status: early development (private).** Engine, CLI, and MCP server (8 tools) — merge-back
+> (`collect_run` + `integrate`), per-provider cost tracking, and capped parallel fan-out
+> (`run_many`) all working, with OpenCode and Cursor live-verified. A measured savings benchmark is
+> next. See [`docs/status.md`](docs/status.md).
 
 ## Why Marshal
 
