@@ -26,12 +26,15 @@ def _cmd_backends(args: argparse.Namespace) -> int:
 def _cmd_usage(args: argparse.Namespace) -> int:
     s = UsageTracker(args.dir).summary()
     t = s["totals"]
+    cps = t["cost_per_succeeded"]
+    cps_str = f"${cps:.4f}" if cps is not None else "n/a"
     print(
-        f"runs={t['runs']}  cost=${t['cost_usd']:.4f}  "
-        f"in={t['input_tokens']}  out={t['output_tokens']}"
+        f"runs={t['runs']}  succeeded={t['succeeded']}  cost=${t['cost_usd']:.4f} "
+        f"(native ${t['cost_native']:.4f} / est ${t['cost_estimated']:.4f})"
     )
+    print(f"  $/run=${t['cost_per_run']:.4f}  $/succeeded={cps_str}  in={t['input_tokens']} out={t['output_tokens']}")
     for backend, v in sorted(s["by_backend"].items()):
-        print(f"  {backend:13} runs={v['runs']:<4} cost=${v['cost_usd']:.4f}")
+        print(f"  {backend:13} runs={v['runs']:<4} succ={v['succeeded']:<4} cost=${v['cost_usd']:.4f}")
     return 0
 
 

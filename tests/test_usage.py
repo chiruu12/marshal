@@ -60,3 +60,20 @@ def test_empty_tracker(tmp_path: Path) -> None:
     t = UsageTracker(tmp_path / "usage")
     assert t.events() == []
     assert t.summary()["totals"]["runs"] == 0
+    assert t.summary()["totals"]["cost_per_succeeded"] is None  # no successes -> not claimable
+
+
+def test_cost_per_outcome_and_source_split(tmp_path: Path) -> None:
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="r1", cost_usd=0.02, status="succeeded", source="native"))
+    t.record(_ev(run_id="r2", cost_usd=0.04, status="succeeded", source="estimated"))
+    t.record(_ev(run_id="r3", cost_usd=0.00, status="empty", source="unavailable"))  # cost, no success
+
+    tot = t.summary()["totals"]
+    assert tot["runs"] == 3
+    assert tot["succeeded"] == 2
+    assert abs(tot["cost_usd"] - 0.06) < 1e-9
+    assert abs(tot["cost_native"] - 0.02) < 1e-9
+    assert abs(tot["cost_estimated"] - 0.04) < 1e-9     # estimate kept separate from native
+    assert abs(tot["cost_per_run"] - 0.02) < 1e-9       # 0.06 / 3
+    assert abs(tot["cost_per_succeeded"] - 0.03) < 1e-9  # 0.06 / 2 (failures/empties still cost)

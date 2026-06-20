@@ -96,6 +96,8 @@ class UsageTracker:
             _add(by_backend.setdefault(e.backend, _bucket()), e)
             _add(by_client.setdefault(e.client or "-", _bucket()), e)
             _add(by_model.setdefault(e.model or "-", _bucket()), e)
+        for bucket in (totals, *by_backend.values(), *by_client.values(), *by_model.values()):
+            _finalize(bucket)
         return {
             "totals": totals,
             "by_backend": by_backend,
@@ -107,7 +109,10 @@ class UsageTracker:
 def _bucket() -> dict[str, Any]:
     return {
         "runs": 0,
+        "succeeded": 0,
         "cost_usd": 0.0,
+        "cost_native": 0.0,        # cost we know is real (backend-reported)
+        "cost_estimated": 0.0,     # cost derived from a price table — not ground truth
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_tokens": 0,
@@ -116,7 +121,22 @@ def _bucket() -> dict[str, Any]:
 
 def _add(bucket: dict[str, Any], e: UsageEvent) -> None:
     bucket["runs"] += 1
+    if e.status == "succeeded":
+        bucket["succeeded"] += 1
     bucket["cost_usd"] = round(bucket["cost_usd"] + e.cost_usd, 6)
+    if e.source == UsageSource.NATIVE.value:
+        bucket["cost_native"] = round(bucket["cost_native"] + e.cost_usd, 6)
+    elif e.source == UsageSource.ESTIMATED.value:
+        bucket["cost_estimated"] = round(bucket["cost_estimated"] + e.cost_usd, 6)
     bucket["input_tokens"] += e.input_tokens
     bucket["output_tokens"] += e.output_tokens
     bucket["cache_read_tokens"] += e.cache_read_tokens
+
+
+def _finalize(bucket: dict[str, Any]) -> None:
+    """Add derived cost-per-outcome (report layer, computed on read — never stored on the ledger)."""
+    runs = bucket["runs"]
+    succeeded = bucket["succeeded"]
+    bucket["cost_per_run"] = round(bucket["cost_usd"] / runs, 6) if runs else 0.0
+    # None (not 0) when there are no successes — a real outcome cost can't be claimed.
+    bucket["cost_per_succeeded"] = round(bucket["cost_usd"] / succeeded, 6) if succeeded else None
