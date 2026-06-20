@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     pu = sub.add_parser("usage", help="show usage summary")
     pu.add_argument("--dir", default=".marshal/usage")
     ps = sub.add_parser("status", help="list fleet runs")
-    ps.add_argument("--state", default=".marshal/fleet.json")
+    ps.add_argument("--state", default=".marshal/runs", help="per-run state directory")
     sub.add_parser("mcp", help="run the MCP server over stdio")
     args = p.parse_args(argv)
 

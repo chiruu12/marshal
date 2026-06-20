@@ -81,7 +81,7 @@ class Fleet:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
         self.worktrees = WorktreeManager(self.repo_root, worktree_base or base / "worktrees")
-        self.state = FleetState(base / "fleet.json")
+        self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()

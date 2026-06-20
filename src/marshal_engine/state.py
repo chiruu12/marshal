@@ -1,12 +1,16 @@
-"""Persistent fleet state — a JSON record of every run.
+"""Persistent fleet state — one JSON file per run.
 
 The driver (or MCP server) can spawn a run, disconnect, and later reconnect to see status and
-cost. No database: a single `fleet.json` keyed by run id.
+cost. No database: each run is its own ``runs/<run_id>.json``. One file per run means each run has
+a single writer (its owning thread), so concurrent runs never contend on a shared file — the
+prerequisite for parallel fan-out. Aggregates (`list`) glob the directory on read; writes are
+atomic (temp file + ``os.replace``) so a concurrent reader never sees a torn file.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -34,36 +38,47 @@ class RunRecord:
 
 
 class FleetState:
-    def __init__(self, path: Path | str) -> None:
-        self.path = Path(path)
+    """Per-run JSON files under a directory; one writer per run, aggregated on read."""
 
-    def _load(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return {"runs": {}}
-        data: dict[str, Any] = json.loads(self.path.read_text(encoding="utf-8"))
-        data.setdefault("runs", {})
-        return data
+    def __init__(self, runs_dir: Path | str) -> None:
+        self.dir = Path(runs_dir)
 
-    def _save(self, data: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    def _path(self, run_id: str) -> Path:
+        return self.dir / f"{run_id}.json"
+
+    def _write(self, record: RunRecord) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        path = self._path(record.run_id)
+        tmp = path.with_name(f"{path.name}.tmp")  # not matched by the *.json glob in list()
+        tmp.write_text(json.dumps(asdict(record), indent=2), encoding="utf-8")
+        os.replace(tmp, path)  # atomic: a reader sees either the old file or the whole new one
 
     def add(self, record: RunRecord) -> None:
-        data = self._load()
-        data["runs"][record.run_id] = asdict(record)
-        self._save(data)
+        self._write(record)
 
     def update(self, run_id: str, **fields: Any) -> RunRecord:
-        data = self._load()
-        if run_id not in data["runs"]:
+        rec = self.get(run_id)
+        if rec is None:
             raise KeyError(run_id)
-        data["runs"][run_id].update(fields)
-        self._save(data)
-        return RunRecord(**data["runs"][run_id])
+        data = asdict(rec)
+        data.update(fields)
+        record = RunRecord(**data)
+        self._write(record)
+        return record
 
     def get(self, run_id: str) -> RunRecord | None:
-        raw = self._load()["runs"].get(run_id)
-        return RunRecord(**raw) if raw else None
+        path = self._path(run_id)
+        if not path.exists():
+            return None
+        return RunRecord(**json.loads(path.read_text(encoding="utf-8")))
 
     def list(self) -> list[RunRecord]:
-        return [RunRecord(**r) for r in self._load()["runs"].values()]
+        if not self.dir.exists():
+            return []
+        records: list[RunRecord] = []
+        for path in sorted(self.dir.glob("*.json")):
+            try:
+                records.append(RunRecord(**json.loads(path.read_text(encoding="utf-8"))))
+            except (json.JSONDecodeError, OSError, TypeError):
+                continue  # skip a torn/foreign file rather than failing the whole listing
+        return records
