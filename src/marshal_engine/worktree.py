@@ -62,7 +62,9 @@ class WorktreeManager:
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                # LC_ALL=C keeps git's messages in English so stderr matching (e.g. the
+                # blocked-merge detection in merge()) is stable across locales.
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
                 timeout=self.git_timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
