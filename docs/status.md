@@ -23,7 +23,7 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `cli.py` | `marshal backends/usage/status/mcp` | done |
 | `mcp_server.py` | 7-tool MCP surface over stdio (incl. `collect_run` + `integrate`) | done |
 
-Quality gate: 80 unit tests pass; ruff and mypy (strict) clean across all source files.
+Quality gate: 91 unit tests pass; ruff and mypy (strict) clean across all source files.
 
 ## Backend verification matrix
 
@@ -52,11 +52,13 @@ cost-per-outcome (`$/run`, `$/succeeded`) + a native/estimated split in `usage`;
 recovery on timeout; and `RunStatus.EMPTY` for clean-but-no-work runs. The engine stamps facts to an
 immutable ledger; the report layer derives interpretation on read.
 
-### Phase 2 — solidify (next)
-The 5 known `collect_run`/`integrate` bugs (quoted-path handling, dirty-main integrate,
-conflict-retry "empty", detached-HEAD, `commit_all --no-verify` test), a git-spawn timeout + stdin
-guard on `WorktreeManager._git`, globally-unique `run_id`, and a run loop that terminal-stamps state
-on any exception (no zombie RUNNING records). Plus process-group kill on timeout (`os.killpg`).
+### Phase 2 — solidify (shipped)
+Done: the 5 known `collect_run`/`integrate` bugs (quoted-path handling via `-z`; dirty-main integrate
+now returns a structured `blocked` status; conflict/blocked retries re-merge instead of reporting
+"empty"; detached-HEAD refused; `commit_all --no-verify` pinned by a hook test); a git-spawn timeout
++ stdin guard + `GIT_TERMINAL_PROMPT=0` on `WorktreeManager._git`; globally-unique `run_id`; a run
+loop that terminal-stamps `failed` on any exception (no zombie RUNNING); and **process-group kill on
+timeout** (`os.killpg`), completing invariant #1 (no orphaned agent grandchildren).
 
 ### Phase 3 — parallel + measured benchmark
 Parallel spawn via `ThreadPoolExecutor` behind a swappable Fleet API (blocking `run_many` +
