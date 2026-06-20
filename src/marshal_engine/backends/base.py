@@ -128,6 +128,10 @@ class CodingAgentBackend(ABC):
 
         result = self.parse_output(out, err, proc.returncode)
         result.duration_ms = _elapsed_ms()
+        if result.status is RunStatus.FAILED and not result.error:
+            # parse_output found no reason (e.g. the backend errored on stderr, not in its JSON
+            # stream). Surface the exit code + a stderr tail so a failure is never a silent "failed".
+            result.error = _failure_reason(self.name, proc.returncode, err)
         return result
 
     def _recover_partial_usage(self, stdout: str, stderr: str) -> UsageRecord | None:
@@ -181,3 +185,10 @@ def _as_text(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
     return str(value)
+
+
+def _failure_reason(name: str, exit_code: int, stderr: str) -> str:
+    """A debuggable reason for a failed run that parse_output couldn't explain: exit code + stderr tail."""
+    tail = " ".join(stderr.strip().splitlines()[-3:])
+    reason = f"{name}: exited with code {exit_code}"
+    return f"{reason}: {tail}" if tail else reason

@@ -135,6 +135,15 @@ def test_run_stdin_closed_does_not_hang(tmp_path: Path) -> None:
     assert res.text == "eof-ok"
 
 
+def test_failed_run_without_error_surfaces_exit_code_and_stderr(tmp_path: Path) -> None:
+    # _Dummy.parse_output returns FAILED with no error on a non-zero exit; base.run must fill a
+    # debuggable reason from the exit code + stderr (so a failure is never a silent "failed").
+    b = _Dummy([sys.executable, "-c", "import sys; sys.stderr.write('boom detail\\n'); sys.exit(3)"])
+    res = b.run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    assert res.error and "code 3" in res.error and "boom detail" in res.error
+
+
 def test_run_missing_binary(tmp_path: Path) -> None:
     b = _Dummy(["marshal-no-such-binary-xyz123"])
     res = b.run(_task(), RunOpts(cwd=tmp_path))
