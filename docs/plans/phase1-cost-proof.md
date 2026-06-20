@@ -43,6 +43,9 @@ mechanism; interpretation and policy stay out of it.
 ## Honesty rules (must be tested)
 
 - `estimated` is never shown as `native` (source tag).
+- `native` means the backend actually reported a **cost** (a real `$0` included); a backend never
+  claims `native` for a cost it didn't report. Tokens-without-a-reported-cost stay `unavailable`
+  and get priced from the table. So a backend-reported `$0` is kept as-is, never re-priced.
 - `unpriced` is never shown as free (`$0`).
 - a timed-out run keeps `timed_out` even when partial usage is recovered.
 - a no-op run (`EMPTY`) is never counted as a success in `$/succeeded`.
