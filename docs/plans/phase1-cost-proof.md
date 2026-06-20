@@ -1,7 +1,8 @@
-# Phase 1 — Cost-proof (active plan)
+# Phase 1 — Cost-proof (shipped)
 
 > The differentiated milestone: make per-provider cost **trustworthy and honest**, single-threaded.
-> Decided 2026-06-20 (product + engineering review). See `../decisions.md` for the why.
+> Decided 2026-06-20 (product + engineering review); shipped the same day. See `../decisions.md`
+> for the why. All 8 scope items below landed with tests; the gate stayed green per commit.
 
 ## Roadmap context
 

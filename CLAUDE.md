@@ -10,8 +10,8 @@ autonomous coding system — will be built on top of Marshal. See `docs/chauffeu
 Marshal clean and embeddable.
 
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
-> `collect_run`/`integrate` shipped. Next: **Phase 1 cost-proof** (`docs/plans/phase1-cost-proof.md`),
-> then solidify, then parallel. OpenCode + Cursor live-verified. See `docs/status.md`.
+> `collect_run`/`integrate` and **Phase 1 cost-proof** shipped (`docs/plans/phase1-cost-proof.md`).
+> Next: **Phase 2 solidify**, then parallel. OpenCode + Cursor live-verified. See `docs/status.md`.
 
 ## Directory Structure
 
