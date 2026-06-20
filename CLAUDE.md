@@ -1,13 +1,16 @@
 # Marshal
 
 Orchestration engine for driving a **fleet of headless coding agents** (Cursor CLI, OpenCode,
-Codex now; Gemini later) from one "driver" agent (e.g. Claude Code). The driver plans; Marshal
-spawns and manages the fleet in isolated git worktrees, in parallel, and reports back — exposed as
-an **MCP server + Skills**, with **per-provider usage tracking**.
+Codex, Google Antigravity now; Gemini later) from one "driver" agent (e.g. Claude Code). The driver
+plans; Marshal spawns and manages the fleet in isolated git worktrees, in parallel, and reports
+back — exposed as an **MCP server + Skills**, with **per-provider usage tracking**.
 
 Marshal is the **infrastructure layer**. A future, separate product (**Chauffeur**) — an end-user
 autonomous coding system — will be built on top of Marshal. See `docs/chauffeur-future.md`. Keep
 Marshal clean and embeddable.
+
+> **Current status:** full vertical slice built (engine → service → CLI → MCP), 57 tests green.
+> OpenCode + Cursor live-verified; merge-back and parallel fan-out are next. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -16,20 +19,23 @@ marshal/
 ├── src/marshal_engine/      # the engine (import package; NOT "marshal" — shadows stdlib builtin)
 │   ├── types.py             # TaskSpec, RunOpts, AgentResult, UsageRecord, Capabilities, enums
 │   ├── backends/            # one adapter per backend, all derive from base.CodingAgentBackend
-│   │   ├── base.py          # the base class (cornerstone)
+│   │   ├── base.py          # the base class (cornerstone) — owns the safe run() loop
 │   │   ├── cursor.py        # Cursor CLI (cursor-agent)
 │   │   ├── opencode.py      # OpenCode (opencode run / serve)
 │   │   ├── codex.py         # OpenAI Codex (codex exec)
 │   │   └── antigravity.py   # Google Antigravity (agy)
-│   ├── worktree.py          # git worktree lifecycle (planned)
-│   ├── runner.py            # process spawning + timeouts (planned)
-│   ├── usage.py             # events.jsonl + summary.json + price table (planned)
-│   ├── fleet.py             # persistent fleet state (planned)
-│   ├── mcp/                 # MCP server: lean tool surface (planned)
-│   └── cli.py               # `marshal` CLI entry point
-├── .claude/skills/          # orchestration playbooks + Marshal "driver's manual" skills
-├── docs/                    # design.md (full architecture), sources.md, chauffeur-future.md
-└── tests/                   # contract tests per backend
+│   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
+│   ├── usage.py             # per-provider usage: events.jsonl + summary.json
+│   ├── state.py             # persistent fleet state (fleet.json)
+│   ├── fleet.py             # orchestrator: worktree → run backend → record usage → persist
+│   ├── registry.py          # construct backends by name
+│   ├── config.py            # fleet.config.yaml loader + Fireworks guard
+│   ├── service.py           # MarshalService — the testable core the MCP/CLI call into
+│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/get_run/status/usage
+│   └── cli.py               # `marshal` CLI (backends/usage/status/mcp)
+├── .claude/skills/          # imported skills; Marshal "driver's manual" skills are planned
+├── docs/                    # design · vision · status · usage · decisions · chauffeur-future · sources
+└── tests/                   # contract tests per backend + engine/service/mcp tests
 ```
 
 ## Tech Stack
@@ -39,11 +45,14 @@ MCP server via the `mcp` SDK (optional extra). Config in YAML. No database — f
 
 ## Development
 
-- Install: `uv sync`
-- Run CLI: `uv run marshal`
+- Install: `uv sync --extra mcp --extra dev`
+- Run CLI: `uv run marshal` (`backends` · `usage` · `status` · `mcp`)
 - Test: `uv run pytest`
-- Lint: `uv run ruff check . && uv run mypy src`
+- Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)
+
+The gate every commit must pass (single-line; `git -C`/`uv --directory` from outside the dir):
+`uv --directory . run pytest -q && uv --directory . run ruff check src tests && uv --directory . run mypy`
 
 ## Core invariants (do not violate)
 
