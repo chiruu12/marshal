@@ -103,6 +103,7 @@ class AgentResult:
     usage: UsageRecord | None = None
     files_changed: list[str] = field(default_factory=list)
     exit_code: int | None = None
+    duration_ms: int = 0                    # wall-clock around the run, stamped by base.run()
     error: str | None = None
     raw_stdout: str = ""
     raw_stderr: str = ""

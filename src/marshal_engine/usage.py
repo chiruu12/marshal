@@ -52,7 +52,7 @@ class UsageEvent:
             output_tokens=u.output_tokens if u else 0,
             cache_read_tokens=u.cache_read_tokens if u else 0,
             cost_usd=u.cost_usd if u else 0.0,
-            duration_ms=u.duration_ms if u else 0,
+            duration_ms=result.duration_ms,  # wall-clock from base.run(), always present
             status=result.status.value,
             source=(u.source.value if u else UsageSource.UNAVAILABLE.value),
         )

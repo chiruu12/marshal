@@ -59,6 +59,15 @@ def test_run_timeout_kills_process(tmp_path: Path) -> None:
     assert "timed out" in (res.error or "")
 
 
+def test_run_stamps_duration_on_every_path(tmp_path: Path) -> None:
+    ok = _Dummy([sys.executable, "-c", "print('hi')"])
+    assert ok.run(_task(), RunOpts(cwd=tmp_path)).duration_ms >= 0  # success path stamped
+    slow = _Dummy([sys.executable, "-c", "import time; time.sleep(30)"])
+    timed = slow.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert timed.status is RunStatus.TIMED_OUT
+    assert timed.duration_ms >= 1000  # timeout path stamped (~the 1s wait)
+
+
 def test_run_stdin_closed_does_not_hang(tmp_path: Path) -> None:
     # If stdin were a TTY/open pipe this would block forever; DEVNULL gives EOF immediately.
     b = _Dummy([sys.executable, "-c", "import sys; sys.stdin.read(); print('eof-ok')"])

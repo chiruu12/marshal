@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from abc import ABC, abstractmethod
 
 from ..types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord
@@ -79,6 +80,10 @@ class CodingAgentBackend(ABC):
         """
         argv = self.build_invocation(task, opts)
         env = {**os.environ, **opts.extra_env}
+        start = time.monotonic()
+
+        def _elapsed_ms() -> int:
+            return int((time.monotonic() - start) * 1000)
 
         try:
             proc = subprocess.run(
@@ -98,14 +103,18 @@ class CodingAgentBackend(ABC):
                 session_id=opts.session_id,
                 raw_stdout=_as_text(exc.stdout),
                 raw_stderr=_as_text(exc.stderr),
+                duration_ms=_elapsed_ms(),
             )
         except FileNotFoundError:
             return AgentResult(
                 status=RunStatus.FAILED,
                 error=f"{self.name}: binary {self.binary!r} not found on PATH",
+                duration_ms=_elapsed_ms(),
             )
 
-        return self.parse_output(proc.stdout, proc.stderr, proc.returncode)
+        result = self.parse_output(proc.stdout, proc.stderr, proc.returncode)
+        result.duration_ms = _elapsed_ms()
+        return result
 
 
 def _as_text(value: object) -> str:
