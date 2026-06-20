@@ -8,20 +8,31 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .backends.base import CodingAgentBackend
+from .pricing import PriceTable, PricingError
 from .state import FleetState, RunRecord
-from .types import PermissionMode, RunOpts, RunStatus, TaskSpec
+from .types import AgentResult, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord, UsageSource
 from .usage import UsageEvent, UsageTracker
-from .worktree import Worktree, WorktreeManager
+from .worktree import Worktree, WorktreeError, WorktreeManager
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _load_default_prices() -> PriceTable:
+    """Load the shipped price table; on any problem fall back to empty (everything unpriced)."""
+    try:
+        return PriceTable.load()
+    except PricingError as exc:
+        print(f"[marshal] price table unavailable: {exc}; costs will be unpriced", file=sys.stderr)
+        return PriceTable({})
 
 
 @dataclass
@@ -60,6 +71,7 @@ class Fleet:
         *,
         base_dir: Path | str | None = None,
         worktree_base: Path | str | None = None,
+        prices: PriceTable | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
@@ -67,6 +79,7 @@ class Fleet:
         self.state = FleetState(base / "fleet.json")
         self.usage = UsageTracker(base / "usage")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
+        self.prices = prices if prices is not None else _load_default_prices()
 
     def run(
         self,
@@ -105,17 +118,24 @@ class Fleet:
             task, RunOpts(cwd=wt.path, permission=permission, model=model, timeout_s=timeout_s)
         )
 
+        usage = backend.extract_usage(result)        # the seam (default: result.usage)
+        self._price_usage(usage, model)              # normalize cost + source (native/estimated/unavailable)
+        status = self._authoritative_status(result, wt)
+
         event = UsageEvent.from_result(
-            result, run_id=run_id, backend=backend_name, ts=ts, client=client, model=model
+            result, run_id=run_id, backend=backend_name, ts=ts, usage=usage, client=client, model=model
         )
+        event.status = status.value                  # report the authoritative outcome (incl. EMPTY)
         self.usage.record(event)
 
         record = self.state.update(
             run_id,
-            status=result.status.value,
+            status=status.value,
             cost_usd=event.cost_usd,
             input_tokens=event.input_tokens,
             output_tokens=event.output_tokens,
+            duration_ms=result.duration_ms,
+            source=event.source,
             ended_at=_now(),
             error=result.error,
         )
@@ -123,6 +143,45 @@ class Fleet:
         if cleanup:
             self.worktrees.remove(wt)
         return record
+
+    def _price_usage(self, usage: UsageRecord | None, model: str | None) -> None:
+        """Normalize cost + source in place: keep native cost, else estimate, else unavailable.
+
+        `source` describes how we know the COST. Tokens are kept regardless; a tokened run with no
+        price is `unavailable` (cost unknown), never a misleading $0.
+        """
+        if usage is None:
+            return
+        if usage.source is UsageSource.NATIVE and usage.cost_usd > 0:
+            return  # backend reported real cost (e.g. OpenCode)
+        if usage.input_tokens + usage.output_tokens <= 0:
+            usage.cost_usd = 0.0
+            usage.source = UsageSource.UNAVAILABLE
+            return
+        est = self.prices.estimate(
+            model or usage.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+        )
+        if est is None:
+            usage.cost_usd = 0.0
+            usage.source = UsageSource.UNAVAILABLE  # unpriced -> cost unavailable (tokens kept)
+        else:
+            usage.cost_usd = est
+            usage.source = UsageSource.ESTIMATED
+
+    def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
+        """A clean exit that produced no work (no text, no file changes) is EMPTY, not success."""
+        if result.status is not RunStatus.SUCCEEDED:
+            return result.status
+        if result.text.strip():
+            return RunStatus.SUCCEEDED
+        try:
+            changed = self.worktrees.changed_files(wt)
+        except WorktreeError:
+            return RunStatus.SUCCEEDED  # can't tell -> don't mislabel a success as empty
+        return RunStatus.SUCCEEDED if changed else RunStatus.EMPTY
 
     def collect_run(self, run_id: str) -> CollectResult:
         """Surface a run's uncommitted diff + changed files. Read-only — nothing is merged."""

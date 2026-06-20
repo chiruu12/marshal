@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .types import AgentResult, UsageSource
+from .types import AgentResult, UsageRecord, UsageSource
 
 
 @dataclass
@@ -38,10 +38,12 @@ class UsageEvent:
         run_id: str,
         backend: str,
         ts: str,
+        usage: UsageRecord | None = None,
         client: str | None = None,
         model: str | None = None,
     ) -> UsageEvent:
-        u = result.usage
+        # `usage` lets the caller pass a priced/normalized record; default to what the run carried.
+        u = usage if usage is not None else result.usage
         return cls(
             ts=ts,
             run_id=run_id,

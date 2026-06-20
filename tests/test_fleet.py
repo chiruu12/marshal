@@ -20,6 +20,7 @@ from marshal_engine import (
 )
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.fleet import Fleet
+from marshal_engine.pricing import ModelPrice, PriceTable
 
 
 class _Writer(CodingAgentBackend):
@@ -74,6 +75,61 @@ class _Patcher(CodingAgentBackend):
         )
 
 
+class _NoOp(CodingAgentBackend):
+    """Exits 0 but writes nothing and prints nothing — should be recorded as EMPTY, not success."""
+
+    name = "noop"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "pass"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+class _Tokened(CodingAgentBackend):
+    """Reports tokens but no cost (like Codex) — the engine must price it via the table."""
+
+    name = "tok"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "print('done')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED,
+            text=raw_stdout.strip(),
+            usage=UsageRecord(
+                backend="tok",
+                model="m",
+                input_tokens=1_000_000,
+                output_tokens=0,
+                source=UsageSource.UNAVAILABLE,  # tokens known, cost not — engine prices it
+            ),
+            exit_code=exit_code,
+        )
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -120,6 +176,29 @@ def test_fleet_unknown_backend(repo: Path) -> None:
     fleet = Fleet(repo, {})
     with pytest.raises(ValueError):
         fleet.run("nope", TaskSpec(id="t", goal="x"))
+
+
+def test_clean_run_with_no_work_is_empty(repo: Path) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="e1", goal="x"))
+    assert rec.status == "empty"  # exit 0 but no text and no file changes
+
+
+def test_tokened_run_gets_estimated_cost(repo: Path) -> None:
+    prices = PriceTable({"m": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
+    fleet = Fleet(repo, {"tok": _Tokened()}, prices=prices)
+    rec = fleet.run("tok", TaskSpec(id="p1", goal="x"))
+    assert rec.status == "succeeded"
+    assert rec.cost_usd == 10.0          # 1M input tokens @ $10/Mtok
+    assert rec.source == "estimated"
+    assert rec.duration_ms >= 0
+
+
+def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:
+    fleet = Fleet(repo, {"tok": _Tokened()}, prices=PriceTable({}))  # empty table
+    rec = fleet.run("tok", TaskSpec(id="p2", goal="x"))
+    assert rec.cost_usd == 0.0
+    assert rec.source == "unavailable"   # unpriced -> cost unknown, never shown as a real $0
 
 
 def test_collect_run_returns_diff_and_changed_files(repo: Path) -> None:

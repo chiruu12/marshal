@@ -25,6 +25,8 @@ class RunRecord:
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    duration_ms: int = 0
+    source: str | None = None  # cost provenance: native | estimated | unavailable | ...
     started_at: str | None = None
     ended_at: str | None = None
     error: str | None = None

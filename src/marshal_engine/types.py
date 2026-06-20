@@ -27,6 +27,7 @@ class RunStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
+    EMPTY = "empty"           # exited clean but produced no work; counts in $/run, not $/succeeded
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
