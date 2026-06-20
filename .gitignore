@@ -34,3 +34,6 @@ tmp/
 
 # Marshal runtime state (worktrees, fleet.json, usage)
 .marshal/
+
+# Live agent-run artifacts + playground (review locally, don't commit)
+marshal-runs/
