@@ -61,18 +61,21 @@ class UsageEvent:
 
 
 class UsageTracker:
-    """Append usage events and maintain a rolled-up summary on disk."""
+    """Append-only usage events; the rollup is derived on read.
+
+    `record` only appends one line to `events.jsonl` — a small write under O_APPEND, which is atomic
+    for concurrent writers, so parallel runs never corrupt the log or race a shared rewrite. The
+    summary is computed from the log on demand (`summary()`), never maintained on the hot path.
+    """
 
     def __init__(self, usage_dir: Path | str) -> None:
         self.dir = Path(usage_dir)
         self.events_path = self.dir / "events.jsonl"
-        self.summary_path = self.dir / "summary.json"
 
     def record(self, event: UsageEvent) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(asdict(event)) + "\n")
-        self.summary_path.write_text(json.dumps(self.summary(), indent=2), encoding="utf-8")
 
     def events(self) -> list[UsageEvent]:
         if not self.events_path.exists():

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,6 @@ def test_record_appends_and_summarizes(tmp_path: Path) -> None:
     assert abs(s["by_backend"]["opencode"]["cost_usd"] - 0.03) < 1e-9
     assert s["by_backend"]["cursor"]["runs"] == 1
     assert s["by_backend"]["opencode"]["input_tokens"] == 300
-    assert t.summary_path.exists()
 
 
 def test_from_result_builds_event() -> None:
@@ -54,6 +54,20 @@ def test_from_result_builds_event() -> None:
     assert ev.status == "succeeded"
     assert ev.source == "native"
     assert ev.model == "opencode-go/glm-5.2"
+
+
+def test_concurrent_records_do_not_corrupt_the_log(tmp_path: Path) -> None:
+    # Parallel runs each append their own line; the append-only log must not lose or tear records.
+    t = UsageTracker(tmp_path / "usage")
+
+    def rec(i: int) -> None:
+        t.record(_ev(run_id=f"r{i}", backend="opencode", cost_usd=0.001))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(rec, range(60)))
+
+    assert len(t.events()) == 60
+    assert t.summary()["totals"]["runs"] == 60
 
 
 def test_empty_tracker(tmp_path: Path) -> None:
