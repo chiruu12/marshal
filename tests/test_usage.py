@@ -77,3 +77,16 @@ def test_cost_per_outcome_and_source_split(tmp_path: Path) -> None:
     assert abs(tot["cost_estimated"] - 0.04) < 1e-9     # estimate kept separate from native
     assert abs(tot["cost_per_run"] - 0.02) < 1e-9       # 0.06 / 3
     assert abs(tot["cost_per_succeeded"] - 0.03) < 1e-9  # 0.06 / 2 (failures/empties still cost)
+
+
+def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None:
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="s", cost_usd=0.02, status="succeeded", source="native"))
+    t.record(_ev(run_id="e", cost_usd=0.03, status="empty", source="estimated"))  # burned tokens, no success
+
+    tot = t.summary()["totals"]
+    assert tot["runs"] == 2
+    assert tot["succeeded"] == 1
+    assert abs(tot["cost_usd"] - 0.05) < 1e-9            # EMPTY cost is real spend, counted
+    assert abs(tot["cost_per_run"] - 0.025) < 1e-9       # 0.05 / 2
+    assert abs(tot["cost_per_succeeded"] - 0.05) < 1e-9  # 0.05 / 1 — the wasted EMPTY run inflates it

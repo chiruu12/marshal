@@ -21,6 +21,7 @@ from marshal_engine import (
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.fleet import Fleet
 from marshal_engine.pricing import ModelPrice, PriceTable
+from marshal_engine.worktree import WorktreeError
 
 
 class _Writer(CodingAgentBackend):
@@ -130,6 +131,30 @@ class _Tokened(CodingAgentBackend):
         )
 
 
+class _SilentWriter(CodingAgentBackend):
+    """Writes a file but returns empty text — a write-only success that must NOT be marked EMPTY."""
+
+    name = "silent"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "open('made.txt','w').write('x')"]  # writes, prints nothing
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),  # empty — the only success signal is the file it wrote
+            exit_code=exit_code,
+        )
+
+
 class _NativeZero(CodingAgentBackend):
     """Backend that authoritatively reports a $0 cost with tokens (e.g. a free/local model)."""
 
@@ -214,6 +239,23 @@ def test_clean_run_with_no_work_is_empty(repo: Path) -> None:
     fleet = Fleet(repo, {"noop": _NoOp()})
     rec = fleet.run("noop", TaskSpec(id="e1", goal="x"))
     assert rec.status == "empty"  # exit 0 but no text and no file changes
+
+
+def test_write_only_success_is_not_empty(repo: Path) -> None:
+    fleet = Fleet(repo, {"silent": _SilentWriter()})
+    rec = fleet.run("silent", TaskSpec(id="s1", goal="x"))
+    assert rec.status == "succeeded"  # empty text but a real diff -> success, not EMPTY
+
+
+def test_status_succeeds_when_changed_files_unknown(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+
+    def _boom(wt: object) -> list[str]:
+        raise WorktreeError("cannot stat worktree")
+
+    monkeypatch.setattr(fleet.worktrees, "changed_files", _boom)
+    rec = fleet.run("noop", TaskSpec(id="we1", goal="x"))
+    assert rec.status == "succeeded"  # can't determine work -> don't mislabel a success as empty
 
 
 def test_tokened_run_gets_estimated_cost(repo: Path) -> None:
