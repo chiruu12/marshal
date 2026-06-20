@@ -31,3 +31,6 @@ tmp/
 # Python
 .ruff_cache/
 *.egg-info/
+
+# Marshal runtime state (worktrees, fleet.json, usage)
+.marshal/
