@@ -10,7 +10,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from marshal_engine import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine import (
+    AgentResult,
+    Capabilities,
+    PermissionMode,
+    RunOpts,
+    RunStatus,
+    TaskSpec,
+    UsageRecord,
+    UsageSource,
+)
 from marshal_engine.backends.base import CodingAgentBackend
 
 
@@ -81,3 +90,55 @@ def test_run_missing_binary(tmp_path: Path) -> None:
     res = b.run(_task(), RunOpts(cwd=tmp_path))
     assert res.status is RunStatus.FAILED
     assert "not found" in (res.error or "")
+
+
+class _PartialUsage(CodingAgentBackend):
+    """Flushes a usage line, then hangs — exercises partial-usage recovery on timeout."""
+
+    name = "partial"
+    capabilities = Capabilities()
+    binary = sys.executable
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "import time; print('TOKENS=42', flush=True); time.sleep(30)"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        usage = None
+        for line in raw_stdout.splitlines():
+            if line.startswith("TOKENS="):
+                usage = UsageRecord(
+                    backend="partial", input_tokens=int(line.split("=")[1]), source=UsageSource.NATIVE
+                )
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            usage=usage,
+            exit_code=exit_code,
+        )
+
+
+def test_timeout_recovers_partial_usage(tmp_path: Path) -> None:
+    res = _PartialUsage().run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert res.status is RunStatus.TIMED_OUT  # status is preserved, not flipped to success
+    assert res.usage is not None and res.usage.input_tokens == 42  # real spend salvaged
+
+
+class _BoomParser(_PartialUsage):
+    """parse_output raises — recovery must swallow it and still report the timeout."""
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "import time; print('x', flush=True); time.sleep(30)"]
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        raise ValueError("parser blew up")
+
+
+def test_timeout_recovery_error_does_not_mask_timeout(tmp_path: Path) -> None:
+    res = _BoomParser().run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert res.status is RunStatus.TIMED_OUT  # recovery failure swallowed, timeout still reported
+    assert res.usage is None

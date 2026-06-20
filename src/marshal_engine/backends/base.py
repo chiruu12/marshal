@@ -97,12 +97,14 @@ class CodingAgentBackend(ABC):
                 start_new_session=True,        # own process group (group-kill hardening: TODO runner.py)
             )
         except subprocess.TimeoutExpired as exc:
+            out, err = _as_text(exc.stdout), _as_text(exc.stderr)
             return AgentResult(
                 status=RunStatus.TIMED_OUT,
                 error=f"{self.name}: timed out after {opts.timeout_s}s",
                 session_id=opts.session_id,
-                raw_stdout=_as_text(exc.stdout),
-                raw_stderr=_as_text(exc.stderr),
+                usage=self._recover_partial_usage(out, err),
+                raw_stdout=out,
+                raw_stderr=err,
                 duration_ms=_elapsed_ms(),
             )
         except FileNotFoundError:
@@ -115,6 +117,19 @@ class CodingAgentBackend(ABC):
         result = self.parse_output(proc.stdout, proc.stderr, proc.returncode)
         result.duration_ms = _elapsed_ms()
         return result
+
+    def _recover_partial_usage(self, stdout: str, stderr: str) -> UsageRecord | None:
+        """Best-effort: salvage usage from a timed-out run's partial output. Never raises.
+
+        Tokens are real spend even if the run was killed mid-stream, so recovering them keeps the
+        cost ledger honest. A recovery failure must never mask the timeout — all errors are swallowed.
+        """
+        if not stdout.strip():
+            return None
+        try:
+            return self.parse_output(stdout, stderr, 0).usage
+        except Exception:  # noqa: BLE001 — recovery is best-effort and must not mask the timeout
+            return None
 
 
 def _as_text(value: object) -> str:
