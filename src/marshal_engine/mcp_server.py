@@ -53,6 +53,11 @@ def build_app(service: MarshalService) -> Any:
         return asdict(rec) if rec else None
 
     @app.tool()
+    def collect_run(run_id: str) -> dict[str, Any]:
+        """Collect a run's diff and changed files (read-only; nothing is merged)."""
+        return asdict(service.collect_run(run_id))
+
+    @app.tool()
     def status() -> list[dict[str, Any]]:
         """List all fleet runs with status and cost."""
         return [asdict(r) for r in service.status()]

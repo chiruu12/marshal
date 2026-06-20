@@ -46,6 +46,17 @@ def test_changed_files_detects_edits_and_additions(repo: Path) -> None:
     assert "README.md" in changed
 
 
+def test_diff_includes_tracked_and_untracked(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("task_diff")
+    (wt.path / "README.md").write_text("changed\n")  # tracked modification
+    (wt.path / "new.txt").write_text("brand new\n")   # untracked addition
+    diff = m.diff(wt)
+    assert "changed" in diff          # the tracked edit shows
+    assert "new.txt" in diff          # the untracked file shows (git diff HEAD alone misses it)
+    assert "brand new" in diff
+
+
 def test_list_includes_created_worktree(repo: Path) -> None:
     m = WorktreeManager(repo)
     wt = m.create("task3")

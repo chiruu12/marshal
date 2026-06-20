@@ -97,3 +97,19 @@ def test_fleet_unknown_backend(repo: Path) -> None:
     fleet = Fleet(repo, {})
     with pytest.raises(ValueError):
         fleet.run("nope", TaskSpec(id="t", goal="x"))
+
+
+def test_collect_run_returns_diff_and_changed_files(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.run("writer", TaskSpec(id="c1", goal="x"), ts="2026-06-19T00:00:00Z")
+    collected = fleet.collect_run("c1.writer")
+    assert collected.run_id == "c1.writer"
+    assert collected.branch == "marshal/c1.writer"
+    assert collected.changed_files == ["out.txt"]
+    assert "out.txt" in collected.diff  # the agent's new (untracked) file is in the diff
+
+
+def test_collect_run_unknown_run_raises(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError):
+        fleet.collect_run("nope.writer")

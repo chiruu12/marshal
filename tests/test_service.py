@@ -94,3 +94,11 @@ def test_run_agent_unknown_client(repo: Path) -> None:
     svc = _svc(repo)
     with pytest.raises(ValueError):
         svc.run_agent("nope", "x")
+
+
+def test_collect_run_surfaces_changed_files(repo: Path) -> None:
+    svc = _svc(repo)
+    svc.run_agent("worker", "do something", task_id="t1")
+    collected = svc.collect_run("t1.echo")
+    assert collected.run_id == "t1.echo"
+    assert collected.branch == "marshal/t1.echo"

@@ -9,6 +9,7 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,11 +17,22 @@ from .backends.base import CodingAgentBackend
 from .state import FleetState, RunRecord
 from .types import PermissionMode, RunOpts, RunStatus, TaskSpec
 from .usage import UsageEvent, UsageTracker
-from .worktree import WorktreeManager
+from .worktree import Worktree, WorktreeManager
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class CollectResult:
+    """A run's uncommitted work, surfaced read-only for the driver to review."""
+
+    run_id: str
+    branch: str | None
+    worktree: str | None
+    changed_files: list[str]
+    diff: str
 
 
 class Fleet:
@@ -94,3 +106,26 @@ class Fleet:
         if cleanup:
             self.worktrees.remove(wt)
         return record
+
+    def collect_run(self, run_id: str) -> CollectResult:
+        """Surface a run's uncommitted diff + changed files. Read-only — nothing is merged."""
+        wt = self._worktree_for(run_id)
+        return CollectResult(
+            run_id=run_id,
+            branch=wt.branch or None,
+            worktree=str(wt.path),
+            changed_files=self.worktrees.changed_files(wt),
+            diff=self.worktrees.diff(wt),
+        )
+
+    def _worktree_for(self, run_id: str) -> Worktree:
+        """Reconstruct the live Worktree for a recorded run, or raise if it is gone."""
+        rec = self.state.get(run_id)
+        if rec is None:
+            raise ValueError(f"no such run: {run_id!r}")
+        if not rec.worktree:
+            raise ValueError(f"run {run_id!r} has no worktree")
+        path = Path(rec.worktree)
+        if not path.exists():
+            raise ValueError(f"worktree for run {run_id!r} no longer exists: {path}")
+        return Worktree(task_id=rec.task_id, path=path, branch=rec.branch or "")

@@ -71,8 +71,25 @@ class WorktreeManager:
         return files
 
     def diff(self, wt: Worktree) -> str:
-        """Unified diff of committed-vs-working changes in the worktree."""
-        return self._git("diff", "HEAD", cwd=wt.path).stdout
+        """Unified diff of all uncommitted work in the worktree, including new files.
+
+        `git diff HEAD` alone misses untracked files an agent created — the common case — so
+        those are appended as against-/dev/null diffs. Read-only: the index is not modified.
+        """
+        parts: list[str] = []
+        tracked = self._git("diff", "HEAD", cwd=wt.path)
+        if tracked.returncode != 0:
+            raise WorktreeError(f"diff failed for {wt.task_id!r}: {tracked.stderr.strip()}")
+        if tracked.stdout:
+            parts.append(tracked.stdout)
+        listing = self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=wt.path)
+        for path in listing.stdout.split("\0"):
+            if not path:
+                continue
+            # `git diff --no-index` exits 1 when files differ (always, vs /dev/null) — not an error.
+            added = self._git("diff", "--no-index", "--", "/dev/null", path, cwd=wt.path)
+            parts.append(added.stdout)
+        return "".join(parts)
 
     def list(self) -> list[Worktree]:
         """All worktrees known to the repo (includes the main checkout)."""

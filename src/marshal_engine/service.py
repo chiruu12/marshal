@@ -13,7 +13,7 @@ from typing import Any
 
 from .backends.base import CodingAgentBackend
 from .config import FleetConfig, resolve_model
-from .fleet import Fleet
+from .fleet import CollectResult, Fleet
 from .registry import make_backend
 from .state import RunRecord
 from .types import TaskSpec
@@ -73,6 +73,9 @@ class MarshalService:
 
     def get_run(self, run_id: str) -> RunRecord | None:
         return self.fleet.state.get(run_id)
+
+    def collect_run(self, run_id: str) -> CollectResult:
+        return self.fleet.collect_run(run_id)
 
     def status(self) -> list[RunRecord]:
         return self.fleet.state.list()
