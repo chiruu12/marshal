@@ -53,6 +53,8 @@ top of it. See `docs/chauffeur-future.md`.
 
 ## Documentation
 
+- [`docs/usage.md`](docs/usage.md) — configure a fleet and drive it via MCP, CLI, or library.
+- [`docs/status.md`](docs/status.md) — what's built, the backend verification matrix, and the roadmap.
 - [`docs/design.md`](docs/design.md) — full architecture, per-backend cheat sheets, permission
   model, usage schema, and the edge-case hardening checklist.
 - [`docs/sources.md`](docs/sources.md) — primary sources.
