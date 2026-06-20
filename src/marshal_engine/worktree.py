@@ -166,6 +166,15 @@ class WorktreeManager:
             return False
         return proc.stdout.strip() not in ("", "0")
 
+    def branch_tip(self, branch: str) -> str:
+        """The commit sha at the tip of `branch`."""
+        return self._git("rev-parse", branch).stdout.strip()
+
+    def merged_diff_files(self, branch: str, target: str) -> list[str]:
+        """Files `branch` would bring into `target` (names in the `target..branch` range)."""
+        proc = self._git("diff", "--name-only", "-z", f"{target}..{branch}")
+        return [f for f in proc.stdout.split("\0") if f]
+
     def merge(self, branch: str, *, message: str | None = None) -> MergeResult:
         """Merge `branch` into the repo's current branch.
 

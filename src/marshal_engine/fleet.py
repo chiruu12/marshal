@@ -230,6 +230,12 @@ class Fleet:
             # (A prior blocked/conflict already committed the work, so a retry still has work to merge.)
             if commit is None and not self.worktrees.has_unmerged_commits(wt.branch, target):
                 return IntegrateResult(run_id=run_id, status="empty", branch=wt.branch)
+            if commit is None:
+                # retry: a prior blocked/conflict attempt already committed the work, so the
+                # worktree is clean now. Report what the branch actually lands, not the empty
+                # worktree state. (Compute before the merge — afterwards target..branch is empty.)
+                commit = self.worktrees.branch_tip(wt.branch)
+                changed = self.worktrees.merged_diff_files(wt.branch, target)
             merge = self.worktrees.merge(wt.branch)
         except WorktreeError as exc:
             # a timed-out / locked / otherwise-failed git op: surface a structured, recoverable

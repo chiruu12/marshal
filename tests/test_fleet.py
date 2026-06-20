@@ -382,6 +382,8 @@ def test_integrate_blocked_on_dirty_target_then_retry_merges(repo: Path) -> None
     _git(repo, "checkout", "--", "README.md")  # clean the target, then retry
     merged = fleet.integrate(rec.run_id)
     assert merged.status == "merged"     # the already-committed work merges, NOT reported "empty"
+    assert merged.commit                 # honest: reports the commit that landed (not None)...
+    assert "README.md" in merged.changed_files  # ...and the files it changed (not [])
 
 
 def test_integrate_survives_hook_rejected_merge(repo: Path) -> None:
