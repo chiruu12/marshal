@@ -4,8 +4,8 @@ Marshal drives a fleet of headless coding agents from one driver. You declare na
 **clients** (each pinning a backend + model + permission), then call Marshal three ways: as an
 MCP server, as a CLI, or as a Python library.
 
-> **Status:** early development. The engine, CLI, and MCP server work; merge-back and parallel
-> fan-out are on the roadmap (see [`status.md`](status.md)).
+> **Status:** early development. The engine, CLI, and MCP server work, including merge-back
+> (`collect_run` + `integrate`); parallel fan-out is on the roadmap (see [`status.md`](status.md)).
 
 ## Install
 
@@ -86,6 +86,8 @@ Tools exposed to the driver:
 | `list_clients` | List configured clients (name, backend, model, permission). |
 | `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
 | `get_run(run_id)` | Fetch one run record. |
+| `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). |
+| `integrate(run_id, cleanup?)` | Merge a run's worktree branch into the current branch; reports conflicts. |
 | `status()` | List all runs with status + cost. |
 | `usage()` | Per-provider usage summary (totals + by backend/client/model). |
 
@@ -113,6 +115,28 @@ print(service.usage()["totals"])
 
 Each run lands in its own git worktree under `.marshal/worktrees/`, with state in
 `.marshal/fleet.json` and usage in `.marshal/usage/`.
+
+## Collect and integrate a run
+
+A run's work stays isolated in its worktree until you explicitly merge it back. Review it first,
+then integrate:
+
+```python
+collected = service.collect_run(record.run_id)
+print(collected.changed_files)        # what the agent touched
+print(collected.diff)                 # full diff, including new files
+
+result = service.integrate(record.run_id, cleanup=True)
+if result.status == "conflict":
+    print("resolve these:", result.conflicts)   # merge was aborted; repo left clean
+else:
+    print(result.status, "->", result.merged_into)  # "merged" (or "empty" if nothing changed)
+```
+
+`collect_run` is read-only. `integrate` commits the worktree's changes onto its
+`marshal/<run_id>` branch and merges that into the branch you currently have checked out; a
+conflict is reported and the merge aborted so you resolve it deliberately. `cleanup=True` removes
+the worktree after a successful merge.
 
 ## Where things land
 

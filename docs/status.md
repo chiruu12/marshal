@@ -20,9 +20,9 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
 | `service.py` | Testable core the MCP/CLI call into | done |
 | `cli.py` | `marshal backends/usage/status/mcp` | done |
-| `mcp_server.py` | 5-tool MCP surface over stdio | done |
+| `mcp_server.py` | 7-tool MCP surface over stdio (incl. `collect_run` + `integrate`) | done |
 
-Quality gate: 57 unit tests pass; ruff and mypy (strict) clean across all source files.
+Quality gate: 67 unit tests pass; ruff and mypy (strict) clean across all source files.
 
 ## Backend verification matrix
 
@@ -40,9 +40,9 @@ untrusted workspace (`--add-dir` does not fix it). Needs a PTY / workspace-trust
 ## Roadmap
 
 ### Tier 1 — close the core loop
-1. **`collect_run` / `integrate`** — surface a run's diff + changed files, and merge a worktree
-   branch back to base with conflict handling; expose both over MCP. (README already lists these
-   tools — implement to match.)
+1. ~~**`collect_run` / `integrate`**~~ — *done.* `collect_run` surfaces a run's diff (including new
+   files) + changed files, read-only; `integrate` commits the worktree's work onto its branch and
+   merges it into the current branch, reporting (and aborting on) conflicts. Both exposed over MCP.
 2. **Parallel spawn + concurrency cap** — run N agents concurrently with a max-concurrency limit
    and a non-blocking spawn/poll mode (`Fleet.run` is sequential today).
 3. **Skills layer** — `.claude/skills/marshal-*` playbooks teaching a driver to decompose →

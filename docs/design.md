@@ -174,7 +174,7 @@ clients:
 `usage([since],[group_by])`, `cleanup_worktrees`.
 
 > This is the **target** surface. Implemented today: `list_clients`, `run_agent`, `get_run`,
-> `status`, `usage`. The rest (`collect_run`, `cancel_run`, `integrate`, `cleanup_worktrees`) are
+> `collect_run`, `integrate`, `status`, `usage`. The rest (`cancel_run`, `cleanup_worktrees`) are
 > planned — current state is tracked in `docs/status.md`.
 
 Mirror to **one orchestration Skill** so the fleet works in both MCP and Skills hosts.
