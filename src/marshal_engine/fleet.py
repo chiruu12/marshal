@@ -9,6 +9,7 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 import sys
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -97,7 +98,9 @@ class Fleet:
             raise ValueError(f"no such backend: {backend_name!r}")
         backend = self.backends[backend_name]
         ts = ts or _now()
-        run_id = f"{task.id}.{backend_name}"
+        # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
+        # dir, or the state record. task_id stays the grouping key on RunRecord.
+        run_id = f"{task.id}.{backend_name}.{uuid.uuid4().hex[:8]}"
 
         wt = self.worktrees.create(run_id, base_branch=task.base_branch)
         self.state.add(

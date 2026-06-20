@@ -83,9 +83,9 @@ def test_run_agent_records(repo: Path) -> None:
     svc = _svc(repo)
     rec = svc.run_agent("worker", "do something", task_id="t1")
     assert rec.status == "succeeded"
-    assert rec.run_id == "t1.echo"
-    assert svc.get_run("t1.echo") is not None
-    assert svc.status()[0].run_id == "t1.echo"
+    assert rec.run_id.startswith("t1.echo.")  # task.backend.<uuid>
+    assert svc.get_run(rec.run_id) is not None
+    assert svc.status()[0].run_id == rec.run_id
     assert svc.usage()["totals"]["runs"] == 1
     assert abs(svc.usage()["totals"]["cost_usd"] - 0.002) < 1e-9
 
@@ -98,14 +98,14 @@ def test_run_agent_unknown_client(repo: Path) -> None:
 
 def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     svc = _svc(repo)
-    svc.run_agent("worker", "do something", task_id="t1")
-    collected = svc.collect_run("t1.echo")
-    assert collected.run_id == "t1.echo"
-    assert collected.branch == "marshal/t1.echo"
+    rec = svc.run_agent("worker", "do something", task_id="t1")
+    collected = svc.collect_run(rec.run_id)
+    assert collected.run_id == rec.run_id
+    assert collected.branch == rec.branch
 
 
 def test_integrate_empty_run_is_noop(repo: Path) -> None:
     svc = _svc(repo)  # _Echo prints but writes no files
-    svc.run_agent("worker", "do nothing", task_id="e1")
-    result = svc.integrate("e1.echo")
+    rec = svc.run_agent("worker", "do nothing", task_id="e1")
+    result = svc.integrate(rec.run_id)
     assert result.status == "empty"

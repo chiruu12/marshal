@@ -217,13 +217,13 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
     )
     assert rec.status == "succeeded"
     assert rec.cost_usd == 0.001
-    assert rec.run_id == "t1.writer"
+    assert rec.run_id.startswith("t1.writer.")  # task.backend.<uuid> — globally unique
 
     wt = Path(rec.worktree or "")
     assert wt.exists()  # kept by default for later collect/integrate
     assert (wt / "out.txt").read_text() == "hi"
 
-    assert fleet.state.get("t1.writer") is not None
+    assert fleet.state.get(rec.run_id) is not None
     s = fleet.usage.summary()
     assert s["totals"]["runs"] == 1
     assert s["by_backend"]["writer"]["runs"] == 1
@@ -233,6 +233,17 @@ def test_fleet_unknown_backend(repo: Path) -> None:
     fleet = Fleet(repo, {})
     with pytest.raises(ValueError):
         fleet.run("nope", TaskSpec(id="t", goal="x"))
+
+
+def test_run_id_unique_across_same_task_runs(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    a = fleet.run("writer", TaskSpec(id="dup", goal="x"))
+    b = fleet.run("writer", TaskSpec(id="dup", goal="x"))  # same task+backend again (a retry)
+    assert a.run_id != b.run_id        # no collision on the record...
+    assert a.branch != b.branch        # ...the branch...
+    assert a.worktree != b.worktree    # ...or the worktree dir
+    assert fleet.state.get(a.run_id) is not None
+    assert fleet.state.get(b.run_id) is not None
 
 
 def test_clean_run_with_no_work_is_empty(repo: Path) -> None:
@@ -285,10 +296,10 @@ def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:
 
 def test_collect_run_returns_diff_and_changed_files(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
-    fleet.run("writer", TaskSpec(id="c1", goal="x"), ts="2026-06-19T00:00:00Z")
-    collected = fleet.collect_run("c1.writer")
-    assert collected.run_id == "c1.writer"
-    assert collected.branch == "marshal/c1.writer"
+    rec = fleet.run("writer", TaskSpec(id="c1", goal="x"), ts="2026-06-19T00:00:00Z")
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.run_id == rec.run_id
+    assert collected.branch == rec.branch
     assert collected.changed_files == ["out.txt"]
     assert "out.txt" in collected.diff  # the agent's new (untracked) file is in the diff
 
@@ -301,22 +312,22 @@ def test_collect_run_unknown_run_raises(repo: Path) -> None:
 
 def test_integrate_merges_run_into_current_branch(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
-    fleet.run("writer", TaskSpec(id="m1", goal="x"), ts="2026-06-19T00:00:00Z")
-    result = fleet.integrate("m1.writer")
+    run_rec = fleet.run("writer", TaskSpec(id="m1", goal="x"), ts="2026-06-19T00:00:00Z")
+    result = fleet.integrate(run_rec.run_id)
     assert result.status == "merged"
     assert result.merged_into  # the repo's current branch
     assert result.changed_files == ["out.txt"]
     assert (repo / "out.txt").read_text() == "hi"  # work landed on the main checkout
-    rec = fleet.state.get("m1.writer")
+    rec = fleet.state.get(run_rec.run_id)
     assert rec is not None and rec.merged_into == result.merged_into
 
 
 def test_integrate_reports_conflict_and_aborts(repo: Path) -> None:
     fleet = Fleet(repo, {"patcher": _Patcher()})
-    fleet.run("patcher", TaskSpec(id="a", goal="x"))
-    fleet.run("patcher", TaskSpec(id="b", goal="x"))
-    assert fleet.integrate("a.patcher").status == "merged"
-    conflict = fleet.integrate("b.patcher")
+    rec_a = fleet.run("patcher", TaskSpec(id="a", goal="x"))
+    rec_b = fleet.run("patcher", TaskSpec(id="b", goal="x"))
+    assert fleet.integrate(rec_a.run_id).status == "merged"
+    conflict = fleet.integrate(rec_b.run_id)
     assert conflict.status == "conflict"
     assert "README.md" in conflict.conflicts
     assert (repo / "README.md").read_text() == "a"  # aborted -> main untouched
