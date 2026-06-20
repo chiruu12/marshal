@@ -8,6 +8,7 @@ Uses a dummy backend over the local Python interpreter — portable, fast, no re
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from marshal_engine import (
@@ -75,6 +76,23 @@ def test_run_stamps_duration_on_every_path(tmp_path: Path) -> None:
     timed = slow.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
     assert timed.status is RunStatus.TIMED_OUT
     assert timed.duration_ms >= 1000  # timeout path stamped (~the 1s wait)
+
+
+def test_timeout_kills_whole_process_group(tmp_path: Path) -> None:
+    # Outer process spawns a grandchild that would write a sentinel at +3s, then sleeps. A timeout
+    # at 1s must group-kill BOTH, so the grandchild never reaches its write.
+    sentinel = tmp_path / "grandchild.txt"
+    inner = f"import time; time.sleep(3); open({str(sentinel)!r}, 'w').write('alive')"
+    outer = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {inner!r}]); "
+        "time.sleep(30)"
+    )
+    b = _Dummy([sys.executable, "-c", outer])
+    res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert res.status is RunStatus.TIMED_OUT
+    time.sleep(3)  # past the grandchild's +3s write window
+    assert not sentinel.exists()  # group was killed -> grandchild never wrote
 
 
 def test_run_stdin_closed_does_not_hang(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ Design rules (see docs/design.md):
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -76,7 +77,9 @@ class CodingAgentBackend(ABC):
 
         This is the single chokepoint that defends the two universal headless footguns:
         the process is killed if it exceeds `opts.timeout_s`, and stdin is closed so an
-        unexpected interactive prompt fails fast instead of deadlocking forever.
+        unexpected interactive prompt fails fast instead of deadlocking forever. On timeout the
+        whole process *group* is killed (`start_new_session` + `os.killpg`), so agent grandchildren
+        (subagents, MCP servers, tool shells) are not orphaned.
         """
         argv = self.build_invocation(task, opts)
         env = {**os.environ, **opts.extra_env}
@@ -86,26 +89,15 @@ class CodingAgentBackend(ABC):
             return int((time.monotonic() - start) * 1000)
 
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 argv,
                 cwd=str(opts.cwd),
                 env=env,
                 stdin=subprocess.DEVNULL,     # headless: never wait on stdin
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=opts.timeout_s,        # hard timeout — kills the child on expiry
-                start_new_session=True,        # own process group (group-kill hardening: TODO runner.py)
-            )
-        except subprocess.TimeoutExpired as exc:
-            out, err = _as_text(exc.stdout), _as_text(exc.stderr)
-            return AgentResult(
-                status=RunStatus.TIMED_OUT,
-                error=f"{self.name}: timed out after {opts.timeout_s}s",
-                session_id=opts.session_id,
-                usage=self._recover_partial_usage(out, err),
-                raw_stdout=out,
-                raw_stderr=err,
-                duration_ms=_elapsed_ms(),
+                start_new_session=True,        # own process group so a timeout can kill the tree
             )
         except FileNotFoundError:
             return AgentResult(
@@ -114,7 +106,22 @@ class CodingAgentBackend(ABC):
                 duration_ms=_elapsed_ms(),
             )
 
-        result = self.parse_output(proc.stdout, proc.stderr, proc.returncode)
+        try:
+            out, err = proc.communicate(timeout=opts.timeout_s)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            out, err = proc.communicate()  # drain pipes + reap now that the group is dead
+            return AgentResult(
+                status=RunStatus.TIMED_OUT,
+                error=f"{self.name}: timed out after {opts.timeout_s}s",
+                session_id=opts.session_id,
+                usage=self._recover_partial_usage(out or "", err or ""),
+                raw_stdout=out or "",
+                raw_stderr=err or "",
+                duration_ms=_elapsed_ms(),
+            )
+
+        result = self.parse_output(out, err, proc.returncode)
         result.duration_ms = _elapsed_ms()
         return result
 
@@ -132,9 +139,23 @@ class CodingAgentBackend(ABC):
             return None
 
 
-def _as_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
-    return str(value)
+def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+    """SIGTERM then (if needed) SIGKILL the child's whole process group.
+
+    The child was started with `start_new_session=True`, so it is its own group leader and
+    `os.killpg` reaches every descendant it spawned — no orphaned grandchildren after a timeout.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return  # already exited
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue  # ignored SIGTERM -> escalate to SIGKILL
