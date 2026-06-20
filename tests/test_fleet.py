@@ -187,6 +187,26 @@ class _NativeZero(CodingAgentBackend):
         )
 
 
+class _Exploder(CodingAgentBackend):
+    """parse_output raises (propagates out of base.run) — the run loop must terminal-stamp it."""
+
+    name = "boom"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "print('hi')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        raise RuntimeError("kaboom")
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -233,6 +253,16 @@ def test_fleet_unknown_backend(repo: Path) -> None:
     fleet = Fleet(repo, {})
     with pytest.raises(ValueError):
         fleet.run("nope", TaskSpec(id="t", goal="x"))
+
+
+def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
+    fleet = Fleet(repo, {"boom": _Exploder()})
+    with pytest.raises(RuntimeError):
+        fleet.run("boom", TaskSpec(id="x1", goal="x"))
+    runs = fleet.state.list()
+    assert len(runs) == 1
+    assert runs[0].status == "failed"  # not left stranded as RUNNING
+    assert runs[0].error and "kaboom" in runs[0].error
 
 
 def test_run_id_unique_across_same_task_runs(repo: Path) -> None:

@@ -117,31 +117,36 @@ class Fleet:
             )
         )
 
-        result = backend.run(
-            task, RunOpts(cwd=wt.path, permission=permission, model=model, timeout_s=timeout_s)
-        )
+        try:
+            result = backend.run(
+                task, RunOpts(cwd=wt.path, permission=permission, model=model, timeout_s=timeout_s)
+            )
 
-        usage = backend.extract_usage(result)        # the seam (default: result.usage)
-        self._price_usage(usage, model)              # normalize cost + source (native/estimated/unavailable)
-        status = self._authoritative_status(result, wt)
+            usage = backend.extract_usage(result)    # the seam (default: result.usage)
+            self._price_usage(usage, model)          # normalize cost + source (native/estimated/unavailable)
+            status = self._authoritative_status(result, wt)
 
-        event = UsageEvent.from_result(
-            result, run_id=run_id, backend=backend_name, ts=ts, usage=usage, client=client, model=model
-        )
-        event.status = status.value                  # report the authoritative outcome (incl. EMPTY)
-        self.usage.record(event)
+            event = UsageEvent.from_result(
+                result, run_id=run_id, backend=backend_name, ts=ts, usage=usage, client=client, model=model
+            )
+            event.status = status.value              # report the authoritative outcome (incl. EMPTY)
+            self.usage.record(event)
 
-        record = self.state.update(
-            run_id,
-            status=status.value,
-            cost_usd=event.cost_usd,
-            input_tokens=event.input_tokens,
-            output_tokens=event.output_tokens,
-            duration_ms=result.duration_ms,
-            source=event.source,
-            ended_at=_now(),
-            error=result.error,
-        )
+            record = self.state.update(
+                run_id,
+                status=status.value,
+                cost_usd=event.cost_usd,
+                input_tokens=event.input_tokens,
+                output_tokens=event.output_tokens,
+                duration_ms=result.duration_ms,
+                source=event.source,
+                ended_at=_now(),
+                error=result.error,
+            )
+        except Exception as exc:  # noqa: BLE001 — never leave a run stranded as RUNNING
+            # Terminal-stamp the record before re-raising, so one failure can't leave a zombie.
+            self.state.update(run_id, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}")
+            raise
 
         if cleanup:
             self.worktrees.remove(wt)
