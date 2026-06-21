@@ -28,7 +28,7 @@ def test_build_service_from_env_config(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     svc = build_service()
-    names = [c["name"] for c in svc.list_clients()]
+    names = [c.name for c in svc.list_clients()]
     assert "reviewer" in names
 
 

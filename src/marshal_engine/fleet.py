@@ -14,9 +14,10 @@ import time
 import uuid
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .pricing import PriceTable, PricingError
@@ -39,8 +40,7 @@ def _load_default_prices() -> PriceTable:
         return PriceTable({})
 
 
-@dataclass
-class CollectResult:
+class CollectResult(BaseModel):
     """A run's uncommitted work, surfaced read-only for the driver to review."""
 
     run_id: str
@@ -50,8 +50,7 @@ class CollectResult:
     diff: str
 
 
-@dataclass
-class IntegrateResult:
+class IntegrateResult(BaseModel):
     """Outcome of merging a run's worktree branch back into the current branch.
 
     status is one of: "merged" (changes landed), "conflict" (merge aborted, resolve manually),
@@ -65,14 +64,13 @@ class IntegrateResult:
     status: str
     branch: str | None = None
     merged_into: str | None = None
-    changed_files: list[str] = field(default_factory=list)
-    conflicts: list[str] = field(default_factory=list)
+    changed_files: list[str] = []
+    conflicts: list[str] = []
     commit: str | None = None
     message: str = ""
 
 
-@dataclass
-class StrategyResult:
+class StrategyResult(BaseModel):
     """One strategy's measured outcome in a benchmark (the run's recorded facts)."""
 
     run_id: str
@@ -87,8 +85,7 @@ class StrategyResult:
     output_tokens: int
 
 
-@dataclass
-class BenchmarkResult:
+class BenchmarkResult(BaseModel):
     """Same task run through N strategies, compared on measured cost/latency/outcome (derived).
 
     `cheapest`/`fastest` name the winning client among *comparable* strategies only — succeeded,
@@ -98,13 +95,12 @@ class BenchmarkResult:
 
     task_id: str
     goal: str
-    strategies: list[StrategyResult] = field(default_factory=list)
+    strategies: list[StrategyResult] = []
     cheapest: str | None = None
     fastest: str | None = None
 
 
-@dataclass
-class RunRequest:
+class RunRequest(BaseModel):
     """One unit of work for a parallel batch (the same parameters Fleet.run takes)."""
 
     backend_name: str
@@ -153,7 +149,14 @@ class Fleet:
         cleanup: bool = False,
     ) -> RunRecord:
         """Run one task synchronously: worktree -> backend -> usage -> persist. Blocks until done."""
-        req = RunRequest(backend_name, task, permission, model, client, timeout_s)
+        req = RunRequest(
+            backend_name=backend_name,
+            task=task,
+            permission=permission,
+            model=model,
+            client=client,
+            timeout_s=timeout_s,
+        )
         run_id, wt, started = self._start(req, ts)
         return self._execute(req, run_id, wt, started, cleanup=cleanup)
 

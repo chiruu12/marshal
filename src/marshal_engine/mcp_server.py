@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -39,12 +38,12 @@ def build_app(service: MarshalService) -> Any:
     @app.tool()
     def list_clients() -> list[dict[str, Any]]:
         """List configured backend clients (name, backend, model, permission)."""
-        return service.list_clients()
+        return [c.model_dump(mode="json") for c in service.list_clients()]
 
     @app.tool()
     def run_agent(client: str, goal: str, task_id: str | None = None) -> dict[str, Any]:
         """Run a task on a client's backend in an isolated git worktree; returns the run record."""
-        return asdict(service.run_agent(client, goal, task_id=task_id))
+        return service.run_agent(client, goal, task_id=task_id).model_dump(mode="json")
 
     @app.tool()
     def run_many(jobs: list[dict[str, Any]], max_concurrency: int = 4) -> list[dict[str, Any]]:
@@ -52,50 +51,52 @@ def build_app(service: MarshalService) -> Any:
 
         jobs is a list of {client, goal, task_id?}. Concurrency is capped at max_concurrency.
         """
-        return [asdict(r) for r in service.run_many(jobs, max_concurrency=max_concurrency)]
+        records = service.run_many(jobs, max_concurrency=max_concurrency)
+        return [r.model_dump(mode="json") for r in records]
 
     @app.tool()
     def spawn(client: str, goal: str, task_id: str | None = None) -> dict[str, Any]:
         """Start a run in the background; returns its RUNNING record immediately. Poll get_run/status."""
-        return asdict(service.spawn(client, goal, task_id=task_id))
+        return service.spawn(client, goal, task_id=task_id).model_dump(mode="json")
 
     @app.tool()
     def benchmark(
         goal: str, clients: list[str], task_id: str | None = None, max_concurrency: int = 4
     ) -> dict[str, Any]:
         """Run one goal through several clients (routing strategies) and compare cost/latency/outcome."""
-        return asdict(service.benchmark(goal, clients, task_id=task_id, max_concurrency=max_concurrency))
+        result = service.benchmark(goal, clients, task_id=task_id, max_concurrency=max_concurrency)
+        return result.model_dump(mode="json")
 
     @app.tool()
     def report(task_id: str) -> dict[str, Any]:
         """Derive the strategy comparison for a past benchmark task_id from the ledger (read-only)."""
-        return asdict(service.report(task_id))
+        return service.report(task_id).model_dump(mode="json")
 
     @app.tool()
     def get_run(run_id: str) -> dict[str, Any] | None:
         """Get a run record by id."""
         rec = service.get_run(run_id)
-        return asdict(rec) if rec else None
+        return rec.model_dump(mode="json") if rec else None
 
     @app.tool()
     def collect_run(run_id: str) -> dict[str, Any]:
         """Collect a run's diff and changed files (read-only; nothing is merged)."""
-        return asdict(service.collect_run(run_id))
+        return service.collect_run(run_id).model_dump(mode="json")
 
     @app.tool()
     def integrate(run_id: str, cleanup: bool = False) -> dict[str, Any]:
         """Merge a run's worktree branch into the current branch; reports merge conflicts."""
-        return asdict(service.integrate(run_id, cleanup=cleanup))
+        return service.integrate(run_id, cleanup=cleanup).model_dump(mode="json")
 
     @app.tool()
     def status() -> list[dict[str, Any]]:
         """List all fleet runs with status and cost."""
-        return [asdict(r) for r in service.status()]
+        return [r.model_dump(mode="json") for r in service.status()]
 
     @app.tool()
     def usage() -> dict[str, Any]:
         """Per-provider usage summary (totals + by backend/client/model)."""
-        return service.usage()
+        return service.usage().model_dump(mode="json")
 
     return app
 

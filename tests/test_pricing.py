@@ -16,7 +16,7 @@ def test_estimate_prices_tokens() -> None:
 
 
 def test_estimate_unpriced_model_returns_none() -> None:
-    t = PriceTable({"m": ModelPrice(1.0, 1.0)})
+    t = PriceTable({"m": ModelPrice(input_per_mtok=1.0, output_per_mtok=1.0)})
     assert t.estimate("other", input_tokens=1000, output_tokens=1000) is None  # missing -> unpriced
     assert t.estimate(None, input_tokens=1000, output_tokens=0) is None         # no model -> unpriced
 

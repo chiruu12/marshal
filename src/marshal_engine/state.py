@@ -9,15 +9,14 @@ atomic (temp file + ``os.replace``) so a concurrent reader never sees a torn fil
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ValidationError
 
-@dataclass
-class RunRecord:
+
+class RunRecord(BaseModel):
     run_id: str
     task_id: str
     backend: str
@@ -51,7 +50,7 @@ class FleetState:
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._path(record.run_id)
         tmp = path.with_name(f"{path.name}.tmp")  # not matched by the *.json glob in list()
-        tmp.write_text(json.dumps(asdict(record), indent=2), encoding="utf-8")
+        tmp.write_text(record.model_dump_json(indent=2), encoding="utf-8")
         os.replace(tmp, path)  # atomic: a reader sees either the old file or the whole new one
 
     def add(self, record: RunRecord) -> None:
@@ -61,9 +60,9 @@ class FleetState:
         rec = self.get(run_id)
         if rec is None:
             raise KeyError(run_id)
-        data = asdict(rec)
-        data.update(fields)
-        record = RunRecord(**data)
+        # Re-validate the merged record (model_copy(update=...) would skip validation, so a
+        # wrong-typed field could write a corrupt file that then vanishes from get()/list()).
+        record = RunRecord.model_validate({**rec.model_dump(), **fields})
         self._write(record)
         return record
 
@@ -71,7 +70,7 @@ class FleetState:
         path = self._path(run_id)
         if not path.exists():
             return None
-        return RunRecord(**json.loads(path.read_text(encoding="utf-8")))
+        return RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
 
     def list(self) -> list[RunRecord]:
         if not self.dir.exists():
@@ -79,7 +78,7 @@ class FleetState:
         records: list[RunRecord] = []
         for path in sorted(self.dir.glob("*.json")):
             try:
-                records.append(RunRecord(**json.loads(path.read_text(encoding="utf-8"))))
-            except (json.JSONDecodeError, OSError, TypeError):
+                records.append(RunRecord.model_validate_json(path.read_text(encoding="utf-8")))
+            except (ValidationError, OSError):
                 continue  # skip a torn/foreign file rather than failing the whole listing
         return records

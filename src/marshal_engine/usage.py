@@ -1,22 +1,20 @@
 """Per-provider usage tracking — append-only events log + rolled-up summary.
 
-No database: an `events.jsonl` (one line per run) plus a `summary.json` rollup, so usage is
-auditable and queryable. Every event carries a `source` so estimated/scraped costs are never
-confused with provider-reported ones.
+No database: an `events.jsonl` (one line per run) plus a derived summary, so usage is auditable and
+queryable. Every event carries a `source` so estimated/scraped costs are never confused with
+provider-reported ones. `summary()` returns a typed `UsageSummary` (computed on read, never stored).
 """
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+
+from pydantic import BaseModel, Field
 
 from .types import AgentResult, UsageRecord, UsageSource
 
 
-@dataclass
-class UsageEvent:
+class UsageEvent(BaseModel):
     ts: str
     run_id: str
     backend: str
@@ -60,6 +58,31 @@ class UsageEvent:
         )
 
 
+class Bucket(BaseModel):
+    """Rolled-up usage for one grouping (totals, or one backend/client/model)."""
+
+    runs: int = 0
+    succeeded: int = 0
+    cost_usd: float = 0.0
+    cost_native: float = 0.0        # cost we know is real (backend-reported)
+    cost_estimated: float = 0.0     # cost derived from a price table — not ground truth
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cost_per_run: float = 0.0
+    # None (not 0) when there are no successes — a real outcome cost can't be claimed.
+    cost_per_succeeded: float | None = None
+
+
+class UsageSummary(BaseModel):
+    """Derived usage rollup: grand totals plus per-backend/client/model breakdowns."""
+
+    totals: Bucket = Field(default_factory=Bucket)
+    by_backend: dict[str, Bucket] = {}
+    by_client: dict[str, Bucket] = {}
+    by_model: dict[str, Bucket] = {}
+
+
 class UsageTracker:
     """Append-only usage events; the rollup is derived on read.
 
@@ -75,7 +98,7 @@ class UsageTracker:
     def record(self, event: UsageEvent) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(event)) + "\n")
+            f.write(event.model_dump_json() + "\n")
 
     def events(self) -> list[UsageEvent]:
         if not self.events_path.exists():
@@ -85,61 +108,43 @@ class UsageTracker:
             line = line.strip()
             if not line:
                 continue
-            data: dict[str, Any] = json.loads(line)
-            out.append(UsageEvent(**data))
+            out.append(UsageEvent.model_validate_json(line))
         return out
 
-    def summary(self) -> dict[str, Any]:
-        by_backend: dict[str, dict[str, Any]] = {}
-        by_client: dict[str, dict[str, Any]] = {}
-        by_model: dict[str, dict[str, Any]] = {}
-        totals = _bucket()
+    def summary(self) -> UsageSummary:
+        by_backend: dict[str, Bucket] = {}
+        by_client: dict[str, Bucket] = {}
+        by_model: dict[str, Bucket] = {}
+        totals = Bucket()
         for e in self.events():
             _add(totals, e)
-            _add(by_backend.setdefault(e.backend, _bucket()), e)
-            _add(by_client.setdefault(e.client or "-", _bucket()), e)
-            _add(by_model.setdefault(e.model or "-", _bucket()), e)
+            _add(by_backend.setdefault(e.backend, Bucket()), e)
+            _add(by_client.setdefault(e.client or "-", Bucket()), e)
+            _add(by_model.setdefault(e.model or "-", Bucket()), e)
         for bucket in (totals, *by_backend.values(), *by_client.values(), *by_model.values()):
             _finalize(bucket)
-        return {
-            "totals": totals,
-            "by_backend": by_backend,
-            "by_client": by_client,
-            "by_model": by_model,
-        }
+        return UsageSummary(
+            totals=totals, by_backend=by_backend, by_client=by_client, by_model=by_model
+        )
 
 
-def _bucket() -> dict[str, Any]:
-    return {
-        "runs": 0,
-        "succeeded": 0,
-        "cost_usd": 0.0,
-        "cost_native": 0.0,        # cost we know is real (backend-reported)
-        "cost_estimated": 0.0,     # cost derived from a price table — not ground truth
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_tokens": 0,
-    }
-
-
-def _add(bucket: dict[str, Any], e: UsageEvent) -> None:
-    bucket["runs"] += 1
+def _add(bucket: Bucket, e: UsageEvent) -> None:
+    bucket.runs += 1
     if e.status == "succeeded":
-        bucket["succeeded"] += 1
-    bucket["cost_usd"] = round(bucket["cost_usd"] + e.cost_usd, 6)
+        bucket.succeeded += 1
+    bucket.cost_usd = round(bucket.cost_usd + e.cost_usd, 6)
     if e.source == UsageSource.NATIVE.value:
-        bucket["cost_native"] = round(bucket["cost_native"] + e.cost_usd, 6)
+        bucket.cost_native = round(bucket.cost_native + e.cost_usd, 6)
     elif e.source == UsageSource.ESTIMATED.value:
-        bucket["cost_estimated"] = round(bucket["cost_estimated"] + e.cost_usd, 6)
-    bucket["input_tokens"] += e.input_tokens
-    bucket["output_tokens"] += e.output_tokens
-    bucket["cache_read_tokens"] += e.cache_read_tokens
+        bucket.cost_estimated = round(bucket.cost_estimated + e.cost_usd, 6)
+    bucket.input_tokens += e.input_tokens
+    bucket.output_tokens += e.output_tokens
+    bucket.cache_read_tokens += e.cache_read_tokens
 
 
-def _finalize(bucket: dict[str, Any]) -> None:
+def _finalize(bucket: Bucket) -> None:
     """Add derived cost-per-outcome (report layer, computed on read — never stored on the ledger)."""
-    runs = bucket["runs"]
-    succeeded = bucket["succeeded"]
-    bucket["cost_per_run"] = round(bucket["cost_usd"] / runs, 6) if runs else 0.0
-    # None (not 0) when there are no successes — a real outcome cost can't be claimed.
-    bucket["cost_per_succeeded"] = round(bucket["cost_usd"] / succeeded, 6) if succeeded else None
+    runs = bucket.runs
+    succeeded = bucket.succeeded
+    bucket.cost_per_run = round(bucket.cost_usd / runs, 6) if runs else 0.0
+    bucket.cost_per_succeeded = round(bucket.cost_usd / succeeded, 6) if succeeded else None

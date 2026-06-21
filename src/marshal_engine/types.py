@@ -1,14 +1,17 @@
 """Core data types shared across the Marshal engine.
 
-These are deliberately stdlib-only (dataclasses + enums) so the engine has no heavy
-dependencies and the types are trivially serializable for fleet state and usage logs.
+Value objects are Pydantic models so construction validates inputs and (de)serialization to fleet
+state / usage logs / the MCP surface is uniform. Enums stay plain ``str`` enums (Pydantic handles
+them natively). The loose, version-variable JSON that backend CLIs emit is deliberately parsed as
+plain dicts in the adapters — strict models there would reject on an unexpected upstream field.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict
 
 
 class PermissionMode(str, Enum):
@@ -43,9 +46,10 @@ class UsageSource(str, Enum):
     UNAVAILABLE = "unavailable"  # backend exposes no usage data
 
 
-@dataclass(frozen=True)
-class Capabilities:
+class Capabilities(BaseModel):
     """Feature flags so the orchestrator degrades gracefully per backend."""
+
+    model_config = ConfigDict(frozen=True)
 
     json_output: bool = False
     stream_json: bool = False
@@ -55,21 +59,19 @@ class Capabilities:
     permission_modes: frozenset[PermissionMode] = frozenset()
 
 
-@dataclass
-class TaskSpec:
+class TaskSpec(BaseModel):
     """A single unit of work handed to one agent."""
 
     id: str
     goal: str                              # natural-language task for the agent
     role: str | None = None                # routing role (planner/coder/writer/reviewer/...);
                                            # policy maps role -> backend. Engine stays mechanism.
-    context_files: list[str] = field(default_factory=list)  # minimal files the worker should see
-    files_touched: list[str] = field(default_factory=list)  # declared scope -> conflict analysis
+    context_files: list[str] = []          # minimal files the worker should see
+    files_touched: list[str] = []          # declared scope -> conflict analysis
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
 
 
-@dataclass
-class RunOpts:
+class RunOpts(BaseModel):
     """How to run a TaskSpec. Backend-agnostic; adapters translate these to native flags."""
 
     cwd: Path                              # where the agent runs (typically a worktree)
@@ -77,11 +79,10 @@ class RunOpts:
     model: str | None = None
     session_id: str | None = None         # resume a prior session if the backend supports it
     timeout_s: int = 600                  # external timeout + kill — never run without one
-    extra_env: dict[str, str] = field(default_factory=dict)
+    extra_env: dict[str, str] = {}
 
 
-@dataclass
-class UsageRecord:
+class UsageRecord(BaseModel):
     """Normalized usage/cost for one run."""
 
     backend: str
@@ -94,15 +95,14 @@ class UsageRecord:
     source: UsageSource = UsageSource.UNAVAILABLE
 
 
-@dataclass
-class AgentResult:
+class AgentResult(BaseModel):
     """Normalized result of one agent run, regardless of backend."""
 
     status: RunStatus
     text: str = ""                         # final assistant message
     session_id: str | None = None
     usage: UsageRecord | None = None
-    files_changed: list[str] = field(default_factory=list)
+    files_changed: list[str] = []
     exit_code: int | None = None
     duration_ms: int = 0                    # wall-clock around the run, stamped by base.run()
     error: str | None = None

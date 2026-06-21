@@ -2,7 +2,7 @@
 
 A ``model -> price`` table converts token counts into a cost estimate for backends that report
 tokens but not cost. Pricing lives in this ONE module so backend adapters stay config-free
-(see the engine/report split in docs/plans/phase1-cost-proof.md). Prices are USD per million
+(see the engine/report split in docs/internal/plans/phase1-cost-proof.md). Prices are USD per million
 tokens. A model missing from the table is **unpriced** (``estimate`` returns ``None``) — never
 silently ``$0``. The table is data the user owns and should keep current; an estimate reflects the
 table's prices at the moment of the run.
@@ -10,11 +10,11 @@ table's prices at the moment of the run.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel, ConfigDict
 
 DEFAULT_PRICES_PATH = Path(__file__).parent / "data" / "prices.yaml"
 
@@ -23,9 +23,10 @@ class PricingError(ValueError):
     """The price table is missing or malformed."""
 
 
-@dataclass(frozen=True)
-class ModelPrice:
+class ModelPrice(BaseModel):
     """USD per million tokens for one model."""
+
+    model_config = ConfigDict(frozen=True)
 
     input_per_mtok: float
     output_per_mtok: float

@@ -5,6 +5,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from marshal_engine.state import FleetState, RunRecord
 
 
@@ -21,6 +24,18 @@ def test_add_get_update_list(tmp_path: Path) -> None:
     assert updated.cost_usd == 0.02
     assert len(st.list()) == 1
     assert st.get("missing") is None
+
+
+def test_update_validates_and_does_not_corrupt(tmp_path: Path) -> None:
+    # A wrong-typed update must raise, not silently write a corrupt record that vanishes on read.
+    st = FleetState(tmp_path / "runs")
+    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode"))
+    with pytest.raises(ValidationError):
+        st.update("r1", cost_usd="not-a-number")
+    # the run is still readable and unchanged
+    got = st.get("r1")
+    assert got is not None and got.cost_usd == 0.0
+    assert len(st.list()) == 1
 
 
 def test_persists_across_instances(tmp_path: Path) -> None:

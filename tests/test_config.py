@@ -67,6 +67,24 @@ def test_fireworks_model_is_rejected() -> None:
         validate(cfg)
 
 
+def test_load_config_rejects_fireworks_at_load(tmp_path: Path) -> None:
+    # The guard must fire at LOAD, not only when validate() is called (the MCP path).
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "clients:\n"
+        "  bad:\n"
+        "    backend: opencode\n"
+        "    model: fireworks-ai/accounts/fireworks/models/glm-5p2\n"
+    )
+    with pytest.raises(ConfigError, match="Fireworks"):
+        load_config(p)
+
+
+def test_missing_config_file_raises_friendly_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="no fleet config"):
+        load_config(tmp_path / "does-not-exist.yaml")
+
+
 def test_missing_secret_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     cfg = FleetConfig(

@@ -271,8 +271,8 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
 
     assert fleet.state.get(rec.run_id) is not None
     s = fleet.usage.summary()
-    assert s["totals"]["runs"] == 1
-    assert s["by_backend"]["writer"]["runs"] == 1
+    assert s.totals.runs == 1
+    assert s.by_backend["writer"].runs == 1
 
 
 def test_fleet_unknown_backend(repo: Path) -> None:
@@ -293,7 +293,7 @@ def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
 
 def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
-    reqs = [RunRequest("writer", TaskSpec(id=f"m{i}", goal="x")) for i in range(6)]
+    reqs = [RunRequest(backend_name="writer", task=TaskSpec(id=f"m{i}", goal="x")) for i in range(6)]
     records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
 
     assert [r.task_id for r in records] == [f"m{i}" for i in range(6)]  # input order preserved
@@ -306,7 +306,7 @@ def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
 
 def test_run_many_runs_concurrently(repo: Path) -> None:
     fleet = Fleet(repo, {"sleeper": _Sleeper()})  # each run sleeps ~0.5s
-    reqs = [RunRequest("sleeper", TaskSpec(id=f"s{i}", goal="x")) for i in range(4)]
+    reqs = [RunRequest(backend_name="sleeper", task=TaskSpec(id=f"s{i}", goal="x")) for i in range(4)]
     start = time.monotonic()
     records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
     elapsed = time.monotonic() - start
@@ -318,7 +318,7 @@ def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> N
     fleet = Fleet(repo, {"sleeper": _Sleeper()})  # each run sleeps ~0.5s
     try:
         start = time.monotonic()
-        run_id = fleet.spawn(RunRequest("sleeper", TaskSpec(id="sp1", goal="x")))
+        run_id = fleet.spawn(RunRequest(backend_name="sleeper", task=TaskSpec(id="sp1", goal="x")))
         assert time.monotonic() - start < 0.4  # returned without waiting for the 0.5s run
 
         rec = fleet.state.get(run_id)
@@ -340,7 +340,7 @@ def test_spawn_terminal_stamps_a_background_failure(repo: Path) -> None:
     # swallow the exception (no worker-thread crash), and shutdown() must drain cleanly.
     fleet = Fleet(repo, {"boom": _Exploder()})
     try:
-        run_id = fleet.spawn(RunRequest("boom", TaskSpec(id="bf1", goal="x")))
+        run_id = fleet.spawn(RunRequest(backend_name="boom", task=TaskSpec(id="bf1", goal="x")))
         deadline = time.monotonic() + 10
         rec = fleet.state.get(run_id)
         while time.monotonic() < deadline:

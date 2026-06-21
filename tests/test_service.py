@@ -122,7 +122,9 @@ def _svc(repo: Path) -> MarshalService:
 def test_list_clients(repo: Path) -> None:
     svc = _svc(repo)
     clients = svc.list_clients()
-    assert clients == [{"name": "worker", "backend": "echo", "model": None, "permission": "safe-edit"}]
+    assert [c.model_dump() for c in clients] == [
+        {"name": "worker", "backend": "echo", "model": None, "permission": "safe-edit"}
+    ]
 
 
 def test_run_agent_records(repo: Path) -> None:
@@ -132,8 +134,8 @@ def test_run_agent_records(repo: Path) -> None:
     assert rec.run_id.startswith("t1.echo.")  # task.backend.<uuid>
     assert svc.get_run(rec.run_id) is not None
     assert svc.status()[0].run_id == rec.run_id
-    assert svc.usage()["totals"]["runs"] == 1
-    assert abs(svc.usage()["totals"]["cost_usd"] - 0.002) < 1e-9
+    assert svc.usage().totals.runs == 1
+    assert abs(svc.usage().totals.cost_usd - 0.002) < 1e-9
 
 
 def test_run_agent_unknown_client(repo: Path) -> None:

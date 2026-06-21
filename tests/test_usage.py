@@ -26,12 +26,12 @@ def test_record_appends_and_summarizes(tmp_path: Path) -> None:
     assert len(t.events()) == 3
 
     s = t.summary()
-    assert s["totals"]["runs"] == 3
-    assert abs(s["totals"]["cost_usd"] - 0.03) < 1e-9
-    assert s["by_backend"]["opencode"]["runs"] == 2
-    assert abs(s["by_backend"]["opencode"]["cost_usd"] - 0.03) < 1e-9
-    assert s["by_backend"]["cursor"]["runs"] == 1
-    assert s["by_backend"]["opencode"]["input_tokens"] == 300
+    assert s.totals.runs == 3
+    assert abs(s.totals.cost_usd - 0.03) < 1e-9
+    assert s.by_backend["opencode"].runs == 2
+    assert abs(s.by_backend["opencode"].cost_usd - 0.03) < 1e-9
+    assert s.by_backend["cursor"].runs == 1
+    assert s.by_backend["opencode"].input_tokens == 300
 
 
 def test_from_result_builds_event() -> None:
@@ -67,14 +67,14 @@ def test_concurrent_records_do_not_corrupt_the_log(tmp_path: Path) -> None:
         list(pool.map(rec, range(60)))
 
     assert len(t.events()) == 60
-    assert t.summary()["totals"]["runs"] == 60
+    assert t.summary().totals.runs == 60
 
 
 def test_empty_tracker(tmp_path: Path) -> None:
     t = UsageTracker(tmp_path / "usage")
     assert t.events() == []
-    assert t.summary()["totals"]["runs"] == 0
-    assert t.summary()["totals"]["cost_per_succeeded"] is None  # no successes -> not claimable
+    assert t.summary().totals.runs == 0
+    assert t.summary().totals.cost_per_succeeded is None  # no successes -> not claimable
 
 
 def test_cost_per_outcome_and_source_split(tmp_path: Path) -> None:
@@ -83,14 +83,14 @@ def test_cost_per_outcome_and_source_split(tmp_path: Path) -> None:
     t.record(_ev(run_id="r2", cost_usd=0.04, status="succeeded", source="estimated"))
     t.record(_ev(run_id="r3", cost_usd=0.00, status="empty", source="unavailable"))  # cost, no success
 
-    tot = t.summary()["totals"]
-    assert tot["runs"] == 3
-    assert tot["succeeded"] == 2
-    assert abs(tot["cost_usd"] - 0.06) < 1e-9
-    assert abs(tot["cost_native"] - 0.02) < 1e-9
-    assert abs(tot["cost_estimated"] - 0.04) < 1e-9     # estimate kept separate from native
-    assert abs(tot["cost_per_run"] - 0.02) < 1e-9       # 0.06 / 3
-    assert abs(tot["cost_per_succeeded"] - 0.03) < 1e-9  # 0.06 / 2 (failures/empties still cost)
+    tot = t.summary().totals
+    assert tot.runs == 3
+    assert tot.succeeded == 2
+    assert abs(tot.cost_usd - 0.06) < 1e-9
+    assert abs(tot.cost_native - 0.02) < 1e-9
+    assert abs(tot.cost_estimated - 0.04) < 1e-9     # estimate kept separate from native
+    assert abs(tot.cost_per_run - 0.02) < 1e-9       # 0.06 / 3
+    assert abs(tot.cost_per_succeeded - 0.03) < 1e-9  # 0.06 / 2 (failures/empties still cost)
 
 
 def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None:
@@ -98,9 +98,9 @@ def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None
     t.record(_ev(run_id="s", cost_usd=0.02, status="succeeded", source="native"))
     t.record(_ev(run_id="e", cost_usd=0.03, status="empty", source="estimated"))  # burned tokens, no success
 
-    tot = t.summary()["totals"]
-    assert tot["runs"] == 2
-    assert tot["succeeded"] == 1
-    assert abs(tot["cost_usd"] - 0.05) < 1e-9            # EMPTY cost is real spend, counted
-    assert abs(tot["cost_per_run"] - 0.025) < 1e-9       # 0.05 / 2
-    assert abs(tot["cost_per_succeeded"] - 0.05) < 1e-9  # 0.05 / 1 — the wasted EMPTY run inflates it
+    tot = t.summary().totals
+    assert tot.runs == 2
+    assert tot.succeeded == 1
+    assert abs(tot.cost_usd - 0.05) < 1e-9            # EMPTY cost is real spend, counted
+    assert abs(tot.cost_per_run - 0.025) < 1e-9       # 0.05 / 2
+    assert abs(tot.cost_per_succeeded - 0.05) < 1e-9  # 0.05 / 1 — the wasted EMPTY run inflates it

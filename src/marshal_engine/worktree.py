@@ -9,27 +9,26 @@ from __future__ import annotations
 
 import os
 import subprocess
-from dataclasses import dataclass, field
 from pathlib import Path
+
+from pydantic import BaseModel
 
 
 class WorktreeError(RuntimeError):
     """A git worktree operation failed."""
 
 
-@dataclass
-class Worktree:
+class Worktree(BaseModel):
     task_id: str
     path: Path
     branch: str
 
 
-@dataclass
-class MergeResult:
+class MergeResult(BaseModel):
     """Outcome of merging a worktree branch back into the current branch."""
 
     ok: bool
-    conflicts: list[str] = field(default_factory=list)
+    conflicts: list[str] = []
     message: str = ""
     blocked: bool = False  # merge could not start (dirty/colliding target); nothing was changed
 

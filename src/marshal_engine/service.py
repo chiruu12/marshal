@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from .backends.base import CodingAgentBackend
 from .config import FleetConfig, resolve_model
 from .fleet import (
@@ -24,6 +26,16 @@ from .fleet import (
 from .registry import make_backend
 from .state import RunRecord
 from .types import TaskSpec
+from .usage import UsageSummary
+
+
+class ClientInfo(BaseModel):
+    """A configured client as surfaced to the driver (resolved model, permission as a string)."""
+
+    name: str
+    backend: str
+    model: str | None
+    permission: str
 
 
 class MarshalService:
@@ -41,14 +53,14 @@ class MarshalService:
             backends = {name: make_backend(name) for name in names}
         self.fleet = Fleet(repo_root, backends, base_dir=base_dir)
 
-    def list_clients(self) -> list[dict[str, Any]]:
+    def list_clients(self) -> list[ClientInfo]:
         return [
-            {
-                "name": c.name,
-                "backend": c.backend,
-                "model": resolve_model(c),
-                "permission": c.permission.value,
-            }
+            ClientInfo(
+                name=c.name,
+                backend=c.backend,
+                model=resolve_model(c),
+                permission=c.permission.value,
+            )
             for c in self.config.clients.values()
         ]
 
@@ -61,7 +73,8 @@ class MarshalService:
     ) -> RunRequest:
         client = self.config.clients.get(client_name)
         if client is None:
-            raise ValueError(f"no such client: {client_name!r}")
+            known = ", ".join(self.config.clients) or "(none configured)"
+            raise ValueError(f"no such client: {client_name!r}; known: {known}")
         task = TaskSpec(
             id=task_id or uuid.uuid4().hex[:8],
             goal=goal,
@@ -182,5 +195,5 @@ class MarshalService:
     def status(self) -> list[RunRecord]:
         return self.fleet.state.list()
 
-    def usage(self) -> dict[str, Any]:
+    def usage(self) -> UsageSummary:
         return self.fleet.usage.summary()
