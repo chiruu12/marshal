@@ -24,13 +24,23 @@ build/
 *.swp
 *.swo
 
-# Claude Code
+# Claude Code (local tooling — the public driver Skills live in skills/, not here)
 .context/
+.claude/
 tmp/
+
+# Internal notes — strategy / decisions / plans, kept local, not part of the public docs set
+docs/internal/
 
 # Python
 .ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
 *.egg-info/
+
+# A user's real fleet config (copied from fleet.config.example.yaml) — never commit it
+fleet.config.yaml
 
 # Marshal runtime state (worktrees, fleet.json, usage)
 .marshal/
