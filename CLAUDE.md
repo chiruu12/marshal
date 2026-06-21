@@ -33,22 +33,29 @@ marshal/
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard
 │   ├── service.py           # MarshalService — the testable core the MCP/CLI call into
+│   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness)
 │   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/spawn/benchmark/report/get_run/collect_run/integrate/status/usage
-│   └── cli.py               # `marshal` CLI (backends/usage/status/mcp)
-├── .claude/skills/          # driver playbooks (marshal-orchestrate, marshal-benchmark) + imported
-├── docs/                    # design · vision · status · usage · decisions · chauffeur-future · sources
+│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/mcp)
+├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark
+├── examples/                # runnable library_quickstart.py + a benchmark-output sample
+├── SETUP.md                 # clone-to-first-run setup guide
+├── docs/                    # design · status · usage · chauffeur-future · sources (docs/internal/ is local-only, gitignored)
 └── tests/                   # contract tests per backend + engine/service/mcp tests
+# .claude/ is local tooling (gitignored); the public copies of the Marshal Skills live in skills/.
 ```
 
 ## Tech Stack
 
-Python ≥ 3.11, managed with **uv**. Stdlib-first engine (dataclasses, subprocess, pathlib).
-MCP server via the `mcp` SDK (optional extra). Config in YAML. No database — file-based state.
+Python ≥ 3.11, managed with **uv**. **Pydantic** models for value types, config, persisted state,
+and the MCP I/O surface (validation + uniform JSON serialization); stdlib for the rest (subprocess,
+pathlib). Loose, version-variable **backend CLI stdout is parsed as plain dicts** in the adapters —
+strict models there would reject on an unexpected upstream field. MCP server via the `mcp` SDK
+(optional extra). Config in YAML. No database — file-based state.
 
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`backends` · `usage` · `status` · `mcp`)
+- Run CLI: `uv run marshal` (`doctor` · `backends` · `usage` · `status` · `mcp`)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)

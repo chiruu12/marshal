@@ -1,27 +1,34 @@
-# Marshal fleet config — declare N named clients.
-# Each client pins a backend + permission + model. Secrets are REFERENCED (env:VAR), never inlined.
-# Copy to `fleet.config.yaml` and edit.
+# Marshal fleet config — declare N named clients. Copy to `fleet.config.yaml` and edit.
+# Each client pins a backend + permission + model.
+#
+# AUTH IS PER-CLI: authenticate each backend by running its own login once (e.g.
+# `opencode auth login`, `cursor-agent login`, `codex login`). Marshal does not need an API key
+# of its own and does not install the backend CLIs.
+#
+# `secret_ref: env:VAR` is OPTIONAL and ADVISORY: `marshal doctor` warns if VAR is unset, but
+# Marshal does NOT inject it into the backend — the CLI's own login is what authenticates. If you
+# logged the CLI in, you can omit secret_ref entirely.
 
 defaults:
   permission: safe-edit        # read-only | safe-edit | yolo
   timeout_s: 600
 
 clients:
-  # OpenCode on the Go subscription. Omit `model` and it defaults to a Go model
-  # (opencode-go/glm-5.2) — a fireworks-ai/* model here is rejected so you never burn Fireworks credits.
+  # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
+  # fireworks-ai/* model is rejected at load so you never burn Fireworks credits.
+  # Auth: `opencode auth login`.
   implementer:
     backend: opencode
     model: opencode-go/glm-5.2
     permission: safe-edit
-    secret_ref: env:OPENCODE_API_KEY
+    secret_ref: env:OPENCODE_API_KEY   # optional preflight check; see header
 
-  # Cursor for read-only review passes (no edits).
+  # Cursor for read-only review passes (no edits). Auth: `cursor-agent login`.
   reviewer:
     backend: cursor
     permission: read-only
-    secret_ref: env:CURSOR_API_KEY
 
-  # Codex (workspace-write) — usable once its account usage limit clears.
+  # Codex (workspace-write under safe-edit). Auth: `codex login` (ChatGPT) or set OPENAI_API_KEY.
   refactorer:
     backend: codex
     permission: safe-edit

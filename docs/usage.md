@@ -4,17 +4,21 @@ Marshal drives a fleet of headless coding agents from one driver. You declare na
 **clients** (each pinning a backend + model + permission), then call Marshal three ways: as an
 MCP server, as a CLI, or as a Python library.
 
-> **Status:** early development. The engine, CLI, and MCP server work, including merge-back
+> **Status:** V1 core complete, pre-1.0. The engine, CLI, and MCP server work, including merge-back
 > (`collect_run` + `integrate`), capped parallel fan-out (`run_many`), and a measured savings
 > benchmark (`benchmark`/`report`). See [`status.md`](status.md).
 
 ## Install
 
+New here? Start with **[`../SETUP.md`](../SETUP.md)** for the full clone-to-first-run path:
+prerequisites (Python ≥ 3.11, uv, git) and how to install + authenticate the backend CLIs —
+Marshal does **not** install them.
+
 ```bash
 uv sync --extra mcp --extra dev
 ```
 
-The base package is stdlib + PyYAML only. The `mcp` extra adds the MCP server; `dev` adds the
+The base package is Pydantic + PyYAML. The `mcp` extra adds the MCP server; `dev` adds the
 test/lint toolchain.
 
 ## Configure a fleet
@@ -43,7 +47,9 @@ clients:
     secret_ref: env:CURSOR_API_KEY
 ```
 
-- **Secrets are referenced, never inlined** (`env:VAR`).
+- **Auth is per-CLI**: run each backend's login once (`opencode auth login`, `cursor-agent login`,
+  `codex login`). `secret_ref: env:VAR` is an optional preflight check — `marshal doctor` warns if
+  unset — but Marshal does **not** inject it; the CLI's own login is what authenticates.
 - An OpenCode client with no `model` defaults to `opencode-go/glm-5.2` so runs bill the Go
   subscription, not Fireworks credits. A `fireworks-ai/*` model is rejected outright.
 
@@ -66,15 +72,20 @@ Point your driver at `marshal mcp`. Environment:
 | `MARSHAL_REPO` | `.` | The repo agents work in. |
 | `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | The fleet config. |
 
-Example Claude Code MCP entry:
+Example Claude Code MCP entry. A bare `uv sync` does not put a `marshal` command on your PATH, so
+invoke it through uv with the absolute path to your Marshal checkout (or run `uv tool install .`
+first to use a bare `"command": "marshal"`). Run `marshal doctor` before wiring this up.
 
 ```json
 {
   "mcpServers": {
     "marshal": {
-      "command": "marshal",
-      "args": ["mcp"],
-      "env": { "MARSHAL_REPO": "/path/to/your/project" }
+      "command": "uv",
+      "args": ["--directory", "/abs/path/to/marshal", "run", "marshal", "mcp"],
+      "env": {
+        "MARSHAL_REPO": "/abs/path/to/your/project",
+        "MARSHAL_CONFIG": "/abs/path/to/your/project/fleet.config.yaml"
+      }
     }
   }
 }
@@ -99,11 +110,15 @@ Tools exposed to the driver:
 ## Use it as a CLI
 
 ```bash
+marshal doctor       # preflight: check the setup is ready to run agents
 marshal backends     # list backends and availability
 marshal status       # list fleet runs
 marshal usage        # per-provider usage summary
 marshal mcp          # run the MCP server over stdio
 ```
+
+The CLI is **inspection-only** (doctor/backends/status/usage) plus `mcp`. You *run* agents by
+driving the MCP tools from your driver (see above), not from the CLI.
 
 ## Use it as a library
 

@@ -9,7 +9,7 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 
 | Module | Responsibility | State |
 |--------|----------------|-------|
-| `types.py` | Shared dataclasses + enums | done |
+| `types.py` | Shared Pydantic models + enums | done |
 | `backends/base.py` | Abstract backend + safe `run()` (no-stdin, hard timeout) | done |
 | `backends/{cursor,opencode,codex,antigravity}.py` | Four adapters off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
@@ -20,10 +20,10 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `registry.py` | Construct backends by name | done |
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
 | `service.py` | Testable core the MCP/CLI call into | done |
-| `cli.py` | `marshal backends/usage/status/mcp` | done |
+| `cli.py` | `marshal doctor/backends/usage/status/mcp` | done |
 | `mcp_server.py` | 11-tool MCP surface over stdio (run/run_many/spawn/benchmark/report/collect/integrate/…) | done |
 
-Quality gate: 107 unit tests pass; ruff and mypy (strict) clean across all source files.
+Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files.
 
 ## Backend verification matrix
 
@@ -31,22 +31,22 @@ Quality gate: 107 unit tests pass; ruff and mypy (strict) clean across all sourc
 |---------|-----------|-----------|----------------------------|--------------|
 | OpenCode | yes | verified | verified | verified (tokens + cost) |
 | Cursor | yes | verified | verified | n/a by design (Admin API only) |
-| Codex | yes | blocked* | blocked* | best-effort |
+| Codex | yes | — | verified* | tokens only (cost unpriced) |
 | Antigravity | yes | verified (reply) | not yet** | none |
 
-\* Codex account is usage-limited until ~2026-07-18; only the failure path is verified.
+\* Codex safe-edit (worktree write) verified on a fresh usage window; the dev account is
+intermittently rate-limited, so a re-run may have to wait. Token counts are captured but cost is
+`unavailable` until the model is added to the price table.
 \*\* Antigravity headless writes divert to `~/.gemini/antigravity-cli/scratch` under an
 untrusted workspace (`--add-dir` does not fix it). Needs a PTY / workspace-trust workaround.
 
 ## Roadmap
 
-Reordered 2026-06-20 (see [`decisions.md`](decisions.md)) to lead with the differentiator.
 `collect_run`/`integrate` are shipped.
 
 ### Phase 1 — cost-proof (shipped)
-Per-provider cost is now trustworthy and honest, single-threaded. Shipped (see
-[`plans/phase1-cost-proof.md`](plans/phase1-cost-proof.md)): `duration_ms` on every run;
-`extract_usage` wired into `Fleet.run`; a YAML price table (`pricing.py` + `data/prices.yaml`) with
+Per-provider cost is now trustworthy and honest, single-threaded. Shipped: `duration_ms` on every
+run; `extract_usage` wired into `Fleet.run`; a YAML price table (`pricing.py` + `data/prices.yaml`) with
 `ESTIMATED` tagging and `unpriced`-not-`$0` honesty; cost/duration/source persisted on `RunRecord`;
 cost-per-outcome (`$/run`, `$/succeeded`) + a native/estimated split in `usage`; partial-usage
 recovery on timeout; and `RunStatus.EMPTY` for clean-but-no-work runs. The engine stamps facts to an

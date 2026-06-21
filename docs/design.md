@@ -1,8 +1,8 @@
 # Marshal — Foundational Design
 
 > **Marshal** is the infrastructure layer: one "driver" agent (Claude Code) plans work, then
-> Marshal spawns and manages a **fleet of headless coding agents** (Cursor CLI, OpenCode, Codex
-> now; Gemini later), each in an isolated git worktree, in parallel — exposed to the driver as an
+> Marshal spawns and manages a **fleet of headless coding agents** (Cursor CLI, OpenCode, Codex,
+> Google Antigravity now; Gemini later), each in an isolated git worktree, in parallel — exposed to the driver as an
 > **MCP server + Skills**, with **per-provider usage tracking**. To *marshal* = to gather and
 > organize a force — exactly what this does to a fleet of agents.
 >
@@ -10,15 +10,16 @@
 > of* Marshal — planning, routing, self-driving workflows, agent-management UI. Out of scope for
 > now; see `docs/chauffeur-future.md`.
 
-Status: design locked enough to scaffold. Build happens in a new private repo created from
-`chiruu12/claude-skills-template`, cloned to `~/conductor/repos/<name>`. Language: **Python + uv**.
+Status: design locked. Language: **Python + uv**. **Pydantic v2** models for value types, config,
+persisted state, and the MCP I/O surface; stdlib for the rest (subprocess, pathlib). Backend CLI
+stdout is parsed as plain dicts on purpose. See the package layout in the README and `docs/status.md`.
 
 ---
 
 ## 0. Locked decisions
 
 - **Execution model:** background **fleet** — N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
-- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex now (Codex already installed locally → free third backend to prove the abstraction). Gemini later = new adapter only.
+- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Antigravity now. Gemini later = new adapter only.
 - **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) — optional fast path.
 - **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** — they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
 - **Differentiator:** **per-provider usage tracking** + a `usage` command. Nearly every competitor omits this.
@@ -160,22 +161,23 @@ Surface a `usage` MCP tool / `<name> usage` CLI with `--since` and `--by client|
 **Single config file**, named clients each pinning a backend; **secrets by reference only**:
 
 ```yaml
-# fleet.config.yaml
-defaults: { permission: safe-edit, timeout_ms: 600000, worktree_base: .worktrees, usage_dir: .fleet/usage }
+# fleet.config.yaml  (see fleet.config.example.yaml)
+defaults:
+  permission: safe-edit
+  timeout_s: 600
 clients:
-  reviewer:    { backend: cursor,   model: auto, permission: read-only, allowed_tools: [read,grep,glob], secret_ref: env:CURSOR_API_KEY }
-  implementer: { backend: opencode, model: anthropic/claude-sonnet-4, permission: safe-edit, server_mode: true, secret_ref: env:OPENCODE_API_KEY }
-  refactorer:  { backend: codex,    permission: safe-edit, secret_ref: env:OPENAI_API_KEY }
+  reviewer:    { backend: cursor,   permission: read-only }
+  implementer: { backend: opencode, model: opencode-go/glm-5.2, permission: safe-edit }
+  refactorer:  { backend: codex,    permission: safe-edit }
 ```
 
-**Lean tool surface** (backend is a param, NOT in tool names — avoids Roundtable's 2N-tool explosion):
-`list_clients`, `check_client(client)`, `run_agent(client, task, [worktree], [permission_override], [model_override])`,
-`get_run(run_id)`, `collect_run(run_id)`, `cancel_run(run_id)`, `integrate(run_ids[], strategy)`,
-`usage([since],[group_by])`, `cleanup_worktrees`.
+Runtime state — worktrees, per-run JSON, usage — lands under `.marshal/`. Auth is per-CLI login;
+an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
-> This is the **target** surface. Implemented today: `list_clients`, `run_agent`, `get_run`,
-> `collect_run`, `integrate`, `status`, `usage`. The rest (`cancel_run`, `cleanup_worktrees`) are
-> planned — current state is tracked in `docs/status.md`.
+**Lean tool surface** (backend is a param, NOT in tool names — avoids the 2N-tool explosion).
+Shipped today (11): `list_clients`, `run_agent`, `run_many`, `spawn`, `benchmark`, `report`,
+`get_run`, `collect_run`, `integrate`, `status`, `usage`. Planned: `cancel_run`. Current state is
+tracked in `docs/status.md`.
 
 Mirror to **one orchestration Skill** so the fleet works in both MCP and Skills hosts.
 Security from day one: **localhost-only bind, reject non-loopback, validate `Host` header** (DNS-rebind).
@@ -210,10 +212,10 @@ Security from day one: **localhost-only bind, reject non-loopback, validate `Hos
 
 ## 10. Build roadmap
 
-- **Phase 0 — repo:** create private repo from `claude-skills-template` → `~/conductor/repos/<name>`; lay down `pyproject.toml` (uv), package skeleton, move these docs into `docs/`.
+- **Phase 0 — repo:** lay down `pyproject.toml` (uv), the package skeleton, and `docs/`.
 - **Phase 1 — engine:** base class + `CursorBackend` + `OpenCodeBackend` + `CodexBackend` (pure `build_invocation`/`map_permission` + `parse_output`), worktree manager, process runner (timeout!), result collector. CLI-testable standalone before any MCP. Contract tests per backend.
 - **Phase 2 — usage:** `events.jsonl` + `summary.json`, price table, `source` tagging, OpenCode native + on-disk reconciliation, Cursor Admin-API path, `usage` command.
-- **Phase 3 — MCP server:** the 9 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
+- **Phase 3 — MCP server:** the 11 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
 - **Phase 4 — Skills:** `*-plan` (decompose + independence analysis), `*-run` (spawn+monitor loop + prompt-writing), `*-integrate` (merge + verify).
 - **Phase 5 — harden + docs:** retries/backoff, concurrency caps, worktree cleanup, dry-run, OpenCode warm-server fast path, README/onboarding → flip public.
 
@@ -225,7 +227,7 @@ Security from day one: **localhost-only bind, reject non-loopback, validate `Hos
 
 ---
 
-## 11. Product-driven design (from the PRD — see `docs/vision.md`)
+## 11. Product-driven design (from the PRD — see `docs/internal/vision.md`)
 
 Positioning: **"the control plane for AI coding agents."** Thesis: keep the best model planning;
 route execution to cheaper/specialized workers; isolate context; **prove the savings**. Four things
