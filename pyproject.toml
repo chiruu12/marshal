@@ -1,13 +1,25 @@
 [project]
 name = "marshal"
 version = "0.0.1"
-description = "Orchestration engine for driving a fleet of headless coding agents (Cursor, OpenCode, Codex) from one driver via MCP + Skills"
+description = "Orchestration engine for driving a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity) from one driver via MCP + Skills"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "chiruu12" }]
-keywords = ["agents", "orchestration", "mcp", "cursor", "opencode", "codex", "headless", "coding-agent"]
+keywords = ["agents", "orchestration", "mcp", "cursor", "opencode", "codex", "antigravity", "headless", "coding-agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Operating System :: POSIX",
+]
 dependencies = [
+    "pydantic>=2.13.4",
     "pyyaml>=6.0",
 ]
 
@@ -20,6 +32,12 @@ dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "types-PyYAML>=6"]
 
 [project.scripts]
 marshal = "marshal_engine.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/chiruu12/marshal"
+Repository = "https://github.com/chiruu12/marshal"
+Issues = "https://github.com/chiruu12/marshal/issues"
+Changelog = "https://github.com/chiruu12/marshal/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
@@ -40,3 +58,10 @@ files = ["src"]
 [[tool.mypy.overrides]]
 module = "mcp.*"
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# Only ever collect the real suite. Live agent runs drop git worktrees (full repo copies,
+# tests included) under marshal-runs/ and .marshal/; without this, pytest discovers those
+# duplicate test modules and collection explodes.
+testpaths = ["tests"]
+norecursedirs = ["marshal-runs", ".marshal", ".venv", "tmp", "build", "dist"]
