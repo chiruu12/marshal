@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a problem with Marshal
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please do **not** report security vulnerabilities here — see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Marshal version / commit
+      description: Output of `uv run marshal --version` or the git commit SHA.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: "e.g. macOS 14.5, Python 3.12.11"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Which backend(s)?
+      multiple: true
+      options:
+        - cursor
+        - opencode
+        - codex
+        - antigravity
+        - not backend-specific
+    validations:
+      required: true
+  - type: input
+    id: auth
+    attributes:
+      label: How is that backend authenticated?
+      placeholder: "e.g. opencode auth login / codex login / OPENAI_API_KEY env"
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `uv run marshal doctor`
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: fleet.config.yaml (redact any secrets / client names you don't want public)
+      render: yaml
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / error output
+      render: text

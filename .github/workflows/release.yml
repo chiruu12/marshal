@@ -1,0 +1,40 @@
+name: Release
+
+# Cuts a GitHub Release with the built sdist + wheel when a v* tag is pushed.
+# Install-from-source for now; PyPI trusted publishing can be added here later.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (e.g. v0.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gate
+        run: |
+          uv sync --extra mcp --extra dev
+          uv run pytest -q && uv run ruff check src tests && uv run mypy
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release create "$TAG" dist/* --generate-notes --verify-tag
