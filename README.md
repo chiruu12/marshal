@@ -1,5 +1,9 @@
 # Marshal
 
+[![CI](https://github.com/chiruu12/marshal/actions/workflows/ci.yml/badge.svg)](https://github.com/chiruu12/marshal/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 **The control plane for AI coding agents.** Keep your best reasoning model focused on planning and
 review, route execution to cheaper or specialized workers, isolate each task in its own git
 worktree, and measure what every routing strategy actually cost.
