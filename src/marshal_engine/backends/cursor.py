@@ -26,6 +26,7 @@ Notes / gaps baked in from research:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -174,16 +175,17 @@ def _parse_about(raw: str) -> dict[str, str] | None:
         if isinstance(model, str) and model:
             info["model"] = model
         return info or None
+    labels = {"subscription tier": "plan", "model": "model"}
     for line in raw.splitlines():
-        low = line.strip()
-        if low.lower().startswith("subscription tier"):
-            value = low[len("subscription tier") :].strip()
-            if value:
-                info["plan"] = value
-        elif low.lower().startswith("model"):
-            value = low[len("model") :].strip()
-            if value:
-                info["model"] = value
+        # Split "Key: value" or "Key    value" into label + value; match the WHOLE label so
+        # "Modeling foo" / "Subscription Tierx" don't false-positive on a prefix.
+        parts = re.split(r"\s*:\s*|\s{2,}", line.strip(), maxsplit=1)
+        if len(parts) != 2:
+            continue
+        key = " ".join(parts[0].lower().split())
+        value = parts[1].strip()
+        if value and key in labels:
+            info[labels[key]] = value
     return info or None
 
 
