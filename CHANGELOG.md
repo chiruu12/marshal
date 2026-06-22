@@ -30,6 +30,10 @@ First tagged release: the V1 vertical slice — engine -> service -> CLI -> MCP.
   a known cost.
 - **`marshal doctor`** preflight CLI command, plus `backends`, `status`, `usage`, and `mcp`.
 - **Driver Skills:** `marshal-orchestrate` and `marshal-benchmark`.
+- **Claude Code plugin:** `.claude-plugin/` manifests so `/plugin marketplace add chiruu12/marshal`
+  installs both Skills and the MCP server in one step. The server runs from the plugin checkout via
+  `uv` and starts with zero clients (logging how to configure one) when no `fleet.config.yaml` is
+  present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
 [Unreleased]: https://github.com/chiruu12/marshal/compare/v0.0.1...HEAD

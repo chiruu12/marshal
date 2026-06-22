@@ -109,6 +109,23 @@ Marshal exposes its tools over an MCP server (`marshal mcp`, stdio). It reads tw
 | `MARSHAL_REPO` | `.` | the repo agents work in |
 | `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | the fleet config |
 
+### Option A — install the Claude Code plugin (one step)
+
+The fastest path. From Claude Code:
+
+```
+/plugin marketplace add chiruu12/marshal
+/plugin install marshal@marshal
+```
+
+This installs both driver Skills **and** the MCP server. The server runs from the plugin's own
+checkout via `uv` (auto-syncing the `mcp` extra on first run) and inherits the project you have
+open, so `MARSHAL_REPO`/`MARSHAL_CONFIG` default to that project and its `fleet.config.yaml` — you
+still complete steps 1–4 there (config + backend auth). If no config is found yet, the server
+starts with zero clients and logs how to add one.
+
+### Option B — wire it by hand
+
 A bare `uv sync` does **not** put a `marshal` command on your PATH, so invoke it through uv with the
 absolute path to your Marshal checkout:
 

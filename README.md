@@ -44,9 +44,24 @@ uv run marshal doctor                            # preflight: is everything read
 
 Then wire `marshal mcp` into your driver and run a task. Full walkthrough: **[`SETUP.md`](SETUP.md)**.
 
-The two driver Skills live in [`skills/`](skills/) — copy `skills/marshal-orchestrate` and
-`skills/marshal-benchmark` into your driver's skills directory (e.g. `.claude/skills/`) to teach it
-how to run a fleet. (A one-step install via the Claude Code plugin registry is on the roadmap.)
+### Install as a Claude Code plugin
+
+Marshal ships as a Claude Code plugin that bundles both driver Skills **and** the MCP server in one
+step. From Claude Code:
+
+```
+/plugin marketplace add chiruu12/marshal
+/plugin install marshal@marshal
+```
+
+The plugin runs the MCP server from its own checkout (via `uv`), pointed at whatever project you
+have open — so you still need `uv`, a `fleet.config.yaml` in that project, and the backend CLIs
+authenticated (`uv run marshal doctor` checks all of this). Until you add a config, the server
+starts with zero clients and tells you how to configure one.
+
+Prefer to copy just the Skills? The two driver Skills live in [`skills/`](skills/) — copy
+`skills/marshal-orchestrate` and `skills/marshal-benchmark` into your driver's skills directory
+(e.g. `.claude/skills/`) and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 
