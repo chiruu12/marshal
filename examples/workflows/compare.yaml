@@ -1,4 +1,4 @@
-# Compare recipe — run the SAME task across several clients and collect every diff, so you can pick
+# Compare recipe - run the SAME task across several clients and collect every diff, so you can pick
 # the best implementation by reading them side by side. Because all runs in a fan_out share one
 # task_id, `marshal report <task_id>` and `marshal usage` will show what each strategy cost.
 # Copy this into <repo>/workflows/ and replace the client names with your own.

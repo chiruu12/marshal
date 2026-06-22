@@ -1,4 +1,4 @@
-"""``marshal doctor`` — a preflight that tells you whether a fresh setup will actually run.
+"""``marshal doctor`` - a preflight that tells you whether a fresh setup will actually run.
 
 A new user's first failures are environmental, not Marshal's: a backend CLI that isn't installed,
 a config that doesn't parse, an env var that isn't set, the wrong Python. This module runs each
@@ -6,11 +6,11 @@ check and returns a structured verdict; the CLI renders it. Checks are kept side
 the backend probes are injectable so the whole thing is unit-testable without spawning processes.
 
 Severity:
-  * ``fail`` — Marshal will not work until this is fixed (missing git, unparseable config, a
+  * ``fail`` - Marshal will not work until this is fixed (missing git, unparseable config, a
     configured backend's CLI absent, a Fireworks model).
-  * ``warn`` — likely fine but worth knowing (uv missing, the ``mcp`` extra absent, a
-    ``secret_ref`` env var unset — which is OK if you authenticated the CLI via its own login).
-  * ``ok`` — verified good.
+  * ``warn`` - likely fine but worth knowing (uv missing, the ``mcp`` extra absent, a
+    ``secret_ref`` env var unset - which is OK if you authenticated the CLI via its own login).
+  * ``ok`` - verified good.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class Check:
     """One preflight result. ``fix`` is shown only when ``status`` is not ``ok``.
 
     Deliberately a dataclass, not a Pydantic model: it's a trivial CLI-only display struct,
-    constructed positionally a dozen times below, and never serialized or returned over MCP — so a
+    constructed positionally a dozen times below, and never serialized or returned over MCP - so a
     model would add keyword-arg verbosity with zero validation/serialization benefit.
     """
 

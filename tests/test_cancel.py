@@ -1,4 +1,4 @@
-"""Tests for cancel_run — pure unit tests (no real agents spawned)."""
+"""Tests for cancel_run - pure unit tests (no real agents spawned)."""
 
 from __future__ import annotations
 

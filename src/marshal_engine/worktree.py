@@ -2,7 +2,7 @@
 
 Each task runs in its own worktree + branch so the fleet works in parallel without branch
 collisions, and the main branch stays untouched until an explicit integrate step. This is the
-safety boundary of the whole system — keep it boring and reliable.
+safety boundary of the whole system - keep it boring and reliable.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ class WorktreeManager:
     def changed_files(self, wt: Worktree) -> list[str]:
         """Paths changed inside the worktree (uncommitted).
 
-        Uses `git status --porcelain -z` so paths are emitted verbatim and NUL-delimited — names
+        Uses `git status --porcelain -z` so paths are emitted verbatim and NUL-delimited - names
         with spaces or non-ASCII are returned as-is, not C-quoted (`"my file.txt"`). With `-z` a
         rename/copy emits the new path in the status record followed by the old path as its own
         NUL field, which is skipped.
@@ -109,7 +109,7 @@ class WorktreeManager:
     def diff(self, wt: Worktree) -> str:
         """Unified diff of all uncommitted work in the worktree, including new files.
 
-        `git diff HEAD` alone misses untracked files an agent created — the common case — so
+        `git diff HEAD` alone misses untracked files an agent created - the common case - so
         those are appended as against-/dev/null diffs. Read-only: the index is not modified.
         """
         parts: list[str] = []
@@ -122,7 +122,7 @@ class WorktreeManager:
         for path in listing.stdout.split("\0"):
             if not path:
                 continue
-            # `git diff --no-index` exits 1 when files differ (always, vs /dev/null) — not an error.
+            # `git diff --no-index` exits 1 when files differ (always, vs /dev/null) - not an error.
             added = self._git("diff", "--no-index", "--", "/dev/null", path, cwd=wt.path)
             parts.append(added.stdout)
         return "".join(parts)
@@ -170,11 +170,11 @@ class WorktreeManager:
         return self._git("rev-parse", branch).stdout.strip()
 
     def merged_diff_files(self, branch: str, target: str) -> list[str]:
-        """Files `branch` brings into `target` — the three-dot (merge-base) delta.
+        """Files `branch` brings into `target` - the three-dot (merge-base) delta.
 
         Three-dot `target...branch` diffs from the merge-base, so it lists only what `branch`
         actually changed, not files the target modified independently (two-dot would over-report
-        those — they don't land from this run).
+        those - they don't land from this run).
         """
         proc = self._git("diff", "--name-only", "-z", f"{target}...{branch}")
         return [f for f in proc.stdout.split("\0") if f]
@@ -212,7 +212,7 @@ class WorktreeManager:
         """Abort an in-progress merge and verify the repo is clean again.
 
         `git merge --abort` can itself fail (a held index.lock, or a `_git` timeout). If it does,
-        the checkout is left mid-merge — so we raise a hard error rather than let the caller report
+        the checkout is left mid-merge - so we raise a hard error rather than let the caller report
         a clean, recoverable result over a dirty repo.
         """
         ab = self._git("merge", "--abort")

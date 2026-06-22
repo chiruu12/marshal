@@ -1,4 +1,4 @@
-"""Tests for MarshalService — client resolution + run recording (dummy backend, no network)."""
+"""Tests for MarshalService - client resolution + run recording (dummy backend, no network)."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class _Echo(CodingAgentBackend):
 
 
 class _Pricey(CodingAgentBackend):
-    """A second strategy with a higher native cost — used to compare benchmark strategies."""
+    """A second strategy with a higher native cost - used to compare benchmark strategies."""
 
     name = "pricey"
     binary = "python"
@@ -73,7 +73,7 @@ class _Pricey(CodingAgentBackend):
 
 
 class _Unpriced(CodingAgentBackend):
-    """A strategy with no usage info — its cost is 'unavailable', not a real $0."""
+    """A strategy with no usage info - its cost is 'unavailable', not a real $0."""
 
     name = "noinfo"
     binary = "python"
@@ -224,7 +224,7 @@ def test_run_many_unknown_client_fails_fast(repo: Path) -> None:
     svc = _svc(repo)
     with pytest.raises(ValueError):
         svc.run_many([{"client": "nope", "goal": "x"}])
-    assert svc.status() == []  # nothing ran — validated before launching
+    assert svc.status() == []  # nothing ran - validated before launching
 
 
 def test_integrate_empty_run_is_noop(repo: Path) -> None:

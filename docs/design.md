@@ -1,13 +1,13 @@
-# Marshal — Foundational Design
+# Marshal - Foundational Design
 
 > **Marshal** is the infrastructure layer: one "driver" agent (Claude Code) plans work, then
 > Marshal spawns and manages a **fleet of headless coding agents** (Cursor CLI, OpenCode, Codex,
-> Google Antigravity now; Gemini later), each in an isolated git worktree, in parallel — exposed to the driver as an
+> Google Antigravity now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
 > **MCP server + Skills**, with **per-provider usage tracking**. To *marshal* = to gather and
-> organize a force — exactly what this does to a fleet of agents.
+> organize a force - exactly what this does to a fleet of agents.
 >
 > **Chauffeur** (future, separate product) is the end-user autonomous coding system built *on top
-> of* Marshal — planning, routing, self-driving workflows, agent-management UI. Out of scope for
+> of* Marshal - planning, routing, self-driving workflows, agent-management UI. Out of scope for
 > now; see `docs/chauffeur-future.md`.
 
 Status: design locked. Language: **Python + uv**. **Pydantic v2** models for value types, config,
@@ -18,10 +18,10 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 
 ## 0. Locked decisions
 
-- **Execution model:** background **fleet** — N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
+- **Execution model:** background **fleet** - N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
 - **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Antigravity now. Gemini later = new adapter only.
-- **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) — optional fast path.
-- **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** — they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
+- **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) - optional fast path.
+- **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** - they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
 - **Differentiator:** **per-provider usage tracking** + a `usage` command. Nearly every competitor omits this.
 - **Packaging:** Python package (`uv`), distribute via `uvx`. Private first → public when polished.
 - **Naming:** product/repo/CLI/MCP id = `marshal`. The Python **import package must NOT be `marshal`** (it shadows the stdlib `marshal` builtin and won't import) → import package `marshal_engine`, CLI entry point `marshal`. PyPI distribution `marshal` if free, else `marshal-orchestrator`.
@@ -31,7 +31,7 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 
 ## 1. The spine: state must outlive the driver
 
-Claude Code is **stateless across turns** — it forgets the fleet between messages, but background
+Claude Code is **stateless across turns** - it forgets the fleet between messages, but background
 agents outlive a turn. So fleet state lives in the **long-lived MCP server**, persisted to disk.
 
 - **MCP tools** = mechanism (imperative verbs).
@@ -46,7 +46,7 @@ Don't put decomposition logic in the MCP server, and don't put process managemen
 
 Convergent pattern from AWS CAO, ORCH, and litellm: one abstract base; each backend implements a
 common contract; the orchestrator treats all backends uniformly. Keep `build_invocation` and
-`map_permission` **pure functions returning argv** — fully unit-testable without spawning processes.
+`map_permission` **pure functions returning argv** - fully unit-testable without spawning processes.
 
 ```python
 class CodingAgentBackend(ABC):
@@ -91,12 +91,12 @@ Add a **version probe** in `check_available` + **contract tests per backend** (t
 |---|---|---|---|---|
 | Headless run | `cursor-agent -p "..."` | `opencode run "..."` | `codex ...` | `claude --print` |
 | JSON | `--output-format json\|stream-json` | `--format json` (NDJSON event stream) | json | `--output-format json\|stream-json` |
-| Final text | `result.result` field | concat all `text` events' `part.text` | — | json field |
-| Tokens/cost in output | **NONE** (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | — | `total_cost_usd` + `usage{...}` |
-| File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | — | — |
-| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | — | `session_id` returned |
-| Model select | `--model` / `--list-models` (default **Auto**) | `-m provider/model` / `opencode models` | — | — |
-| Working dir | **no `--cwd`**; `--workspace <path>`; `-w/--worktree [name]`, `--worktree-base` | `--dir <path>` (config walks up to git root) | — | — |
+| Final text | `result.result` field | concat all `text` events' `part.text` | - | json field |
+| Tokens/cost in output | **NONE** (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | `total_cost_usd` + `usage{...}` |
+| File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | - |
+| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `session_id` returned |
+| Model select | `--model` / `--list-models` (default **Auto**) | `-m provider/model` / `opencode models` | - | - |
+| Working dir | **no `--cwd`**; `--workspace <path>`; `-w/--worktree [name]`, `--worktree-base` | `--dir <path>` (config walks up to git root) | - | - |
 | Server mode | no | **`opencode serve`** (OpenAPI on 127.0.0.1:4096) + `opencode acp` | no | no |
 
 ---
@@ -116,7 +116,7 @@ for lower latency, with subprocess `opencode run` as fallback (cmuxlayer-style f
 ## 5. Normalized permission model (3 tiers → native flags)
 
 The single most reusable artifact (from shinpr/sub-agents-mcp). Headless = **no interactive
-approvals, ever** — "sub-agents have no stdin, so any approval prompt deadlocks the run."
+approvals, ever** - "sub-agents have no stdin, so any approval prompt deadlocks the run."
 
 | Tier | Cursor | OpenCode | Codex | Claude Code | Gemini |
 |---|---|---|---|---|---|
@@ -125,19 +125,19 @@ approvals, ever** — "sub-agents have no stdin, so any approval prompt deadlock
 | **yolo** (opt-in) | `--force`/`--yolo` (no deny) | `--dangerously-skip-permissions` | workspace-write, no approval | bypass | bypass |
 
 Key per-backend detail:
-- **Cursor:** `--force`/`--yolo` = "allow everything **not explicitly denied**" — so the safe pattern is `--force` + a curated `deny` list (`Shell(rm)`, `Write(**/.env)`, `Write(**/.git/**)`). Permission grammar lives in `~/.cursor/cli-config.json` / `.cursor/cli.json`: `Shell(git)`, `Read(glob)`, `Write(src/**)`, `WebFetch(*.github.com)`, `Mcp(server:tool)`. **Deny beats allow.** Redirections (`>`,`|`) can't be allowlisted inline. Also needs `--trust` (headless workspace trust) and `--approve-mcps` for MCP.
+- **Cursor:** `--force`/`--yolo` = "allow everything **not explicitly denied**" - so the safe pattern is `--force` + a curated `deny` list (`Shell(rm)`, `Write(**/.env)`, `Write(**/.git/**)`). Permission grammar lives in `~/.cursor/cli-config.json` / `.cursor/cli.json`: `Shell(git)`, `Read(glob)`, `Write(src/**)`, `WebFetch(*.github.com)`, `Mcp(server:tool)`. **Deny beats allow.** Redirections (`>`,`|`) can't be allowlisted inline. Also needs `--trust` (headless workspace trust) and `--approve-mcps` for MCP.
 - **OpenCode:** `permission` keys: `read, edit, glob, grep, bash, task, skill, lsp, question, webfetch, websearch, external_directory, doom_loop`; values `allow|ask|deny`; **last matching rule wins**. **CRITICAL for server mode:** `serve`+`attach` **hangs if any permission is `ask`** → set all to `allow` + `question: deny` in a dedicated `opencode.json`. `--dangerously-skip-permissions` does NOT cover the `question` tool.
 - **Worktree isolation is the dominant safety primitive** across all serious tools (ORCH, Crystal, Orca). Main branch untouched until explicit merge. Worktrees share host FS/network → fine for trusted local use; for untrusted code use containers later (agentbox/scion).
 
 ---
 
-## 6. Usage tracking (the differentiator) — and the Cursor asymmetry
+## 6. Usage tracking (the differentiator) - and the Cursor asymmetry
 
 **Major finding: backends are NOT symmetric on usage.**
 
-- **OpenCode — easy.** Per-step `cost`+`tokens` in the stream; `opencode stats --days --models`; on-disk store at `~/.local/share/opencode/storage/` (note: message files store `cost: 0` → recompute from tokens via price table). Caveat: stream may **drop the final `step_finish`** → read final accounting from on-disk store / `opencode export`, not the stream.
-- **Cursor — hard.** **No tokens, no cost in CLI output at all.** Programmatic usage only via the **Admin API** (`api.cursor.com`, HTTP Basic `-u KEY:`) — **Team/Enterprise only**. `POST /teams/filtered-usage-events` returns per-event tokens+cost with an **`isHeadless`** flag and **`serviceAccountId`**. Pattern: give each worker its own **service-account key**, attribute via `serviceAccountId`. Pro/individual accounts → dashboard only, no API.
-- **Codex/Gemini — likely no JSON usage** → fall back to terminal screen-scrape (cmuxlayer `read_screen` parses tokens/context% off output).
+- **OpenCode - easy.** Per-step `cost`+`tokens` in the stream; `opencode stats --days --models`; on-disk store at `~/.local/share/opencode/storage/` (note: message files store `cost: 0` → recompute from tokens via price table). Caveat: stream may **drop the final `step_finish`** → read final accounting from on-disk store / `opencode export`, not the stream.
+- **Cursor - hard.** **No tokens, no cost in CLI output at all.** Programmatic usage only via the **Admin API** (`api.cursor.com`, HTTP Basic `-u KEY:`) - **Team/Enterprise only**. `POST /teams/filtered-usage-events` returns per-event tokens+cost with an **`isHeadless`** flag and **`serviceAccountId`**. Pattern: give each worker its own **service-account key**, attribute via `serviceAccountId`. Pro/individual accounts → dashboard only, no API.
+- **Codex/Gemini - likely no JSON usage** → fall back to terminal screen-scrape (cmuxlayer `read_screen` parses tokens/context% off output).
 
 **Local schema (no DB; file-based like ORCH's `.orchestry/`):**
 
@@ -171,10 +171,10 @@ clients:
   refactorer:  { backend: codex,    permission: safe-edit }
 ```
 
-Runtime state — worktrees, per-run JSON, usage — lands under `.marshal/`. Auth is per-CLI login;
+Runtime state - worktrees, per-run JSON, usage - lands under `.marshal/`. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
-**Lean tool surface** (backend is a param, NOT in tool names — avoids the 2N-tool explosion).
+**Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
 Shipped today (14): `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`,
 `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
 `run_workflow`. Current state is tracked in `docs/status.md`.
@@ -185,21 +185,21 @@ Security from day one: **localhost-only bind, reject non-loopback, validate `Hos
 
 ### Declarative workflows (a recipe is a sequence of primitives, not a new execution path)
 
-A **workflow** (`workflow.py`) is a human-authored YAML recipe — phases of `fan_out` / `agent` /
-`collect` / `integrate` — that the engine runs by issuing exactly the calls a driver would make by
+A **workflow** (`workflow.py`) is a human-authored YAML recipe - phases of `fan_out` / `agent` /
+`collect` / `integrate` - that the engine runs by issuing exactly the calls a driver would make by
 hand (`run_many` / `run_agent` / `collect_run` / `integrate`) in declared order. **Safety property:
 the runner adds no new execution path.** Every run still flows through `Fleet.run` (external timeout
 + process-group kill + worktree + usage ledger); the runner never spawns a process, touches git, or
 writes run state. Spec validation is pure (client names checked against the config, goal templates
 restricted to bare `{input}` placeholders, sources resolved) so a typo'd recipe fails before any
 agent runs. **Integration is gated off by default** (`auto: false`): a workflow surfaces succeeded
-runs as candidates with `next_actions`, and the driver merges the good ones after review — `succeeded`
+runs as candidates with `next_actions`, and the driver merges the good ones after review - `succeeded`
 is not `correct`. The judgment (which recipe, when to merge) stays in the `marshal-workflow` Skill;
 the engine only sequences. Discover/validate with `marshal workflows`; run via `run_workflow`.
 
 ---
 
-## 8. Edge-case hardening checklist (MUST defend — from real GitHub/forum issues)
+## 8. Edge-case hardening checklist (MUST defend - from real GitHub/forum issues)
 
 1. **External timeout + kill on EVERY run.** Both Cursor (`-p` hang, version-gated) and OpenCode (hangs on API error/429 with no exit code; hangs after tool calls) hang. Treat absence of stdout as a hang.
 2. **No-stdin deadlock is the #1 footgun.** Never default to a prompting permission mode. Default `safe-edit` (non-prompting). OpenCode: set `question: deny`.
@@ -209,9 +209,9 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 6. **Cursor: pin & assert version** at startup (hang/race/terminal-release fixes are version-gated). Parse stdout JSON **only on exit 0**; on failure there's no JSON, only stderr.
 7. **Cursor wants a TTY** → run under pseudo-tty (`script -q /dev/null`) or `--print`, stdin from `/dev/null`, **clean shell** (a heavy `.zshrc` causes completion-detection hangs).
 8. **Cursor concurrent launches:** stagger ~100ms + use worktrees (file-lock race, fixed but stagger anyway).
-9. **Cursor workspace trust:** `--trust` / pre-seed trusted config — esp. required for MCP in headless.
+9. **Cursor workspace trust:** `--trust` / pre-seed trusted config - esp. required for MCP in headless.
 10. **Worktree lifecycle:** spec creation, naming, owner-tracking, orphan detection, `git worktree prune` on crash. Track which run owns which worktree in the usage log.
-11. **Concurrency caps:** each CLI is 150–400 MB RAM → cap parallel runs per fleet and per client or a fan-out OOMs the host.
+11. **Concurrency caps:** each CLI is 150-400 MB RAM → cap parallel runs per fleet and per client or a fan-out OOMs the host.
 12. **Secrets by reference** (`env:VAR`/file), validate presence at load, fail fast with a clear message. Never inline.
 
 ---
@@ -227,22 +227,22 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 
 ## 10. Build roadmap
 
-- **Phase 0 — repo:** lay down `pyproject.toml` (uv), the package skeleton, and `docs/`.
-- **Phase 1 — engine:** base class + `CursorBackend` + `OpenCodeBackend` + `CodexBackend` (pure `build_invocation`/`map_permission` + `parse_output`), worktree manager, process runner (timeout!), result collector. CLI-testable standalone before any MCP. Contract tests per backend.
-- **Phase 2 — usage:** `events.jsonl` + `summary.json`, price table, `source` tagging, OpenCode native + on-disk reconciliation, Cursor Admin-API path, `usage` command.
-- **Phase 3 — MCP server:** the 11 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
-- **Phase 4 — Skills:** `*-plan` (decompose + independence analysis), `*-run` (spawn+monitor loop + prompt-writing), `*-integrate` (merge + verify).
-- **Phase 5 — harden + docs:** retries/backoff, concurrency caps, worktree cleanup, dry-run, OpenCode warm-server fast path, README/onboarding → flip public.
+- **Phase 0 - repo:** lay down `pyproject.toml` (uv), the package skeleton, and `docs/`.
+- **Phase 1 - engine:** base class + `CursorBackend` + `OpenCodeBackend` + `CodexBackend` (pure `build_invocation`/`map_permission` + `parse_output`), worktree manager, process runner (timeout!), result collector. CLI-testable standalone before any MCP. Contract tests per backend.
+- **Phase 2 - usage:** `events.jsonl` + `summary.json`, price table, `source` tagging, OpenCode native + on-disk reconciliation, Cursor Admin-API path, `usage` command.
+- **Phase 3 - MCP server:** the 11 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
+- **Phase 4 - Skills:** `*-plan` (decompose + independence analysis), `*-run` (spawn+monitor loop + prompt-writing), `*-integrate` (merge + verify).
+- **Phase 5 - harden + docs:** retries/backoff, concurrency caps, worktree cleanup, dry-run, OpenCode warm-server fast path, README/onboarding → flip public.
 
 ## Anchors to study before/while building
-- **AWS `awslabs/cli-agent-orchestrator`** — architectural gold standard (provider resolution, tmux/PTY isolation, dual MCP servers, localhost hardening).
-- **shinpr/sub-agents-mcp + sub-agents-skills** — closest match (permission-mapping table, MCP+Skills dual surface). Beat its global `AGENT_TYPE` with per-call backend.
-- **ORCH** — worktree isolation + review state machine + live per-run cost.
-- **litellm `BaseConfig`** — the adapter triad to adapt to a process world.
+- **AWS `awslabs/cli-agent-orchestrator`** - architectural gold standard (provider resolution, tmux/PTY isolation, dual MCP servers, localhost hardening).
+- **shinpr/sub-agents-mcp + sub-agents-skills** - closest match (permission-mapping table, MCP+Skills dual surface). Beat its global `AGENT_TYPE` with per-call backend.
+- **ORCH** - worktree isolation + review state machine + live per-run cost.
+- **litellm `BaseConfig`** - the adapter triad to adapt to a process world.
 
 ---
 
-## 11. Product-driven design (from the PRD — see `docs/internal/vision.md`)
+## 11. Product-driven design (from the PRD - see `docs/internal/vision.md`)
 
 Positioning: **"the control plane for AI coding agents."** Thesis: keep the best model planning;
 route execution to cheaper/specialized workers; isolate context; **prove the savings**. Four things
@@ -254,22 +254,22 @@ become first-class and must be designed in (even if full logic lands in V2):
    to `TaskSpec`.
 2. **Benchmarking + cost intelligence (first-class).** Beyond `usage`: run the same task through N
    routing strategies and record cost/latency/completion/test-pass/merge/retries/quality. Adds MCP
-   tools **`benchmark`** and **`report`**. Builds directly on the usage schema (§6) — each run
+   tools **`benchmark`** and **`report`**. Builds directly on the usage schema (§6) - each run
    already logs cost+source; a benchmark just groups runs by a `strategy` label.
 3. **Policy / customer-config layer.** Extend `fleet.config.yaml` defaults with
    `strategy: quality-first|cost-first|balanced`, `budget` ceilings (per task/repo), a role→client
    map, and `require_approval_before_merge`. The user expresses intent; the engine enforces.
 4. **Context scoping per worker.** Each worker sees only its task + `context_files` + minimal repo
-   context — never the planner's whole session. Core value prop (token waste + drift), not an optimization.
+   context - never the planner's whole session. Core value prop (token waste + drift), not an optimization.
 
 **Fleet-state records** must capture (basis for reporting/benchmarking): task, role, client/backend,
 model, cost, tokens, duration, artifacts/diff, checks (test pass/fail), merged?, strategy label.
 
-**Roadmap mapping:** Phases 0–5 == PRD **V1** (control-plane primitive + cost logging + simple
+**Roadmap mapping:** Phases 0-5 == PRD **V1** (control-plane primitive + cost logging + simple
 benchmark). **V2** (role-routing engine, policy engine, comparison reports/dashboards, team configs,
 budgets) and **V3** (auto routing recommendations, historical provider scoring, org policy,
 approvals, multi-repo) are post-v0. Design the data model so V2 reporting is a *query, not a rewrite*.
-Keep V1 focused — the #1 risk is becoming "yet another agent framework."
+Keep V1 focused - the #1 risk is becoming "yet another agent framework."
 
 ### Backends in scope (built)
 
@@ -281,7 +281,7 @@ and contract tests:
 | Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost estimated) |
 | Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
 | OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` |
-| Antigravity | `agy -p` (text only) | — / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
+| Antigravity | `agy -p` (text only) | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
 
 Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth, needs a PTY
 wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo
@@ -291,7 +291,7 @@ verified for the failure path only (live success run pending).
 **Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
 usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
 safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` authenticates). 
-Antigravity ⚠️ partial — CLI/auth/reply work, but headless writes divert to
+Antigravity ⚠️ partial - CLI/auth/reply work, but headless writes divert to
 `~/.gemini/antigravity-cli/scratch` instead of the target worktree (untrusted-workspace fallback);
 worktree-isolated edits need an `agy` workspace-trust/PTY workaround (tracked). Codex ⛔ adapter
 ready, blocked by the account usage limit (~Jul 18).

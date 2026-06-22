@@ -1,4 +1,4 @@
-"""Tests for declarative workflows — pure spec/validation + the runner over a stub service.
+"""Tests for declarative workflows - pure spec/validation + the runner over a stub service.
 
 The runner is exercised against a StubService that records every call and returns canned records,
 so no Fleet, git, or process is involved. The StubService exposes ONLY the four primitives the
@@ -325,7 +325,7 @@ def test_runner_auto_integrate_empty_is_completed_with_note() -> None:
     svc = StubService(_config("a", "b"), integrate={"a.1": empty})
     result = WorkflowRunner(svc).run(_auto_integrate_spec(), {"t": "go"})
 
-    assert result.status == "completed"  # nothing landed, nothing to review — not a gate
+    assert result.status == "completed"  # nothing landed, nothing to review - not a gate
     merge_phase = result.phases[-1]
     assert any("a.1" in n for n in merge_phase.notes)
     assert not any("a.1" in a for a in result.next_actions)  # no action demanded for an empty merge
@@ -370,7 +370,7 @@ def test_runner_validates_before_running() -> None:
     svc = StubService(_config("real"))
     with pytest.raises(ConfigError, match="unknown client"):
         WorkflowRunner(svc).run(spec, {})
-    assert svc.calls == []  # nothing ran — validation failed fast
+    assert svc.calls == []  # nothing ran - validation failed fast
 
 
 def test_runner_missing_input_raises_before_running() -> None:

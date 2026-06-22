@@ -33,7 +33,7 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
   worktree under `.marshal/worktrees/`. The agent edits files there, not in your working tree.
 - **Your main branch is never touched until you explicitly integrate.** Reviewing a diff
   (`collect_run`) is read-only; merging (`integrate`) is a separate, explicit step.
-- **Permission tiers gate what an agent may do.** `read-only` (no edits), `safe-edit` (the default —
+- **Permission tiers gate what an agent may do.** `read-only` (no edits), `safe-edit` (the default -
   edits confined to the worktree), and `yolo` (unrestricted, opt-in). `yolo` removes the guardrails
   by design; only use it when you trust the task prompt and the backend.
 - **Every run has a hard timeout and a process-group kill.** A run that exceeds its timeout is
@@ -41,7 +41,7 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
   tool shells) are not orphaned (`src/marshal_engine/backends/base.py`).
 - **Marshal never injects secrets.** Backend authentication is the responsibility of each CLI's own
   login (e.g. `opencode auth login`, `cursor-agent login`, `codex login`). `secret_ref` in
-  `fleet.config.yaml` is an **advisory preflight check only** — Marshal verifies the named env var
+  `fleet.config.yaml` is an **advisory preflight check only** - Marshal verifies the named env var
   is present but does not read, store, or inject its value.
 
 ## What you are responsible for

@@ -1,4 +1,4 @@
-"""Backend registry — construct adapters by name (used by the CLI / MCP layer).
+"""Backend registry - construct adapters by name (used by the CLI / MCP layer).
 
 The Fleet itself takes injected backends for testability; this registry supplies the real ones.
 """

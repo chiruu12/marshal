@@ -1,7 +1,7 @@
 """Contract tests for CodexBackend.
 
 These exercise the PURE hooks (`map_permission`, `build_invocation`) and the JSONL
-`parse_output` — no process spawning, no network. Success-path token/message shapes are
+`parse_output` - no process spawning, no network. Success-path token/message shapes are
 best-effort until a live successful Codex run confirms them.
 """
 

@@ -103,4 +103,4 @@ def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None
     assert tot.succeeded == 1
     assert abs(tot.cost_usd - 0.05) < 1e-9            # EMPTY cost is real spend, counted
     assert abs(tot.cost_per_run - 0.025) < 1e-9       # 0.05 / 2
-    assert abs(tot.cost_per_succeeded - 0.05) < 1e-9  # 0.05 / 1 — the wasted EMPTY run inflates it
+    assert abs(tot.cost_per_succeeded - 0.05) < 1e-9  # 0.05 / 1 - the wasted EMPTY run inflates it

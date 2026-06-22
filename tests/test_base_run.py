@@ -2,7 +2,7 @@
 
 Verifies the two invariants that the base class must enforce for every backend: a hard
 timeout that kills the child, and stdin closed so an interactive prompt can't deadlock.
-Uses a dummy backend over the local Python interpreter — portable, fast, no real CLIs.
+Uses a dummy backend over the local Python interpreter - portable, fast, no real CLIs.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def test_timeout_kills_whole_process_group(tmp_path: Path) -> None:
 
 def test_timeout_sigkills_grandchild_that_ignores_sigterm(tmp_path: Path) -> None:
     # A grandchild that ignores SIGTERM (e.g. a server doing graceful shutdown) must still be
-    # SIGKILLed — escalation must depend on the group dying, not on the leader being reaped.
+    # SIGKILLed - escalation must depend on the group dying, not on the leader being reaped.
     sentinel = tmp_path / "ignored-sigterm.txt"
     inner = (
         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
@@ -152,7 +152,7 @@ def test_run_missing_binary(tmp_path: Path) -> None:
 
 
 class _PartialUsage(CodingAgentBackend):
-    """Flushes a usage line, then hangs — exercises partial-usage recovery on timeout."""
+    """Flushes a usage line, then hangs - exercises partial-usage recovery on timeout."""
 
     name = "partial"
     capabilities = Capabilities()
@@ -188,7 +188,7 @@ def test_timeout_recovers_partial_usage(tmp_path: Path) -> None:
 
 
 class _BoomParser(_PartialUsage):
-    """parse_output raises — recovery must swallow it and still report the timeout."""
+    """parse_output raises - recovery must swallow it and still report the timeout."""
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         return [sys.executable, "-c", "import time; print('x', flush=True); time.sleep(30)"]

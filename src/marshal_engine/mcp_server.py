@@ -7,7 +7,7 @@ Thin wrapper over MarshalService. Repo + config come from the environment:
 If no config file exists the server still starts, with zero clients, so a freshly installed
 plugin never crashes on connect; it logs how to configure a fleet. The `mcp` dependency is
 optional (install extra `mcp`); it is imported lazily inside `build_app` so the rest of the
-package works without it. Config messages go to STDERR — never stdout, which is the JSON-RPC
+package works without it. Config messages go to STDERR - never stdout, which is the JSON-RPC
 channel for stdio transport.
 """
 
@@ -120,7 +120,7 @@ def build_app(service: MarshalService) -> Any:
 
     @app.tool()
     def run_workflow(name: str, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run a workflow recipe by name. Integration is gated off by default — the result's
+        """Run a workflow recipe by name. Integration is gated off by default - the result's
         `next_actions` lists the runs to review and integrate. Validates before any agent spawns."""
         return service.run_workflow(name, inputs).model_dump(mode="json")
 

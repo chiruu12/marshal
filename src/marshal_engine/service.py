@@ -1,4 +1,4 @@
-"""MarshalService — the testable core the MCP server (and CLI) call into.
+"""MarshalService - the testable core the MCP server (and CLI) call into.
 
 Maps a named client to its backend/model/permission and drives the Fleet. Backends can be
 injected for tests; in production they come from the registry.

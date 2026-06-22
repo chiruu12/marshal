@@ -1,8 +1,8 @@
-"""Persistent fleet state — one JSON file per run.
+"""Persistent fleet state - one JSON file per run.
 
 The driver (or MCP server) can spawn a run, disconnect, and later reconnect to see status and
 cost. No database: each run is its own ``runs/<run_id>.json``. One file per run means each run has
-a single writer (its owning thread), so concurrent runs never contend on a shared file — the
+a single writer (its owning thread), so concurrent runs never contend on a shared file - the
 prerequisite for parallel fan-out. Aggregates (`list`) glob the directory on read; writes are
 atomic (temp file + ``os.replace``) so a concurrent reader never sees a torn file.
 """

@@ -1,4 +1,4 @@
-"""Declarative YAML workflows — reusable, human-authored fleet orchestration recipes.
+"""Declarative YAML workflows - reusable, human-authored fleet orchestration recipes.
 
 A workflow is a named sequence of *phases* the driver can run by name instead of re-deriving the
 plan each time: fan out a goal across clients, collect the diffs, and (opt-in) integrate the clean
@@ -6,11 +6,11 @@ ones. It is the engine analogue of an "ultracode" workflow, scoped to Marshal's 
 
 Safety property (the reason this is allowed to live in the engine despite the
 "engine is mechanism, judgment in Skills" invariant): **the WorkflowRunner adds no new execution
-path.** It issues exactly the calls a human driver would make by hand — ``run_many`` / ``run_agent``
-/ ``collect_run`` / ``integrate`` — in a declared order. Every run still flows through ``Fleet.run``
+path.** It issues exactly the calls a human driver would make by hand - ``run_many`` / ``run_agent``
+/ ``collect_run`` / ``integrate`` - in a declared order. Every run still flows through ``Fleet.run``
 (external timeout + process-group kill + usage ledger + worktree). The runner never spawns a
 process, touches git, or writes run state. Integration is **gated off by default** (``auto: false``)
-so main is untouched until an explicit, reviewed merge — ``succeeded`` is not ``correct``.
+so main is untouched until an explicit, reviewed merge - ``succeeded`` is not ``correct``.
 
 Spec parsing and validation are pure (no spawning), so a typo'd recipe fails before any agent runs.
 """
@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .config import ConfigError, FleetConfig
 
-if TYPE_CHECKING:  # typing only — avoids a runtime import cycle with fleet/state
+if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
     from .fleet import CollectResult, IntegrateResult
     from .state import RunRecord
 
@@ -41,7 +41,7 @@ class PhaseSpec(BaseModel):
     """One step in a workflow.
 
     ``fan_out`` runs ``goal`` across ``clients`` in parallel; ``agent`` runs it on one ``client``;
-    ``collect`` surfaces a prior phase's diffs (read-only); ``integrate`` merges them — but only if
+    ``collect`` surfaces a prior phase's diffs (read-only); ``integrate`` merges them - but only if
     ``auto`` is true (default false = report candidates for the driver to merge after review).
     """
 
@@ -51,7 +51,7 @@ class PhaseSpec(BaseModel):
     run: Literal["fan_out", "agent", "collect", "integrate"]
     clients: list[str] = []          # fan_out
     client: str | None = None        # agent
-    goal: str | None = None          # fan_out/agent — template with {input} substitution
+    goal: str | None = None          # fan_out/agent - template with {input} substitution
     auto: bool = False               # integrate gate; default OFF (safety)
     from_phase: str | None = None    # collect/integrate source (names an earlier named generative phase)
 
@@ -95,12 +95,12 @@ def _placeholders(template: str) -> set[str]:
     """The set of ``{name}`` field names referenced in a template.
 
     Strict: only bare ``{name}`` placeholders are allowed. A positional ``{}``/``{0}``, or any
-    attribute/index access (``{x.attr}``, ``{x[0]}``), raises ValueError — those would slip past
+    attribute/index access (``{x.attr}``, ``{x[0]}``), raises ValueError - those would slip past
     input-declaration checks and leak object internals at render time. Bad braces also raise.
     """
     names: set[str] = set()
     for _literal, field, _spec, _conv in string.Formatter().parse(template):
-        if field is None:  # trailing literal text — no placeholder here
+        if field is None:  # trailing literal text - no placeholder here
             continue
         if field == "":
             raise ValueError("positional {} placeholder is not allowed; use a named {input}")
@@ -160,7 +160,7 @@ def resolve_source(spec: WorkflowSpec, phase_index: int) -> int:
 
 
 def validate_workflow(spec: WorkflowSpec, config: FleetConfig) -> None:
-    """Raise ConfigError on any structural problem — BEFORE any agent runs (fail-fast like run_many)."""
+    """Raise ConfigError on any structural problem - BEFORE any agent runs (fail-fast like run_many)."""
     if not spec.phases:
         raise ConfigError(f"workflow {spec.name!r}: has no phases")
     known = set(config.clients)
@@ -189,7 +189,7 @@ def validate_workflow(spec: WorkflowSpec, config: FleetConfig) -> None:
                 raise ConfigError(
                     f"phase {idx} ({phase.run}): unknown client(s) {unknown}; configured: {listed}"
                 )
-        else:  # collect | integrate — must resolve a source phase (raises if it can't)
+        else:  # collect | integrate - must resolve a source phase (raises if it can't)
             resolve_source(spec, idx)
 
 
@@ -245,7 +245,7 @@ def list_workflows(directory: Path | str) -> list[WorkflowSpec]:
 
 
 class WorkflowService(Protocol):
-    """The slice of MarshalService the runner uses — and the *only* calls it is permitted to make.
+    """The slice of MarshalService the runner uses - and the *only* calls it is permitted to make.
 
     Typing the runner against this Protocol (not the concrete service) keeps it decoupled and makes
     the "no new execution path" property checkable: a stub satisfying exactly these four methods is
@@ -365,7 +365,7 @@ class WorkflowRunner:
                                 f"integrate blocked, fix then retry: {rid}: {ir.message}"
                             )
                         elif ir.status == "empty":
-                            # nothing landed and nothing to review — informational, not a gate.
+                            # nothing landed and nothing to review - informational, not a gate.
                             pr.notes.append(f"{rid}: nothing to integrate (empty)")
                         # "merged" → no follow-up needed
                 phases.append(pr)

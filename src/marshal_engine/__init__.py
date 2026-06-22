@@ -1,4 +1,4 @@
-"""Marshal — orchestration engine for a fleet of headless coding agents.
+"""Marshal - orchestration engine for a fleet of headless coding agents.
 
 Import package is `marshal_engine` (the name `marshal` is a stdlib builtin and cannot be
 used as a top-level package). The installed CLI command is `marshal`.
