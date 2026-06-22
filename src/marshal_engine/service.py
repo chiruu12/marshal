@@ -27,6 +27,14 @@ from .state import RunRecord
 from .registry import make_backend
 from .types import TaskSpec
 from .usage import UsageSummary
+from .workflow import (
+    WorkflowResult,
+    WorkflowRunner,
+    WorkflowSpec,
+    find_workflow,
+    load_workflow,
+)
+from .workflow import list_workflows as _discover_workflows
 
 
 class ClientInfo(BaseModel):
@@ -48,6 +56,7 @@ class MarshalService:
         backends: Mapping[str, CodingAgentBackend] | None = None,
     ) -> None:
         self.config = config
+        self.repo_root = Path(repo_root)
         if backends is None:
             names = {c.backend for c in config.clients.values()}
             backends = {name: make_backend(name) for name in names}
@@ -200,3 +209,23 @@ class MarshalService:
 
     def usage(self) -> UsageSummary:
         return self.fleet.usage.summary()
+
+    # --- workflows: run a declared recipe by sequencing the primitives above -----------------
+
+    @property
+    def workflows_dir(self) -> Path:
+        return self.repo_root / "workflows"
+
+    def list_workflows(self) -> list[WorkflowSpec]:
+        """Discover the well-formed workflow recipes under ``<repo>/workflows/``."""
+        return _discover_workflows(self.workflows_dir)
+
+    def run_workflow(
+        self, name: str, inputs: dict[str, Any] | None = None, *, max_concurrency: int = 4
+    ) -> WorkflowResult:
+        """Run a workflow by name (or path). Validates the recipe before any agent spawns."""
+        path = Path(name)
+        if path.suffix not in (".yaml", ".yml") or not path.exists():
+            path = find_workflow(name, self.workflows_dir)
+        spec = load_workflow(path)
+        return WorkflowRunner(self).run(spec, inputs or {}, max_concurrency=max_concurrency)

@@ -42,6 +42,10 @@ docs/internal/
 # A user's real fleet config (copied from fleet.config.example.yaml) — never commit it
 fleet.config.yaml
 
+# A user's own workflow recipes (they reference local client names). Templates ship in
+# examples/workflows/; user recipes live in the repo-root workflows/, local-only.
+/workflows/
+
 # Marshal runtime state (worktrees, fleet.json, usage)
 .marshal/
 

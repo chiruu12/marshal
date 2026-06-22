@@ -1,0 +1,19 @@
+# Review recipe — fan a review out across two clients, surface the diffs, then leave the merge
+# decision to you. `integrate` is gated off by default (auto: false), so it reports the runs to
+# review instead of merging them. Copy this into <repo>/workflows/ and replace the client names
+# with your own from fleet.config.yaml — run `marshal workflows` to validate them.
+name: review
+description: Review a target across two clients and surface diffs for the driver to merge.
+inputs:
+  - target
+phases:
+  - name: review
+    run: fan_out
+    clients: [reviewer-a, reviewer-b]   # <- your client names from fleet.config.yaml
+    goal: |
+      Review {target} for correctness bugs, edge cases, and missing tests.
+      Apply concrete fixes as edits, scoped to {target}. Do not refactor unrelated code.
+  - name: gate
+    run: collect                        # read-only: surfaces each run's diff for review
+  - name: merge
+    run: integrate                      # auto: false (default) -> lists candidates, never auto-merges
