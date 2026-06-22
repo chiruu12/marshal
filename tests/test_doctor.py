@@ -15,13 +15,19 @@ class _FakeBackend(CodingAgentBackend):
 
     capabilities = Capabilities()
 
-    def __init__(self, name: str, *, available: bool) -> None:
+    def __init__(
+        self, name: str, *, available: bool, account: dict[str, str] | None = None
+    ) -> None:
         self.name = name
         self.binary = name
         self._available = available
+        self._account = account
 
     def check_available(self) -> bool:
         return self._available
+
+    def account_info(self) -> dict[str, str] | None:
+        return self._account
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         return [self.binary]
@@ -115,6 +121,31 @@ def test_non_git_repo_fails(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
     checks = run_checks(plain, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
     assert _by_name(checks, "repo").status == FAIL
+
+
+def test_account_info_surfaced_as_plan_check(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    backend = _FakeBackend("opencode", available=True, account={"plan": "Pro", "model": "glm-5.2"})
+    checks = run_checks(repo, cfg, backends={"opencode": backend})
+    plan = _by_name(checks, "plan:opencode")
+    assert plan.status == OK
+    assert plan.detail == "Pro (model glm-5.2)"
+
+
+def test_no_plan_check_when_account_info_absent_or_unavailable(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    # available but no account_info -> no plan check
+    none_acct = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    assert "plan:opencode" not in _names(none_acct)
+    # account_info present but backend unavailable -> not probed, no plan check
+    unavail = run_checks(
+        repo,
+        cfg,
+        backends={"opencode": _FakeBackend("opencode", available=False, account={"plan": "Pro"})},
+    )
+    assert "plan:opencode" not in _names(unavail)
 
 
 def test_only_referenced_backends_are_probed(tmp_path: Path) -> None:

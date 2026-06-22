@@ -70,6 +70,16 @@ class CodingAgentBackend(ABC):
         """
         return result.usage
 
+    def account_info(self) -> dict[str, str] | None:
+        """Return human-readable account facts (e.g. plan tier, default model), or None.
+
+        This is account *metadata* a CLI can report cheaply — NOT a usage record, so it never
+        touches the cost ledger. Backends that expose it (e.g. Cursor's `about`) override this;
+        the default is None. Implementations must be side-effect-light and never raise: return
+        None on any failure (missing binary, unauthenticated, unparseable output).
+        """
+        return None
+
     # --- shared, concrete run loop -------------------------------------------------------
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
