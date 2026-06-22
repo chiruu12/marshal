@@ -89,6 +89,19 @@ def test_parse_about_text_fallback() -> None:
     assert _parse_about(raw) == {"model": "Composer 2.5", "plan": "Ultra"}
 
 
+def test_parse_about_text_fallback_colon_separated() -> None:
+    assert _parse_about("Model: Composer 2.5\nSubscription Tier: Ultra\n") == {
+        "model": "Composer 2.5",
+        "plan": "Ultra",
+    }
+
+
+def test_parse_about_text_fallback_rejects_prefix_false_positives() -> None:
+    # a loose prefix match would misread these as the real fields; full-label matching must not.
+    raw = "Modeling          notes\nSubscription Tierless   other\n"
+    assert _parse_about(raw) is None
+
+
 def test_parse_about_empty_or_unusable() -> None:
     assert _parse_about("") is None
     assert _parse_about("   ") is None
