@@ -7,12 +7,15 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import __version__
+from .config import ConfigError, load_config
 from .doctor import FAIL, OK, WARN, run_checks, summarize
 from .registry import backend_names, default_backends
 from .state import FleetState
 from .usage import UsageTracker
+from .workflow import load_workflow, validate_workflow, workflow_paths
 
 
 def _cmd_backends(args: argparse.Namespace) -> int:
@@ -74,6 +77,49 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workflows(args: argparse.Namespace) -> int:
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    config = None
+    if cfg_path.exists():
+        try:
+            config = load_config(cfg_path)
+        except ConfigError:
+            config = None  # a broken config is its own `doctor` problem; still list/parse recipes
+
+    wdir = repo / "workflows"
+    rows: list[dict[str, Any]] = []
+    for p in workflow_paths(wdir):
+        row: dict[str, Any] = {"file": p.name, "name": p.stem, "inputs": [], "phases": [], "error": None}
+        try:
+            spec = load_workflow(p)
+            row["name"] = spec.name
+            row["inputs"] = spec.inputs
+            row["phases"] = [{"name": ph.name, "run": ph.run} for ph in spec.phases]
+            if config is not None:
+                validate_workflow(spec, config)  # cross-check client names; fail-fast on a typo
+        except ConfigError as exc:
+            row["error"] = str(exc)
+        rows.append(row)
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 1 if any(r["error"] for r in rows) else 0
+
+    if not rows:
+        print(f"no workflows in {wdir} (copy a template from examples/workflows/)")
+        return 0
+    for row in rows:
+        glyph = "✗" if row["error"] else "✓"
+        phases = " → ".join(p["run"] for p in row["phases"]) or "(unparsed)"
+        print(f"{glyph} {row['name']:16} [{phases}]  inputs={row['inputs']}")
+        if row["error"]:
+            print(f"    error: {row['error']}")
+    if config is None:
+        print(f"\nnote: no readable {cfg_path.name} — client names were not validated")
+    return 1 if any(r["error"] for r in rows) else 0
+
+
 _GLYPH = {OK: "✓", WARN: "⚠", FAIL: "✗"}
 
 
@@ -107,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
     pd = sub.add_parser("doctor", help="preflight: check the setup is ready to run agents")
     pd.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pd.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    pw = sub.add_parser("workflows", help="list and validate workflow recipes")
+    pw.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    pw.add_argument("--json", action="store_true", help="output JSON")
     sub.add_parser("mcp", help="run the MCP server over stdio")
     args = p.parse_args(argv)
 
@@ -121,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_status(args)
     if args.cmd == "doctor":
         return _cmd_doctor(args)
+    if args.cmd == "workflows":
+        return _cmd_workflows(args)
     if args.cmd == "mcp":
         try:
             from .mcp_server import main as serve

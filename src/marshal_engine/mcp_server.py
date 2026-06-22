@@ -106,6 +106,25 @@ def build_app(service: MarshalService) -> Any:
         return service.integrate(run_id, cleanup=cleanup).model_dump(mode="json")
 
     @app.tool()
+    def list_workflows() -> list[dict[str, Any]]:
+        """List declared workflow recipes (name, description, inputs, phase summary)."""
+        return [
+            {
+                "name": w.name,
+                "description": w.description,
+                "inputs": w.inputs,
+                "phases": [{"name": p.name, "run": p.run} for p in w.phases],
+            }
+            for w in service.list_workflows()
+        ]
+
+    @app.tool()
+    def run_workflow(name: str, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run a workflow recipe by name. Integration is gated off by default — the result's
+        `next_actions` lists the runs to review and integrate. Validates before any agent spawns."""
+        return service.run_workflow(name, inputs).model_dump(mode="json")
+
+    @app.tool()
     def status() -> list[dict[str, Any]]:
         """List all fleet runs with status and cost."""
         return [r.model_dump(mode="json") for r in service.status()]
