@@ -62,6 +62,13 @@ def _first_line(text: str) -> str:
     return text.splitlines()[0] if text else ""
 
 
+def _format_plan(info: dict[str, str]) -> str:
+    """Render a backend's account_info() into a one-line plan summary."""
+    plan = info.get("plan", "?")
+    model = info.get("model")
+    return f"{plan} (model {model})" if model else plan
+
+
 def _binary_version(binary: str, arg: str = "--version", timeout: float = 10.0) -> str | None:
     """Return the binary's version line, or None if it's missing / not runnable."""
     if shutil.which(binary) is None:
@@ -168,6 +175,11 @@ def run_checks(
                 "" if available else BACKEND_HINTS.get(name, f"install the {name} CLI"),
             )
         )
+        # Surface plan/account context for backends that expose it (e.g. Cursor's plan tier).
+        if available and backend is not None:
+            info = backend.account_info()
+            if info:
+                checks.append(Check(f"plan:{name}", OK, _format_plan(info)))
 
     # --- secrets (advisory: secret_ref is NOT injected; CLI login is the real auth path) ------
     for c in config.clients.values():

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
-from marshal_engine.backends.cursor import CursorBackend
+from marshal_engine.backends.cursor import CursorBackend, _parse_about
 
 
 @pytest.fixture
@@ -77,3 +77,19 @@ def test_parse_output_nonzero_exit(backend: CursorBackend) -> None:
     res = backend.parse_output("", "stderr boom", 1)
     assert res.status is RunStatus.FAILED
     assert res.exit_code == 1
+
+
+def test_parse_about_json() -> None:
+    raw = '{"cliVersion":"x","model":"Composer 2.5","subscriptionTier":"Ultra","userEmail":"a@b.c"}'
+    assert _parse_about(raw) == {"plan": "Ultra", "model": "Composer 2.5"}
+
+
+def test_parse_about_text_fallback() -> None:
+    raw = "About Cursor CLI\n\nModel               Composer 2.5\nSubscription Tier   Ultra\nShell   zsh\n"
+    assert _parse_about(raw) == {"model": "Composer 2.5", "plan": "Ultra"}
+
+
+def test_parse_about_empty_or_unusable() -> None:
+    assert _parse_about("") is None
+    assert _parse_about("   ") is None
+    assert _parse_about('{"cliVersion":"x"}') is None  # JSON but no plan/model fields

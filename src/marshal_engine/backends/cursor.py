@@ -76,6 +76,25 @@ class CursorBackend(CodingAgentBackend):
             return False
         return proc.returncode == 0
 
+    def account_info(self) -> dict[str, str] | None:
+        """Plan tier + default model from `cursor-agent about`. Cursor exposes no quota/usage API
+        for an individual account, but it does report the subscription tier and current model —
+        honest account context (never a usage record). Returns None on any failure."""
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "about", "--format", "json"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        return _parse_about(proc.stdout)
+
     def map_permission(self, mode: PermissionMode) -> list[str]:
         try:
             return list(self._PERMISSION[mode])
@@ -131,6 +150,41 @@ class CursorBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+def _parse_about(raw: str) -> dict[str, str] | None:
+    """Extract ``{plan, model}`` from ``cursor-agent about`` output.
+
+    JSON (``--format json``) is preferred; a text fallback parses the human table so a future
+    default-format change can't silently drop the signal. Pure — unit-tested without a subprocess.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+    info: dict[str, str] = {}
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        obj = None
+    if isinstance(obj, dict):
+        tier = obj.get("subscriptionTier")
+        model = obj.get("model")
+        if isinstance(tier, str) and tier:
+            info["plan"] = tier
+        if isinstance(model, str) and model:
+            info["model"] = model
+        return info or None
+    for line in raw.splitlines():
+        low = line.strip()
+        if low.lower().startswith("subscription tier"):
+            value = low[len("subscription tier") :].strip()
+            if value:
+                info["plan"] = value
+        elif low.lower().startswith("model"):
+            value = low[len("model") :].strip()
+            if value:
+                info["model"] = value
+    return info or None
 
 
 def _find_result(raw: str) -> dict[str, Any] | None:
