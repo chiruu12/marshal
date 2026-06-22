@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
-from .config import FleetConfig, resolve_model
+from .config import ConfigError, FleetConfig, resolve_model
 from .fleet import (
     BenchmarkResult,
     CollectResult,
@@ -225,7 +225,10 @@ class MarshalService:
     ) -> WorkflowResult:
         """Run a workflow by name (or path). Validates the recipe before any agent spawns."""
         path = Path(name)
-        if path.suffix not in (".yaml", ".yml") or not path.exists():
+        if path.suffix in (".yaml", ".yml"):
+            if not path.exists():
+                raise ConfigError(f"no workflow file at {path}")
+        else:
             path = find_workflow(name, self.workflows_dir)
         spec = load_workflow(path)
         return WorkflowRunner(self).run(spec, inputs or {}, max_concurrency=max_concurrency)

@@ -46,6 +46,21 @@ def test_build_service_without_config_starts_with_zero_clients(
     assert "no fleet config" in capsys.readouterr().err
 
 
+def test_run_workflow_missing_yaml_path_is_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from marshal_engine.config import ConfigError
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    svc = build_service()
+    # an explicit .yaml path that doesn't exist must NOT be re-treated as a bare name (which would
+    # look for "<dir>/x.yaml.yaml" and raise a misleading "no workflow 'x.yaml'").
+    with pytest.raises(ConfigError, match="no workflow file at"):
+        svc.run_workflow("does-not-exist.yaml")
+
+
 def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("mcp")
     import asyncio

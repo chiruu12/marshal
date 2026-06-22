@@ -169,6 +169,16 @@ def test_validate_goal_with_undeclared_input_rejected() -> None:
         validate_workflow(spec, _config("x"))
 
 
+@pytest.mark.parametrize("goal", ["{target.__class__}", "{target[0]}", "do {}"])
+def test_validate_rejects_non_bare_placeholders(goal: str) -> None:
+    # attribute/index access and positional {} would bypass input validation / leak internals.
+    spec = WorkflowSpec(
+        name="w", inputs=["target"], phases=[PhaseSpec(run="fan_out", clients=["x"], goal=goal)]
+    )
+    with pytest.raises(ConfigError):
+        validate_workflow(spec, _config("x"))
+
+
 # --- loading / discovery -----------------------------------------------------------------------
 
 
@@ -279,6 +289,46 @@ def test_runner_auto_integrate_conflict_is_awaiting_review() -> None:
     conflict = IntegrateResult(run_id="a.1", status="conflict", conflicts=["f.py"])
     svc = StubService(_config("a"), integrate={"a.1": conflict})
     assert WorkflowRunner(svc).run(spec, {"t": "go"}).status == "awaiting_review"
+
+
+def _auto_integrate_spec() -> WorkflowSpec:
+    return WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[
+            PhaseSpec(name="impl", run="fan_out", clients=["a", "b"], goal="{t}"),
+            PhaseSpec(name="merge", run="integrate", auto=True),
+        ],
+    )
+
+
+def test_runner_auto_integrate_all_merged_is_completed() -> None:
+    svc = StubService(_config("a", "b"))  # both succeed, both merge (StubService default)
+    result = WorkflowRunner(svc).run(_auto_integrate_spec(), {"t": "go"})
+
+    assert result.status == "completed"
+    assert [c[1] for c in svc.calls if c[0] == "integrate"] == ["a.1", "b.2"]
+    assert result.next_actions == []  # clean merge needs no follow-up
+
+
+def test_runner_auto_integrate_blocked_surfaces_message() -> None:
+    blocked = IntegrateResult(run_id="a.1", status="blocked", message="working tree is dirty")
+    svc = StubService(_config("a", "b"), integrate={"a.1": blocked})
+    result = WorkflowRunner(svc).run(_auto_integrate_spec(), {"t": "go"})
+
+    assert result.status == "awaiting_review"
+    assert any("working tree is dirty" in a and "a.1" in a for a in result.next_actions)
+
+
+def test_runner_auto_integrate_empty_is_completed_with_note() -> None:
+    empty = IntegrateResult(run_id="a.1", status="empty")
+    svc = StubService(_config("a", "b"), integrate={"a.1": empty})
+    result = WorkflowRunner(svc).run(_auto_integrate_spec(), {"t": "go"})
+
+    assert result.status == "completed"  # nothing landed, nothing to review — not a gate
+    merge_phase = result.phases[-1]
+    assert any("a.1" in n for n in merge_phase.notes)
+    assert not any("a.1" in a for a in result.next_actions)  # no action demanded for an empty merge
 
 
 def test_runner_auto_integrate_error_is_error_status() -> None:

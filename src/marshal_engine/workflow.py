@@ -92,11 +92,23 @@ class WorkflowResult(BaseModel):
 
 
 def _placeholders(template: str) -> set[str]:
-    """The set of ``{name}`` field names referenced in a template. Raises ValueError on bad braces."""
+    """The set of ``{name}`` field names referenced in a template.
+
+    Strict: only bare ``{name}`` placeholders are allowed. A positional ``{}``/``{0}``, or any
+    attribute/index access (``{x.attr}``, ``{x[0]}``), raises ValueError — those would slip past
+    input-declaration checks and leak object internals at render time. Bad braces also raise.
+    """
     names: set[str] = set()
     for _literal, field, _spec, _conv in string.Formatter().parse(template):
-        if field:  # None for trailing literal text; "" for a bare "{}"
-            names.add(field.split(".")[0].split("[")[0])
+        if field is None:  # trailing literal text — no placeholder here
+            continue
+        if field == "":
+            raise ValueError("positional {} placeholder is not allowed; use a named {input}")
+        if "." in field or "[" in field:
+            raise ValueError(
+                f"placeholder {{{field}}} must be a bare input name (no attribute/index access)"
+            )
+        names.add(field)
     return names
 
 
@@ -342,12 +354,20 @@ class WorkflowRunner:
                         if ir.status == "error":
                             had_error = True
                             next_actions.append(f"integrate error (human needed): {rid}: {ir.message}")
-                        elif ir.status in ("conflict", "blocked", "empty"):
+                        elif ir.status == "conflict":
                             needs_review = True
-                            if ir.status == "conflict":
-                                next_actions.append(
-                                    f"resolve conflict then retry: {rid} ({', '.join(ir.conflicts)})"
-                                )
+                            next_actions.append(
+                                f"resolve conflict then retry: {rid} ({', '.join(ir.conflicts)})"
+                            )
+                        elif ir.status == "blocked":
+                            needs_review = True
+                            next_actions.append(
+                                f"integrate blocked, fix then retry: {rid}: {ir.message}"
+                            )
+                        elif ir.status == "empty":
+                            # nothing landed and nothing to review — informational, not a gate.
+                            pr.notes.append(f"{rid}: nothing to integrate (empty)")
+                        # "merged" → no follow-up needed
                 phases.append(pr)
 
         status: Literal["completed", "awaiting_review", "error"] = (
