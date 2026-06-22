@@ -1,4 +1,4 @@
-"""The `marshal` CLI — inspect backends, usage, and fleet state."""
+"""The `marshal` CLI - inspect backends, usage, and fleet state."""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ def _cmd_workflows(args: argparse.Namespace) -> int:
         if row["error"]:
             print(f"    error: {row['error']}")
     if config is None:
-        print(f"\nnote: no readable {cfg_path.name} — client names were not validated")
+        print(f"\nnote: no readable {cfg_path.name} - client names were not validated")
     return 1 if any(r["error"] for r in rows) else 0
 
 
@@ -127,18 +127,28 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
     checks = run_checks(repo, cfg_path)
+    fails, warns = summarize(checks)
+    if args.json:
+        payload = {
+            "checks": [
+                {"name": c.name, "status": c.status, "detail": c.detail, "fix": c.fix} for c in checks
+            ],
+            "fails": fails,
+            "warns": warns,
+        }
+        print(json.dumps(payload, indent=2))
+        return 1 if fails else 0
     for c in checks:
         print(f"{_GLYPH[c.status]} {c.name}: {c.detail}")
         if c.fix and c.status != OK:
             print(f"    fix: {c.fix}")
-    fails, warns = summarize(checks)
     print(f"\n{fails} issue(s), {warns} warning(s)")
     return 1 if fails else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        prog="marshal", description="Marshal — control plane for headless coding agents"
+        prog="marshal", description="Marshal - control plane for headless coding agents"
     )
     p.add_argument("-v", "--version", action="store_true")
     sub = p.add_subparsers(dest="cmd")
@@ -153,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     pd = sub.add_parser("doctor", help="preflight: check the setup is ready to run agents")
     pd.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pd.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    pd.add_argument("--json", action="store_true", help="output JSON")
     pw = sub.add_parser("workflows", help="list and validate workflow recipes")
     pw.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")

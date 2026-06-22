@@ -1,7 +1,7 @@
-# Review recipe — fan a review out across two clients, surface the diffs, then leave the merge
+# Review recipe - fan a review out across two clients, surface the diffs, then leave the merge
 # decision to you. `integrate` is gated off by default (auto: false), so it reports the runs to
 # review instead of merging them. Copy this into <repo>/workflows/ and replace the client names
-# with your own from fleet.config.yaml — run `marshal workflows` to validate them.
+# with your own from fleet.config.yaml - run `marshal workflows` to validate them.
 name: review
 description: Review a target across two clients and surface diffs for the driver to merge.
 inputs:

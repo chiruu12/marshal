@@ -11,7 +11,7 @@ MCP server, as a CLI, or as a Python library.
 ## Install
 
 New here? Start with **[`../SETUP.md`](../SETUP.md)** for the full clone-to-first-run path:
-prerequisites (Python ≥ 3.11, uv, git) and how to install + authenticate the backend CLIs —
+prerequisites (Python ≥ 3.11, uv, git) and how to install + authenticate the backend CLIs -
 Marshal does **not** install them.
 
 ```bash
@@ -37,7 +37,7 @@ defaults:
 clients:
   implementer:
     backend: opencode          # opencode | cursor | codex | antigravity
-    model: opencode-go/glm-5.2 # Go sub — a fireworks-ai/* model here is rejected
+    model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model here is rejected
     permission: safe-edit
     secret_ref: env:OPENCODE_API_KEY
 
@@ -48,8 +48,8 @@ clients:
 ```
 
 - **Auth is per-CLI**: run each backend's login once (`opencode auth login`, `cursor-agent login`,
-  `codex login`). `secret_ref: env:VAR` is an optional preflight check — `marshal doctor` warns if
-  unset — but Marshal does **not** inject it; the CLI's own login is what authenticates.
+  `codex login`). `secret_ref: env:VAR` is an optional preflight check - `marshal doctor` warns if
+  unset - but Marshal does **not** inject it; the CLI's own login is what authenticates.
 - An OpenCode client with no `model` defaults to `opencode-go/glm-5.2` so runs bill the Go
   subscription, not Fireworks credits. A `fireworks-ai/*` model is rejected outright.
 
@@ -57,7 +57,7 @@ clients:
 
 | Tier | Meaning |
 |------|---------|
-| `read-only` | Plan/inspect only — no edits. |
+| `read-only` | Plan/inspect only - no edits. |
 | `safe-edit` | Edit and run **inside the worktree**, no prompts. The default. |
 | `yolo` | Fully unrestricted. Opt-in only. |
 
@@ -98,7 +98,7 @@ Tools exposed to the driver:
 | `list_clients` | List configured clients (name, backend, model, permission). |
 | `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
 | `run_many(jobs, max_concurrency?)` | Run several `{client, goal}` jobs in parallel, each in its own worktree; returns all records. |
-| `spawn(client, goal, task_id?)` | Start a run in the background; returns its RUNNING record at once — poll `get_run`/`status`. |
+| `spawn(client, goal, task_id?)` | Start a run in the background; returns its RUNNING record at once - poll `get_run`/`status`. |
 | `cancel_run(run_id)` | Stop a running agent (process-group `SIGTERM`); returns the updated record. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
@@ -166,8 +166,8 @@ the worktree after a successful merge.
 
 ## Run a workflow
 
-When you orchestrate the same shape of work repeatedly — fan a task out to a few clients, collect
-their diffs, then merge the good ones — capture it as a **workflow**: a declarative YAML recipe in
+When you orchestrate the same shape of work repeatedly - fan a task out to a few clients, collect
+their diffs, then merge the good ones - capture it as a **workflow**: a declarative YAML recipe in
 `<repo>/workflows/`. Marshal runs it by sequencing the very primitives above (`run_many` /
 `run_agent` / `collect_run` / `integrate`) in the declared order. It adds **no new execution path**,
 so every run still flows through the safe fleet loop and worktree isolation.
@@ -192,7 +192,7 @@ default, or names an earlier one with `from_phase`. Goal templates may reference
 `inputs`.
 
 **Integration is gated off by default.** An `integrate` phase with `auto: false` (the default) never
-calls `integrate` — it lists the succeeded runs as candidates, one `next_actions` line each, and the
+calls `integrate` - it lists the succeeded runs as candidates, one `next_actions` line each, and the
 result status is `awaiting_review`. You read the collected diffs, then `integrate` the good runs
 yourself. Set `auto: true` only when you want the workflow to merge succeeded runs unattended.
 

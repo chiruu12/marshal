@@ -8,12 +8,12 @@ Invocation reference (Antigravity CLI 2.0, `agy`):
 its launch folder; there is no `--dir` flag).
 
 Honest gaps from research (these shape what we expose):
-  * NO reliable structured output yet — `--output-format json` is reported broken, so we parse
+  * NO reliable structured output yet - `--output-format json` is reported broken, so we parse
     PLAIN TEXT stdout. native_usage = False (no tokens/cost available headless).
   * Auth is OAuth-first; unattended `ANTIGRAVITY_API_KEY` is an unconfirmed upstream request.
     Expect a one-time OAuth on a persistent runner.
   * `agy` checks for a TTY; without one, stdout can be swallowed while exit code stays 0. A PTY
-    wrapper (e.g. `script -q /dev/null`) belongs in the runner layer — TODO. Until then treat an
+    wrapper (e.g. `script -q /dev/null`) belongs in the runner layer - TODO. Until then treat an
     empty success as suspect.
   * No headless session-id capture (`-p` doesn't return its conversation id), so sessions=False;
     `--conversation` is passed through only if the caller already has an id.
@@ -21,7 +21,7 @@ Honest gaps from research (these shape what we expose):
     one-shot read-only flag (the read-only presets prompt), so READ_ONLY is unsupported here.
   * VERIFIED 2026-06-19: reply/read works headless, but file WRITES can divert to agy's scratch
     workspace (`~/.gemini/antigravity-cli/scratch`) instead of `cwd` when it cannot establish
-    workspace trust headlessly — so worktree-isolated edits do NOT reliably land in the target
+    workspace trust headlessly - so worktree-isolated edits do NOT reliably land in the target
     dir yet. Needs a workspace-trust / PTY workaround before write use is dependable.
 
 Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-opus-4.6, gpt-oss-120b.

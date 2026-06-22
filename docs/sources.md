@@ -1,4 +1,4 @@
-# Sources — Headless Agent Orchestrator research (2026-06-19)
+# Sources - Headless Agent Orchestrator research (2026-06-19)
 
 ## OpenCode
 - Docs: https://opencode.ai/docs/ (cli, server, permissions, config, models, agents, mcp-servers, zen, go, sdk)

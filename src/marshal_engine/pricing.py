@@ -3,7 +3,7 @@
 A ``model -> price`` table converts token counts into a cost estimate for backends that report
 tokens but not cost. Pricing lives in this ONE module so backend adapters stay config-free
 (see the engine/report split in docs/internal/plans/phase1-cost-proof.md). Prices are USD per million
-tokens. A model missing from the table is **unpriced** (``estimate`` returns ``None``) — never
+tokens. A model missing from the table is **unpriced** (``estimate`` returns ``None``) - never
 silently ``$0``. The table is data the user owns and should keep current; an estimate reflects the
 table's prices at the moment of the run.
 """
@@ -83,7 +83,7 @@ class PriceTable:
         """USD cost for these tokens under ``model``, or ``None`` if the model is unpriced."""
         price = self._prices.get(model) if model is not None else None
         if price is None:
-            return None  # unpriced — never fabricate a cost
+            return None  # unpriced - never fabricate a cost
         return round(
             input_tokens / 1_000_000 * price.input_per_mtok
             + output_tokens / 1_000_000 * price.output_per_mtok

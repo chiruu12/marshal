@@ -1,4 +1,4 @@
-"""The Fleet orchestrator — ties backends + worktrees + usage + state into one run loop.
+"""The Fleet orchestrator - ties backends + worktrees + usage + state into one run loop.
 
 `Fleet.run(...)` is the cohesive unit: create an isolated worktree, run the chosen backend in it,
 record the usage event, persist the run's state, and (by default) keep the worktree so its diff can
@@ -56,9 +56,9 @@ class IntegrateResult(BaseModel):
     """Outcome of merging a run's worktree branch back into the current branch.
 
     status is one of: "merged" (changes landed), "conflict" (merge aborted, resolve manually),
-    "blocked" (the target checkout is dirty/colliding or detached HEAD — nothing changed, fixable
+    "blocked" (the target checkout is dirty/colliding or detached HEAD - nothing changed, fixable
     then retry), "empty" (the run produced no changes to integrate), or "error" (a git operation
-    failed in a way the engine can't classify as cleanly recoverable — commit failure, repo left
+    failed in a way the engine can't classify as cleanly recoverable - commit failure, repo left
     mid-merge, op timeout; surface to a human, see `message`, don't blindly retry).
     """
 
@@ -90,7 +90,7 @@ class StrategyResult(BaseModel):
 class BenchmarkResult(BaseModel):
     """Same task run through N strategies, compared on measured cost/latency/outcome (derived).
 
-    `cheapest`/`fastest` name the winning client among *comparable* strategies only — succeeded,
+    `cheapest`/`fastest` name the winning client among *comparable* strategies only - succeeded,
     and (for cheapest) with a known cost (native/estimated, never `unavailable`). None when no
     strategy qualifies. The per-strategy rows carry `source` so an estimate is never read as truth.
     """
@@ -131,7 +131,7 @@ class Fleet:
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()
         # `git worktree add` is the one step that races across threads; serialize just that (it's
-        # milliseconds — the long-running agent runs still proceed fully in parallel).
+        # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
         # Persistent pool for non-blocking spawn(); lives as long as this Fleet (i.e. the long-lived
         # MCP server) so background runs outlive the driver turn that started them.
@@ -166,7 +166,7 @@ class Fleet:
         """Start a run in the background and return its run_id immediately (does NOT wait).
 
         The run is recorded RUNNING synchronously (so `status()`/`get_run()` see it at once), then
-        the agent executes on a persistent pool that outlives this call — so background runs survive
+        the agent executes on a persistent pool that outlives this call - so background runs survive
         the driver turn that started them. The driver polls for the terminal status.
         """
         run_id, wt, started = self._start(request, ts)
@@ -253,7 +253,7 @@ class Fleet:
                 ended_at=_now(),
                 error=result.error,
             )
-        except Exception as exc:  # noqa: BLE001 — never leave a run stranded as RUNNING
+        except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie.
             self.state.update(run_id, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}")
             raise
@@ -266,7 +266,7 @@ class Fleet:
         """Background variant: the outcome (incl. failure) is already persisted; never propagate."""
         try:
             self._execute(req, run_id, wt, ts)
-        except Exception:  # noqa: BLE001 — _execute already terminal-stamped; the driver polls status()
+        except Exception:  # noqa: BLE001 - _execute already terminal-stamped; the driver polls status()
             pass
 
     def run_many(
@@ -305,7 +305,7 @@ class Fleet:
                 client=req.client,
                 timeout_s=req.timeout_s,
             )
-        except Exception as exc:  # noqa: BLE001 — one job's failure must not abort the batch
+        except Exception as exc:  # noqa: BLE001 - one job's failure must not abort the batch
             return RunRecord(
                 run_id=f"{req.task.id}.{req.backend_name}",
                 task_id=req.task.id,
@@ -326,7 +326,7 @@ class Fleet:
         if usage is None:
             return
         if usage.source is UsageSource.NATIVE:
-            return  # backend authoritatively reported the cost (a real $0 included) — never override
+            return  # backend authoritatively reported the cost (a real $0 included) - never override
         if usage.input_tokens + usage.output_tokens <= 0:
             usage.cost_usd = 0.0
             usage.source = UsageSource.UNAVAILABLE
@@ -357,7 +357,7 @@ class Fleet:
         return RunStatus.SUCCEEDED if changed else RunStatus.EMPTY
 
     def collect_run(self, run_id: str) -> CollectResult:
-        """Surface a run's uncommitted diff + changed files. Read-only — nothing is merged."""
+        """Surface a run's uncommitted diff + changed files. Read-only - nothing is merged."""
         wt = self._worktree_for(run_id)
         return CollectResult(
             run_id=run_id,
@@ -372,7 +372,7 @@ class Fleet:
 
         If the run is not running (or its pid is missing / already exited) this is a safe no-op
         that still returns the (updated) record. The run may finish concurrently between the status
-        check and the kill — re-read the record before stamping to avoid overwriting a terminal
+        check and the kill - re-read the record before stamping to avoid overwriting a terminal
         status with ``cancelled``.
         """
         rec = self.state.get(run_id)
@@ -398,7 +398,7 @@ class Fleet:
 
         Commits the worktree's uncommitted work onto its branch, then merges that branch into
         the repo's current branch. Outcomes: "merged" (stamps `merged_into`), "conflict" (aborted,
-        repo left clean), "blocked" (target dirty/colliding or detached HEAD — fix it and retry),
+        repo left clean), "blocked" (target dirty/colliding or detached HEAD - fix it and retry),
         or "empty" (nothing to integrate). The blocked/conflict commit stays on the branch, so a
         retry after fixing the target re-merges it instead of reporting "empty".
         """
@@ -420,14 +420,14 @@ class Fleet:
             if commit is None:
                 # retry: a prior blocked/conflict attempt already committed the work, so the
                 # worktree is clean now. Report what the branch actually lands, not the empty
-                # worktree state. (Compute before the merge — afterwards target..branch is empty.)
+                # worktree state. (Compute before the merge - afterwards target..branch is empty.)
                 commit = self.worktrees.branch_tip(wt.branch)
                 changed = self.worktrees.merged_diff_files(wt.branch, target)
             merge = self.worktrees.merge(wt.branch)
         except WorktreeError as exc:
             # a git op failed in a way we can't classify as cleanly recoverable (commit failure,
             # repo left mid-merge, timeout). Surface a distinct "error" status (not the recoverable
-            # "blocked") so a driver doesn't blindly retry — the cause needs a human.
+            # "blocked") so a driver doesn't blindly retry - the cause needs a human.
             return IntegrateResult(
                 run_id=run_id, status="error", branch=wt.branch, merged_into=target, message=str(exc)
             )

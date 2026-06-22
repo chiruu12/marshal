@@ -110,7 +110,7 @@ def test_bad_config_fails_and_skips_backend_checks(tmp_path: Path) -> None:
     checks = run_checks(repo, missing)
 
     assert _by_name(checks, "config").status == FAIL
-    # No config means we can't know which backends matter — those checks are skipped.
+    # No config means we can't know which backends matter - those checks are skipped.
     assert not any(n.startswith("backend:") for n in _names(checks))
     assert not any(n.startswith("secret:") for n in _names(checks))
 

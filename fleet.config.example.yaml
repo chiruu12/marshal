@@ -1,4 +1,4 @@
-# Marshal fleet config — declare N named clients. Copy to `fleet.config.yaml` and edit.
+# Marshal fleet config - declare N named clients. Copy to `fleet.config.yaml` and edit.
 # Each client pins a backend + permission + model.
 #
 # AUTH IS PER-CLI: authenticate each backend by running its own login once (e.g.
@@ -6,7 +6,7 @@
 # of its own and does not install the backend CLIs.
 #
 # `secret_ref: env:VAR` is OPTIONAL and ADVISORY: `marshal doctor` warns if VAR is unset, but
-# Marshal does NOT inject it into the backend — the CLI's own login is what authenticates. If you
+# Marshal does NOT inject it into the backend - the CLI's own login is what authenticates. If you
 # logged the CLI in, you can omit secret_ref entirely.
 
 defaults:

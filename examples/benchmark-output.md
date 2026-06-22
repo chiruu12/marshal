@@ -2,7 +2,7 @@
 
 This shows the shape of a `benchmark` + `report` comparison: one goal run through several
 strategies (configured clients), with a source-honest cost/latency/outcome table. It doubles as a
-demo of Marshal's cost honesty — a strategy whose cost is unknown is reported as `unavailable`, not
+demo of Marshal's cost honesty - a strategy whose cost is unknown is reported as `unavailable`, not
 as `$0`, and `cheapest` ranks **only** strategies with a known cost.
 
 > The numbers below are an illustrative capture. Regenerate with a real run and paste the actual
@@ -13,7 +13,7 @@ as `$0`, and `cheapest` ranks **only** strategies with a known cost.
 | Strategy        | Backend   | Status | Cost     | Source       | Duration | Tokens (in / out) |
 |-----------------|-----------|--------|----------|--------------|----------|-------------------|
 | implementer     | opencode  | ok     | $0.0123  | native       | 41.2 s   | 18,400 / 2,100    |
-| refactorer      | codex     | ok     | —        | unavailable  | 53.8 s   | 21,900 / 3,050    |
+| refactorer      | codex     | ok     | -        | unavailable  | 53.8 s   | 21,900 / 3,050    |
 
 ```
 cheapest: implementer (opencode)  $0.0123   [codex not ranked: cost unavailable]

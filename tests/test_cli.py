@@ -74,6 +74,17 @@ def test_status_human_no_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]
     assert "no runs recorded" in out
 
 
+def test_doctor_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ret = cli.main(["doctor", "--json", "--repo", str(tmp_path), "--config", str(tmp_path / "none.yaml")])
+    assert ret in (0, 1)  # exit code tracks hard failures; structure is what we assert here
+    data = json.loads(capsys.readouterr()[0])
+    assert set(data) == {"checks", "fails", "warns"}
+    assert isinstance(data["checks"], list) and data["checks"]
+    for c in data["checks"]:
+        assert set(c.keys()) == {"name", "status", "detail", "fix"}
+    assert "python" in {c["name"] for c in data["checks"]}
+
+
 _FLEET = "clients:\n  a:\n    backend: cursor\n  b:\n    backend: cursor\n"
 
 

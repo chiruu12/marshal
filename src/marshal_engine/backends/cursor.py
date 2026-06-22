@@ -14,12 +14,12 @@ Invocation reference (cursor-agent, headless):
 On failure the process exits non-zero and writes to stderr with no JSON object on stdout.
 
 Notes / gaps baked in from research:
-  * Cursor CLI emits NO tokens or cost in its output — usage is reported as unavailable here.
+  * Cursor CLI emits NO tokens or cost in its output - usage is reported as unavailable here.
     The account-level Cursor Admin API (team/enterprise, per service-account) is wired later.
   * `--force`/`--yolo` mean "allow everything not explicitly denied"; tighter scoping is a
     deny-list in `.cursor/cli.json` applied by the engine, not an argv flag.
   * There is no `--cwd`; `--workspace` sets the repo root. `--trust` avoids the trust prompt.
-  * `check_available` should pin/assert a minimum version — several headless hang bugs are
+  * `check_available` should pin/assert a minimum version - several headless hang bugs are
     version-gated and only fixed in recent builds.
 """
 
@@ -79,7 +79,7 @@ class CursorBackend(CodingAgentBackend):
 
     def account_info(self) -> dict[str, str] | None:
         """Plan tier + default model from `cursor-agent about`. Cursor exposes no quota/usage API
-        for an individual account, but it does report the subscription tier and current model —
+        for an individual account, but it does report the subscription tier and current model -
         honest account context (never a usage record). Returns None on any failure."""
         if shutil.which(self.binary) is None:
             return None
@@ -157,7 +157,7 @@ def _parse_about(raw: str) -> dict[str, str] | None:
     """Extract ``{plan, model}`` from ``cursor-agent about`` output.
 
     JSON (``--format json``) is preferred; a text fallback parses the human table so a future
-    default-format change can't silently drop the signal. Pure — unit-tested without a subprocess.
+    default-format change can't silently drop the signal. Pure - unit-tested without a subprocess.
     """
     raw = raw.strip()
     if not raw:

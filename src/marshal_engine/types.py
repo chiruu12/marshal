@@ -3,7 +3,7 @@
 Value objects are Pydantic models so construction validates inputs and (de)serialization to fleet
 state / usage logs / the MCP surface is uniform. Enums stay plain ``str`` enums (Pydantic handles
 them natively). The loose, version-variable JSON that backend CLIs emit is deliberately parsed as
-plain dicts in the adapters — strict models there would reject on an unexpected upstream field.
+plain dicts in the adapters - strict models there would reject on an unexpected upstream field.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ class RunStatus(str, Enum):
 
 
 class UsageSource(str, Enum):
-    """Provenance of a usage record — never present an estimate as ground truth."""
+    """Provenance of a usage record - never present an estimate as ground truth."""
 
     NATIVE = "native"            # backend reported tokens+cost in its output
     ADMIN_API = "admin-api"      # fetched from a provider account/admin API
@@ -79,7 +79,7 @@ class RunOpts(BaseModel):
     permission: PermissionMode = PermissionMode.SAFE_EDIT
     model: str | None = None
     session_id: str | None = None         # resume a prior session if the backend supports it
-    timeout_s: int = 600                  # external timeout + kill — never run without one
+    timeout_s: int = 600                  # external timeout + kill - never run without one
     extra_env: dict[str, str] = {}
     on_pid: Callable[[int], None] | None = None  # called by base.run() with the child pid
 

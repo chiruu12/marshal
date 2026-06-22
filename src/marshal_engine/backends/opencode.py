@@ -16,11 +16,11 @@ Invocation reference (opencode CLI):
 Notes / gaps baked in from research (verify against a live run):
   * The JSON stream can drop the final `step-finish` event, so cost/tokens may be incomplete;
     Phase 2 reconciles from `~/.local/share/opencode/storage` / `opencode export`.
-  * `opencode serve` (HTTP, 127.0.0.1:4096) is a faster warm-server path — added later
+  * `opencode serve` (HTTP, 127.0.0.1:4096) is a faster warm-server path - added later
     (capabilities.server_mode = True).
   * serve+attach hangs if any permission is `ask`; for `run` headless we keep stdin closed
     (shared runner) so a stray prompt fails fast instead of deadlocking. yolo/safe-edit also
-    want `question: deny` in a dedicated opencode.json (engine-managed) — TODO config layer.
+    want `question: deny` in a dedicated opencode.json (engine-managed) - TODO config layer.
   * Canonical repo moved sst/opencode -> anomalyco/opencode; npm package still `opencode-ai`.
 """
 
@@ -51,7 +51,7 @@ class OpenCodeBackend(CodingAgentBackend):
         json_output=True,
         stream_json=True,
         sessions=True,
-        server_mode=True,  # `opencode serve` — warm-server fast path wired in a later phase
+        server_mode=True,  # `opencode serve` - warm-server fast path wired in a later phase
         native_usage=True,
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}

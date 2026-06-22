@@ -9,16 +9,16 @@ review, route execution to cheaper or specialized workers, isolate each task in 
 worktree, and measure what every routing strategy actually cost.
 
 One driver agent (e.g. Claude Code) plans the work. Marshal spawns and manages a fleet of
-*headless* coding agents — **Cursor CLI, OpenCode, Codex, and Google Antigravity** today, more
-behind a single base class — each running autonomously in its own isolated git worktree, in parallel. Marshal monitors
+*headless* coding agents - **Cursor CLI, OpenCode, Codex, and Google Antigravity** today, more
+behind a single base class - each running autonomously in its own isolated git worktree, in parallel. Marshal monitors
 them, collects their diffs, tracks per-provider usage, and hands results back for integration.
 
 It plugs into your driver two ways:
 
-- **MCP server** — you declare N backend "clients"; the driver calls a lean tool surface (14 tools):
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (14 tools):
   `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`,
   `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
-- **Skills** — orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
+- **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
   a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
   `marshal-benchmark` (compare routing strategies on a real task), and `marshal-workflow` (author
   and run a declarative recipe).
@@ -26,14 +26,14 @@ It plugs into your driver two ways:
 > **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (14
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
 > fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
-> **measured savings benchmark** (`benchmark`/`report` — run one task through N strategies and
+> **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and
 > compare real cost/latency/outcome). OpenCode and Cursor live-verified; the Codex adapter verified
 > on a fresh usage window (re-verify pending). See [`docs/status.md`](docs/status.md).
 
 ## Getting started
 
 **Prerequisites:** Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), git, and the CLI for each
-backend you'll use (`opencode` / `cursor-agent` / `codex` / `agy`) — each authenticated via its own
+backend you'll use (`opencode` / `cursor-agent` / `codex` / `agy`) - each authenticated via its own
 login. Marshal does **not** install the backend CLIs.
 
 ```bash
@@ -56,22 +56,22 @@ step. From Claude Code:
 ```
 
 The plugin runs the MCP server from its own checkout (via `uv`), pointed at whatever project you
-have open — so you still need `uv`, a `fleet.config.yaml` in that project, and the backend CLIs
+have open - so you still need `uv`, a `fleet.config.yaml` in that project, and the backend CLIs
 authenticated (`uv run marshal doctor` checks all of this). Until you add a config, the server
 starts with zero clients and tells you how to configure one.
 
-Prefer to copy just the Skills? The three driver Skills live in [`skills/`](skills/) — copy
+Prefer to copy just the Skills? The three driver Skills live in [`skills/`](skills/) - copy
 `skills/marshal-orchestrate`, `skills/marshal-benchmark`, and `skills/marshal-workflow` into your
 driver's skills directory (e.g. `.claude/skills/`) and wire the MCP server by hand per
 **[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 
-- **One base class, many backends.** Cursor, OpenCode, Codex, Gemini — adding one is a new adapter,
+- **One base class, many backends.** Cursor, OpenCode, Codex, Gemini - adding one is a new adapter,
   not a rewrite. Backend choice is a per-call parameter.
 - **Parallel by default.** Each agent runs in its own git worktree; your main branch stays clean
   until you explicitly integrate.
-- **Per-provider usage tracking.** Token and cost accounting per backend, per client — a `usage`
+- **Per-provider usage tracking.** Token and cost accounting per backend, per client - a `usage`
   command most orchestrators don't have. `marshal doctor` also reports each authenticated backend's
   plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
@@ -81,7 +81,7 @@ driver's skills directory (e.g. `.claude/skills/`) and wire the MCP server by ha
 
 Marshal's headline feature is a **measured** routing comparison, not a guess. Run one task through
 several strategies and `report` derives a source-honest table from each run's recorded facts. An
-example capture — Marshal benchmarking two OpenCode models on a real drafting task:
+example capture - Marshal benchmarking two OpenCode models on a real drafting task:
 
 | strategy | backend | status | cost | source | duration | out tokens |
 |---|---|---|---|---|---|---|
@@ -91,13 +91,13 @@ example capture — Marshal benchmarking two OpenCode models on a real drafting 
 **cheapest:** kimi ($0.0111) · **fastest:** kimi (14.1s)
 
 Cost is tagged by **source** and never invented: a strategy whose provider reports no cost shows as
-`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. That honesty is the point — you
+`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. That honesty is the point - you
 route on evidence, not vibes. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
 
 ## Workflows
 
 For orchestration you run more than once, write it down. A **workflow** is a declarative YAML recipe
-— phases of fan-out, collect, and gated integrate — that Marshal runs by *sequencing the same safe
+(phases of fan-out, collect, and gated integrate) that Marshal runs by *sequencing the same safe
 primitives* a driver would call by hand. It adds no new execution path: every run still flows
 through the isolated-worktree fleet loop (timeout, process-group kill, usage ledger), and
 **integration is gated off by default** so nothing touches your branch until you review it.
@@ -145,17 +145,17 @@ top of it. See `docs/chauffeur-future.md`.
 
 ## Documentation
 
-- [`SETUP.md`](SETUP.md) — clone-to-first-run setup (prerequisites, install, auth, verify, wire in).
-- [`docs/usage.md`](docs/usage.md) — configure a fleet and drive it via MCP, CLI, or library.
-- [`docs/status.md`](docs/status.md) — what's built, the backend verification matrix, and the roadmap.
-- [`docs/design.md`](docs/design.md) — full architecture, per-backend cheat sheets, permission
+- [`SETUP.md`](SETUP.md) - clone-to-first-run setup (prerequisites, install, auth, verify, wire in).
+- [`docs/usage.md`](docs/usage.md) - configure a fleet and drive it via MCP, CLI, or library.
+- [`docs/status.md`](docs/status.md) - what's built, the backend verification matrix, and the roadmap.
+- [`docs/design.md`](docs/design.md) - full architecture, per-backend cheat sheets, permission
   model, usage schema, and the edge-case hardening checklist.
-- [`docs/sources.md`](docs/sources.md) — primary sources.
+- [`docs/sources.md`](docs/sources.md) - primary sources.
 
 ## Contributing & community
 
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, the quality gate, and how to add a backend.
-- [`SECURITY.md`](SECURITY.md) — the security model and how to report a vulnerability privately.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) - dev setup, the quality gate, and how to add a backend.
+- [`SECURITY.md`](SECURITY.md) - the security model and how to report a vulnerability privately.
 - [`CHANGELOG.md`](CHANGELOG.md) · [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 
 ## License

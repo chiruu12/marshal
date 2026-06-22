@@ -11,7 +11,7 @@ Runnable, copy-paste examples for Marshal.
 
 ## Files
 
-- [`library_quickstart.py`](library_quickstart.py) — the shortest no-driver path: construct
+- [`library_quickstart.py`](library_quickstart.py) - the shortest no-driver path: construct
   `MarshalService`, run one trivial task in an isolated worktree, print its status/cost/source,
   review the diff, and integrate it. This is the fastest way to see Marshal actually run an agent
   without wiring an MCP driver.

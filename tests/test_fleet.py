@@ -55,7 +55,7 @@ class _Writer(CodingAgentBackend):
 
 
 class _Patcher(CodingAgentBackend):
-    """Rewrites a tracked file with task-specific content — used to force merge conflicts."""
+    """Rewrites a tracked file with task-specific content - used to force merge conflicts."""
 
     name = "patcher"
     binary = "python"
@@ -78,7 +78,7 @@ class _Patcher(CodingAgentBackend):
 
 
 class _Sleeper(CodingAgentBackend):
-    """Sleeps then prints — used to prove run_many actually runs concurrently."""
+    """Sleeps then prints - used to prove run_many actually runs concurrently."""
 
     name = "sleeper"
     binary = "python"
@@ -102,7 +102,7 @@ class _Sleeper(CodingAgentBackend):
 
 
 class _NoOp(CodingAgentBackend):
-    """Exits 0 but writes nothing and prints nothing — should be recorded as EMPTY, not success."""
+    """Exits 0 but writes nothing and prints nothing - should be recorded as EMPTY, not success."""
 
     name = "noop"
     binary = "python"
@@ -126,7 +126,7 @@ class _NoOp(CodingAgentBackend):
 
 
 class _Tokened(CodingAgentBackend):
-    """Reports tokens but no cost (like Codex) — the engine must price it via the table."""
+    """Reports tokens but no cost (like Codex) - the engine must price it via the table."""
 
     name = "tok"
     binary = "python"
@@ -150,14 +150,14 @@ class _Tokened(CodingAgentBackend):
                 model="m",
                 input_tokens=1_000_000,
                 output_tokens=0,
-                source=UsageSource.UNAVAILABLE,  # tokens known, cost not — engine prices it
+                source=UsageSource.UNAVAILABLE,  # tokens known, cost not - engine prices it
             ),
             exit_code=exit_code,
         )
 
 
 class _SilentWriter(CodingAgentBackend):
-    """Writes a file but returns empty text — a write-only success that must NOT be marked EMPTY."""
+    """Writes a file but returns empty text - a write-only success that must NOT be marked EMPTY."""
 
     name = "silent"
     binary = "python"
@@ -175,7 +175,7 @@ class _SilentWriter(CodingAgentBackend):
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
             status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
-            text=raw_stdout.strip(),  # empty — the only success signal is the file it wrote
+            text=raw_stdout.strip(),  # empty - the only success signal is the file it wrote
             exit_code=exit_code,
         )
 
@@ -213,7 +213,7 @@ class _NativeZero(CodingAgentBackend):
 
 
 class _Exploder(CodingAgentBackend):
-    """parse_output raises (propagates out of base.run) — the run loop must terminal-stamp it."""
+    """parse_output raises (propagates out of base.run) - the run loop must terminal-stamp it."""
 
     name = "boom"
     binary = "python"
@@ -263,7 +263,7 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
     assert rec.status == "succeeded"
     assert rec.cost_usd == 0.001
     assert rec.text == "done"  # the agent's final message is persisted for review
-    assert rec.run_id.startswith("t1.writer.")  # task.backend.<uuid> — globally unique
+    assert rec.run_id.startswith("t1.writer.")  # task.backend.<uuid> - globally unique
 
     wt = Path(rec.worktree or "")
     assert wt.exists()  # kept by default for later collect/integrate

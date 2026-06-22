@@ -1,4 +1,4 @@
-"""The Marshal backend base class — the cornerstone of the engine.
+"""The Marshal backend base class - the cornerstone of the engine.
 
 Every headless coding agent (Cursor, OpenCode, Codex, Gemini, ...) is a subclass that
 implements four pure-or-simple hooks. The base class owns the one thing that must never
@@ -73,7 +73,7 @@ class CodingAgentBackend(ABC):
     def account_info(self) -> dict[str, str] | None:
         """Return human-readable account facts (e.g. plan tier, default model), or None.
 
-        This is account *metadata* a CLI can report cheaply — NOT a usage record, so it never
+        This is account *metadata* a CLI can report cheaply - NOT a usage record, so it never
         touches the cost ledger. Backends that expose it (e.g. Cursor's `about`) override this;
         the default is None. Implementations must be side-effect-light and never raise: return
         None on any failure (missing binary, unauthenticated, unparseable output).
@@ -121,7 +121,7 @@ class CodingAgentBackend(ABC):
             opts.on_pid(proc.pid)
 
         # start_new_session makes the child its own group leader, so its pgid == its pid. Capture
-        # it now, while the leader is alive — resolving it later (after a fast leader exit) can race
+        # it now, while the leader is alive - resolving it later (after a fast leader exit) can race
         # a zombie and strand the group.
         pgid = proc.pid
 
@@ -152,13 +152,13 @@ class CodingAgentBackend(ABC):
         """Best-effort: salvage usage from a timed-out run's partial output. Never raises.
 
         Tokens are real spend even if the run was killed mid-stream, so recovering them keeps the
-        cost ledger honest. A recovery failure must never mask the timeout — all errors are swallowed.
+        cost ledger honest. A recovery failure must never mask the timeout - all errors are swallowed.
         """
         if not stdout.strip():
             return None
         try:
             return self.parse_output(stdout, stderr, 0).usage
-        except Exception:  # noqa: BLE001 — recovery is best-effort and must not mask the timeout
+        except Exception:  # noqa: BLE001 - recovery is best-effort and must not mask the timeout
             return None
 
 
@@ -167,7 +167,7 @@ def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
 
     `pgid` is the leader pid (the child was started with `start_new_session=True`). After SIGTERM
     we wait a short grace for cooperative shutdown, then SIGKILL the *whole group* regardless of
-    whether the leader itself already exited — escalation must depend on the group dying, not on the
+    whether the leader itself already exited - escalation must depend on the group dying, not on the
     leader being reaped, or a SIGTERM-ignoring grandchild survives. A grandchild that escaped the
     session (`setsid`) cannot be reached here; the bounded drain in `run()` is what keeps such a
     survivor from hanging the engine.

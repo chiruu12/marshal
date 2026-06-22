@@ -24,12 +24,12 @@ build/
 *.swp
 *.swo
 
-# Claude Code (local tooling — the public driver Skills live in skills/, not here)
+# Claude Code (local tooling - the public driver Skills live in skills/, not here)
 .context/
 .claude/
 tmp/
 
-# Internal notes — strategy / decisions / plans, kept local, not part of the public docs set
+# Internal notes - strategy / decisions / plans, kept local, not part of the public docs set
 docs/internal/
 
 # Python
@@ -39,7 +39,7 @@ docs/internal/
 .coverage
 *.egg-info/
 
-# A user's real fleet config (copied from fleet.config.example.yaml) — never commit it
+# A user's real fleet config (copied from fleet.config.example.yaml) - never commit it
 fleet.config.yaml
 
 # A user's own workflow recipes (they reference local client names). Templates ship in

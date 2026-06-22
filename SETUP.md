@@ -15,7 +15,7 @@ Marshal itself needs:
 | **uv** | install + run | `uv --version` ([install](https://docs.astral.sh/uv/)) |
 | **git** | worktree isolation + integrate shell out to it | `git --version` |
 
-**Backend CLIs — Marshal does NOT install these.** Install and authenticate the CLI for each
+**Backend CLIs - Marshal does NOT install these.** Install and authenticate the CLI for each
 backend you intend to use. Each one manages its *own* login; Marshal just shells out to it.
 
 | Backend | Install | Authenticate |
@@ -62,16 +62,16 @@ clients:
 ```
 
 Permission tiers: `read-only` (plan/inspect, no edits), `safe-edit` (edit + run inside the
-worktree, no prompts — the default), `yolo` (unrestricted, opt-in). Headless agents have no stdin,
+worktree, no prompts - the default), `yolo` (unrestricted, opt-in). Headless agents have no stdin,
 so Marshal never uses a prompting mode (it would deadlock).
 
 ## 3. Authenticate your backends
 
 **Auth is per-CLI.** Run each backend's login command once (see the Prerequisites table). That's
-it — Marshal does not need any API key of its own.
+it - Marshal does not need any API key of its own.
 
 > **About `secret_ref`:** you may add `secret_ref: env:OPENCODE_API_KEY` to a client. This is an
-> **optional preflight check only** — `marshal doctor` warns if that variable is unset. Marshal
+> **optional preflight check only** - `marshal doctor` warns if that variable is unset. Marshal
 > **does not inject it** into the backend; the CLI's own login (or whatever you export into the
 > environment) is what actually authenticates. If you logged the CLI in, an unset `secret_ref` is
 > fine and shows as a warning, not a failure.
@@ -83,7 +83,7 @@ uv run marshal doctor
 ```
 
 It checks Python/uv/git, that your repo is a git work tree, that the config parses, the `mcp`
-extra, each configured backend's CLI, and your `secret_ref` variables — printing a `fix:` line for
+extra, each configured backend's CLI, and your `secret_ref` variables - printing a `fix:` line for
 anything wrong. When a backend exposes account facts (e.g. Cursor's subscription tier + current
 model), doctor also prints a `plan:<backend>` line. Exit code is non-zero if there are hard
 failures. Example:
@@ -111,7 +111,7 @@ Marshal exposes its tools over an MCP server (`marshal mcp`, stdio). It reads tw
 | `MARSHAL_REPO` | `.` | the repo agents work in |
 | `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | the fleet config |
 
-### Option A — install the Claude Code plugin (one step)
+### Option A - install the Claude Code plugin (one step)
 
 The fastest path. From Claude Code:
 
@@ -122,11 +122,11 @@ The fastest path. From Claude Code:
 
 This installs all three driver Skills **and** the MCP server. The server runs from the plugin's own
 checkout via `uv` (auto-syncing the `mcp` extra on first run) and inherits the project you have
-open, so `MARSHAL_REPO`/`MARSHAL_CONFIG` default to that project and its `fleet.config.yaml` — you
-still complete steps 1–4 there (config + backend auth). If no config is found yet, the server
+open, so `MARSHAL_REPO`/`MARSHAL_CONFIG` default to that project and its `fleet.config.yaml` - you
+still complete steps 1-4 there (config + backend auth). If no config is found yet, the server
 starts with zero clients and logs how to add one.
 
-### Option B — wire it by hand
+### Option B - wire it by hand
 
 A bare `uv sync` does **not** put a `marshal` command on your PATH, so invoke it through uv with the
 absolute path to your Marshal checkout:
@@ -152,7 +152,7 @@ on your PATH.)
 ## 6. Your first run
 
 Marshal's **CLI is inspection-only** (`doctor`, `backends`, `status`, `usage`, `workflows`, `mcp`).
-You *run* agents by driving the MCP tools from Claude Code — ask it to `list_clients`, then
+You *run* agents by driving the MCP tools from Claude Code - ask it to `list_clients`, then
 `run_agent` a small task, then `collect_run` to review the diff, then `integrate` to merge it.
 Use `spawn` + `cancel_run` for long-running background work; use `run_workflow` for declarative
 recipes (see [`docs/usage.md`](docs/usage.md)).

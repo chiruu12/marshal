@@ -1,4 +1,4 @@
-"""Per-provider usage tracking — append-only events log + rolled-up summary.
+"""Per-provider usage tracking - append-only events log + rolled-up summary.
 
 No database: an `events.jsonl` (one line per run) plus a derived summary, so usage is auditable and
 queryable. Every event carries a `source` so estimated/scraped costs are never confused with
@@ -65,12 +65,12 @@ class Bucket(BaseModel):
     succeeded: int = 0
     cost_usd: float = 0.0
     cost_native: float = 0.0        # cost we know is real (backend-reported)
-    cost_estimated: float = 0.0     # cost derived from a price table — not ground truth
+    cost_estimated: float = 0.0     # cost derived from a price table - not ground truth
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cost_per_run: float = 0.0
-    # None (not 0) when there are no successes — a real outcome cost can't be claimed.
+    # None (not 0) when there are no successes - a real outcome cost can't be claimed.
     cost_per_succeeded: float | None = None
 
 
@@ -86,7 +86,7 @@ class UsageSummary(BaseModel):
 class UsageTracker:
     """Append-only usage events; the rollup is derived on read.
 
-    `record` only appends one line to `events.jsonl` — a small write under O_APPEND, which is atomic
+    `record` only appends one line to `events.jsonl` - a small write under O_APPEND, which is atomic
     for concurrent writers, so parallel runs never corrupt the log or race a shared rewrite. The
     summary is computed from the log on demand (`summary()`), never maintained on the hot path.
     """
@@ -143,7 +143,7 @@ def _add(bucket: Bucket, e: UsageEvent) -> None:
 
 
 def _finalize(bucket: Bucket) -> None:
-    """Add derived cost-per-outcome (report layer, computed on read — never stored on the ledger)."""
+    """Add derived cost-per-outcome (report layer, computed on read - never stored on the ledger)."""
     runs = bucket.runs
     succeeded = bucket.succeeded
     bucket.cost_per_run = round(bucket.cost_usd / runs, 6) if runs else 0.0

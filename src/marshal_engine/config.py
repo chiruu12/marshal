@@ -1,4 +1,4 @@
-"""Fleet configuration — `fleet.config.yaml` declares N named clients.
+"""Fleet configuration - `fleet.config.yaml` declares N named clients.
 
 Each client pins a backend + permission + model. Secrets are referenced (`env:VAR`), never
 inlined. Includes a Fireworks guard: an OpenCode client must use a Go model (`opencode-go/...`),
@@ -67,7 +67,7 @@ def load_config(path: Path | str) -> FleetConfig:
 
 
 def resolve_model(client: ClientConfig) -> str | None:
-    """The model to actually pass — defaults OpenCode to a Go model so it never hits Fireworks."""
+    """The model to actually pass - defaults OpenCode to a Go model so it never hits Fireworks."""
     if client.backend == "opencode" and not client.model:
         return DEFAULT_OPENCODE_MODEL
     return client.model

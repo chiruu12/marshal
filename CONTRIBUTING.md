@@ -2,8 +2,8 @@
 
 Thanks for your interest in Marshal. It is an orchestration engine for driving a fleet of
 headless coding agents (Cursor, OpenCode, Codex, Antigravity) from one driver agent, exposed as an
-MCP server and driver Skills. This guide covers the dev setup, the quality gate, and — most
-importantly — how to add a new backend, which is Marshal's core extension point.
+MCP server and driver Skills. This guide covers the dev setup, the quality gate, and - most
+importantly - how to add a new backend, which is Marshal's core extension point.
 
 Marshal is **pre-1.0**; APIs may change between minor versions until 1.0.
 
@@ -56,12 +56,12 @@ uv run pytest -q && uv run ruff check src tests && uv run mypy
 src/marshal_engine/
   types.py            # TaskSpec, RunOpts, AgentResult, UsageRecord, Capabilities, enums (Pydantic v2)
   backends/
-    base.py           # CodingAgentBackend — owns the safe run() loop (do not bypass)
+    base.py           # CodingAgentBackend - owns the safe run() loop (do not bypass)
     cursor.py opencode.py codex.py antigravity.py
   worktree.py         # git worktree lifecycle (isolation boundary)
   usage.py            # per-provider usage ledger (events.jsonl + summary)
   pricing.py state.py fleet.py registry.py config.py
-  service.py          # MarshalService — the testable core the CLI/MCP call into
+  service.py          # MarshalService - the testable core the CLI/MCP call into
   doctor.py cli.py mcp_server.py
 skills/               # driver Skills (marshal-orchestrate, marshal-benchmark, marshal-workflow)
 tests/                # contract tests per backend + engine/service/MCP tests
@@ -73,10 +73,10 @@ These are load-bearing safety properties. A PR that breaks one will not be merge
 
 - **Every agent run gets a hard external timeout + process-group kill.** This lives in
   `backends/base.py::run()`; do not spawn agent processes outside it.
-- **Headless = no stdin.** Never use a prompting/interactive permission mode — it deadlocks.
+- **Headless = no stdin.** Never use a prompting/interactive permission mode - it deadlocks.
   The default tier is `safe-edit`.
 - **Backend is a per-call parameter**, never a global and never encoded in tool or skill names.
-- **`build_invocation` and `map_permission` are pure functions** returning argv / flags — unit
+- **`build_invocation` and `map_permission` are pure functions** returning argv / flags - unit
   testable without spawning a process.
 - **Tag every usage record with its `source`** (native / admin-api / estimated / scraped /
   unavailable). Never present an estimate as ground truth, and never invent `$0` for an unknown cost.
@@ -92,18 +92,18 @@ on timeout, partial-usage recovery), so an adapter only declares identity, capab
 hooks.
 
 1. **Create `src/marshal_engine/backends/<name>.py`** with a subclass that sets:
-   - `name` — short stable id (e.g. `"opencode"`).
-   - `binary` — the executable to invoke (e.g. `"opencode"`).
-   - `capabilities` — a `Capabilities` instance so the orchestrator can degrade gracefully.
+   - `name` - short stable id (e.g. `"opencode"`).
+   - `binary` - the executable to invoke (e.g. `"opencode"`).
+   - `capabilities` - a `Capabilities` instance so the orchestrator can degrade gracefully.
 
 2. **Implement the four hooks:**
-   - `check_available() -> bool` — probe `binary --version` (pin a minimum where hangs/bugs are
+   - `check_available() -> bool` - probe `binary --version` (pin a minimum where hangs/bugs are
      version-gated) and verify credentials are present.
-   - `build_invocation(task, opts) -> list[str]` — **pure**: `(task, opts) -> argv`. No side effects,
+   - `build_invocation(task, opts) -> list[str]` - **pure**: `(task, opts) -> argv`. No side effects,
      no spawning.
-   - `map_permission(mode) -> list[str]` — **pure**: a normalized `PermissionMode` -> this backend's
+   - `map_permission(mode) -> list[str]` - **pure**: a normalized `PermissionMode` -> this backend's
      native flags. Never map to a prompting/interactive mode.
-   - `parse_output(raw_stdout, raw_stderr, exit_code) -> AgentResult` — normalize raw output. Treat a
+   - `parse_output(raw_stdout, raw_stderr, exit_code) -> AgentResult` - normalize raw output. Treat a
      non-zero exit or unparseable output as **failure**. Populate usage / session_id / files_changed
      where the backend exposes them. Backend stdout is parsed as a plain dict on purpose; only the
      normalized `AgentResult` / `UsageRecord` are Pydantic models.
@@ -121,7 +121,7 @@ hooks.
    each `PermissionMode`. These run without spawning a process.
 
 6. **Price the model** (if it reports cost) by adding it to `data/prices.yaml`, or leave cost
-   `unavailable` — never fabricate a number.
+   `unavailable` - never fabricate a number.
 
 Run the gate, then open a PR describing what the new backend supports and its verification state
 (see `docs/status.md` for the honesty conventions of the verification matrix).
