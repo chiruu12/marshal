@@ -1,0 +1,24 @@
+{
+  "name": "marshal",
+  "owner": {
+    "name": "chiruu12",
+    "url": "https://github.com/chiruu12"
+  },
+  "plugins": [
+    {
+      "name": "marshal",
+      "source": "./",
+      "description": "Drive a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity) from one driver: parallel git-worktree isolation, per-provider cost tracking, and measured routing benchmarks. Bundles the marshal-orchestrate and marshal-benchmark skills and the Marshal MCP server.",
+      "version": "0.0.1",
+      "license": "MIT",
+      "homepage": "https://github.com/chiruu12/marshal",
+      "keywords": [
+        "ai",
+        "coding-agents",
+        "orchestration",
+        "mcp",
+        "cost-tracking"
+      ]
+    }
+  ]
+}
