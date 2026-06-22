@@ -63,7 +63,7 @@ src/marshal_engine/
   pricing.py state.py fleet.py registry.py config.py
   service.py          # MarshalService — the testable core the CLI/MCP call into
   doctor.py cli.py mcp_server.py
-skills/               # Marshal's own driver Skills (marshal-orchestrate, marshal-benchmark)
+skills/               # driver Skills (marshal-orchestrate, marshal-benchmark, marshal-workflow)
 tests/                # contract tests per backend + engine/service/MCP tests
 ```
 

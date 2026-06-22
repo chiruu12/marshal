@@ -19,9 +19,10 @@ The full vertical slice is in place — driver → MCP → service → fleet →
 | `fleet.py` | Orchestrator: worktree → run → price → record → persist | done |
 | `registry.py` | Construct backends by name | done |
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
+| `workflow.py` | Declarative YAML workflows — spec, validation, runner over the service primitives | done |
 | `service.py` | Testable core the MCP/CLI call into | done |
-| `cli.py` | `marshal doctor/backends/usage/status/mcp` | done |
-| `mcp_server.py` | 11-tool MCP surface over stdio (run/run_many/spawn/benchmark/report/collect/integrate/…) | done |
+| `cli.py` | `marshal doctor/backends/usage/status/workflows/mcp` | done |
+| `mcp_server.py` | 14-tool MCP surface over stdio (run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/…) | done |
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files.
 
@@ -70,10 +71,19 @@ outcome comparison from the ledger ("cheapest" only ranks strategies with a know
 exposed over the service and MCP. This completes the V1 core (engine + cost + benchmark).
 
 ### Phase 4 — coverage & productization (started)
-Shipped: the **Skills layer** — `.claude/skills/marshal-orchestrate` (decompose → spawn → monitor →
-collect → integrate) and `.claude/skills/marshal-benchmark` (compare strategies) driver playbooks,
-completing the four surfaces (engine · MCP · Skills · config).
+Shipped: the **Skills layer** — `skills/marshal-orchestrate` (decompose → spawn → monitor →
+collect → integrate), `skills/marshal-benchmark` (compare strategies), and `skills/marshal-workflow`
+(author + run a declarative recipe) driver playbooks, completing the four surfaces
+(engine · MCP · Skills · config).
 Also shipped: **non-blocking `spawn`** — start a run in the background (persistent pool on the Fleet)
 and poll `status`/`get_run`; the run is recorded RUNNING at once and survives the driver turn.
+**`cancel_run`** stops a running agent by id (process-group `SIGTERM`).
+**Declarative YAML workflows** (`workflow.py`) — a recipe of `fan_out`/`collect`/gated-`integrate`
+phases the engine runs by sequencing the existing safe primitives (no new execution path; integrate
+gated off by default); surfaced as `list_workflows`/`run_workflow` (MCP), `marshal workflows` (CLI),
+and the `marshal-workflow` Skill.
+**Cursor plan tier in `doctor`** — surfaces the authenticated CLI's subscription tier + current
+model (an honest account fact; individual accounts expose no usage/quota API, so no percentage is
+fabricated).
 Remaining: Antigravity PTY/workspace-trust; Cursor admin-API usage; Codex live re-verify; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

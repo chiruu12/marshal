@@ -15,19 +15,20 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** — you declare N backend "clients"; the driver calls a lean tool surface. Today:
-  `list_clients`, `run_agent`, `run_many`, `spawn`, `benchmark`, `report`, `get_run`, `collect_run`,
-  `integrate`, `status`, `usage`. Planned: `cancel_run`.
+- **MCP server** — you declare N backend "clients"; the driver calls a lean tool surface (14 tools):
+  `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`,
+  `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
 - **Skills** — orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
-  a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate) and
-  `marshal-benchmark` (compare routing strategies on a real task).
+  a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
+  `marshal-benchmark` (compare routing strategies on a real task), and `marshal-workflow` (author
+  and run a declarative recipe).
 
-> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (11
+> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (14
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
-> fan-out (`run_many`), non-blocking `spawn`, and a **measured savings benchmark**
-> (`benchmark`/`report` — run one task through N strategies and compare real cost/latency/outcome).
-> OpenCode and Cursor live-verified; the Codex adapter verified on a fresh usage window (re-verify
-> pending). See [`docs/status.md`](docs/status.md).
+> fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
+> **measured savings benchmark** (`benchmark`/`report` — run one task through N strategies and
+> compare real cost/latency/outcome). OpenCode and Cursor live-verified; the Codex adapter verified
+> on a fresh usage window (re-verify pending). See [`docs/status.md`](docs/status.md).
 
 ## Getting started
 
@@ -59,9 +60,10 @@ have open — so you still need `uv`, a `fleet.config.yaml` in that project, and
 authenticated (`uv run marshal doctor` checks all of this). Until you add a config, the server
 starts with zero clients and tells you how to configure one.
 
-Prefer to copy just the Skills? The two driver Skills live in [`skills/`](skills/) — copy
-`skills/marshal-orchestrate` and `skills/marshal-benchmark` into your driver's skills directory
-(e.g. `.claude/skills/`) and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
+Prefer to copy just the Skills? The three driver Skills live in [`skills/`](skills/) — copy
+`skills/marshal-orchestrate`, `skills/marshal-benchmark`, and `skills/marshal-workflow` into your
+driver's skills directory (e.g. `.claude/skills/`) and wire the MCP server by hand per
+**[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 
@@ -70,7 +72,8 @@ Prefer to copy just the Skills? The two driver Skills live in [`skills/`](skills
 - **Parallel by default.** Each agent runs in its own git worktree; your main branch stays clean
   until you explicitly integrate.
 - **Per-provider usage tracking.** Token and cost accounting per backend, per client — a `usage`
-  command most orchestrators don't have.
+  command most orchestrators don't have. `marshal doctor` also reports each authenticated backend's
+  plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
   defenses for the real-world hangs and quirks documented in `docs/design.md`.
 
@@ -90,6 +93,34 @@ example capture — Marshal benchmarking two OpenCode models on a real drafting 
 Cost is tagged by **source** and never invented: a strategy whose provider reports no cost shows as
 `unavailable` (not `$0`) and is excluded from the `cheapest` ranking. That honesty is the point — you
 route on evidence, not vibes. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
+
+## Workflows
+
+For orchestration you run more than once, write it down. A **workflow** is a declarative YAML recipe
+— phases of fan-out, collect, and gated integrate — that Marshal runs by *sequencing the same safe
+primitives* a driver would call by hand. It adds no new execution path: every run still flows
+through the isolated-worktree fleet loop (timeout, process-group kill, usage ledger), and
+**integration is gated off by default** so nothing touches your branch until you review it.
+
+```yaml
+# workflows/review.yaml
+name: review
+description: Review a target across two clients and surface diffs to merge.
+inputs: [target]
+phases:
+  - name: review
+    run: fan_out
+    clients: [reviewer-a, reviewer-b]
+    goal: "Review {target} for correctness bugs and missing tests; apply scoped fixes."
+  - run: collect          # gather every candidate's diff (read-only)
+  - run: integrate        # auto: false (default) → lists candidates; you merge the good ones
+```
+
+Validate recipes against your config with `marshal workflows`, then run one over MCP
+(`run_workflow("review", {"target": "src/foo.py"})`). It returns the collected diffs plus a gated
+`awaiting_review` status with concrete next-actions; the driver integrates the good runs one at a
+time. The `marshal-workflow` Skill is the authoring + running playbook; templates live in
+[`examples/workflows/`](examples/workflows/).
 
 ## Architecture
 

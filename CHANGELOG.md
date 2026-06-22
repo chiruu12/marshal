@@ -8,6 +8,22 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **Declarative YAML workflows** — author a reusable orchestration recipe (phases of
+  `fan_out` → `collect` → gated `integrate`) and run it as one unit. The engine executes a
+  workflow by *sequencing existing safe primitives* (`run_many` / `run_agent` / `collect_run` /
+  `integrate`); it adds no new execution path, so every run still flows through the safe fleet loop
+  (timeout, process-group kill, worktree, usage ledger). Integration is **gated off by default**
+  (`auto: false`) — a workflow surfaces candidate runs and next-actions, and the driver merges the
+  good ones deliberately. New MCP tools `list_workflows` and `run_workflow`, a `marshal workflows`
+  CLI command that lists and validates recipes against the live config, a `marshal-workflow` driver
+  Skill, and `examples/workflows/{review,compare}.yaml` templates.
+- **`cancel_run`** — stop a running agent by run id (process-group `SIGTERM`); exposed as an MCP
+  tool and service method.
+- **Cursor plan tier in `doctor`** — when the Cursor CLI is available and authenticated, `marshal
+  doctor` reports its subscription tier and current model (an honest account fact, not a fabricated
+  quota percentage).
+
 ## [0.0.1]
 
 First tagged release: the V1 vertical slice — engine -> service -> CLI -> MCP.
