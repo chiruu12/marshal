@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,22 @@ from .usage import UsageTracker
 
 def _cmd_backends(args: argparse.Namespace) -> int:
     backends = default_backends()
+    if args.json:
+        data = []
+        for name in backend_names():
+            b = backends[name]
+            c = b.capabilities
+            data.append(
+                {
+                    "name": name,
+                    "available": b.check_available(),
+                    "json_output": c.json_output,
+                    "native_usage": c.native_usage,
+                    "permission_modes": sorted(m.value for m in c.permission_modes),
+                }
+            )
+        print(json.dumps(data, indent=2))
+        return 0
     for name in backend_names():
         b = backends[name]
         c = b.capabilities
@@ -29,6 +46,9 @@ def _cmd_backends(args: argparse.Namespace) -> int:
 
 def _cmd_usage(args: argparse.Namespace) -> int:
     s = UsageTracker(args.dir).summary()
+    if args.json:
+        print(json.dumps(s.model_dump(mode="json"), indent=2))
+        return 0
     t = s.totals
     cps_str = f"${t.cost_per_succeeded:.4f}" if t.cost_per_succeeded is not None else "n/a"
     print(
@@ -43,6 +63,9 @@ def _cmd_usage(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     runs = FleetState(args.state).list()
+    if args.json:
+        print(json.dumps([r.model_dump(mode="json") for r in runs], indent=2))
+        return 0
     if not runs:
         print(f"no runs recorded under {Path(args.state).resolve()}")
         return 0
@@ -73,11 +96,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("-v", "--version", action="store_true")
     sub = p.add_subparsers(dest="cmd")
-    sub.add_parser("backends", help="list backends and availability")
+    pb = sub.add_parser("backends", help="list backends and availability")
+    pb.add_argument("--json", action="store_true", help="output JSON")
     pu = sub.add_parser("usage", help="show usage summary")
     pu.add_argument("--dir", default=".marshal/usage")
+    pu.add_argument("--json", action="store_true", help="output JSON")
     ps = sub.add_parser("status", help="list fleet runs")
     ps.add_argument("--state", default=".marshal/runs", help="per-run state directory")
+    ps.add_argument("--json", action="store_true", help="output JSON")
     pd = sub.add_parser("doctor", help="preflight: check the setup is ready to run agents")
     pd.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pd.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
