@@ -32,6 +32,20 @@ def test_build_service_from_env_config(tmp_path: Path, monkeypatch: pytest.Monke
     assert "reviewer" in names
 
 
+def test_build_service_without_config_starts_with_zero_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A freshly installed plugin has no fleet.config.yaml; the server must still start (not crash)
+    # so the driver can connect and be told to configure a fleet.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    svc = build_service()
+    assert svc.list_clients() == []
+    assert "no fleet config" in capsys.readouterr().err
+
+
 def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("mcp")
     import asyncio

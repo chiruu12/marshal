@@ -4,9 +4,11 @@ Thin wrapper over MarshalService. Repo + config come from the environment:
   MARSHAL_REPO    working repo root        (default: cwd)
   MARSHAL_CONFIG  path to fleet.config.yaml (default: <repo>/fleet.config.yaml)
 
-The `mcp` dependency is optional (install extra `mcp`); it is imported lazily inside `build_app`
-so the rest of the package works without it. Config warnings go to STDERR — never stdout, which
-is the JSON-RPC channel for stdio transport.
+If no config file exists the server still starts, with zero clients, so a freshly installed
+plugin never crashes on connect; it logs how to configure a fleet. The `mcp` dependency is
+optional (install extra `mcp`); it is imported lazily inside `build_app` so the rest of the
+package works without it. Config messages go to STDERR — never stdout, which is the JSON-RPC
+channel for stdio transport.
 """
 
 from __future__ import annotations
@@ -16,13 +18,23 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import load_config, validate
+from .config import FleetConfig, load_config, validate
 from .service import MarshalService
 
 
 def build_service() -> MarshalService:
     repo = Path(os.environ.get("MARSHAL_REPO", "."))
     cfg_path = Path(os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    if not cfg_path.exists():
+        # Start anyway, with zero clients, so the server (e.g. a freshly installed plugin) never
+        # crashes on connect. list_clients() returns [] and the driver is told to configure a fleet.
+        print(
+            f"[marshal] no fleet config at {cfg_path}; starting with zero clients. "
+            "Copy fleet.config.example.yaml to fleet.config.yaml (or set MARSHAL_CONFIG), then "
+            "reconnect. See SETUP.md.",
+            file=sys.stderr,
+        )
+        return MarshalService(repo, FleetConfig())
     config = load_config(cfg_path)
     for warning in validate(config):
         print(f"[marshal] config warning: {warning}", file=sys.stderr)
