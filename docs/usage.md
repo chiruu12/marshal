@@ -99,6 +99,7 @@ Tools exposed to the driver:
 | `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
 | `run_many(jobs, max_concurrency?)` | Run several `{client, goal}` jobs in parallel, each in its own worktree; returns all records. |
 | `spawn(client, goal, task_id?)` | Start a run in the background; returns its RUNNING record at once — poll `get_run`/`status`. |
+| `cancel_run(run_id)` | Stop a running agent (process-group `SIGTERM`); returns the updated record. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
 | `get_run(run_id)` | Fetch one run record. |
@@ -106,6 +107,8 @@ Tools exposed to the driver:
 | `integrate(run_id, cleanup?)` | Merge a run's worktree branch into the current branch; reports conflicts. |
 | `status()` | List all runs with status + cost. |
 | `usage()` | Per-provider usage summary (totals + by backend/client/model). |
+| `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. |
+| `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
 
 ## Use it as a CLI
 
@@ -114,11 +117,14 @@ marshal doctor       # preflight: check the setup is ready to run agents
 marshal backends     # list backends and availability
 marshal status       # list fleet runs
 marshal usage        # per-provider usage summary
+marshal workflows    # list + validate workflow recipes against the config
 marshal mcp          # run the MCP server over stdio
 ```
 
-The CLI is **inspection-only** (doctor/backends/status/usage) plus `mcp`. You *run* agents by
-driving the MCP tools from your driver (see above), not from the CLI.
+The CLI is **inspection-only** (doctor/backends/status/usage/workflows) plus `mcp`. You *run* agents
+by driving the MCP tools from your driver (see above), not from the CLI. `marshal doctor` also
+reports a backend's plan tier where the CLI exposes it (e.g. a `plan:cursor` line with the
+subscription tier + current model).
 
 ## Use it as a library
 
@@ -157,6 +163,54 @@ else:
 `marshal/<run_id>` branch and merges that into the branch you currently have checked out; a
 conflict is reported and the merge aborted so you resolve it deliberately. `cleanup=True` removes
 the worktree after a successful merge.
+
+## Run a workflow
+
+When you orchestrate the same shape of work repeatedly — fan a task out to a few clients, collect
+their diffs, then merge the good ones — capture it as a **workflow**: a declarative YAML recipe in
+`<repo>/workflows/`. Marshal runs it by sequencing the very primitives above (`run_many` /
+`run_agent` / `collect_run` / `integrate`) in the declared order. It adds **no new execution path**,
+so every run still flows through the safe fleet loop and worktree isolation.
+
+```yaml
+# workflows/review.yaml
+name: review
+description: Review a target across two clients and surface diffs to merge.
+inputs: [target]               # values passed at run time; referenced as {target} in goals
+phases:
+  - name: review
+    run: fan_out               # → run_many across the listed clients, one shared task_id
+    clients: [reviewer-a, reviewer-b]
+    goal: "Review {target} for correctness bugs and missing tests; apply scoped fixes."
+  - run: collect               # → collect_run for each preceding run (read-only)
+  - run: integrate             # auto: false (default) → lists candidates, merges nothing
+```
+
+Phase kinds: `fan_out` (needs `clients` + `goal`), `agent` (a single `client` + `goal`), `collect`,
+and `integrate`. A `collect`/`integrate` phase acts on the most recent preceding generative phase by
+default, or names an earlier one with `from_phase`. Goal templates may reference only declared
+`inputs`.
+
+**Integration is gated off by default.** An `integrate` phase with `auto: false` (the default) never
+calls `integrate` — it lists the succeeded runs as candidates, one `next_actions` line each, and the
+result status is `awaiting_review`. You read the collected diffs, then `integrate` the good runs
+yourself. Set `auto: true` only when you want the workflow to merge succeeded runs unattended.
+
+Discover and validate recipes (every client name is checked against your config, fail-fast):
+
+```bash
+marshal workflows           # human-readable; add --json for machine output
+```
+
+Then run one from your driver over MCP:
+
+```text
+run_workflow("review", {"target": "src/foo.py"})
+```
+
+It returns each phase's run ids, the collected diffs, a rolled-up `status`
+(`completed` / `awaiting_review` / `error`), and `next_actions`. The `marshal-workflow` Skill is the
+driver's playbook for authoring and running them; starter templates live in `examples/workflows/`.
 
 ## Where things land
 

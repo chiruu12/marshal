@@ -11,8 +11,9 @@ Marshal clean and embeddable.
 
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
 > **V1 complete**: merge-back, per-provider cost-proof, capped parallel `run_many`, non-blocking
-> `spawn`, the **measured savings benchmark** (`benchmark`/`report`), and driver Skills. 11 MCP
-> tools. OpenCode + Cursor live-verified. Remaining work is coverage/polish. See `docs/status.md`.
+> `spawn`, `cancel_run`, the **measured savings benchmark** (`benchmark`/`report`), **declarative
+> YAML workflows**, and driver Skills. 14 MCP tools. OpenCode + Cursor live-verified. Remaining work
+> is coverage/polish. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -32,11 +33,12 @@ marshal/
 │   ├── fleet.py             # orchestrator: worktree → run backend → record usage → persist
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard
+│   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
 │   ├── service.py           # MarshalService — the testable core the MCP/CLI call into
-│   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness)
-│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/spawn/benchmark/report/get_run/collect_run/integrate/status/usage
-│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/mcp)
-├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark
+│   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier
+│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow
+│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/mcp)
+├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
 ├── SETUP.md                 # clone-to-first-run setup guide
 ├── docs/                    # design · status · usage · chauffeur-future · sources (docs/internal/ is local-only, gitignored)
@@ -55,7 +57,7 @@ strict models there would reject on an unexpected upstream field. MCP server via
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`doctor` · `backends` · `usage` · `status` · `mcp`)
+- Run CLI: `uv run marshal` (`doctor` · `backends` · `usage` · `status` · `workflows` · `mcp`)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)

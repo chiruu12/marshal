@@ -175,12 +175,27 @@ Runtime state — worktrees, per-run JSON, usage — lands under `.marshal/`. Au
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
 **Lean tool surface** (backend is a param, NOT in tool names — avoids the 2N-tool explosion).
-Shipped today (11): `list_clients`, `run_agent`, `run_many`, `spawn`, `benchmark`, `report`,
-`get_run`, `collect_run`, `integrate`, `status`, `usage`. Planned: `cancel_run`. Current state is
-tracked in `docs/status.md`.
+Shipped today (14): `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`,
+`report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
+`run_workflow`. Current state is tracked in `docs/status.md`.
 
-Mirror to **one orchestration Skill** so the fleet works in both MCP and Skills hosts.
+Mirror to **driver Skills** (`marshal-orchestrate`, `marshal-benchmark`, `marshal-workflow`) so the
+fleet works in both MCP and Skills hosts.
 Security from day one: **localhost-only bind, reject non-loopback, validate `Host` header** (DNS-rebind).
+
+### Declarative workflows (a recipe is a sequence of primitives, not a new execution path)
+
+A **workflow** (`workflow.py`) is a human-authored YAML recipe — phases of `fan_out` / `agent` /
+`collect` / `integrate` — that the engine runs by issuing exactly the calls a driver would make by
+hand (`run_many` / `run_agent` / `collect_run` / `integrate`) in declared order. **Safety property:
+the runner adds no new execution path.** Every run still flows through `Fleet.run` (external timeout
++ process-group kill + worktree + usage ledger); the runner never spawns a process, touches git, or
+writes run state. Spec validation is pure (client names checked against the config, goal templates
+restricted to bare `{input}` placeholders, sources resolved) so a typo'd recipe fails before any
+agent runs. **Integration is gated off by default** (`auto: false`): a workflow surfaces succeeded
+runs as candidates with `next_actions`, and the driver merges the good ones after review — `succeeded`
+is not `correct`. The judgment (which recipe, when to merge) stays in the `marshal-workflow` Skill;
+the engine only sequences. Discover/validate with `marshal workflows`; run via `run_workflow`.
 
 ---
 
