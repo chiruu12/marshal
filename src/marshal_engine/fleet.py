@@ -8,6 +8,8 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 
 from __future__ import annotations
 
+import os
+import signal
 import sys
 import threading
 import time
@@ -217,10 +219,17 @@ class Fleet:
         """Execute suffix: run the backend, price + classify, persist the terminal record."""
         backend = self.backends[req.backend_name]
         try:
+            def _record_pid(pid: int) -> None:
+                self.state.update(run_id, pid=pid)
+
             result = backend.run(
                 req.task,
                 RunOpts(
-                    cwd=wt.path, permission=req.permission, model=req.model, timeout_s=req.timeout_s
+                    cwd=wt.path,
+                    permission=req.permission,
+                    model=req.model,
+                    timeout_s=req.timeout_s,
+                    on_pid=_record_pid,
                 ),
             )
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
@@ -357,6 +366,30 @@ class Fleet:
             changed_files=self.worktrees.changed_files(wt),
             diff=self.worktrees.diff(wt),
         )
+
+    def cancel_run(self, run_id: str) -> RunRecord:
+        """Cancel a running run: SIGTERM its process group, then mark cancelled.
+
+        If the run is not running (or its pid is missing / already exited) this is a safe no-op
+        that still returns the (updated) record. The run may finish concurrently between the status
+        check and the kill — re-read the record before stamping to avoid overwriting a terminal
+        status with ``cancelled``.
+        """
+        rec = self.state.get(run_id)
+        if rec is None:
+            raise ValueError(f"no such run: {run_id!r}")
+        if rec.status != "running":
+            return rec
+        if rec.pid is not None:
+            try:
+                os.killpg(rec.pid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass  # already exited
+        # Re-read: the run may have finished between the check and the kill.
+        after = self.state.get(run_id)
+        if after is not None and after.status == "running":
+            return self.state.update(run_id, status="cancelled", ended_at=_now())
+        return after if after is not None else rec
 
     def integrate(
         self, run_id: str, *, message: str | None = None, cleanup: bool = False

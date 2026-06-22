@@ -96,6 +96,11 @@ def build_app(service: MarshalService) -> Any:
         return service.collect_run(run_id).model_dump(mode="json")
 
     @app.tool()
+    def cancel_run(run_id: str) -> dict[str, Any]:
+        """Cancel a running run by id; returns the updated run record."""
+        return service.cancel_run(run_id).model_dump(mode="json")
+
+    @app.tool()
     def integrate(run_id: str, cleanup: bool = False) -> dict[str, Any]:
         """Merge a run's worktree branch into the current branch; reports merge conflicts."""
         return service.integrate(run_id, cleanup=cleanup).model_dump(mode="json")

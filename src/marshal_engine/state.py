@@ -35,6 +35,7 @@ class RunRecord(BaseModel):
     ended_at: str | None = None
     error: str | None = None
     merged_into: str | None = None  # branch this run was integrated into, once merged
+    pid: int | None = None  # OS process id of the agent subprocess, for cancel
 
 
 class FleetState:

@@ -106,6 +106,10 @@ class CodingAgentBackend(ABC):
                 duration_ms=_elapsed_ms(),
             )
 
+        # Notify the caller of the child pid (for later cancellation via process-group signal).
+        if opts.on_pid is not None:
+            opts.on_pid(proc.pid)
+
         # start_new_session makes the child its own group leader, so its pgid == its pid. Capture
         # it now, while the leader is alive — resolving it later (after a fast leader exit) can race
         # a zombie and strand the group.
