@@ -9,6 +9,8 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **`--json` on inspection CLI commands** — `marshal backends`, `status`, `usage`, and
+  `workflows` accept `--json` for machine-readable output.
 - **Declarative YAML workflows** — author a reusable orchestration recipe (phases of
   `fan_out` → `collect` → gated `integrate`) and run it as one unit. The engine executes a
   workflow by *sequencing existing safe primitives* (`run_many` / `run_agent` / `collect_run` /

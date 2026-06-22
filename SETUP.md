@@ -84,7 +84,9 @@ uv run marshal doctor
 
 It checks Python/uv/git, that your repo is a git work tree, that the config parses, the `mcp`
 extra, each configured backend's CLI, and your `secret_ref` variables — printing a `fix:` line for
-anything wrong. Exit code is non-zero if there are hard failures. Example:
+anything wrong. When a backend exposes account facts (e.g. Cursor's subscription tier + current
+model), doctor also prints a `plan:<backend>` line. Exit code is non-zero if there are hard
+failures. Example:
 
 ```
 ✓ python: 3.12.11
@@ -118,7 +120,7 @@ The fastest path. From Claude Code:
 /plugin install marshal@marshal
 ```
 
-This installs both driver Skills **and** the MCP server. The server runs from the plugin's own
+This installs all three driver Skills **and** the MCP server. The server runs from the plugin's own
 checkout via `uv` (auto-syncing the `mcp` extra on first run) and inherits the project you have
 open, so `MARSHAL_REPO`/`MARSHAL_CONFIG` default to that project and its `fleet.config.yaml` — you
 still complete steps 1–4 there (config + backend auth). If no config is found yet, the server
@@ -149,9 +151,11 @@ on your PATH.)
 
 ## 6. Your first run
 
-Marshal's **CLI is inspection-only** (`doctor`, `backends`, `status`, `usage`, `mcp`). You *run*
-agents by driving the MCP tools from Claude Code — ask it to `list_clients`, then `run_agent` a
-small task, then `collect_run` to review the diff, then `integrate` to merge it.
+Marshal's **CLI is inspection-only** (`doctor`, `backends`, `status`, `usage`, `workflows`, `mcp`).
+You *run* agents by driving the MCP tools from Claude Code — ask it to `list_clients`, then
+`run_agent` a small task, then `collect_run` to review the diff, then `integrate` to merge it.
+Use `spawn` + `cancel_run` for long-running background work; use `run_workflow` for declarative
+recipes (see [`docs/usage.md`](docs/usage.md)).
 
 To try the engine directly without a driver, use it as a library:
 
