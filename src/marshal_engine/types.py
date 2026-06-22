@@ -8,6 +8,7 @@ plain dicts in the adapters — strict models there would reject on an unexpecte
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
@@ -80,6 +81,7 @@ class RunOpts(BaseModel):
     session_id: str | None = None         # resume a prior session if the backend supports it
     timeout_s: int = 600                  # external timeout + kill — never run without one
     extra_env: dict[str, str] = {}
+    on_pid: Callable[[int], None] | None = None  # called by base.run() with the child pid
 
 
 class UsageRecord(BaseModel):

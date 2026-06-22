@@ -23,8 +23,8 @@ from .fleet import (
     RunRequest,
     StrategyResult,
 )
-from .registry import make_backend
 from .state import RunRecord
+from .registry import make_backend
 from .types import TaskSpec
 from .usage import UsageSummary
 
@@ -188,6 +188,9 @@ class MarshalService:
 
     def collect_run(self, run_id: str) -> CollectResult:
         return self.fleet.collect_run(run_id)
+
+    def cancel_run(self, run_id: str) -> RunRecord:
+        return self.fleet.cancel_run(run_id)
 
     def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult:
         return self.fleet.integrate(run_id, cleanup=cleanup)
