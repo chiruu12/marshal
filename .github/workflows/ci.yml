@@ -10,6 +10,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   gate:
     name: gate (py${{ matrix.python-version }})
@@ -25,9 +28,10 @@ jobs:
         uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync --extra mcp --extra dev
+        run: uv sync --frozen --extra mcp --extra dev
 
       - name: Tests
         run: uv run pytest -q
