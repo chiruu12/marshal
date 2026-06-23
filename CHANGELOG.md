@@ -16,7 +16,8 @@ versions may include breaking API changes until 1.0.
 - **Architectural-invariant tests** - lock the engine's core invariants in source (default
   safe-edit + always-timed runs, capability/permission agreement, no prompting flag, backend never
   encoded in a public name, usage-source honesty, the `run()` timeout/kill loop) plus a Skill
-  entrypoint contract, so a regression trips a test instead of shipping.
+  entrypoint contract and a CI/release workflow contract (least-privilege tokens, pinned actions,
+  frozen installs), so a regression trips a test instead of shipping.
 - **`--json` on inspection CLI commands** - `marshal backends`, `status`, `usage`, `workflows`,
   and `doctor` accept `--json` for machine-readable output.
 - **Declarative YAML workflows** - author a reusable orchestration recipe (phases of
