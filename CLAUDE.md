@@ -38,7 +38,7 @@ marshal/
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier
 │   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow
 │   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/mcp)
-├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow
+├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
 ├── SETUP.md                 # clone-to-first-run setup guide
 ├── docs/                    # design · status · usage · chauffeur-future · sources (docs/internal/ is local-only, gitignored)

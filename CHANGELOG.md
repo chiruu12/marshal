@@ -9,6 +9,14 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Consensus driver Skills** - `marshal-review-gate` (gate a merge behind an independent,
+  multi-reviewer quorum and a fixed truth table) and `marshal-plan-consensus` (converge biased,
+  independent solver plans into one approach via an independent judge before building). Both are
+  pure driver playbooks over the existing MCP tools - they add no new execution path.
+- **Architectural-invariant tests** - lock the engine's core invariants in source (default
+  safe-edit + always-timed runs, capability/permission agreement, no prompting flag, backend never
+  encoded in a public name, usage-source honesty, the `run()` timeout/kill loop) plus a Skill
+  entrypoint contract, so a regression trips a test instead of shipping.
 - **`--json` on inspection CLI commands** - `marshal backends`, `status`, `usage`, `workflows`,
   and `doctor` accept `--json` for machine-readable output.
 - **Declarative YAML workflows** - author a reusable orchestration recipe (phases of

@@ -72,9 +72,10 @@ exposed over the service and MCP. This completes the V1 core (engine + cost + be
 
 ### Phase 4 - coverage & productization (started)
 Shipped: the **Skills layer** - `skills/marshal-orchestrate` (decompose → spawn → monitor →
-collect → integrate), `skills/marshal-benchmark` (compare strategies), and `skills/marshal-workflow`
-(author + run a declarative recipe) driver playbooks, completing the four surfaces
-(engine · MCP · Skills · config).
+collect → integrate), `skills/marshal-benchmark` (compare strategies), `skills/marshal-workflow`
+(author + run a declarative recipe), `skills/marshal-review-gate` (gate a merge behind reviewer
+consensus), and `skills/marshal-plan-consensus` (converge on an approach before building) driver
+playbooks, completing the four surfaces (engine · MCP · Skills · config).
 Also shipped: **non-blocking `spawn`** - start a run in the background (persistent pool on the Fleet)
 and poll `status`/`get_run`; the run is recorded RUNNING at once and survives the driver turn.
 **`cancel_run`** stops a running agent by id (process-group `SIGTERM`).

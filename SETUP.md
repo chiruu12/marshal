@@ -120,7 +120,7 @@ The fastest path. From Claude Code:
 /plugin install marshal@marshal
 ```
 
-This installs all three driver Skills **and** the MCP server. The server runs from the plugin's own
+This installs all driver Skills **and** the MCP server. The server runs from the plugin's own
 checkout via `uv` (auto-syncing the `mcp` extra on first run) and inherits the project you have
 open, so `MARSHAL_REPO`/`MARSHAL_CONFIG` default to that project and its `fleet.config.yaml` - you
 still complete steps 1-4 there (config + backend auth). If no config is found yet, the server

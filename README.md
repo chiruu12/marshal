@@ -20,8 +20,9 @@ It plugs into your driver two ways:
   `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
   a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
-  `marshal-benchmark` (compare routing strategies on a real task), and `marshal-workflow` (author
-  and run a declarative recipe).
+  `marshal-benchmark` (compare routing strategies on a real task), `marshal-workflow` (author
+  and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
+  consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
 > **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (14
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
@@ -60,10 +61,9 @@ have open - so you still need `uv`, a `fleet.config.yaml` in that project, and t
 authenticated (`uv run marshal doctor` checks all of this). Until you add a config, the server
 starts with zero clients and tells you how to configure one.
 
-Prefer to copy just the Skills? The three driver Skills live in [`skills/`](skills/) - copy
-`skills/marshal-orchestrate`, `skills/marshal-benchmark`, and `skills/marshal-workflow` into your
-driver's skills directory (e.g. `.claude/skills/`) and wire the MCP server by hand per
-**[`SETUP.md`](SETUP.md)**.
+Prefer to copy just the Skills? The driver Skills live in [`skills/`](skills/) - copy the
+`skills/marshal-*` directories you want into your driver's skills directory (e.g. `.claude/skills/`)
+and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 

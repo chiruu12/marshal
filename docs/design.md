@@ -179,7 +179,7 @@ Shipped today (14): `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_ru
 `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
 `run_workflow`. Current state is tracked in `docs/status.md`.
 
-Mirror to **driver Skills** (`marshal-orchestrate`, `marshal-benchmark`, `marshal-workflow`) so the
+Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
 fleet works in both MCP and Skills hosts.
 Security from day one: **localhost-only bind, reject non-loopback, validate `Host` header** (DNS-rebind).
 
