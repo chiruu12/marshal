@@ -141,7 +141,7 @@ def test_backend_name_is_never_encoded_in_a_public_surface_name() -> None:
     # Guard against a vacuous pass if the source shape ever changes under the AST walk.
     assert len(tools) >= 10, tools
     assert len(subcommands) >= 5, subcommands
-    assert len(skills) == 3, skills
+    assert len(skills) >= 3, skills
     for surface in (*tools, *subcommands, *skills):
         for backend in backends:
             assert backend not in surface.lower(), f"backend {backend!r} leaked into {surface!r}"
