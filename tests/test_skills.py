@@ -35,6 +35,7 @@ def test_known_skills_are_present() -> None:
         "marshal-benchmark",
         "marshal-workflow",
         "marshal-review-gate",
+        "marshal-plan-consensus",
     } <= names
 
 
