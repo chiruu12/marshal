@@ -9,6 +9,10 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **`context_files` on `run_agent` / `run_many` / `spawn`** - a driver can now point a worker at the
+  specific repo files it should see (injected into the worker's prompt), scoping its context instead
+  of leaking the planner's whole session. Exposed through the service and the MCP tools; every
+  backend already consumed the field.
 - **Consensus driver Skills** - `marshal-review-gate` (gate a merge behind an independent,
   multi-reviewer quorum and a fixed truth table) and `marshal-plan-consensus` (converge biased,
   independent solver plans into one approach via an independent judge before building). Both are
