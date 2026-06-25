@@ -53,23 +53,44 @@ def build_app(service: MarshalService) -> Any:
         return [c.model_dump(mode="json") for c in service.list_clients()]
 
     @app.tool()
-    def run_agent(client: str, goal: str, task_id: str | None = None) -> dict[str, Any]:
-        """Run a task on a client's backend in an isolated git worktree; returns the run record."""
-        return service.run_agent(client, goal, task_id=task_id).model_dump(mode="json")
+    def run_agent(
+        client: str,
+        goal: str,
+        task_id: str | None = None,
+        context_files: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run a task on a client's backend in an isolated git worktree; returns the run record.
+
+        context_files: optional repo-relative paths to point the worker at (injected into its prompt).
+        """
+        return service.run_agent(
+            client, goal, task_id=task_id, context_files=context_files
+        ).model_dump(mode="json")
 
     @app.tool()
     def run_many(jobs: list[dict[str, Any]], max_concurrency: int = 4) -> list[dict[str, Any]]:
         """Run several clients in parallel, each in its own worktree; returns all run records.
 
-        jobs is a list of {client, goal, task_id?}. Concurrency is capped at max_concurrency.
+        jobs is a list of {client, goal, task_id?, context_files?}. Concurrency is capped at
+        max_concurrency.
         """
         records = service.run_many(jobs, max_concurrency=max_concurrency)
         return [r.model_dump(mode="json") for r in records]
 
     @app.tool()
-    def spawn(client: str, goal: str, task_id: str | None = None) -> dict[str, Any]:
-        """Start a run in the background; returns its RUNNING record immediately. Poll get_run/status."""
-        return service.spawn(client, goal, task_id=task_id).model_dump(mode="json")
+    def spawn(
+        client: str,
+        goal: str,
+        task_id: str | None = None,
+        context_files: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Start a run in the background; returns its RUNNING record immediately. Poll get_run/status.
+
+        context_files: optional repo-relative paths to point the worker at (injected into its prompt).
+        """
+        return service.spawn(
+            client, goal, task_id=task_id, context_files=context_files
+        ).model_dump(mode="json")
 
     @app.tool()
     def benchmark(

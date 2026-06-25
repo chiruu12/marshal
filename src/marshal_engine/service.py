@@ -79,6 +79,7 @@ class MarshalService:
         goal: str,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
+        context_files: list[str] | None = None,
     ) -> RunRequest:
         client = self.config.clients.get(client_name)
         if client is None:
@@ -88,6 +89,7 @@ class MarshalService:
             id=task_id or uuid.uuid4().hex[:8],
             goal=goal,
             role=client_name,
+            context_files=context_files or [],
             files_touched=files_touched or [],
         )
         return RunRequest(
@@ -106,8 +108,9 @@ class MarshalService:
         *,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
+        context_files: list[str] | None = None,
     ) -> RunRecord:
-        req = self._request_for(client_name, goal, task_id, files_touched)
+        req = self._request_for(client_name, goal, task_id, files_touched, context_files)
         return self.fleet.run(
             req.backend_name,
             req.task,
@@ -118,12 +121,16 @@ class MarshalService:
         )
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
-        """Run several clients in parallel. Each job is {client, goal, task_id?, files_touched?}.
+        """Run several clients in parallel. Each job is
+        {client, goal, task_id?, files_touched?, context_files?}.
 
         Client names are validated up front, so a typo fails fast before any run starts.
         """
         requests = [
-            self._request_for(j["client"], j["goal"], j.get("task_id"), j.get("files_touched"))
+            self._request_for(
+                j["client"], j["goal"], j.get("task_id"), j.get("files_touched"),
+                j.get("context_files"),
+            )
             for j in jobs
         ]
         return self.fleet.run_many(requests, max_concurrency=max_concurrency)
@@ -135,9 +142,10 @@ class MarshalService:
         *,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
+        context_files: list[str] | None = None,
     ) -> RunRecord:
         """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
-        req = self._request_for(client_name, goal, task_id, files_touched)
+        req = self._request_for(client_name, goal, task_id, files_touched, context_files)
         run_id = self.fleet.spawn(req)
         rec = self.fleet.state.get(run_id)
         assert rec is not None  # _start just recorded it RUNNING

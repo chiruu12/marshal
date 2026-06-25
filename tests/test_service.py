@@ -92,6 +92,30 @@ class _Unpriced(CodingAgentBackend):
         return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
 
 
+class _Capture(CodingAgentBackend):
+    """Records each TaskSpec it is asked to run, so tests can assert what the service threaded through."""
+
+    name = "capture"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self) -> None:
+        self.tasks: list[TaskSpec] = []
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        self.tasks.append(task)
+        return [sys.executable, "-c", "print('ok')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -142,6 +166,31 @@ def test_run_agent_unknown_client(repo: Path) -> None:
     svc = _svc(repo)
     with pytest.raises(ValueError):
         svc.run_agent("nope", "x")
+
+
+def _capture_svc(repo: Path, backend: _Capture) -> MarshalService:
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(name="worker", backend="capture", permission=PermissionMode.SAFE_EDIT)
+        }
+    )
+    return MarshalService(repo, cfg, backends={"capture": backend})
+
+
+def test_run_agent_threads_context_files_to_the_task(repo: Path) -> None:
+    # context_files is consumed by every backend's prompt; the service must carry it onto the TaskSpec
+    # so a driver can actually point a worker at the files it should see.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_agent("worker", "do x", task_id="t1", context_files=["a.py", "b.py"])
+    assert backend.tasks[-1].context_files == ["a.py", "b.py"]
+
+
+def test_run_many_threads_context_files_per_job(repo: Path) -> None:
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_many([{"client": "worker", "goal": "g", "task_id": "j1", "context_files": ["x.py"]}])
+    assert backend.tasks[-1].context_files == ["x.py"]
 
 
 def test_collect_run_surfaces_changed_files(repo: Path) -> None:
