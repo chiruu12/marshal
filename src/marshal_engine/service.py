@@ -85,10 +85,12 @@ class MarshalService:
         if client is None:
             known = ", ".join(self.config.clients) or "(none configured)"
             raise ValueError(f"no such client: {client_name!r}; known: {known}")
+        # `role` is a semantic routing role (planner/coder/reviewer) that a future policy layer maps
+        # to a backend - NOT the client name (the client is carried on RunRequest/RunRecord already).
+        # Leave it unset until that policy exists, so the field never claims a role nothing assigned.
         task = TaskSpec(
             id=task_id or uuid.uuid4().hex[:8],
             goal=goal,
-            role=client_name,
             context_files=context_files or [],
             files_touched=files_touched or [],
         )

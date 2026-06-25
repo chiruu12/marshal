@@ -193,6 +193,15 @@ def test_run_many_threads_context_files_per_job(repo: Path) -> None:
     assert backend.tasks[-1].context_files == ["x.py"]
 
 
+def test_run_agent_does_not_stamp_client_name_into_role(repo: Path) -> None:
+    # `role` is a semantic routing role, not the client name; the client is tracked separately.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    rec = svc.run_agent("worker", "do x", task_id="t1")
+    assert backend.tasks[-1].role is None
+    assert rec.client == "worker"  # client identity is still recorded, just not as a "role"
+
+
 def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     svc = _svc(repo)
     rec = svc.run_agent("worker", "do something", task_id="t1")
