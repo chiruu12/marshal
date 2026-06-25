@@ -43,7 +43,8 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
 - **Engine** for driving headless coding agents in isolated git worktrees, off one base class
   (`CodingAgentBackend`) with a shared safe run loop: hard external timeout, no stdin, and a
   process-group kill on timeout.
-- **Four backend adapters:** Cursor, OpenCode, Codex, and Google Antigravity.
+- **Backend adapters:** Cursor, OpenCode, and Codex, plus an experimental Google Antigravity adapter
+  (reply-verified; headless writes currently divert to a scratch dir rather than the worktree).
 - **MCP server** exposing an 11-tool surface: `list_clients`, `run_agent`, `run_many`, `spawn`,
   `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`.
 - **Merge-back workflow:** `collect_run` (read-only diff review) and `integrate` (explicit merge into
