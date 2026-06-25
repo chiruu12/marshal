@@ -230,8 +230,8 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 - **Phase 0 - repo:** lay down `pyproject.toml` (uv), the package skeleton, and `docs/`.
 - **Phase 1 - engine:** base class + `CursorBackend` + `OpenCodeBackend` + `CodexBackend` (pure `build_invocation`/`map_permission` + `parse_output`), worktree manager, process runner (timeout!), result collector. CLI-testable standalone before any MCP. Contract tests per backend.
 - **Phase 2 - usage:** `events.jsonl` + `summary.json`, price table, `source` tagging, OpenCode native + on-disk reconciliation, Cursor Admin-API path, `usage` command.
-- **Phase 3 - MCP server:** the 11 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
-- **Phase 4 - Skills:** `*-plan` (decompose + independence analysis), `*-run` (spawn+monitor loop + prompt-writing), `*-integrate` (merge + verify).
+- **Phase 3 - MCP server:** the 14 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
+- **Phase 4 - Skills:** the `marshal-*` driver playbooks - `marshal-orchestrate` (decompose → spawn → review → integrate), `marshal-benchmark` (measured strategy comparison), `marshal-workflow` (declarative YAML recipes), `marshal-review-gate` + `marshal-plan-consensus` (consensus review / approach convergence).
 - **Phase 5 - harden + docs:** retries/backoff, concurrency caps, worktree cleanup, dry-run, OpenCode warm-server fast path, README/onboarding → flip public.
 
 ## Anchors to study before/while building
