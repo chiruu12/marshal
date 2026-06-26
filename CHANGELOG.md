@@ -9,6 +9,11 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Claude Code backend** (`claude -p`) - a fifth worker adapter. It reports `total_cost_usd` +
+  tokens, so its usage is `native` (honest cost, no estimation); `acceptEdits` maps safe-edit,
+  `plan`/`bypassPermissions` map read-only/yolo. Live-verified end-to-end: edits land in the
+  worktree and the native cost reaches the ledger. The MCP surface is unchanged - backend is a
+  per-call parameter, so every existing tool drives it via a config client.
 - **`context_files` on `run_agent` / `run_many` / `spawn`** - a driver can now point a worker at the
   specific repo files it should see (injected into the worker's prompt), scoping its context instead
   of leaking the planner's whole session. Exposed through the service and the MCP tools; every

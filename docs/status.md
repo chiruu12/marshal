@@ -11,7 +11,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 |--------|----------------|-------|
 | `types.py` | Shared Pydantic models + enums | done |
 | `backends/base.py` | Abstract backend + safe `run()` (no-stdin, hard timeout) | done |
-| `backends/{cursor,opencode,codex,antigravity}.py` | Four adapters off one base class | done |
+| `backends/{cursor,opencode,codex,antigravity,claude_code}.py` | Five adapters off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
 | `pricing.py` | Token → cost price table (the `ESTIMATED` path) | done |
@@ -32,6 +32,7 @@ Quality gate: full unit suite passes; ruff and mypy (strict) clean across all so
 |---------|-----------|-----------|----------------------------|--------------|
 | OpenCode | yes | verified | verified | verified (tokens + cost) |
 | Cursor | yes | verified | verified | n/a by design (Admin API only) |
+| Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost unpriced) |
 | Antigravity | yes | verified (reply) | not yet** | none |
 
@@ -86,5 +87,9 @@ and the `marshal-workflow` Skill.
 **Cursor plan tier in `doctor`** - surfaces the authenticated CLI's subscription tier + current
 model (an honest account fact; individual accounts expose no usage/quota API, so no percentage is
 fabricated).
+**Claude Code backend** (`backends/claude_code.py`) - `claude -p --output-format json` with
+`acceptEdits` for safe-edit; it reports `total_cost_usd` + tokens, so usage is `native` (honest
+cost, no estimation). Live-verified end-to-end (2026-06-26): edits land in the worktree and the
+native cost flows to the ledger.
 Remaining: Antigravity PTY/workspace-trust; Cursor admin-API usage; Codex live re-verify; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

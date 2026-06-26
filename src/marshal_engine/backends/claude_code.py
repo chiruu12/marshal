@@ -18,11 +18,10 @@ Claude Code reports `total_cost_usd` directly, so usage is `native` (honest cost
 estimation) - unlike Cursor. The shared runner closes stdin, so any interactive prompt hits
 EOF instead of blocking; the permission modes below are all non-prompting.
 
-Runtime behaviour pending a live probe (2026-06-26): that `acceptEdits` in `-p` mode never
-blocks on a tool-approval prompt, that edits land in the worktree `cwd` (not a diverted dir,
-the bug that affects Antigravity), and that the JSON `usage`/`total_cost_usd` schema matches
-the parsing below. The pure hooks (`build_invocation`/`map_permission`/`parse_output`) are
-contract-tested offline regardless.
+Runtime behaviour verified by a live probe (2026-06-26): `acceptEdits` in `-p` mode does not
+block with stdin closed, edits land in the worktree `cwd` (not a diverted dir - the bug that
+affects Antigravity), and the JSON `usage`/`total_cost_usd` schema matches the parsing below.
+The pure hooks (`build_invocation`/`map_permission`/`parse_output`) are contract-tested offline.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ description: >
   Drive a fleet of headless coding agents through Marshal's MCP server: decompose a goal into
   independent tasks, run them in parallel in isolated git worktrees, review each diff, and
   integrate the good ones. Use when you have a multi-part coding goal to delegate to worker agents
-  (Cursor, OpenCode, Codex, Antigravity) instead of doing it all yourself. The engine is mechanism;
+  (Cursor, OpenCode, Codex, Antigravity, Claude Code) instead of doing it all yourself. The engine is mechanism;
   this playbook is the judgment - decomposition, prompt-writing, and merge decisions live here.
 ---
 

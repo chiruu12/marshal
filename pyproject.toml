@@ -1,12 +1,12 @@
 [project]
 name = "marshal"
 version = "0.0.1"
-description = "Orchestration engine for driving a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity) from one driver via MCP + Skills"
+description = "Orchestration engine for driving a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver via MCP + Skills"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "chiruu12" }]
-keywords = ["agents", "orchestration", "mcp", "cursor", "opencode", "codex", "antigravity", "headless", "coding-agent"]
+keywords = ["agents", "orchestration", "mcp", "cursor", "opencode", "codex", "antigravity", "claude-code", "headless", "coding-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

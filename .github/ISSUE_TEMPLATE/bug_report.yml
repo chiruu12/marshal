@@ -30,6 +30,7 @@ body:
         - opencode
         - codex
         - antigravity
+        - claude-code
         - not backend-specific
     validations:
       required: true

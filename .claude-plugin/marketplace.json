@@ -8,7 +8,7 @@
     {
       "name": "marshal",
       "source": "./",
-      "description": "Drive a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity) from one driver: parallel git-worktree isolation, per-provider cost tracking, and measured routing benchmarks. Bundles the marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, and marshal-plan-consensus skills and the Marshal MCP server (14 tools).",
+      "description": "Drive a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver: parallel git-worktree isolation, per-provider cost tracking, and measured routing benchmarks. Bundles the marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, and marshal-plan-consensus skills and the Marshal MCP server (14 tools).",
       "version": "0.0.1",
       "license": "MIT",
       "homepage": "https://github.com/chiruu12/marshal",

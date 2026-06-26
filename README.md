@@ -9,9 +9,9 @@ review, route execution to cheaper or specialized workers, isolate each task in 
 worktree, and measure what every routing strategy actually cost.
 
 One driver agent (e.g. Claude Code) plans the work. Marshal spawns and manages a fleet of
-*headless* coding agents - **Cursor CLI, OpenCode, and Codex** today (plus an experimental
-**Google Antigravity** adapter), more behind a single base class - each running autonomously in its
-own isolated git worktree, in parallel. Marshal monitors
+*headless* coding agents - **Cursor CLI, OpenCode, Codex, and Claude Code** today (plus an
+experimental **Google Antigravity** adapter), more behind a single base class - each running
+autonomously in its own isolated git worktree, in parallel. Marshal monitors
 them, collects their diffs, tracks per-provider usage, and hands results back for integration.
 
 It plugs into your driver two ways:
@@ -29,14 +29,15 @@ It plugs into your driver two ways:
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
 > fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
 > **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and
-> compare real cost/latency/outcome). OpenCode and Cursor live-verified; the Codex adapter verified
-> on a fresh usage window (re-verify pending). See [`docs/status.md`](docs/status.md).
+> compare real cost/latency/outcome). OpenCode, Cursor, and Claude Code live-verified (Claude Code
+> with native cost); the Codex adapter verified on a fresh usage window (re-verify pending). See
+> [`docs/status.md`](docs/status.md).
 
 ## Getting started
 
 **Prerequisites:** Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), git, and the CLI for each
-backend you'll use (`opencode` / `cursor-agent` / `codex` / `agy`) - each authenticated via its own
-login. Marshal does **not** install the backend CLIs.
+backend you'll use (`opencode` / `cursor-agent` / `codex` / `claude` / `agy`) - each authenticated
+via its own login. Marshal does **not** install the backend CLIs.
 
 ```bash
 git clone https://github.com/chiruu12/marshal.git && cd marshal
@@ -135,6 +136,7 @@ Marshal MCP server  ──  fleet state (file-based)
 engine ── base class ─┬─ Cursor adapter
                       ├─ OpenCode adapter
                       ├─ Codex adapter        →  each runs headless in its own git worktree
+                      ├─ Claude Code adapter
                       └─ Antigravity adapter
    │
    ▼

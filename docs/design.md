@@ -2,7 +2,7 @@
 
 > **Marshal** is the infrastructure layer: one "driver" agent (Claude Code) plans work, then
 > Marshal spawns and manages a **fleet of headless coding agents** (Cursor CLI, OpenCode, Codex,
-> Google Antigravity now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
+> Google Antigravity, Claude Code now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
 > **MCP server + Skills**, with **per-provider usage tracking**. To *marshal* = to gather and
 > organize a force - exactly what this does to a fleet of agents.
 >
@@ -19,7 +19,7 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 ## 0. Locked decisions
 
 - **Execution model:** background **fleet** - N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
-- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Antigravity now. Gemini later = new adapter only.
+- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Antigravity + Claude Code now. Gemini later = new adapter only.
 - **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) - optional fast path.
 - **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** - they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
 - **Differentiator:** **per-provider usage tracking** + a `usage` command. Nearly every competitor omits this.
@@ -273,7 +273,7 @@ Keep V1 focused - the #1 risk is becoming "yet another agent framework."
 
 ### Backends in scope (built)
 
-Four adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
+Five adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
 and contract tests:
 
 | Backend | Headless invocation | read-only / safe-edit / yolo | Usage in output |
@@ -282,6 +282,7 @@ and contract tests:
 | Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
 | OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` |
 | Antigravity | `agy -p` (text only) | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
+| Claude Code | `claude -p --output-format json` | `--permission-mode plan` / `acceptEdits` / `bypassPermissions` | cost+tokens in JSON (native) |
 
 Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth, needs a PTY
 wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo
@@ -294,4 +295,6 @@ safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` auth
 Antigravity ⚠️ partial - CLI/auth/reply work, but headless writes divert to
 `~/.gemini/antigravity-cli/scratch` instead of the target worktree (untrusted-workspace fallback);
 worktree-isolated edits need an `agy` workspace-trust/PTY workaround (tracked). Codex ⛔ adapter
-ready, blocked by the account usage limit (~Jul 18).
+ready, blocked by the account usage limit (~Jul 18). **Claude Code ✅ fully (2026-06-26):**
+read/safe-edit (`acceptEdits`) writes land in the worktree, native `total_cost_usd`+tokens flow to
+the ledger, and `-p` mode is non-blocking with stdin closed.

@@ -36,7 +36,7 @@ defaults:
 
 clients:
   implementer:
-    backend: opencode          # opencode | cursor | codex | antigravity
+    backend: opencode          # opencode | cursor | codex | claude-code | antigravity
     model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model here is rejected
     permission: safe-edit
     secret_ref: env:OPENCODE_API_KEY
@@ -231,6 +231,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. |
 | Codex | yes | best-effort | `workspace-write` sandbox for safe-edit. |
 | Antigravity | reply-only today | no | Headless writes currently divert to a scratch dir. |
+| Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.
