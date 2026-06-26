@@ -16,16 +16,16 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (14 tools):
-  `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`,
-  `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (15 tools):
+  `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`,
+  `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
   a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
   `marshal-benchmark` (compare routing strategies on a real task), `marshal-workflow` (author
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (14
+> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (15
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
 > fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
 > **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and

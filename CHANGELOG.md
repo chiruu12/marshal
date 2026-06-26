@@ -9,6 +9,10 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **`doctor` over MCP** - the preflight (toolchain, repo, config, per-backend CLI availability +
+  auth) is now an MCP tool, not just a CLI command, so a driver can verify a backend is ready
+  *before* spawning instead of discovering it from a failed run. Read-only; returns per-check
+  results plus a fails/warns roll-up. The MCP surface is now 15 tools.
 - **Claude Code backend** (`claude -p`) - a fifth worker adapter. It reports `total_cost_usd` +
   tokens, so its usage is `native` (honest cost, no estimation); `acceptEdits` maps safe-edit,
   `plan`/`bypassPermissions` map read-only/yolo. Live-verified end-to-end: edits land in the

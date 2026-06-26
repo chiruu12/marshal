@@ -34,11 +34,11 @@ def build_service() -> MarshalService:
             "reconnect. See SETUP.md.",
             file=sys.stderr,
         )
-        return MarshalService(repo, FleetConfig())
+        return MarshalService(repo, FleetConfig(), config_path=cfg_path)
     config = load_config(cfg_path)
     for warning in validate(config):
         print(f"[marshal] config warning: {warning}", file=sys.stderr)
-    return MarshalService(repo, config)
+    return MarshalService(repo, config, config_path=cfg_path)
 
 
 def build_app(service: MarshalService) -> Any:
@@ -51,6 +51,13 @@ def build_app(service: MarshalService) -> Any:
     def list_clients() -> list[dict[str, Any]]:
         """List configured backend clients (name, backend, model, permission)."""
         return [c.model_dump(mode="json") for c in service.list_clients()]
+
+    @app.tool()
+    def doctor() -> dict[str, Any]:
+        """Preflight the setup: toolchain, repo, config, and each configured backend's CLI
+        availability + auth. Read-only - run it before spawning to catch a missing/unauthenticated
+        backend up front rather than via a failed run. Returns per-check results + a fails/warns roll-up."""
+        return service.doctor().model_dump(mode="json")
 
     @app.tool()
     def run_agent(

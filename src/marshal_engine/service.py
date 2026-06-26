@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .config import ConfigError, FleetConfig, resolve_model
+from .doctor import run_checks, summarize
 from .fleet import (
     BenchmarkResult,
     CollectResult,
@@ -46,6 +47,24 @@ class ClientInfo(BaseModel):
     permission: str
 
 
+class DoctorCheck(BaseModel):
+    """One preflight result, serialized for the driver (the doctor `Check` over the MCP surface)."""
+
+    name: str
+    status: str          # ok | warn | fail
+    detail: str
+    fix: str = ""
+
+
+class DoctorReport(BaseModel):
+    """Preflight verdict: per-check results plus a roll-up. `ok` is true when nothing failed."""
+
+    checks: list[DoctorCheck]
+    fails: int
+    warns: int
+    ok: bool
+
+
 class MarshalService:
     def __init__(
         self,
@@ -54,9 +73,12 @@ class MarshalService:
         *,
         base_dir: Path | str | None = None,
         backends: Mapping[str, CodingAgentBackend] | None = None,
+        config_path: Path | str | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path(repo_root)
+        # Where the config was loaded from - the preflight re-checks this file parses on disk.
+        self.config_path = Path(config_path) if config_path else self.repo_root / "fleet.config.yaml"
         if backends is None:
             names = {c.backend for c in config.clients.values()}
             backends = {name: make_backend(name) for name in names}
@@ -213,6 +235,24 @@ class MarshalService:
 
     def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult:
         return self.fleet.integrate(run_id, cleanup=cleanup)
+
+    def doctor(self) -> DoctorReport:
+        """Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth).
+
+        Read-only and side-effect-light - it only probes versions/availability - so a driver can
+        check a backend is ready *before* spawning, instead of learning it from a failed run. Probes
+        the fleet's configured backends (the same instances runs use).
+        """
+        checks = run_checks(self.repo_root, self.config_path, backends=self.fleet.backends)
+        fails, warns = summarize(checks)
+        return DoctorReport(
+            checks=[
+                DoctorCheck(name=c.name, status=c.status, detail=c.detail, fix=c.fix) for c in checks
+            ],
+            fails=fails,
+            warns=warns,
+            ok=fails == 0,
+        )
 
     def status(self) -> list[RunRecord]:
         return self.fleet.state.list()

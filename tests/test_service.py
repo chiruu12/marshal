@@ -20,7 +20,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, FleetConfig
+from marshal_engine.config import ClientConfig, FleetConfig, load_config
 from marshal_engine.service import MarshalService
 
 
@@ -290,3 +290,25 @@ def test_integrate_empty_run_is_noop(repo: Path) -> None:
     rec = svc.run_agent("worker", "do nothing", task_id="e1")
     result = svc.integrate(rec.run_id)
     assert result.status == "empty"
+
+
+def test_doctor_reports_checks_and_serializes(repo: Path) -> None:
+    svc = _svc(repo)  # in-memory config; no fleet.config.yaml on disk
+    report = svc.doctor()
+    by_name = {c.name: c for c in report.checks}
+    assert {"python", "git", "repo"} <= set(by_name)
+    assert by_name["repo"].status == "ok"  # the fixture is a real git work tree
+    assert by_name["config"].status == "fail"  # no config file on disk -> a failing check
+    assert report.ok is (report.fails == 0) and report.ok is False
+    assert report.model_dump(mode="json")["fails"] >= 1  # fully serializable for the MCP surface
+
+
+def test_doctor_probes_configured_backends(repo: Path) -> None:
+    cfg_file = repo / "fleet.config.yaml"
+    cfg_file.write_text("clients:\n  worker:\n    backend: echo\n    permission: safe-edit\n")
+    svc = MarshalService(
+        repo, load_config(cfg_file), backends={"echo": _Echo()}, config_path=cfg_file
+    )
+    by_name = {c.name: c for c in svc.doctor().checks}
+    assert by_name["config"].status == "ok"
+    assert by_name["backend:echo"].status == "ok"  # _Echo.check_available() is True

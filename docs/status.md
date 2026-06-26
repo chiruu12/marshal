@@ -22,7 +22,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
 | `service.py` | Testable core the MCP/CLI call into | done |
 | `cli.py` | `marshal doctor/backends/usage/status/workflows/mcp` | done |
-| `mcp_server.py` | 14-tool MCP surface over stdio (run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/…) | done |
+| `mcp_server.py` | 15-tool MCP surface over stdio (doctor/run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/…) | done |
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files.
 

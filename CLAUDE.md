@@ -12,7 +12,7 @@ Marshal clean and embeddable.
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
 > **V1 complete**: merge-back, per-provider cost-proof, capped parallel `run_many`, non-blocking
 > `spawn`, `cancel_run`, the **measured savings benchmark** (`benchmark`/`report`), **declarative
-> YAML workflows**, and driver Skills. 14 MCP tools. OpenCode + Cursor + Claude Code live-verified
+> YAML workflows**, and driver Skills. 15 MCP tools. OpenCode + Cursor + Claude Code live-verified
 > (Claude Code with native cost). Remaining work is coverage/polish. See `docs/status.md`.
 
 ## Directory Structure
@@ -37,7 +37,7 @@ marshal/
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier
-│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow
+│   ├── mcp_server.py        # MCP server (FastMCP): doctor/list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow
 │   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/mcp)
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
