@@ -48,6 +48,14 @@ versions may include breaking API changes until 1.0.
   doctor` reports its subscription tier and current model (an honest account fact, not a fabricated
   quota percentage).
 
+### Changed
+- **MCP tools are now non-blocking and self-describing.** Each tool runs async and offloads its
+  (possibly long-running) work to a worker thread, so a blocking `run_agent` / `run_many` /
+  `benchmark` / `run_workflow` no longer holds the server's event loop - the driver can poll
+  `status` / `get_run` and `cancel_run` an in-flight run, not only ones started with `spawn`. Tool
+  parameters now carry per-parameter descriptions in the schema, and `run_many` takes a typed job
+  shape (`{client, goal, task_id?, context_files?}`) instead of an untyped object.
+
 ## [0.0.1]
 
 First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.

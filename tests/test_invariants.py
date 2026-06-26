@@ -36,7 +36,7 @@ def _decorated_tool_names(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names: list[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):  # tools are async defs
             continue
         for dec in node.decorator_list:
             target = dec.func if isinstance(dec, ast.Call) else dec

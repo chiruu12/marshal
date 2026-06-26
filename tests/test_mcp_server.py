@@ -78,3 +78,40 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         "doctor",
     }
     assert expected <= names
+
+
+def test_tools_are_async_and_round_trip_via_call_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Tools are async and offload to a worker thread; calling one must execute end-to-end (this
+    # would deadlock/raise if the async+offload wiring were wrong).
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    result = asyncio.run(app.call_tool("list_clients", {}))
+    assert result is not None
+
+
+def test_tool_params_carry_schema_descriptions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Self-describing params: the driver should see a description per parameter, not just type+title.
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    props = tools["run_agent"].inputSchema["properties"]
+    assert props["client"].get("description")
+    assert props["context_files"].get("description")
