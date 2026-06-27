@@ -150,6 +150,8 @@ top of it. See `docs/chauffeur-future.md`.
 
 - [`SETUP.md`](SETUP.md) - clone-to-first-run setup (prerequisites, install, auth, verify, wire in).
 - [`docs/usage.md`](docs/usage.md) - configure a fleet and drive it via MCP, CLI, or library.
+- [`docs/model-playbook.md`](docs/model-playbook.md) - which model/client to route a task to, by
+  task weight (heavy/standard/light), with a copy-paste tiered fleet and cost-honesty notes.
 - [`docs/status.md`](docs/status.md) - what's built, the backend verification matrix, and the roadmap.
 - [`docs/design.md`](docs/design.md) - full architecture, per-backend cheat sheets, permission
   model, usage schema, and the edge-case hardening checklist.

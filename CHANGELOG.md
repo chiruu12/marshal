@@ -9,6 +9,10 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Model & client routing playbook** (`docs/model-playbook.md`) - how to pick which model/client to
+  route a task to by task weight (heavy/standard/light), a per-backend model menu, a copy-paste
+  tiered fleet config, routing heuristics, and cost-honesty notes (native/estimated/unavailable).
+  Linked from the README and the `marshal-orchestrate` Skill.
 - **`doctor` over MCP** - the preflight (toolchain, repo, config, per-backend CLI availability +
   auth) is now an MCP tool, not just a CLI command, so a driver can verify a backend is ready
   *before* spawning instead of discovering it from a failed run. Read-only; returns per-check
