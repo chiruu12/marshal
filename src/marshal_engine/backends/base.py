@@ -81,6 +81,14 @@ class CodingAgentBackend(ABC):
         """
         return None
 
+    def prepare(self, opts: RunOpts) -> None:
+        """Optional per-run setup, run just before the process is spawned (default: no-op).
+
+        A seam for backend-specific preconditions that aren't pure argv - e.g. Antigravity
+        registering the run's worktree as a trusted workspace so its headless edits land in `cwd`
+        instead of a scratch dir. Keep it fast and idempotent; a failure here fails the run.
+        """
+
     # --- shared, concrete run loop -------------------------------------------------------
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
@@ -100,6 +108,15 @@ class CodingAgentBackend(ABC):
 
         def _elapsed_ms() -> int:
             return int((time.monotonic() - start) * 1000)
+
+        try:
+            self.prepare(opts)
+        except Exception as exc:  # noqa: BLE001 - a prepare failure is a run failure, not a crash
+            return AgentResult(
+                status=RunStatus.FAILED,
+                error=f"{self.name}: prepare failed: {exc}",
+                duration_ms=_elapsed_ms(),
+            )
 
         try:
             proc = subprocess.Popen(

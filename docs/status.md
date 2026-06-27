@@ -34,13 +34,15 @@ Quality gate: full unit suite passes; ruff and mypy (strict) clean across all so
 | Cursor | yes | verified | verified | n/a by design (Admin API only) |
 | Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost unpriced) |
-| Antigravity | yes | verified (reply) | not yet** | none |
+| Antigravity | yes | verified (reply) | verified** | none |
 
 \* Codex safe-edit (worktree write) verified on a fresh usage window; the dev account is
 intermittently rate-limited, so a re-run may have to wait. Token counts are captured but cost is
 `unavailable` until the model is added to the price table.
-\*\* Antigravity headless writes divert to `~/.gemini/antigravity-cli/scratch` under an
-untrusted workspace (`--add-dir` does not fix it). Needs a PTY / workspace-trust workaround.
+\*\* Antigravity headless writes now land in the worktree (verified end-to-end 2026-06-27). The
+adapter's `prepare()` pre-registers the run's worktree in `~/.gemini/antigravity-cli/settings.json`
+`trustedWorkspaces` and passes `--add-dir <cwd>`; without the trust entry, agy diverts edits to its
+scratch dir (`--add-dir` alone was insufficient). Still no native usage (text-only output).
 
 ## Roadmap
 
@@ -91,5 +93,8 @@ fabricated).
 `acceptEdits` for safe-edit; it reports `total_cost_usd` + tokens, so usage is `native` (honest
 cost, no estimation). Live-verified end-to-end (2026-06-26): edits land in the worktree and the
 native cost flows to the ledger.
-Remaining: Antigravity PTY/workspace-trust; Cursor admin-API usage; Codex live re-verify; a Gemini
+**Antigravity headless writes** (`backends/antigravity.py`) - `prepare()` registers the run's
+worktree in agy's `trustedWorkspaces` before launch, so headless edits land in the worktree instead
+of the scratch dir (live-verified 2026-06-27). This closes the prior known limitation.
+Remaining: Antigravity native usage; Cursor admin-API usage; Codex live re-verify; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
