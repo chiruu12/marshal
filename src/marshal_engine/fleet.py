@@ -121,11 +121,14 @@ class Fleet:
         *,
         base_dir: Path | str | None = None,
         worktree_base: Path | str | None = None,
+        worktree_setup: list[str] | None = None,
         prices: PriceTable | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
-        self.worktrees = WorktreeManager(self.repo_root, worktree_base or base / "worktrees")
+        self.worktrees = WorktreeManager(
+            self.repo_root, worktree_base or base / "worktrees", setup_cmd=worktree_setup
+        )
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)

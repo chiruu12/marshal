@@ -8,6 +8,7 @@ never a `fireworks-ai/...` model, so runs bill the Go subscription rather than F
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,9 @@ class ClientConfig(BaseModel):
 
 class FleetConfig(BaseModel):
     clients: dict[str, ClientConfig] = {}
+    # Optional command run once in each fresh worktree before the agent starts (e.g. to provision a
+    # venv). None = no setup step. Repo-wide, not per-client - it sets up the checkout, not a run.
+    worktree_setup: list[str] | None = None
 
 
 def load_config(path: Path | str) -> FleetConfig:
@@ -63,7 +67,27 @@ def load_config(path: Path | str) -> FleetConfig:
         # point (CLI / library / MCP), not only the MCP path that happens to call validate().
         _reject_fireworks(client)
         clients[name] = client
-    return FleetConfig(clients=clients)
+    return FleetConfig(clients=clients, worktree_setup=_parse_setup(raw.get("worktree_setup")))
+
+
+def _parse_setup(value: Any) -> list[str] | None:
+    """Normalize the optional post-create worktree command to an argv list (or None).
+
+    Accepts a shell-ish string (``uv sync --extra dev``) or an explicit argv list. The command runs
+    once in each fresh worktree before the agent starts - with the driver's VIRTUAL_ENV scrubbed so
+    it targets the worktree, not the driver. An empty/blank value is treated as "no setup".
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        argv = shlex.split(value)
+    elif isinstance(value, list):
+        argv = [str(x) for x in value]
+    else:
+        raise ConfigError(
+            f"worktree_setup must be a string or list, got {type(value).__name__}"
+        )
+    return argv or None
 
 
 def resolve_model(client: ClientConfig) -> str | None:

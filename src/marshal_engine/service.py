@@ -82,7 +82,9 @@ class MarshalService:
         if backends is None:
             names = {c.backend for c in config.clients.values()}
             backends = {name: make_backend(name) for name in names}
-        self.fleet = Fleet(repo_root, backends, base_dir=base_dir)
+        self.fleet = Fleet(
+            repo_root, backends, base_dir=base_dir, worktree_setup=config.worktree_setup
+        )
 
     def list_clients(self) -> list[ClientInfo]:
         return [
