@@ -8,6 +8,15 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **Antigravity headless writes now land in the worktree** (were diverting to agy's scratch dir).
+  Headless `agy` can't establish workspace trust without a TTY, so it wrote edits into
+  `~/.gemini/antigravity-cli/scratch` instead of `cwd`. A new `CodingAgentBackend.prepare(opts)` hook
+  (run by `base.run()` just before spawn) lets the Antigravity adapter pre-register the run's worktree
+  in agy's `trustedWorkspaces` (merge-preserving, atomic, idempotent, prunes dead paths, safe for
+  parallel runs); the run also passes `--add-dir <cwd>`. Live-verified end-to-end. `--add-dir` alone
+  was insufficient (the prior known limitation).
+
 ### Added
 - **`doctor` over MCP** - the preflight (toolchain, repo, config, per-backend CLI availability +
   auth) is now an MCP tool, not just a CLI command, so a driver can verify a backend is ready

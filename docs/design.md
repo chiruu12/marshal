@@ -292,9 +292,10 @@ verified for the failure path only (live success run pending).
 **Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
 usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
 safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` authenticates). 
-Antigravity ⚠️ partial - CLI/auth/reply work, but headless writes divert to
-`~/.gemini/antigravity-cli/scratch` instead of the target worktree (untrusted-workspace fallback);
-worktree-isolated edits need an `agy` workspace-trust/PTY workaround (tracked). Codex ⛔ adapter
+**Antigravity ✅ writes fixed (2026-06-27):** headless edits used to divert to
+`~/.gemini/antigravity-cli/scratch` (no TTY → no workspace trust); the adapter's `prepare()` now
+pre-registers the run's worktree in agy's `trustedWorkspaces` (+ `--add-dir <cwd>`), so edits land in
+the worktree - live-verified end-to-end. Still text-only output (no native usage). Codex ⛔ adapter
 ready, blocked by the account usage limit (~Jul 18). **Claude Code ✅ fully (2026-06-26):**
 read/safe-edit (`acceptEdits`) writes land in the worktree, native `total_cost_usd`+tokens flow to
 the ledger, and `-p` mode is non-blocking with stdin closed.

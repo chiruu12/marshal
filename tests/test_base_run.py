@@ -62,6 +62,28 @@ def test_run_success(tmp_path: Path) -> None:
     assert res.text == "hi"
 
 
+def test_run_calls_prepare_before_spawn(tmp_path: Path) -> None:
+    calls: list[Path] = []
+
+    class _Prep(_Dummy):
+        def prepare(self, opts: RunOpts) -> None:
+            calls.append(Path(opts.cwd))
+
+    res = _Prep([sys.executable, "-c", "print('hi')"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.SUCCEEDED
+    assert calls == [tmp_path]  # prepare ran, with the run's cwd
+
+
+def test_run_prepare_failure_is_a_failed_result(tmp_path: Path) -> None:
+    class _BadPrep(_Dummy):
+        def prepare(self, opts: RunOpts) -> None:
+            raise RuntimeError("trust failed")
+
+    res = _BadPrep([sys.executable, "-c", "print('hi')"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    assert "prepare failed" in (res.error or "") and "trust failed" in (res.error or "")
+
+
 def test_run_timeout_kills_process(tmp_path: Path) -> None:
     b = _Dummy([sys.executable, "-c", "import time; time.sleep(30)"])
     res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
