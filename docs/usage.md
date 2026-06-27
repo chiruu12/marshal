@@ -45,6 +45,11 @@ clients:
     backend: cursor
     permission: read-only
     secret_ref: env:CURSOR_API_KEY
+
+  planner:
+    backend: claude-code       # `claude -p` - native cost (total_cost_usd) + tokens
+    model: claude-sonnet-4-6   # bump to claude-opus-4-8 for harder tasks
+    permission: safe-edit
 ```
 
 - **Auth is per-CLI**: run each backend's login once (`opencode auth login`, `cursor-agent login`,

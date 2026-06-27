@@ -38,3 +38,12 @@ clients:
   refactorer:
     backend: codex
     permission: safe-edit
+
+  # Claude Code (`claude -p`). Reports native cost (total_cost_usd) + tokens - honest $/run, no
+  # estimation. Auth: run `claude` and log in, or set ANTHROPIC_API_KEY. Bump the model to
+  # claude-opus-4-8 for harder tasks.
+  planner:
+    backend: claude-code
+    model: claude-sonnet-4-6
+    permission: safe-edit
+    secret_ref: env:ANTHROPIC_API_KEY   # optional preflight check; see header
