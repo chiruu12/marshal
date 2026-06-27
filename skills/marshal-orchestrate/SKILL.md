@@ -19,7 +19,8 @@ collect → integrate.**
 ## 0. Know your clients
 Call `list_clients` to see the configured workers (name, backend, model, permission). Each client is
 a routing choice the user set up (a cheap bulk worker, a careful reviewer, etc.). You route tasks to
-clients **by name** - you never choose backends directly.
+clients **by name** - you never choose backends directly. To decide *which* client a task should go
+to (by task weight - heavy/standard/light - and cost), see [`docs/model-playbook.md`](../../docs/model-playbook.md).
 
 ## 1. Plan - decompose into INDEPENDENT tasks
 Split the goal into tasks that can run in parallel **without colliding**:

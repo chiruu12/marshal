@@ -21,6 +21,8 @@ models:
     input_per_mtok: 3.0
     output_per_mtok: 15.0
     cache_read_per_mtok: 0.3
-  gpt-5-codex:
-    input_per_mtok: 1.25
-    output_per_mtok: 10.0
+  # Codex runs on gpt-5.5 (reports tokens, not cost). Left UNPRICED on purpose - until you fill in
+  # the real per-Mtok prices below, its cost is reported as "unavailable" (never a fake $0).
+  # gpt-5.5:
+  #   input_per_mtok: 0.0
+  #   output_per_mtok: 0.0
