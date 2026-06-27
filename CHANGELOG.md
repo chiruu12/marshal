@@ -12,7 +12,9 @@ versions may include breaking API changes until 1.0.
 - **Model & client routing playbook** (`docs/model-playbook.md`) - how to pick which model/client to
   route a task to by task weight (heavy/standard/light), a per-backend model menu, a copy-paste
   tiered fleet config, routing heuristics, and cost-honesty notes (native/estimated/unavailable).
-  Linked from the README and the `marshal-orchestrate` Skill.
+  Linked from the README and the `marshal-orchestrate` Skill. Codex is documented on `gpt-5.5`; the
+  shipped price table no longer pins `gpt-5-codex`, so Codex cost reads `unavailable` until you price
+  its model (never a fake `$0`).
 - **`doctor` over MCP** - the preflight (toolchain, repo, config, per-backend CLI availability +
   auth) is now an MCP tool, not just a CLI command, so a driver can verify a backend is ready
   *before* spawning instead of discovering it from a failed run. Read-only; returns per-check

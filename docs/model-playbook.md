@@ -37,7 +37,7 @@ Pick a model for the *weight*, and note how its cost is known — Marshal never 
 | `opencode` | `opencode-go/minimax-m3` | Standard | native | General coder. |
 | `opencode` | `opencode-go/deepseek-v4-flash` | Light | native | Fast/cheap for bulk. |
 | `cursor` | `composer-2.5` | Standard–Heavy | **unavailable** | Strong coder; individual plans expose no per-run cost (`doctor` shows plan tier). |
-| `codex` | `gpt-5-codex` | Standard | **estimated** | Cost = tokens × price table (~$1.25/$10); re-verify when rate limits reset. |
+| `codex` | `gpt-5.5` | Standard–Heavy | **unavailable** (until priced) | Reports tokens but no cost; add a `gpt-5.5` entry to `prices.yaml` to get **estimated** cost. |
 | `antigravity` *(experimental)* | `gemini-3.1-pro` (heavy), `gemini-3.5-flash` (light), also `claude-sonnet-4.6` / `claude-opus-4.6` / `gpt-oss-120b` | varies | none | Headless **writes** currently divert under workspace-trust; use read-only/reply until fixed. |
 
 > OpenCode must use an `opencode-go/*` model — a `fireworks-ai/*` model is rejected at config load so
@@ -80,10 +80,11 @@ clients:
 ground truth:
 
 - **native** (`claude-code`, `opencode`) — the backend reported real tokens **and** cost. Trust it.
-- **estimated** (`codex`) — cost computed from tokens × `src/marshal_engine/data/prices.yaml`
-  (USD per Mtok). Those are *starter* values — update them to your providers' current prices. An
-  estimate reflects the table at the moment of the run.
-- **unavailable** (`cursor`) — the backend exposes no per-run cost; tokens may still be recorded.
+- **estimated** — cost computed from tokens × `src/marshal_engine/data/prices.yaml` (USD per Mtok),
+  for a token-only backend (e.g. `codex`) **whose model is in the table**. Those are values you own —
+  set them to your providers' current prices; an estimate reflects the table at the moment of the run.
+- **unavailable** (`cursor`, and `codex` until you price its model) — no per-run cost is known; tokens
+  may still be recorded. A model absent from the price table stays `unavailable`, never a fake `$0`.
 
 When you need true cost accounting (e.g. for a benchmark you'll act on), prefer **native-cost**
 clients so "cheapest" ranks on facts, not estimates.
