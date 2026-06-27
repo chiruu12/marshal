@@ -174,6 +174,14 @@ clients:
 Runtime state - worktrees, per-run JSON, usage - lands under `.marshal/`. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
+**Worktree environment isolation.** The driver usually runs inside its own activated venv, so
+`os.environ` carries `VIRTUAL_ENV`/`PYTHONHOME` pointing at the *driver's* interpreter. Every
+spawned child (agents and the worktree-setup command) has those scrubbed (`env.child_env`), so the
+worktree's own `.venv` wins - otherwise an agent's `uv run pytest` silently resolves the driver's
+install and tests stale code. A fresh worktree has no `.venv` (it's gitignored), so the optional
+top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) provisions one right
+after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
+
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
 Shipped today (14): `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`,
 `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,

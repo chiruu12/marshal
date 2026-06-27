@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,34 @@ def test_create_makes_isolated_worktree(repo: Path) -> None:
     assert wt.path.exists()
     assert wt.branch == "marshal/task1"
     assert (wt.path / "README.md").exists()  # has the repo content
+
+
+def test_create_runs_setup_command_in_worktree(repo: Path) -> None:
+    # setup_cmd runs in the fresh worktree before it's returned (e.g. to provision a venv).
+    m = WorktreeManager(repo, setup_cmd=[sys.executable, "-c", "open('marker', 'w').write('ok')"])
+    wt = m.create("setup_ok")
+    assert (wt.path / "marker").read_text() == "ok"  # ran with cwd = the worktree
+
+
+def test_create_setup_failure_tears_down_and_raises(repo: Path) -> None:
+    m = WorktreeManager(repo, setup_cmd=[sys.executable, "-c", "import sys; sys.exit(1)"])
+    with pytest.raises(WorktreeError, match="setup"):
+        m.create("setup_fail")
+    # the half-made worktree was torn down, so no orphan dir and the id is reusable
+    assert not (m.base_dir / "setup_fail").exists()
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/setup_fail"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "marshal/setup_fail" not in branches
+
+
+def test_create_setup_missing_binary_raises(repo: Path) -> None:
+    m = WorktreeManager(repo, setup_cmd=["marshal-no-such-binary-xyz123"])
+    with pytest.raises(WorktreeError, match="not found"):
+        m.create("setup_nobin")
+    assert not (m.base_dir / "setup_nobin").exists()  # torn down
 
 
 def test_changed_files_detects_edits_and_additions(repo: Path) -> None:

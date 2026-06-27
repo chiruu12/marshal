@@ -21,6 +21,7 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 
+from ..env import child_env
 from ..types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord
 
 
@@ -92,7 +93,9 @@ class CodingAgentBackend(ABC):
         (subagents, MCP servers, tool shells) are not orphaned.
         """
         argv = self.build_invocation(task, opts)
-        env = {**os.environ, **opts.extra_env}
+        # Scrub the driver's VIRTUAL_ENV/PYTHONHOME so the agent's tooling (uv/python) resolves the
+        # worktree's own environment, not the driver's - otherwise `uv run pytest` tests stale code.
+        env = child_env(opts.extra_env)
         start = time.monotonic()
 
         def _elapsed_ms() -> int:

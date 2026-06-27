@@ -85,6 +85,35 @@ def test_missing_config_file_raises_friendly_error(tmp_path: Path) -> None:
         load_config(tmp_path / "does-not-exist.yaml")
 
 
+def test_worktree_setup_string_is_split(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("worktree_setup: uv sync --extra dev --extra mcp\n" + _YAML)
+    cfg = load_config(p)
+    assert cfg.worktree_setup == ["uv", "sync", "--extra", "dev", "--extra", "mcp"]
+
+
+def test_worktree_setup_list_passes_through(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("worktree_setup:\n  - uv\n  - sync\n  - --extra\n  - dev\n" + _YAML)
+    cfg = load_config(p)
+    assert cfg.worktree_setup == ["uv", "sync", "--extra", "dev"]
+
+
+def test_worktree_setup_absent_or_blank_is_none(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)
+    assert load_config(p).worktree_setup is None  # absent -> no setup step
+    p.write_text('worktree_setup: "   "\n' + _YAML)
+    assert load_config(p).worktree_setup is None  # blank string splits to [] -> None
+
+
+def test_worktree_setup_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("worktree_setup: 42\n" + _YAML)
+    with pytest.raises(ConfigError, match="worktree_setup"):
+        load_config(p)
+
+
 def test_missing_secret_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     cfg = FleetConfig(
