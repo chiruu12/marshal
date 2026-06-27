@@ -63,6 +63,10 @@ clients:
   the driver's `VIRTUAL_ENV`/`PYTHONHOME` for the command (and for agent runs), so the worktree's
   own environment wins - without it, an agent's `uv run pytest` would resolve the driver's venv and
   test stale code. A non-zero exit tears the worktree down and fails the run early.
+- **`retries`** (optional, top-level, default `2`): how many times to re-run a run that failed for a
+  **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
+  exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
+  (a timeout retry just burns another full window). A retried run records its `attempts` count.
 
 ### Permission tiers
 

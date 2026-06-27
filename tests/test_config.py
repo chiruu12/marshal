@@ -114,6 +114,28 @@ def test_worktree_setup_wrong_type_raises(tmp_path: Path) -> None:
         load_config(p)
 
 
+def test_retries_defaults_to_two(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)
+    assert load_config(p).retries == 2
+
+
+def test_retries_explicit_value(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("retries: 0\n" + _YAML)
+    assert load_config(p).retries == 0  # 0 disables retries
+
+
+def test_retries_negative_or_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("retries: -1\n" + _YAML)
+    with pytest.raises(ConfigError, match="retries"):
+        load_config(p)
+    p.write_text('retries: "two"\n' + _YAML)
+    with pytest.raises(ConfigError, match="retries"):
+        load_config(p)
+
+
 def test_missing_secret_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     cfg = FleetConfig(

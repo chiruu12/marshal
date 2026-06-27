@@ -19,6 +19,11 @@ defaults:
 # the driver's VIRTUAL_ENV so the command targets the worktree. A non-zero exit fails the run early.
 # worktree_setup: uv sync --extra dev --extra mcp
 
+# How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
+# connection error) - with exponential backoff. Defaults to 2; set 0 to disable. Genuine task
+# failures and timeouts are never retried.
+retries: 2
+
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
   # fireworks-ai/* model is rejected at load so you never burn Fireworks credits.

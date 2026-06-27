@@ -24,6 +24,7 @@ from .fleet import (
     RunRequest,
     StrategyResult,
 )
+from .retry import RetryPolicy
 from .state import RunRecord
 from .registry import make_backend
 from .types import TaskSpec
@@ -83,7 +84,11 @@ class MarshalService:
             names = {c.backend for c in config.clients.values()}
             backends = {name: make_backend(name) for name in names}
         self.fleet = Fleet(
-            repo_root, backends, base_dir=base_dir, worktree_setup=config.worktree_setup
+            repo_root,
+            backends,
+            base_dir=base_dir,
+            worktree_setup=config.worktree_setup,
+            retries=RetryPolicy(max_attempts=config.retries + 1),
         )
 
     def list_clients(self) -> list[ClientInfo]:
