@@ -204,8 +204,13 @@ class Fleet:
         # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
         # dir, or the state record. task_id stays the grouping key on RunRecord.
         run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
+        # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
+        # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
+        # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
+        # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
         with self._create_lock:
             wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+        self.worktrees.setup(wt)
         self.state.add(
             RunRecord(
                 run_id=run_id,

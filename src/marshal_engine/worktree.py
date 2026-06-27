@@ -80,28 +80,34 @@ class WorktreeManager:
             ) from exc
 
     def create(self, task_id: str, base_branch: str | None = None) -> Worktree:
-        """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch."""
+        """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch (git op only).
+
+        Provisioning (the optional ``setup_cmd``, e.g. ``uv sync``) is a SEPARATE step - call
+        ``setup(wt)`` afterwards. The fleet serializes only this git op (it's milliseconds) and runs
+        ``setup()`` OUTSIDE that lock, so a parallel fan-out provisions worktrees concurrently
+        instead of one-at-a-time behind the lock.
+        """
         branch = f"{self.branch_prefix}/{task_id}"
         path = self.base_dir / task_id
         self.base_dir.mkdir(parents=True, exist_ok=True)
         proc = self._git("worktree", "add", "-b", branch, str(path), base_branch or "HEAD")
         if proc.returncode != 0:
             raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
-        wt = Worktree(task_id=task_id, path=path, branch=branch)
-        if self.setup_cmd:
-            self._run_setup(wt)
-        return wt
+        return Worktree(task_id=task_id, path=path, branch=branch)
 
-    def _run_setup(self, wt: Worktree) -> None:
-        """Run the configured setup command inside a fresh worktree (e.g. ``uv sync``).
+    def setup(self, wt: Worktree) -> None:
+        """Provision a fresh worktree by running the configured ``setup_cmd`` (no-op if unset).
 
         Runs with the driver's VIRTUAL_ENV scrubbed (so `uv sync` provisions the worktree's own
         `.venv`, not the driver's), stdin closed, and a hard timeout - the same headless guards as
-        agent runs. A non-zero exit (or missing binary / timeout) tears the half-made worktree back
-        down and raises: a half-provisioned worktree would have the agent run against a broken or
-        stale environment, so fail fast at create time rather than hand it a trap.
+        agent runs. Safe to run concurrently across worktrees (each is a distinct dir), so the fleet
+        calls it OUTSIDE the create lock and a fan-out provisions in parallel. A non-zero exit (or
+        missing binary / timeout) tears the half-made worktree back down and raises: a
+        half-provisioned worktree would have the agent run against a broken or stale environment, so
+        fail fast rather than hand it a trap.
         """
-        assert self.setup_cmd is not None  # guarded by the caller
+        if not self.setup_cmd:
+            return
         try:
             proc = subprocess.run(
                 self.setup_cmd,

@@ -20,7 +20,9 @@ versions may include breaking API changes until 1.0.
   installed code. A new optional top-level config key `worktree_setup` (string or argv list) runs
   once in each fresh worktree right after `git worktree add` - e.g. `uv sync --extra dev --extra mcp`
   to provision the worktree's own venv. A non-zero exit tears the worktree down and fails the run
-  early rather than handing the agent a broken environment.
+  early rather than handing the agent a broken environment. Provisioning runs **outside** the
+  worktree-create lock (only the millisecond `git worktree add` is serialized), so a parallel
+  fan-out (`run_many`) provisions worktrees concurrently instead of one `uv sync` at a time.
 - **`doctor` over MCP** - the preflight (toolchain, repo, config, per-backend CLI availability +
   auth) is now an MCP tool, not just a CLI command, so a driver can verify a backend is ready
   *before* spawning instead of discovering it from a failed run. Read-only; returns per-check
