@@ -9,6 +9,11 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Transient-failure retries** - a run that fails for a transient infra/transport reason (backend
+  state-DB lock, rate limit, 5xx, dropped connection) is now re-run with exponential backoff,
+  configurable via a top-level `retries` key (default 2; `0` disables). Genuine task failures and
+  timeouts are never retried. The classifier is deliberately conservative (a false positive wastes a
+  whole run), and each run records its `attempts` count on the `RunRecord`.
 - **Worktree environment isolation + `worktree_setup`** - every spawned child (agents and the new
   setup command) now runs with the driver's `VIRTUAL_ENV`/`PYTHONHOME` scrubbed, so an agent's
   `uv run pytest` resolves the *worktree's* environment instead of silently testing the driver's

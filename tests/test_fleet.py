@@ -22,6 +22,7 @@ from marshal_engine import (
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.fleet import Fleet, RunRequest
 from marshal_engine.pricing import ModelPrice, PriceTable
+from marshal_engine.retry import RetryPolicy
 from marshal_engine.worktree import WorktreeError
 
 
@@ -232,6 +233,48 @@ class _Exploder(CodingAgentBackend):
         raise RuntimeError("kaboom")
 
 
+class _Flaky(CodingAgentBackend):
+    """Returns canned results per call to drive the transient-retry loop deterministically.
+
+    Each entry in `errors` is the error string for that attempt (None => succeed, writing a file so
+    the run is a real SUCCEEDED, not EMPTY). `run()` is overridden, so no subprocess is spawned.
+    """
+
+    name = "flaky"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, errors: list[str | None]) -> None:
+        self._errors = errors
+        self.calls = 0
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return []
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.SUCCEEDED)
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        err = self._errors[self.calls] if self.calls < len(self._errors) else None
+        self.calls += 1
+        if err is None:
+            (opts.cwd / "ok.txt").write_text("ok")  # a real change -> SUCCEEDED, not EMPTY
+            return AgentResult(
+                status=RunStatus.SUCCEEDED,
+                text="ok",
+                usage=UsageRecord(
+                    backend="flaky", input_tokens=1, output_tokens=1, source=UsageSource.NATIVE
+                ),
+            )
+        return AgentResult(status=RunStatus.FAILED, error=err)
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -279,6 +322,42 @@ def test_fleet_unknown_backend(repo: Path) -> None:
     fleet = Fleet(repo, {})
     with pytest.raises(ValueError):
         fleet.run("nope", TaskSpec(id="t", goal="x"))
+
+
+def test_transient_failure_is_retried_then_succeeds(repo: Path) -> None:
+    backend = _Flaky(["opencode: database is locked"])  # fail once (transient), then succeed
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    assert rec.status == "succeeded"
+    assert rec.attempts == 2          # one retry was needed
+    assert backend.calls == 2
+
+
+def test_non_transient_failure_is_not_retried(repo: Path) -> None:
+    backend = _Flaky(["AssertionError: expected 2 got 3"])  # a genuine task failure, not transient
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    assert rec.status == "failed"
+    assert rec.attempts == 1          # no retry for a real failure
+    assert backend.calls == 1
+
+
+def test_transient_retries_are_bounded(repo: Path) -> None:
+    backend = _Flaky(["rate limit", "rate limit", "rate limit", "rate limit"])  # never recovers
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    assert rec.status == "failed"
+    assert rec.attempts == 3          # capped at max_attempts, then gives up
+    assert backend.calls == 3
+
+
+def test_default_fleet_does_not_retry(repo: Path) -> None:
+    # A bare Fleet (no retries arg) preserves prior behavior: even a transient failure is not retried.
+    backend = _Flaky(["database is locked"])
+    fleet = Fleet(repo, {"flaky": backend})
+    rec = fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    assert rec.status == "failed"
+    assert rec.attempts == 1
 
 
 def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:

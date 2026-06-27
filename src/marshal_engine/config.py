@@ -38,6 +38,9 @@ class FleetConfig(BaseModel):
     # Optional command run once in each fresh worktree before the agent starts (e.g. to provision a
     # venv). None = no setup step. Repo-wide, not per-client - it sets up the checkout, not a run.
     worktree_setup: list[str] | None = None
+    # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
+    # connection error). 0 disables retries. Genuine task failures and timeouts are never retried.
+    retries: int = 2
 
 
 def load_config(path: Path | str) -> FleetConfig:
@@ -67,7 +70,22 @@ def load_config(path: Path | str) -> FleetConfig:
         # point (CLI / library / MCP), not only the MCP path that happens to call validate().
         _reject_fireworks(client)
         clients[name] = client
-    return FleetConfig(clients=clients, worktree_setup=_parse_setup(raw.get("worktree_setup")))
+    return FleetConfig(
+        clients=clients,
+        worktree_setup=_parse_setup(raw.get("worktree_setup")),
+        retries=_parse_retries(raw.get("retries")),
+    )
+
+
+def _parse_retries(value: Any) -> int:
+    """Normalize the optional ``retries`` count (default 2). Must be a non-negative integer."""
+    if value is None:
+        return 2
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"retries must be a non-negative integer, got {type(value).__name__}")
+    if value < 0:
+        raise ConfigError(f"retries must be >= 0, got {value}")
+    return value
 
 
 def _parse_setup(value: Any) -> list[str] | None:
