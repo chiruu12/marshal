@@ -281,6 +281,26 @@ def test_fleet_unknown_backend(repo: Path) -> None:
         fleet.run("nope", TaskSpec(id="t", goal="x"))
 
 
+def test_worktree_setup_runs_outside_the_create_lock(repo: Path) -> None:
+    # The perf fix: only `git worktree add` is serialized; worktree provisioning (setup) runs
+    # OUTSIDE the create lock so a fan-out provisions in parallel. Prove it by checking the lock is
+    # acquirable WHILE setup runs (it would be held if setup still ran inside the lock).
+    fleet = Fleet(repo, {"writer": _Writer()})
+    observed: dict[str, bool] = {}
+    real_setup = fleet.worktrees.setup
+
+    def spy_setup(wt: object) -> None:
+        got = fleet._create_lock.acquire(blocking=False)
+        observed["lock_free_during_setup"] = got
+        if got:
+            fleet._create_lock.release()
+        real_setup(wt)  # type: ignore[arg-type]
+
+    fleet.worktrees.setup = spy_setup  # type: ignore[method-assign]
+    fleet.run("writer", TaskSpec(id="t", goal="x"))
+    assert observed["lock_free_during_setup"] is True
+
+
 def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
     fleet = Fleet(repo, {"boom": _Exploder()})
     with pytest.raises(RuntimeError):
