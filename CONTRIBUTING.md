@@ -30,7 +30,8 @@ uv run mypy                # strict type-check (src)
 
 ## The gate (every change must pass)
 
-Run this single line before opening a PR. CI runs the same gate across Python 3.11/3.12/3.13.
+Run this single line before opening a PR. CI runs the same gate on Linux (Python 3.11/3.12/3.13)
+plus macOS (3.12).
 
 ```bash
 uv run pytest -q && uv run ruff check src tests && uv run mypy
@@ -39,6 +40,9 @@ uv run pytest -q && uv run ruff check src tests && uv run mypy
 - `pytest` must be green.
 - `ruff check src tests` must report no errors.
 - `mypy` runs in **strict** mode over `src` and must be clean.
+- **Coverage:** CI also enforces a 90% floor (`--cov-fail-under=90`). Check locally with
+  `uv run pytest --cov=marshal_engine --cov-report=term-missing` (the bare `pytest -q` skips coverage
+  to stay fast).
 
 ## Pull request norms
 
