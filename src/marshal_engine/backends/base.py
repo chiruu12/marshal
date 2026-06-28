@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 from abc import ABC, abstractmethod
 
@@ -137,8 +138,14 @@ class CodingAgentBackend(ABC):
             )
 
         # Notify the caller of the child pid (for later cancellation via process-group signal).
+        # Recording the pid is best-effort: if the callback raises, do NOT let it escape here - that
+        # would skip communicate()/the timeout and leak the live process. The run proceeds (still
+        # timed + killed); only later cancel-by-pid is unavailable for this run.
         if opts.on_pid is not None:
-            opts.on_pid(proc.pid)
+            try:
+                opts.on_pid(proc.pid)
+            except Exception as exc:  # noqa: BLE001 - never leak the process over a pid-record failure
+                print(f"[marshal] {self.name}: on_pid callback failed: {exc}", file=sys.stderr)
 
         # start_new_session makes the child its own group leader, so its pgid == its pid. Capture
         # it now, while the leader is alive - resolving it later (after a fast leader exit) can race

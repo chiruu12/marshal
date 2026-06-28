@@ -156,9 +156,14 @@ class Fleet:
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
+        # integrate() commits + merges in the SHARED repo checkout; serialize it so two concurrent
+        # integrates can't race git's index.lock and leave the repo mid-merge.
+        self._integrate_lock = threading.Lock()
         # Persistent pool for non-blocking spawn(); lives as long as this Fleet (i.e. the long-lived
-        # MCP server) so background runs outlive the driver turn that started them.
+        # MCP server) so background runs outlive the driver turn that started them. Guard its lazy
+        # init so concurrent first spawns don't build two pools (one would leak, undrained).
         self._bg: ThreadPoolExecutor | None = None
+        self._bg_lock = threading.Lock()
         self._bg_max = 4
 
     def run(
@@ -195,7 +200,15 @@ class Fleet:
         the driver turn that started them. The driver polls for the terminal status.
         """
         run_id, wt, started = self._start(request, ts)
-        self._executor().submit(self._execute_bg, request, run_id, wt, started)
+        try:
+            self._executor().submit(self._execute_bg, request, run_id, wt, started)
+        except RuntimeError as exc:
+            # The pool was shut down between _start and submit; don't strand a RUNNING record.
+            self.state.update(
+                run_id, status=RunStatus.FAILED.value, ended_at=_now(),
+                error=f"spawn: executor unavailable: {exc}",
+            )
+            raise
         return run_id
 
     def spawn_many(self, requests: list[RunRequest], *, ts: str | None = None) -> list[str]:
@@ -210,7 +223,11 @@ class Fleet:
 
     def _executor(self) -> ThreadPoolExecutor:
         if self._bg is None:
-            self._bg = ThreadPoolExecutor(max_workers=self._bg_max, thread_name_prefix="marshal-spawn")
+            with self._bg_lock:
+                if self._bg is None:
+                    self._bg = ThreadPoolExecutor(
+                        max_workers=self._bg_max, thread_name_prefix="marshal-spawn"
+                    )
         return self._bg
 
     def _start(self, req: RunRequest, ts: str | None) -> tuple[str, Worktree, str]:
@@ -471,11 +488,12 @@ class Fleet:
                 os.killpg(rec.pid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
                 pass  # already exited
-        # Re-read: the run may have finished between the check and the kill.
-        after = self.state.get(run_id)
-        if after is not None and after.status == "running":
-            return self.state.update(run_id, status="cancelled", ended_at=_now())
-        return after if after is not None else rec
+        # Stamp cancelled ONLY if the run is still running - update_if does the re-check and the
+        # write atomically under the per-run lock, so a run that finished (succeeded/failed) between
+        # the kill and now is never overwritten with "cancelled".
+        return self.state.update_if(
+            run_id, lambda r: r.status == "running", status="cancelled", ended_at=_now()
+        )
 
     def integrate(
         self, run_id: str, *, message: str | None = None, cleanup: bool = False
@@ -487,7 +505,26 @@ class Fleet:
         repo left clean), "blocked" (target dirty/colliding or detached HEAD - fix it and retry),
         or "empty" (nothing to integrate). The blocked/conflict commit stays on the branch, so a
         retry after fixing the target re-merges it instead of reporting "empty".
+
+        Serialized per Fleet (it commits + merges in the shared repo checkout, so two concurrent
+        integrates would race git's index.lock and could leave the repo mid-merge).
         """
+        with self._integrate_lock:
+            return self._integrate_locked(run_id, message=message, cleanup=cleanup)
+
+    def _integrate_locked(
+        self, run_id: str, *, message: str | None = None, cleanup: bool = False
+    ) -> IntegrateResult:
+        rec = self.state.get(run_id)
+        if rec is not None and rec.status == RunStatus.RUNNING.value:
+            # Never commit a still-running agent's half-written files into the user's branch; the
+            # run must reach a terminal state first. Recoverable -> "blocked" (wait, then retry).
+            return IntegrateResult(
+                run_id=run_id,
+                status="blocked",
+                branch=rec.branch,
+                message="run is still in progress; wait for it to finish before integrating",
+            )
         wt = self._worktree_for(run_id)
         if not wt.branch:
             raise ValueError(f"run {run_id!r} has no branch to integrate")
@@ -497,18 +534,19 @@ class Fleet:
             return IntegrateResult(run_id=run_id, status="blocked", branch=wt.branch, message=str(exc))
 
         try:
-            changed = self.worktrees.changed_files(wt)
             commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
             # "empty" only when the worktree is clean AND the branch has no commits past target.
             # (A prior blocked/conflict already committed the work, so a retry still has work to merge.)
             if commit is None and not self.worktrees.has_unmerged_commits(wt.branch, target):
                 return IntegrateResult(run_id=run_id, status="empty", branch=wt.branch)
+            # Report the FULL set of files this branch lands - every commit past the merge-base, not
+            # just the last uncommitted delta (an agent may have self-committed). Computed BEFORE the
+            # merge, since afterwards target...branch is empty.
+            changed = self.worktrees.merged_diff_files(wt.branch, target)
             if commit is None:
                 # retry: a prior blocked/conflict attempt already committed the work, so the
-                # worktree is clean now. Report what the branch actually lands, not the empty
-                # worktree state. (Compute before the merge - afterwards target..branch is empty.)
+                # worktree is clean now - report the branch tip it lands.
                 commit = self.worktrees.branch_tip(wt.branch)
-                changed = self.worktrees.merged_diff_files(wt.branch, target)
             merge = self.worktrees.merge(wt.branch)
         except WorktreeError as exc:
             # a git op failed in a way we can't classify as cleanly recoverable (commit failure,
