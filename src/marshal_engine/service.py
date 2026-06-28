@@ -6,6 +6,7 @@ injected for tests; in production they come from the registry.
 
 from __future__ import annotations
 
+import sys
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
-from .config import ConfigError, FleetConfig, resolve_model
+from .config import ClientConfig, ConfigError, FleetConfig, resolve_model
 from .doctor import run_checks, summarize
 from .fleet import (
     BenchmarkResult,
@@ -83,6 +84,19 @@ class MarshalService:
         if backends is None:
             names = {c.backend for c in config.clients.values()}
             backends = {name: make_backend(name) for name in names}
+        # Keep the FULL backend set on the Fleet (doctor probes every configured backend, even
+        # ones whose CLI is currently unavailable). Partition clients by availability so a missing
+        # CLI skips that client instead of failing mid-run.
+        avail = {name: be.check_available() for name, be in backends.items()}
+        self._clients: dict[str, ClientConfig] = {
+            n: c for n, c in config.clients.items() if avail.get(c.backend, False)
+        }
+        self.skipped_clients: list[str] = [
+            n for n, c in config.clients.items() if not avail.get(c.backend, False)
+        ]
+        for n, c in config.clients.items():
+            if not avail.get(c.backend, False):
+                print(f"marshal: skipping client {n!r} (backend {c.backend!r} CLI unavailable)", file=sys.stderr)
         self.fleet = Fleet(
             repo_root,
             backends,
@@ -99,8 +113,15 @@ class MarshalService:
                 model=resolve_model(c),
                 permission=c.permission.value,
             )
-            for c in self.config.clients.values()
+            for c in self._clients.values()
         ]
+
+    def client_available(self, client_name: str) -> bool:
+        client = self.config.clients.get(client_name)
+        if client is None:
+            return False
+        backend = self.fleet.backends.get(client.backend)
+        return backend.check_available() if backend is not None else False
 
     def _request_for(
         self,
@@ -110,9 +131,9 @@ class MarshalService:
         files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
     ) -> RunRequest:
-        client = self.config.clients.get(client_name)
+        client = self._clients.get(client_name)
         if client is None:
-            known = ", ".join(self.config.clients) or "(none configured)"
+            known = ", ".join(self._clients) or "(none configured)"
             raise ValueError(f"no such client: {client_name!r}; known: {known}")
         # `role` is a semantic routing role (planner/coder/reviewer) that a future policy layer maps
         # to a backend - NOT the client name (the client is carried on RunRequest/RunRecord already).

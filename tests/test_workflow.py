@@ -42,13 +42,18 @@ class StubService:
         statuses: dict[str, str] | None = None,
         collect_errors: set[str] | None = None,
         integrate: dict[str, IntegrateResult] | None = None,
+        unavailable: set[str] | None = None,
     ) -> None:
         self.config = config
         self.calls: list[tuple[Any, ...]] = []
         self._statuses = statuses or {}
         self._collect_errors = collect_errors or set()
         self._integrate = integrate or {}
+        self._unavailable = unavailable
         self._n = 0
+
+    def client_available(self, name: str) -> bool:
+        return name not in (self._unavailable or set())
 
     def _make(self, client: str, task_id: str | None) -> RunRecord:
         self._n += 1
@@ -384,3 +389,53 @@ def test_runner_uses_only_the_four_primitives() -> None:
     svc = StubService(_config("a", "b"))
     WorkflowRunner(svc).run(_review_spec(), {"target": "x"})
     assert {c[0] for c in svc.calls} <= {"run_many", "run_agent", "collect_run", "integrate"}
+
+
+# --- runner: unavailable-client skipping + failure surfacing -----------------------------------
+
+
+def test_runner_fan_out_skips_unavailable_client() -> None:
+    # (a) one of two clients is unavailable; run_many receives only the available client
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[PhaseSpec(name="impl", run="fan_out", clients=["a", "b"], goal="{t}")],
+    )
+    svc = StubService(_config("a", "b"), unavailable={"b"})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+
+    # only "a" reached run_many
+    run_many_calls = [c for c in svc.calls if c[0] == "run_many"]
+    assert run_many_calls[0][2] == ["a"]  # the recorded client list excludes "b"
+    # a skip note mentions the unavailable client
+    impl = result.phases[0]
+    assert any("b" in n and "skipped" in n for n in impl.notes)
+    assert result.status == "completed"  # the available run succeeded, nothing to review
+
+
+def test_runner_fan_out_all_unavailable_raises() -> None:
+    # (b) every client unavailable -> ConfigError, and nothing spawns
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[PhaseSpec(name="impl", run="fan_out", clients=["a", "b"], goal="{t}")],
+    )
+    svc = StubService(_config("a", "b"), unavailable={"a", "b"})
+    with pytest.raises(ConfigError, match="all clients unavailable"):
+        WorkflowRunner(svc).run(spec, {"t": "go"})
+    assert svc.calls == []  # nothing ran
+
+
+def test_runner_fan_out_failed_run_surfaces_note_and_action() -> None:
+    # (c) a run that does not succeed records a note + a next_action (additive, status unchanged)
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[PhaseSpec(name="impl", run="fan_out", clients=["a"], goal="{t}")],
+    )
+    svc = StubService(_config("a"), statuses={"a": "failed"})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+
+    impl = result.phases[0]
+    assert any("a.1" in n and "did not succeed" in n for n in impl.notes)
+    assert any("a.1" in action and "failed" in action for action in result.next_actions)

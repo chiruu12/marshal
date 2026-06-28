@@ -116,6 +116,26 @@ class _Capture(CodingAgentBackend):
         return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
 
 
+class _Missing(CodingAgentBackend):
+    """A backend whose CLI is unavailable - check_available() is always False."""
+
+    name = "missing"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return False
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "print('ok')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -312,3 +332,38 @@ def test_doctor_probes_configured_backends(repo: Path) -> None:
     by_name = {c.name: c for c in svc.doctor().checks}
     assert by_name["config"].status == "ok"
     assert by_name["backend:echo"].status == "ok"  # _Echo.check_available() is True
+
+
+def _mixed_svc(repo: Path) -> MarshalService:
+    """A service with one available ('echo') and one unavailable ('missing') client."""
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT),
+            "ghost": ClientConfig(name="ghost", backend="missing", permission=PermissionMode.SAFE_EDIT),
+        }
+    )
+    return MarshalService(repo, cfg, backends={"echo": _Echo(), "missing": _Missing()})
+
+
+def test_unavailable_client_skipped(repo: Path) -> None:
+    svc = _mixed_svc(repo)
+    # (a) the unavailable client is absent from list_clients, present in skipped_clients
+    listed = {c.name for c in svc.list_clients()}
+    assert "ghost" not in listed
+    assert "worker" in listed
+    assert svc.skipped_clients == ["ghost"]
+
+
+def test_run_agent_on_skipped_client_raises(repo: Path) -> None:
+    svc = _mixed_svc(repo)
+    # (b) run_agent on a skipped client raises ValueError (it is no longer in self._clients)
+    with pytest.raises(ValueError):
+        svc.run_agent("ghost", "do something", task_id="t1")
+    assert svc.status() == []  # nothing ran
+
+
+def test_all_available_skipped_is_empty(repo: Path) -> None:
+    # (c) a service with only available backends has skipped_clients == []
+    svc = _svc(repo)  # single 'echo' client, _Echo.check_available() is True
+    assert svc.skipped_clients == []
+    assert {c.name for c in svc.list_clients()} == {"worker"}
