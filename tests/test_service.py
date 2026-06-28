@@ -20,7 +20,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, FleetConfig
+from marshal_engine.config import ClientConfig, FleetConfig, load_config
 from marshal_engine.service import MarshalService
 
 
@@ -92,6 +92,30 @@ class _Unpriced(CodingAgentBackend):
         return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
 
 
+class _Capture(CodingAgentBackend):
+    """Records each TaskSpec it is asked to run, so tests can assert what the service threaded through."""
+
+    name = "capture"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self) -> None:
+        self.tasks: list[TaskSpec] = []
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        self.tasks.append(task)
+        return [sys.executable, "-c", "print('ok')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+
+
 def _init_repo(root: Path) -> None:
     def git(*a: str) -> None:
         subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, text=True)
@@ -142,6 +166,40 @@ def test_run_agent_unknown_client(repo: Path) -> None:
     svc = _svc(repo)
     with pytest.raises(ValueError):
         svc.run_agent("nope", "x")
+
+
+def _capture_svc(repo: Path, backend: _Capture) -> MarshalService:
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(name="worker", backend="capture", permission=PermissionMode.SAFE_EDIT)
+        }
+    )
+    return MarshalService(repo, cfg, backends={"capture": backend})
+
+
+def test_run_agent_threads_context_files_to_the_task(repo: Path) -> None:
+    # context_files is consumed by every backend's prompt; the service must carry it onto the TaskSpec
+    # so a driver can actually point a worker at the files it should see.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_agent("worker", "do x", task_id="t1", context_files=["a.py", "b.py"])
+    assert backend.tasks[-1].context_files == ["a.py", "b.py"]
+
+
+def test_run_many_threads_context_files_per_job(repo: Path) -> None:
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_many([{"client": "worker", "goal": "g", "task_id": "j1", "context_files": ["x.py"]}])
+    assert backend.tasks[-1].context_files == ["x.py"]
+
+
+def test_run_agent_does_not_stamp_client_name_into_role(repo: Path) -> None:
+    # `role` is a semantic routing role, not the client name; the client is tracked separately.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    rec = svc.run_agent("worker", "do x", task_id="t1")
+    assert backend.tasks[-1].role is None
+    assert rec.client == "worker"  # client identity is still recorded, just not as a "role"
 
 
 def test_collect_run_surfaces_changed_files(repo: Path) -> None:
@@ -232,3 +290,25 @@ def test_integrate_empty_run_is_noop(repo: Path) -> None:
     rec = svc.run_agent("worker", "do nothing", task_id="e1")
     result = svc.integrate(rec.run_id)
     assert result.status == "empty"
+
+
+def test_doctor_reports_checks_and_serializes(repo: Path) -> None:
+    svc = _svc(repo)  # in-memory config; no fleet.config.yaml on disk
+    report = svc.doctor()
+    by_name = {c.name: c for c in report.checks}
+    assert {"python", "git", "repo"} <= set(by_name)
+    assert by_name["repo"].status == "ok"  # the fixture is a real git work tree
+    assert by_name["config"].status == "fail"  # no config file on disk -> a failing check
+    assert report.ok is (report.fails == 0) and report.ok is False
+    assert report.model_dump(mode="json")["fails"] >= 1  # fully serializable for the MCP surface
+
+
+def test_doctor_probes_configured_backends(repo: Path) -> None:
+    cfg_file = repo / "fleet.config.yaml"
+    cfg_file.write_text("clients:\n  worker:\n    backend: echo\n    permission: safe-edit\n")
+    svc = MarshalService(
+        repo, load_config(cfg_file), backends={"echo": _Echo()}, config_path=cfg_file
+    )
+    by_name = {c.name: c for c in svc.doctor().checks}
+    assert by_name["config"].status == "ok"
+    assert by_name["backend:echo"].status == "ok"  # _Echo.check_available() is True

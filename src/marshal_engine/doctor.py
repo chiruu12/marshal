@@ -37,6 +37,7 @@ BACKEND_HINTS: dict[str, str] = {
     "cursor": "install the Cursor CLI (cursor-agent), then `cursor-agent login` (or set CURSOR_API_KEY)",
     "codex": "install the Codex CLI, then `codex login` (ChatGPT) or set OPENAI_API_KEY",
     "antigravity": "install the Antigravity CLI (agy), then complete its OAuth login",
+    "claude-code": "install Claude Code (claude), then authenticate via its login or set ANTHROPIC_API_KEY",
 }
 
 MIN_PYTHON = (3, 11)

@@ -1,7 +1,7 @@
 # Marshal
 
 Orchestration engine for driving a **fleet of headless coding agents** (Cursor CLI, OpenCode,
-Codex, Google Antigravity now; Gemini later) from one "driver" agent (e.g. Claude Code). The driver
+Codex, Google Antigravity, Claude Code now; Gemini later) from one "driver" agent (e.g. Claude Code). The driver
 plans; Marshal spawns and manages the fleet in isolated git worktrees, in parallel, and reports
 back - exposed as an **MCP server + Skills**, with **per-provider usage tracking**.
 
@@ -12,8 +12,8 @@ Marshal clean and embeddable.
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
 > **V1 complete**: merge-back, per-provider cost-proof, capped parallel `run_many`, non-blocking
 > `spawn`, `cancel_run`, the **measured savings benchmark** (`benchmark`/`report`), **declarative
-> YAML workflows**, and driver Skills. 14 MCP tools. OpenCode + Cursor live-verified. Remaining work
-> is coverage/polish. See `docs/status.md`.
+> YAML workflows**, and driver Skills. 15 MCP tools. OpenCode + Cursor + Claude Code live-verified
+> (Claude Code with native cost). Remaining work is coverage/polish. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -26,7 +26,8 @@ marshal/
 │   │   ├── cursor.py        # Cursor CLI (cursor-agent)
 │   │   ├── opencode.py      # OpenCode (opencode run / serve)
 │   │   ├── codex.py         # OpenAI Codex (codex exec)
-│   │   └── antigravity.py   # Google Antigravity (agy)
+│   │   ├── antigravity.py   # Google Antigravity (agy)
+│   │   └── claude_code.py   # Claude Code (claude -p) - native cost
 │   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
 │   ├── usage.py             # per-provider usage: events.jsonl + summary.json
 │   ├── state.py             # persistent fleet state (one runs/<run_id>.json per run)
@@ -36,9 +37,9 @@ marshal/
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier
-│   ├── mcp_server.py        # MCP server (FastMCP): list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow
+│   ├── mcp_server.py        # MCP server (FastMCP): doctor/list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow
 │   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/mcp)
-├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow
+├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
 ├── SETUP.md                 # clone-to-first-run setup guide
 ├── docs/                    # design · status · usage · chauffeur-future · sources (docs/internal/ is local-only, gitignored)

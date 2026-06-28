@@ -11,7 +11,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 |--------|----------------|-------|
 | `types.py` | Shared Pydantic models + enums | done |
 | `backends/base.py` | Abstract backend + safe `run()` (no-stdin, hard timeout) | done |
-| `backends/{cursor,opencode,codex,antigravity}.py` | Four adapters off one base class | done |
+| `backends/{cursor,opencode,codex,antigravity,claude_code}.py` | Five adapters off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
 | `pricing.py` | Token → cost price table (the `ESTIMATED` path) | done |
@@ -22,7 +22,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
 | `service.py` | Testable core the MCP/CLI call into | done |
 | `cli.py` | `marshal doctor/backends/usage/status/workflows/mcp` | done |
-| `mcp_server.py` | 14-tool MCP surface over stdio (run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/…) | done |
+| `mcp_server.py` | 15-tool MCP surface over stdio (doctor/run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/…) | done |
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files.
 
@@ -32,14 +32,17 @@ Quality gate: full unit suite passes; ruff and mypy (strict) clean across all so
 |---------|-----------|-----------|----------------------------|--------------|
 | OpenCode | yes | verified | verified | verified (tokens + cost) |
 | Cursor | yes | verified | verified | n/a by design (Admin API only) |
+| Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost unpriced) |
-| Antigravity | yes | verified (reply) | not yet** | none |
+| Antigravity | yes | verified (reply) | verified** | none |
 
 \* Codex safe-edit (worktree write) verified on a fresh usage window; the dev account is
 intermittently rate-limited, so a re-run may have to wait. Token counts are captured but cost is
 `unavailable` until the model is added to the price table.
-\*\* Antigravity headless writes divert to `~/.gemini/antigravity-cli/scratch` under an
-untrusted workspace (`--add-dir` does not fix it). Needs a PTY / workspace-trust workaround.
+\*\* Antigravity headless writes now land in the worktree (verified end-to-end 2026-06-27). The
+adapter's `prepare()` pre-registers the run's worktree in `~/.gemini/antigravity-cli/settings.json`
+`trustedWorkspaces` and passes `--add-dir <cwd>`; without the trust entry, agy diverts edits to its
+scratch dir (`--add-dir` alone was insufficient). Still no native usage (text-only output).
 
 ## Roadmap
 
@@ -72,9 +75,10 @@ exposed over the service and MCP. This completes the V1 core (engine + cost + be
 
 ### Phase 4 - coverage & productization (started)
 Shipped: the **Skills layer** - `skills/marshal-orchestrate` (decompose → spawn → monitor →
-collect → integrate), `skills/marshal-benchmark` (compare strategies), and `skills/marshal-workflow`
-(author + run a declarative recipe) driver playbooks, completing the four surfaces
-(engine · MCP · Skills · config).
+collect → integrate), `skills/marshal-benchmark` (compare strategies), `skills/marshal-workflow`
+(author + run a declarative recipe), `skills/marshal-review-gate` (gate a merge behind reviewer
+consensus), and `skills/marshal-plan-consensus` (converge on an approach before building) driver
+playbooks, completing the four surfaces (engine · MCP · Skills · config).
 Also shipped: **non-blocking `spawn`** - start a run in the background (persistent pool on the Fleet)
 and poll `status`/`get_run`; the run is recorded RUNNING at once and survives the driver turn.
 **`cancel_run`** stops a running agent by id (process-group `SIGTERM`).
@@ -85,5 +89,12 @@ and the `marshal-workflow` Skill.
 **Cursor plan tier in `doctor`** - surfaces the authenticated CLI's subscription tier + current
 model (an honest account fact; individual accounts expose no usage/quota API, so no percentage is
 fabricated).
-Remaining: Antigravity PTY/workspace-trust; Cursor admin-API usage; Codex live re-verify; a Gemini
+**Claude Code backend** (`backends/claude_code.py`) - `claude -p --output-format json` with
+`acceptEdits` for safe-edit; it reports `total_cost_usd` + tokens, so usage is `native` (honest
+cost, no estimation). Live-verified end-to-end (2026-06-26): edits land in the worktree and the
+native cost flows to the ledger.
+**Antigravity headless writes** (`backends/antigravity.py`) - `prepare()` registers the run's
+worktree in agy's `trustedWorkspaces` before launch, so headless edits land in the worktree instead
+of the scratch dir (live-verified 2026-06-27). This closes the prior known limitation.
+Remaining: Antigravity native usage; Cursor admin-API usage; Codex live re-verify; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

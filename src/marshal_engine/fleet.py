@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .pricing import PriceTable, PricingError
+from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
 from .types import AgentResult, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord, UsageSource
 from .usage import UsageEvent, UsageTracker
@@ -121,15 +122,22 @@ class Fleet:
         *,
         base_dir: Path | str | None = None,
         worktree_base: Path | str | None = None,
+        worktree_setup: list[str] | None = None,
+        retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
-        self.worktrees = WorktreeManager(self.repo_root, worktree_base or base / "worktrees")
+        self.worktrees = WorktreeManager(
+            self.repo_root, worktree_base or base / "worktrees", setup_cmd=worktree_setup
+        )
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()
+        # Retry only transient (infra/transport) failures. Default off so a bare Fleet behaves
+        # exactly as before; the service turns it on from config (see MarshalService).
+        self.retries = retries if retries is not None else RetryPolicy()
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
@@ -196,8 +204,13 @@ class Fleet:
         # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
         # dir, or the state record. task_id stays the grouping key on RunRecord.
         run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
+        # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
+        # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
+        # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
+        # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
         with self._create_lock:
             wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+        self.worktrees.setup(wt)
         self.state.add(
             RunRecord(
                 run_id=run_id,
@@ -222,16 +235,14 @@ class Fleet:
             def _record_pid(pid: int) -> None:
                 self.state.update(run_id, pid=pid)
 
-            result = backend.run(
-                req.task,
-                RunOpts(
-                    cwd=wt.path,
-                    permission=req.permission,
-                    model=req.model,
-                    timeout_s=req.timeout_s,
-                    on_pid=_record_pid,
-                ),
+            opts = RunOpts(
+                cwd=wt.path,
+                permission=req.permission,
+                model=req.model,
+                timeout_s=req.timeout_s,
+                on_pid=_record_pid,
             )
+            result, attempts = self._run_with_retries(backend, req.task, opts, run_id)
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
             self._price_usage(usage, req.model)      # normalize cost + source
             status = self._authoritative_status(result, wt)
@@ -252,6 +263,7 @@ class Fleet:
                 text=result.text[:16000],  # the agent's final message, so reply/analysis tasks are reviewable
                 ended_at=_now(),
                 error=result.error,
+                attempts=attempts,
             )
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie.
@@ -261,6 +273,30 @@ class Fleet:
         if cleanup:
             self.worktrees.remove(wt)
         return record
+
+    def _run_with_retries(
+        self, backend: CodingAgentBackend, task: TaskSpec, opts: RunOpts, run_id: str
+    ) -> tuple[AgentResult, int]:
+        """Run the backend, retrying only on a transient (infra/transport) failure with backoff.
+
+        Returns the final result and the number of attempts made. The worktree is reused across
+        attempts: the markers we retry on (DB lock, rate limit, 5xx, connection errors) happen at
+        startup/transport time, before an agent writes anything, so there is nothing to reset. A
+        genuine task failure or a timeout is returned as-is - never retried.
+        """
+        attempt = 1
+        while True:
+            result = backend.run(task, opts)
+            if attempt >= self.retries.max_attempts or not is_transient_failure(result):
+                return result, attempt
+            delay = self.retries.delay_for(attempt)
+            print(
+                f"[marshal] {run_id}: transient failure (attempt {attempt}/"
+                f"{self.retries.max_attempts}), retrying in {delay:.1f}s: {result.error}",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            attempt += 1
 
     def _execute_bg(self, req: RunRequest, run_id: str, wt: Worktree, ts: str) -> None:
         """Background variant: the outcome (incl. failure) is already persisted; never propagate."""

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .config import ConfigError, FleetConfig, resolve_model
+from .doctor import run_checks, summarize
 from .fleet import (
     BenchmarkResult,
     CollectResult,
@@ -23,6 +24,7 @@ from .fleet import (
     RunRequest,
     StrategyResult,
 )
+from .retry import RetryPolicy
 from .state import RunRecord
 from .registry import make_backend
 from .types import TaskSpec
@@ -46,6 +48,24 @@ class ClientInfo(BaseModel):
     permission: str
 
 
+class DoctorCheck(BaseModel):
+    """One preflight result, serialized for the driver (the doctor `Check` over the MCP surface)."""
+
+    name: str
+    status: str          # ok | warn | fail
+    detail: str
+    fix: str = ""
+
+
+class DoctorReport(BaseModel):
+    """Preflight verdict: per-check results plus a roll-up. `ok` is true when nothing failed."""
+
+    checks: list[DoctorCheck]
+    fails: int
+    warns: int
+    ok: bool
+
+
 class MarshalService:
     def __init__(
         self,
@@ -54,13 +74,22 @@ class MarshalService:
         *,
         base_dir: Path | str | None = None,
         backends: Mapping[str, CodingAgentBackend] | None = None,
+        config_path: Path | str | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path(repo_root)
+        # Where the config was loaded from - the preflight re-checks this file parses on disk.
+        self.config_path = Path(config_path) if config_path else self.repo_root / "fleet.config.yaml"
         if backends is None:
             names = {c.backend for c in config.clients.values()}
             backends = {name: make_backend(name) for name in names}
-        self.fleet = Fleet(repo_root, backends, base_dir=base_dir)
+        self.fleet = Fleet(
+            repo_root,
+            backends,
+            base_dir=base_dir,
+            worktree_setup=config.worktree_setup,
+            retries=RetryPolicy(max_attempts=config.retries + 1),
+        )
 
     def list_clients(self) -> list[ClientInfo]:
         return [
@@ -79,15 +108,19 @@ class MarshalService:
         goal: str,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
+        context_files: list[str] | None = None,
     ) -> RunRequest:
         client = self.config.clients.get(client_name)
         if client is None:
             known = ", ".join(self.config.clients) or "(none configured)"
             raise ValueError(f"no such client: {client_name!r}; known: {known}")
+        # `role` is a semantic routing role (planner/coder/reviewer) that a future policy layer maps
+        # to a backend - NOT the client name (the client is carried on RunRequest/RunRecord already).
+        # Leave it unset until that policy exists, so the field never claims a role nothing assigned.
         task = TaskSpec(
             id=task_id or uuid.uuid4().hex[:8],
             goal=goal,
-            role=client_name,
+            context_files=context_files or [],
             files_touched=files_touched or [],
         )
         return RunRequest(
@@ -106,8 +139,9 @@ class MarshalService:
         *,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
+        context_files: list[str] | None = None,
     ) -> RunRecord:
-        req = self._request_for(client_name, goal, task_id, files_touched)
+        req = self._request_for(client_name, goal, task_id, files_touched, context_files)
         return self.fleet.run(
             req.backend_name,
             req.task,
@@ -118,12 +152,16 @@ class MarshalService:
         )
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
-        """Run several clients in parallel. Each job is {client, goal, task_id?, files_touched?}.
+        """Run several clients in parallel. Each job is
+        {client, goal, task_id?, files_touched?, context_files?}.
 
         Client names are validated up front, so a typo fails fast before any run starts.
         """
         requests = [
-            self._request_for(j["client"], j["goal"], j.get("task_id"), j.get("files_touched"))
+            self._request_for(
+                j["client"], j["goal"], j.get("task_id"), j.get("files_touched"),
+                j.get("context_files"),
+            )
             for j in jobs
         ]
         return self.fleet.run_many(requests, max_concurrency=max_concurrency)
@@ -135,9 +173,10 @@ class MarshalService:
         *,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
+        context_files: list[str] | None = None,
     ) -> RunRecord:
         """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
-        req = self._request_for(client_name, goal, task_id, files_touched)
+        req = self._request_for(client_name, goal, task_id, files_touched, context_files)
         run_id = self.fleet.spawn(req)
         rec = self.fleet.state.get(run_id)
         assert rec is not None  # _start just recorded it RUNNING
@@ -203,6 +242,24 @@ class MarshalService:
 
     def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult:
         return self.fleet.integrate(run_id, cleanup=cleanup)
+
+    def doctor(self) -> DoctorReport:
+        """Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth).
+
+        Read-only and side-effect-light - it only probes versions/availability - so a driver can
+        check a backend is ready *before* spawning, instead of learning it from a failed run. Probes
+        the fleet's configured backends (the same instances runs use).
+        """
+        checks = run_checks(self.repo_root, self.config_path, backends=self.fleet.backends)
+        fails, warns = summarize(checks)
+        return DoctorReport(
+            checks=[
+                DoctorCheck(name=c.name, status=c.status, detail=c.detail, fix=c.fix) for c in checks
+            ],
+            fails=fails,
+            warns=warns,
+            ok=fails == 0,
+        )
 
     def status(self) -> list[RunRecord]:
         return self.fleet.state.list()

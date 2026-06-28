@@ -2,7 +2,7 @@
 
 > **Marshal** is the infrastructure layer: one "driver" agent (Claude Code) plans work, then
 > Marshal spawns and manages a **fleet of headless coding agents** (Cursor CLI, OpenCode, Codex,
-> Google Antigravity now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
+> Google Antigravity, Claude Code now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
 > **MCP server + Skills**, with **per-provider usage tracking**. To *marshal* = to gather and
 > organize a force - exactly what this does to a fleet of agents.
 >
@@ -19,7 +19,7 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 ## 0. Locked decisions
 
 - **Execution model:** background **fleet** - N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
-- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Antigravity now. Gemini later = new adapter only.
+- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Antigravity + Claude Code now. Gemini later = new adapter only.
 - **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) - optional fast path.
 - **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** - they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
 - **Differentiator:** **per-provider usage tracking** + a `usage` command. Nearly every competitor omits this.
@@ -174,12 +174,20 @@ clients:
 Runtime state - worktrees, per-run JSON, usage - lands under `.marshal/`. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
+**Worktree environment isolation.** The driver usually runs inside its own activated venv, so
+`os.environ` carries `VIRTUAL_ENV`/`PYTHONHOME` pointing at the *driver's* interpreter. Every
+spawned child (agents and the worktree-setup command) has those scrubbed (`env.child_env`), so the
+worktree's own `.venv` wins - otherwise an agent's `uv run pytest` silently resolves the driver's
+install and tests stale code. A fresh worktree has no `.venv` (it's gitignored), so the optional
+top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) provisions one right
+after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
+
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
 Shipped today (14): `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`,
 `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
 `run_workflow`. Current state is tracked in `docs/status.md`.
 
-Mirror to **driver Skills** (`marshal-orchestrate`, `marshal-benchmark`, `marshal-workflow`) so the
+Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
 fleet works in both MCP and Skills hosts.
 Security from day one: **localhost-only bind, reject non-loopback, validate `Host` header** (DNS-rebind).
 
@@ -230,8 +238,8 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 - **Phase 0 - repo:** lay down `pyproject.toml` (uv), the package skeleton, and `docs/`.
 - **Phase 1 - engine:** base class + `CursorBackend` + `OpenCodeBackend` + `CodexBackend` (pure `build_invocation`/`map_permission` + `parse_output`), worktree manager, process runner (timeout!), result collector. CLI-testable standalone before any MCP. Contract tests per backend.
 - **Phase 2 - usage:** `events.jsonl` + `summary.json`, price table, `source` tagging, OpenCode native + on-disk reconciliation, Cursor Admin-API path, `usage` command.
-- **Phase 3 - MCP server:** the 11 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
-- **Phase 4 - Skills:** `*-plan` (decompose + independence analysis), `*-run` (spawn+monitor loop + prompt-writing), `*-integrate` (merge + verify).
+- **Phase 3 - MCP server:** the 15 tools + `fleet.config.yaml` loader + persistent fleet state + localhost hardening.
+- **Phase 4 - Skills:** the `marshal-*` driver playbooks - `marshal-orchestrate` (decompose → spawn → review → integrate), `marshal-benchmark` (measured strategy comparison), `marshal-workflow` (declarative YAML recipes), `marshal-review-gate` + `marshal-plan-consensus` (consensus review / approach convergence).
 - **Phase 5 - harden + docs:** retries/backoff, concurrency caps, worktree cleanup, dry-run, OpenCode warm-server fast path, README/onboarding → flip public.
 
 ## Anchors to study before/while building
@@ -273,7 +281,7 @@ Keep V1 focused - the #1 risk is becoming "yet another agent framework."
 
 ### Backends in scope (built)
 
-Four adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
+Five adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
 and contract tests:
 
 | Backend | Headless invocation | read-only / safe-edit / yolo | Usage in output |
@@ -282,6 +290,7 @@ and contract tests:
 | Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
 | OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` |
 | Antigravity | `agy -p` (text only) | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
+| Claude Code | `claude -p --output-format json` | `--permission-mode plan` / `acceptEdits` / `bypassPermissions` | cost+tokens in JSON (native) |
 
 Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth, needs a PTY
 wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo
@@ -291,7 +300,10 @@ verified for the failure path only (live success run pending).
 **Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
 usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
 safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` authenticates). 
-Antigravity ⚠️ partial - CLI/auth/reply work, but headless writes divert to
-`~/.gemini/antigravity-cli/scratch` instead of the target worktree (untrusted-workspace fallback);
-worktree-isolated edits need an `agy` workspace-trust/PTY workaround (tracked). Codex ⛔ adapter
-ready, blocked by the account usage limit (~Jul 18).
+**Antigravity ✅ writes fixed (2026-06-27):** headless edits used to divert to
+`~/.gemini/antigravity-cli/scratch` (no TTY → no workspace trust); the adapter's `prepare()` now
+pre-registers the run's worktree in agy's `trustedWorkspaces` (+ `--add-dir <cwd>`), so edits land in
+the worktree - live-verified end-to-end. Still text-only output (no native usage). Codex ⛔ adapter
+ready, blocked by the account usage limit (~Jul 18). **Claude Code ✅ fully (2026-06-26):**
+read/safe-edit (`acceptEdits`) writes land in the worktree, native `total_cost_usd`+tokens flow to
+the ledger, and `-p` mode is non-blocking with stdin closed.

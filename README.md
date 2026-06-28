@@ -9,32 +9,35 @@ review, route execution to cheaper or specialized workers, isolate each task in 
 worktree, and measure what every routing strategy actually cost.
 
 One driver agent (e.g. Claude Code) plans the work. Marshal spawns and manages a fleet of
-*headless* coding agents - **Cursor CLI, OpenCode, Codex, and Google Antigravity** today, more
-behind a single base class - each running autonomously in its own isolated git worktree, in parallel. Marshal monitors
+*headless* coding agents - **Cursor CLI, OpenCode, Codex, and Claude Code** today (plus an
+experimental **Google Antigravity** adapter), more behind a single base class - each running
+autonomously in its own isolated git worktree, in parallel. Marshal monitors
 them, collects their diffs, tracks per-provider usage, and hands results back for integration.
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (14 tools):
-  `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`,
-  `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (15 tools):
+  `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`,
+  `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
   a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
-  `marshal-benchmark` (compare routing strategies on a real task), and `marshal-workflow` (author
-  and run a declarative recipe).
+  `marshal-benchmark` (compare routing strategies on a real task), `marshal-workflow` (author
+  and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
+  consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (14
+> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (15
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
 > fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
 > **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and
-> compare real cost/latency/outcome). OpenCode and Cursor live-verified; the Codex adapter verified
-> on a fresh usage window (re-verify pending). See [`docs/status.md`](docs/status.md).
+> compare real cost/latency/outcome). OpenCode, Cursor, and Claude Code live-verified (Claude Code
+> with native cost); the Codex adapter verified on a fresh usage window (re-verify pending). See
+> [`docs/status.md`](docs/status.md).
 
 ## Getting started
 
 **Prerequisites:** Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), git, and the CLI for each
-backend you'll use (`opencode` / `cursor-agent` / `codex` / `agy`) - each authenticated via its own
-login. Marshal does **not** install the backend CLIs.
+backend you'll use (`opencode` / `cursor-agent` / `codex` / `claude` / `agy`) - each authenticated
+via its own login. Marshal does **not** install the backend CLIs.
 
 ```bash
 git clone https://github.com/chiruu12/marshal.git && cd marshal
@@ -60,10 +63,9 @@ have open - so you still need `uv`, a `fleet.config.yaml` in that project, and t
 authenticated (`uv run marshal doctor` checks all of this). Until you add a config, the server
 starts with zero clients and tells you how to configure one.
 
-Prefer to copy just the Skills? The three driver Skills live in [`skills/`](skills/) - copy
-`skills/marshal-orchestrate`, `skills/marshal-benchmark`, and `skills/marshal-workflow` into your
-driver's skills directory (e.g. `.claude/skills/`) and wire the MCP server by hand per
-**[`SETUP.md`](SETUP.md)**.
+Prefer to copy just the Skills? The driver Skills live in [`skills/`](skills/) - copy the
+`skills/marshal-*` directories you want into your driver's skills directory (e.g. `.claude/skills/`)
+and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 
@@ -134,6 +136,7 @@ Marshal MCP server  ──  fleet state (file-based)
 engine ── base class ─┬─ Cursor adapter
                       ├─ OpenCode adapter
                       ├─ Codex adapter        →  each runs headless in its own git worktree
+                      ├─ Claude Code adapter
                       └─ Antigravity adapter
    │
    ▼
@@ -147,6 +150,8 @@ top of it. See `docs/chauffeur-future.md`.
 
 - [`SETUP.md`](SETUP.md) - clone-to-first-run setup (prerequisites, install, auth, verify, wire in).
 - [`docs/usage.md`](docs/usage.md) - configure a fleet and drive it via MCP, CLI, or library.
+- [`docs/model-playbook.md`](docs/model-playbook.md) - which model/client to route a task to, by
+  task weight (heavy/standard/light), with a copy-paste tiered fleet and cost-honesty notes.
 - [`docs/status.md`](docs/status.md) - what's built, the backend verification matrix, and the roadmap.
 - [`docs/design.md`](docs/design.md) - full architecture, per-backend cheat sheets, permission
   model, usage schema, and the edge-case hardening checklist.

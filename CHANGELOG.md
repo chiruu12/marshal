@@ -8,7 +8,58 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **Antigravity headless writes now land in the worktree** (were diverting to agy's scratch dir).
+  Headless `agy` can't establish workspace trust without a TTY, so it wrote edits into
+  `~/.gemini/antigravity-cli/scratch` instead of `cwd`. A new `CodingAgentBackend.prepare(opts)` hook
+  (run by `base.run()` just before spawn) lets the Antigravity adapter pre-register the run's worktree
+  in agy's `trustedWorkspaces` (merge-preserving, atomic, idempotent, prunes dead paths, safe for
+  parallel runs); the run also passes `--add-dir <cwd>`. Live-verified end-to-end. `--add-dir` alone
+  was insufficient (the prior known limitation).
+
 ### Added
+- **Transient-failure retries** - a run that fails for a transient infra/transport reason (backend
+  state-DB lock, rate limit, 5xx, dropped connection) is now re-run with exponential backoff,
+  configurable via a top-level `retries` key (default 2; `0` disables). Genuine task failures and
+  timeouts are never retried. The classifier is deliberately conservative (a false positive wastes a
+  whole run), and each run records its `attempts` count on the `RunRecord`.
+- **Worktree environment isolation + `worktree_setup`** - every spawned child (agents and the new
+  setup command) now runs with the driver's `VIRTUAL_ENV`/`PYTHONHOME` scrubbed, so an agent's
+  `uv run pytest` resolves the *worktree's* environment instead of silently testing the driver's
+  installed code. A new optional top-level config key `worktree_setup` (string or argv list) runs
+  once in each fresh worktree right after `git worktree add` - e.g. `uv sync --extra dev --extra mcp`
+  to provision the worktree's own venv. A non-zero exit tears the worktree down and fails the run
+  early rather than handing the agent a broken environment. Provisioning runs **outside** the
+  worktree-create lock (only the millisecond `git worktree add` is serialized), so a parallel
+  fan-out (`run_many`) provisions worktrees concurrently instead of one `uv sync` at a time.
+- **Model & client routing playbook** (`docs/model-playbook.md`) - how to pick which model/client to
+  route a task to by task weight (heavy/standard/light), a per-backend model menu, a copy-paste
+  tiered fleet config, routing heuristics, and cost-honesty notes (native/estimated/unavailable).
+  Linked from the README and the `marshal-orchestrate` Skill. Codex is documented on `gpt-5.5`; the
+  shipped price table no longer pins `gpt-5-codex`, so Codex cost reads `unavailable` until you price
+  its model (never a fake `$0`).
+- **`doctor` over MCP** - the preflight (toolchain, repo, config, per-backend CLI availability +
+  auth) is now an MCP tool, not just a CLI command, so a driver can verify a backend is ready
+  *before* spawning instead of discovering it from a failed run. Read-only; returns per-check
+  results plus a fails/warns roll-up. The MCP surface is now 15 tools.
+- **Claude Code backend** (`claude -p`) - a fifth worker adapter. It reports `total_cost_usd` +
+  tokens, so its usage is `native` (honest cost, no estimation); `acceptEdits` maps safe-edit,
+  `plan`/`bypassPermissions` map read-only/yolo. Live-verified end-to-end: edits land in the
+  worktree and the native cost reaches the ledger. The MCP surface is unchanged - backend is a
+  per-call parameter, so every existing tool drives it via a config client.
+- **`context_files` on `run_agent` / `run_many` / `spawn`** - a driver can now point a worker at the
+  specific repo files it should see (injected into the worker's prompt), scoping its context instead
+  of leaking the planner's whole session. Exposed through the service and the MCP tools; every
+  backend already consumed the field.
+- **Consensus driver Skills** - `marshal-review-gate` (gate a merge behind an independent,
+  multi-reviewer quorum and a fixed truth table) and `marshal-plan-consensus` (converge biased,
+  independent solver plans into one approach via an independent judge before building). Both are
+  pure driver playbooks over the existing MCP tools - they add no new execution path.
+- **Architectural-invariant tests** - lock the engine's core invariants in source (default
+  safe-edit + always-timed runs, capability/permission agreement, no prompting flag, backend never
+  encoded in a public name, usage-source honesty, the `run()` timeout/kill loop) plus a Skill
+  entrypoint contract and a CI/release workflow contract (least-privilege tokens, pinned actions,
+  frozen installs), so a regression trips a test instead of shipping.
 - **`--json` on inspection CLI commands** - `marshal backends`, `status`, `usage`, `workflows`,
   and `doctor` accept `--json` for machine-readable output.
 - **Declarative YAML workflows** - author a reusable orchestration recipe (phases of
@@ -26,6 +77,14 @@ versions may include breaking API changes until 1.0.
   doctor` reports its subscription tier and current model (an honest account fact, not a fabricated
   quota percentage).
 
+### Changed
+- **MCP tools are now non-blocking and self-describing.** Each tool runs async and offloads its
+  (possibly long-running) work to a worker thread, so a blocking `run_agent` / `run_many` /
+  `benchmark` / `run_workflow` no longer holds the server's event loop - the driver can poll
+  `status` / `get_run` and `cancel_run` an in-flight run, not only ones started with `spawn`. Tool
+  parameters now carry per-parameter descriptions in the schema, and `run_many` takes a typed job
+  shape (`{client, goal, task_id?, context_files?}`) instead of an untyped object.
+
 ## [0.0.1]
 
 First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
@@ -34,7 +93,8 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
 - **Engine** for driving headless coding agents in isolated git worktrees, off one base class
   (`CodingAgentBackend`) with a shared safe run loop: hard external timeout, no stdin, and a
   process-group kill on timeout.
-- **Four backend adapters:** Cursor, OpenCode, Codex, and Google Antigravity.
+- **Backend adapters:** Cursor, OpenCode, and Codex, plus an experimental Google Antigravity adapter
+  (reply-verified; headless writes currently divert to a scratch dir rather than the worktree).
 - **MCP server** exposing an 11-tool surface: `list_clients`, `run_agent`, `run_many`, `spawn`,
   `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`.
 - **Merge-back workflow:** `collect_run` (read-only diff review) and `integrate` (explicit merge into

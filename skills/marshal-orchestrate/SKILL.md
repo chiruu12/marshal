@@ -4,7 +4,7 @@ description: >
   Drive a fleet of headless coding agents through Marshal's MCP server: decompose a goal into
   independent tasks, run them in parallel in isolated git worktrees, review each diff, and
   integrate the good ones. Use when you have a multi-part coding goal to delegate to worker agents
-  (Cursor, OpenCode, Codex, Antigravity) instead of doing it all yourself. The engine is mechanism;
+  (Cursor, OpenCode, Codex, Antigravity, Claude Code) instead of doing it all yourself. The engine is mechanism;
   this playbook is the judgment - decomposition, prompt-writing, and merge decisions live here.
 ---
 
@@ -19,7 +19,8 @@ collect → integrate.**
 ## 0. Know your clients
 Call `list_clients` to see the configured workers (name, backend, model, permission). Each client is
 a routing choice the user set up (a cheap bulk worker, a careful reviewer, etc.). You route tasks to
-clients **by name** - you never choose backends directly.
+clients **by name** - you never choose backends directly. To decide *which* client a task should go
+to (by task weight - heavy/standard/light - and cost), see [`docs/model-playbook.md`](../../docs/model-playbook.md).
 
 ## 1. Plan - decompose into INDEPENDENT tasks
 Split the goal into tasks that can run in parallel **without colliding**:

@@ -36,6 +36,7 @@ class RunRecord(BaseModel):
     error: str | None = None
     merged_into: str | None = None  # branch this run was integrated into, once merged
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
+    attempts: int = 1  # how many times the backend was run (>1 means a transient failure was retried)
 
 
 class FleetState:

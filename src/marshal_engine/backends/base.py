@@ -21,6 +21,7 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 
+from ..env import child_env
 from ..types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord
 
 
@@ -80,6 +81,14 @@ class CodingAgentBackend(ABC):
         """
         return None
 
+    def prepare(self, opts: RunOpts) -> None:
+        """Optional per-run setup, run just before the process is spawned (default: no-op).
+
+        A seam for backend-specific preconditions that aren't pure argv - e.g. Antigravity
+        registering the run's worktree as a trusted workspace so its headless edits land in `cwd`
+        instead of a scratch dir. Keep it fast and idempotent; a failure here fails the run.
+        """
+
     # --- shared, concrete run loop -------------------------------------------------------
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
@@ -92,11 +101,22 @@ class CodingAgentBackend(ABC):
         (subagents, MCP servers, tool shells) are not orphaned.
         """
         argv = self.build_invocation(task, opts)
-        env = {**os.environ, **opts.extra_env}
+        # Scrub the driver's VIRTUAL_ENV/PYTHONHOME so the agent's tooling (uv/python) resolves the
+        # worktree's own environment, not the driver's - otherwise `uv run pytest` tests stale code.
+        env = child_env(opts.extra_env)
         start = time.monotonic()
 
         def _elapsed_ms() -> int:
             return int((time.monotonic() - start) * 1000)
+
+        try:
+            self.prepare(opts)
+        except Exception as exc:  # noqa: BLE001 - a prepare failure is a run failure, not a crash
+            return AgentResult(
+                status=RunStatus.FAILED,
+                error=f"{self.name}: prepare failed: {exc}",
+                duration_ms=_elapsed_ms(),
+            )
 
         try:
             proc = subprocess.Popen(

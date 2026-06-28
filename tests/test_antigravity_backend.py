@@ -1,7 +1,8 @@
-"""Contract tests for AntigravityBackend (pure hooks + text parse; no spawning/network)."""
+"""Contract tests for AntigravityBackend (pure hooks + text parse + trust setup; no network)."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,8 @@ def test_build_invocation_basic(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--add-dir",
+        "/tmp/wt",
         "-p",
         "do it",
     ]
@@ -47,6 +50,8 @@ def test_build_invocation_model(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--add-dir",
+        "/tmp/wt",
         "-m",
         "gemini-3.1-pro",
         "-p",
@@ -62,6 +67,8 @@ def test_build_invocation_conversation(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--add-dir",
+        "/tmp/wt",
         "--conversation",
         "conv-1",
         "-p",
@@ -77,6 +84,8 @@ def test_compose_prompt_includes_context(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--add-dir",
+        "/tmp/wt",
         "-p",
         "fix\n\nRelevant files:\n- a.py",
     ]
@@ -106,3 +115,40 @@ def test_parse_output_nonzero_exit_empty_stderr(backend: AntigravityBackend) -> 
     res = backend.parse_output("", "", 1)
     assert res.status is RunStatus.FAILED
     assert res.error == "agy exited 1"
+
+
+def test_prepare_trusts_the_worktree(backend: AntigravityBackend, tmp_path: Path) -> None:
+    # prepare() must register cwd in agy's trustedWorkspaces so headless edits land in the worktree.
+    backend.settings_path = tmp_path / "settings.json"
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt))
+    data = json.loads(backend.settings_path.read_text())
+    assert data["trustedWorkspaces"] == [str(wt.resolve())]
+
+
+def test_prepare_preserves_other_settings_and_prunes_dead(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    backend.settings_path = tmp_path / "settings.json"
+    live = tmp_path / "live"
+    live.mkdir()
+    dead = tmp_path / "gone"  # never created -> a dead trust entry that should be pruned
+    backend.settings_path.write_text(
+        json.dumps(
+            {
+                "allowNonWorkspaceAccess": True,  # an unrelated key must survive
+                "trustedWorkspaces": [str(live.resolve()), str(dead.resolve())],
+            }
+        )
+    )
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt))
+    backend.prepare(_opts(cwd=wt))  # idempotent: a second call must not duplicate the entry
+    data = json.loads(backend.settings_path.read_text())
+    tw = data["trustedWorkspaces"]
+    assert data["allowNonWorkspaceAccess"] is True          # preserved
+    assert tw.count(str(wt.resolve())) == 1                 # added exactly once
+    assert str(live.resolve()) in tw                        # still-existing trust kept
+    assert str(dead.resolve()) not in tw                    # dead path pruned

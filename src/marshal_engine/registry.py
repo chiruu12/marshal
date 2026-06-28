@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 from .backends.antigravity import AntigravityBackend
 from .backends.base import CodingAgentBackend
+from .backends.claude_code import ClaudeCodeBackend
 from .backends.codex import CodexBackend
 from .backends.cursor import CursorBackend
 from .backends.opencode import OpenCodeBackend
@@ -18,6 +19,7 @@ _FACTORIES: dict[str, Callable[[], CodingAgentBackend]] = {
     "opencode": OpenCodeBackend,
     "codex": CodexBackend,
     "antigravity": AntigravityBackend,
+    "claude-code": ClaudeCodeBackend,
 }
 
 

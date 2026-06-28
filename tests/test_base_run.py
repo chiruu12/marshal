@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from marshal_engine import (
     AgentResult,
     Capabilities,
@@ -60,6 +62,42 @@ def test_run_success(tmp_path: Path) -> None:
     res = b.run(_task(), RunOpts(cwd=tmp_path))
     assert res.status is RunStatus.SUCCEEDED
     assert res.text == "hi"
+
+
+def test_run_scrubs_driver_virtual_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The driver runs inside its own venv; the agent child must NOT inherit VIRTUAL_ENV, or its
+    # `uv run` would resolve the driver's install instead of the worktree's (testing stale code).
+    monkeypatch.setenv("VIRTUAL_ENV", "/driver/.venv")
+    b = _Dummy([sys.executable, "-c", "import os; print(os.environ.get('VIRTUAL_ENV', 'UNSET'))"])
+    res = b.run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.text == "UNSET"  # scrubbed from the child env
+    # extra_env still wins if a caller deliberately sets it
+    b2 = _Dummy([sys.executable, "-c", "import os; print(os.environ.get('VIRTUAL_ENV', 'UNSET'))"])
+    res2 = b2.run(_task(), RunOpts(cwd=tmp_path, extra_env={"VIRTUAL_ENV": "/wanted"}))
+    assert res2.text == "/wanted"
+
+
+def test_run_calls_prepare_before_spawn(tmp_path: Path) -> None:
+    calls: list[Path] = []
+
+    class _Prep(_Dummy):
+        def prepare(self, opts: RunOpts) -> None:
+            calls.append(Path(opts.cwd))
+
+    res = _Prep([sys.executable, "-c", "print('hi')"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.SUCCEEDED
+    assert calls == [tmp_path]  # prepare ran, with the run's cwd
+
+
+def test_run_prepare_failure_is_a_failed_result(tmp_path: Path) -> None:
+    class _BadPrep(_Dummy):
+        def prepare(self, opts: RunOpts) -> None:
+            raise RuntimeError("trust failed")
+
+    res = _BadPrep([sys.executable, "-c", "print('hi')"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    assert "prepare failed" in (res.error or "") and "trust failed" in (res.error or "")
 
 
 def test_run_timeout_kills_process(tmp_path: Path) -> None:

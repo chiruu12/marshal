@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,45 @@ def test_create_makes_isolated_worktree(repo: Path) -> None:
     assert wt.path.exists()
     assert wt.branch == "marshal/task1"
     assert (wt.path / "README.md").exists()  # has the repo content
+
+
+def test_setup_runs_command_in_worktree(repo: Path) -> None:
+    # setup() runs setup_cmd in the worktree (a separate step from create, so it can run unlocked).
+    m = WorktreeManager(repo, setup_cmd=[sys.executable, "-c", "open('marker', 'w').write('ok')"])
+    wt = m.create("setup_ok")
+    assert not (wt.path / "marker").exists()  # create() alone does NOT provision
+    m.setup(wt)
+    assert (wt.path / "marker").read_text() == "ok"  # ran with cwd = the worktree
+
+
+def test_setup_is_noop_without_setup_cmd(repo: Path) -> None:
+    m = WorktreeManager(repo)  # no setup_cmd
+    wt = m.create("nosetup")
+    m.setup(wt)  # no-op; the worktree survives
+    assert wt.path.exists()
+
+
+def test_setup_failure_tears_down_and_raises(repo: Path) -> None:
+    m = WorktreeManager(repo, setup_cmd=[sys.executable, "-c", "import sys; sys.exit(1)"])
+    wt = m.create("setup_fail")
+    with pytest.raises(WorktreeError, match="setup"):
+        m.setup(wt)
+    # the worktree was torn down, so no orphan dir and the id is reusable
+    assert not (m.base_dir / "setup_fail").exists()
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/setup_fail"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "marshal/setup_fail" not in branches
+
+
+def test_setup_missing_binary_raises(repo: Path) -> None:
+    m = WorktreeManager(repo, setup_cmd=["marshal-no-such-binary-xyz123"])
+    wt = m.create("setup_nobin")
+    with pytest.raises(WorktreeError, match="not found"):
+        m.setup(wt)
+    assert not (m.base_dir / "setup_nobin").exists()  # torn down
 
 
 def test_changed_files_detects_edits_and_additions(repo: Path) -> None:

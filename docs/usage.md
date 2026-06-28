@@ -36,7 +36,7 @@ defaults:
 
 clients:
   implementer:
-    backend: opencode          # opencode | cursor | codex | antigravity
+    backend: opencode          # opencode | cursor | codex | claude-code | antigravity
     model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model here is rejected
     permission: safe-edit
     secret_ref: env:OPENCODE_API_KEY
@@ -45,6 +45,11 @@ clients:
     backend: cursor
     permission: read-only
     secret_ref: env:CURSOR_API_KEY
+
+  planner:
+    backend: claude-code       # `claude -p` - native cost (total_cost_usd) + tokens
+    model: claude-sonnet-4-6   # bump to claude-opus-4-8 for harder tasks
+    permission: safe-edit
 ```
 
 - **Auth is per-CLI**: run each backend's login once (`opencode auth login`, `cursor-agent login`,
@@ -52,6 +57,16 @@ clients:
   unset - but Marshal does **not** inject it; the CLI's own login is what authenticates.
 - An OpenCode client with no `model` defaults to `opencode-go/glm-5.2` so runs bill the Go
   subscription, not Fireworks credits. A `fireworks-ai/*` model is rejected outright.
+- **`worktree_setup`** (optional, top-level): a command run once in each fresh worktree before the
+  agent starts - e.g. `worktree_setup: uv sync --extra dev --extra mcp` to provision the worktree's
+  own venv. Accepts a string or an argv list; omit it for repos that need no setup. Marshal scrubs
+  the driver's `VIRTUAL_ENV`/`PYTHONHOME` for the command (and for agent runs), so the worktree's
+  own environment wins - without it, an agent's `uv run pytest` would resolve the driver's venv and
+  test stale code. A non-zero exit tears the worktree down and fails the run early.
+- **`retries`** (optional, top-level, default `2`): how many times to re-run a run that failed for a
+  **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
+  exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
+  (a timeout retry just burns another full window). A retried run records its `attempts` count.
 
 ### Permission tiers
 
@@ -231,6 +246,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. |
 | Codex | yes | best-effort | `workspace-write` sandbox for safe-edit. |
 | Antigravity | reply-only today | no | Headless writes currently divert to a scratch dir. |
+| Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.

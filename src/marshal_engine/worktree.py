@@ -13,6 +13,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .env import child_env
+
 
 class WorktreeError(RuntimeError):
     """A git worktree operation failed."""
@@ -42,6 +44,8 @@ class WorktreeManager:
         base_dir: Path | str | None = None,
         branch_prefix: str = "marshal",
         git_timeout_s: int = 120,
+        setup_cmd: list[str] | None = None,
+        setup_timeout_s: int = 600,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.base_dir = (
@@ -49,6 +53,10 @@ class WorktreeManager:
         )
         self.branch_prefix = branch_prefix
         self.git_timeout_s = git_timeout_s
+        # Optional command run in each fresh worktree right after `git worktree add` (e.g. provision a
+        # venv). None = skip. See _run_setup for why a failure tears the worktree down and raises.
+        self.setup_cmd = setup_cmd
+        self.setup_timeout_s = setup_timeout_s
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         # These git calls run on the driver's checkout (commit/merge/status), so they get the same
@@ -72,7 +80,13 @@ class WorktreeManager:
             ) from exc
 
     def create(self, task_id: str, base_branch: str | None = None) -> Worktree:
-        """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch."""
+        """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch (git op only).
+
+        Provisioning (the optional ``setup_cmd``, e.g. ``uv sync``) is a SEPARATE step - call
+        ``setup(wt)`` afterwards. The fleet serializes only this git op (it's milliseconds) and runs
+        ``setup()`` OUTSIDE that lock, so a parallel fan-out provisions worktrees concurrently
+        instead of one-at-a-time behind the lock.
+        """
         branch = f"{self.branch_prefix}/{task_id}"
         path = self.base_dir / task_id
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +94,45 @@ class WorktreeManager:
         if proc.returncode != 0:
             raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
         return Worktree(task_id=task_id, path=path, branch=branch)
+
+    def setup(self, wt: Worktree) -> None:
+        """Provision a fresh worktree by running the configured ``setup_cmd`` (no-op if unset).
+
+        Runs with the driver's VIRTUAL_ENV scrubbed (so `uv sync` provisions the worktree's own
+        `.venv`, not the driver's), stdin closed, and a hard timeout - the same headless guards as
+        agent runs. Safe to run concurrently across worktrees (each is a distinct dir), so the fleet
+        calls it OUTSIDE the create lock and a fan-out provisions in parallel. A non-zero exit (or
+        missing binary / timeout) tears the half-made worktree back down and raises: a
+        half-provisioned worktree would have the agent run against a broken or stale environment, so
+        fail fast rather than hand it a trap.
+        """
+        if not self.setup_cmd:
+            return
+        try:
+            proc = subprocess.run(
+                self.setup_cmd,
+                cwd=str(wt.path),
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=child_env(),
+                timeout=self.setup_timeout_s,
+            )
+            reason = "" if proc.returncode == 0 else _setup_reason(proc.returncode, proc.stderr, proc.stdout)
+        except subprocess.TimeoutExpired:
+            reason = f"timed out after {self.setup_timeout_s}s"
+        except FileNotFoundError:
+            reason = f"command not found: {self.setup_cmd[0]!r}"
+        if reason:
+            # Best-effort teardown so a failed setup doesn't strand an orphan worktree (and a retry
+            # can reuse the task_id); never let teardown mask the original setup failure.
+            try:
+                self.remove(wt)
+            except WorktreeError:
+                pass
+            raise WorktreeError(
+                f"worktree setup {self.setup_cmd!r} failed for {wt.task_id!r}: {reason}"
+            )
 
     def changed_files(self, wt: Worktree) -> list[str]:
         """Paths changed inside the worktree (uncommitted).
@@ -257,6 +310,13 @@ class WorktreeManager:
     def prune(self) -> None:
         """Clean up administrative files for worktrees whose directories are gone."""
         self._git("worktree", "prune")
+
+
+def _setup_reason(exit_code: int, stderr: str, stdout: str) -> str:
+    """A debuggable reason for a failed setup command: exit code + a short output tail."""
+    tail = " ".join((stderr or stdout).strip().splitlines()[-3:])
+    base = f"exited with code {exit_code}"
+    return f"{base}: {tail}" if tail else base
 
 
 def _from_porcelain(entry: dict[str, str]) -> Worktree:
