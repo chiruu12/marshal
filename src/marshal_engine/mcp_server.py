@@ -83,9 +83,10 @@ def build_app(service: MarshalService) -> Any:
         return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
 
     @app.tool()
-    async def list_clients() -> list[dict[str, Any]]:
-        """List configured backend clients (name, backend, model, permission)."""
-        return [c.model_dump(mode="json") for c in await offload(service.list_clients)]
+    async def list_clients() -> dict[str, Any]:
+        """List configured backend clients (name, backend, model, permission) plus the fleet's
+        driver-facing context. Returns {clients, driver_context}."""
+        return (await offload(service.list_clients)).model_dump(mode="json")
 
     @app.tool()
     async def doctor() -> dict[str, Any]:

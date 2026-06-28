@@ -20,7 +20,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, FleetConfig, load_config
+from marshal_engine.config import ClientConfig, FleetConfig, FleetContext, load_config
 from marshal_engine.service import MarshalService
 
 
@@ -165,12 +165,23 @@ def _svc(repo: Path) -> MarshalService:
 
 def test_list_clients(repo: Path) -> None:
     svc = _svc(repo)
-    clients = svc.list_clients()
-    assert [c.model_dump() for c in clients] == [
+    result = svc.list_clients()
+    assert [c.model_dump() for c in result.clients] == [
         {"name": "worker", "backend": "echo", "model": None, "permission": "safe-edit"}
     ]
+    assert result.driver_context is None  # no context.driver in this config
 
 
+def test_list_clients_surfaces_driver_context(repo: Path) -> None:
+    # context.driver is surfaced back to the driver on list_clients (None when unset).
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT)},
+        context=FleetContext(driver="Fleet runs review + impl; integrate manually."),
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    result = svc.list_clients()
+    assert result.driver_context == "Fleet runs review + impl; integrate manually."
+    assert [c.name for c in result.clients] == ["worker"]
 def test_run_agent_records(repo: Path) -> None:
     svc = _svc(repo)
     rec = svc.run_agent("worker", "do something", task_id="t1")
@@ -188,11 +199,12 @@ def test_run_agent_unknown_client(repo: Path) -> None:
         svc.run_agent("nope", "x")
 
 
-def _capture_svc(repo: Path, backend: _Capture) -> MarshalService:
+def _capture_svc(repo: Path, backend: _Capture, *, worker: str | None = None) -> MarshalService:
     cfg = FleetConfig(
         clients={
             "worker": ClientConfig(name="worker", backend="capture", permission=PermissionMode.SAFE_EDIT)
-        }
+        },
+        context=FleetContext(worker=worker) if worker else FleetContext(),
     )
     return MarshalService(repo, cfg, backends={"capture": backend})
 
@@ -205,6 +217,30 @@ def test_run_agent_threads_context_files_to_the_task(repo: Path) -> None:
     svc.run_agent("worker", "do x", task_id="t1", context_files=["a.py", "b.py"])
     assert backend.tasks[-1].context_files == ["a.py", "b.py"]
 
+
+def test_goal_is_prefixed_with_worker_preamble(repo: Path) -> None:
+    # The worker preamble is injected into every goal, and the user's original goal survives.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_agent("worker", "refactor the parser", task_id="t1")
+    goal = backend.tasks[-1].goal
+    assert goal.startswith("You are a headless coding agent in a Marshal fleet")
+    assert "headless coding agent in a Marshal fleet" in goal
+    assert "refactor the parser" in goal  # the user's goal text is still present
+
+
+def test_goal_includes_fleet_worker_context_when_set(repo: Path) -> None:
+    # When context.worker is set, it is layered between the preamble and the user's goal.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend, worker="Always add type hints. No new deps.")
+    svc.run_agent("worker", "fix the bug", task_id="t1")
+    goal = backend.tasks[-1].goal
+    assert goal.startswith("You are a headless coding agent in a Marshal fleet")
+    assert "Always add type hints. No new deps." in goal  # fleet worker context
+    assert "fix the bug" in goal  # user's goal still present
+    # ordering: preamble, then worker context, then goal
+    assert goal.index("headless coding agent") < goal.index("Always add type hints")
+    assert goal.index("Always add type hints") < goal.index("fix the bug")
 
 def test_run_many_threads_context_files_per_job(repo: Path) -> None:
     backend = _Capture()
@@ -348,7 +384,7 @@ def _mixed_svc(repo: Path) -> MarshalService:
 def test_unavailable_client_skipped(repo: Path) -> None:
     svc = _mixed_svc(repo)
     # (a) the unavailable client is absent from list_clients, present in skipped_clients
-    listed = {c.name for c in svc.list_clients()}
+    listed = {c.name for c in svc.list_clients().clients}
     assert "ghost" not in listed
     assert "worker" in listed
     assert svc.skipped_clients == ["ghost"]
@@ -366,4 +402,4 @@ def test_all_available_skipped_is_empty(repo: Path) -> None:
     # (c) a service with only available backends has skipped_clients == []
     svc = _svc(repo)  # single 'echo' client, _Echo.check_available() is True
     assert svc.skipped_clients == []
-    assert {c.name for c in svc.list_clients()} == {"worker"}
+    assert {c.name for c in svc.list_clients().clients} == {"worker"}

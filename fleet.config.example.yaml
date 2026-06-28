@@ -24,6 +24,17 @@ defaults:
 # failures and timeouts are never retried.
 retries: 2
 
+# Optional fleet-wide layered context.
+#   worker: text prepended to EVERY worker agent's goal (shared operating assumptions - coding
+#           style, repo quirks). Omit for no extra context.
+#   driver: text surfaced back to the driver (e.g. via list_clients over MCP) so it knows how the
+#           fleet is configured. Omit for none.
+# context:
+#   worker: |
+#     Prefer small, focused commits. Run `uv run pytest -q` before finishing.
+#     Target Python 3.12; do not introduce new dependencies.
+#   driver: Fleet runs read-only review + safe-edit implementation; integrate manually.
+
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
   # fireworks-ai/* model is rejected at load so you never burn Fireworks credits.

@@ -28,7 +28,7 @@ def test_build_service_from_env_config(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     svc = build_service()
-    names = [c.name for c in svc.list_clients()]
+    names = [c.name for c in svc.list_clients().clients]
     assert "reviewer" in names
 
 
@@ -42,7 +42,7 @@ def test_build_service_without_config_starts_with_zero_clients(
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     svc = build_service()
-    assert svc.list_clients() == []
+    assert svc.list_clients().clients == []
     assert "no fleet config" in capsys.readouterr().err
 
 

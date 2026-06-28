@@ -40,6 +40,14 @@ from .workflow import (
 from .workflow import list_workflows as _discover_workflows
 
 
+_WORKER_PREAMBLE = (
+    "You are a headless coding agent in a Marshal fleet, running in an isolated git worktree. "
+    "You cannot ask questions or wait for input - make reasonable decisions and proceed. "
+    "Make all edits inside this worktree only. "
+    "If the repo root has an AGENTS.md, CLAUDE.md, or GEMINI.md, read it first for project conventions."
+)
+
+
 class ClientInfo(BaseModel):
     """A configured client as surfaced to the driver (resolved model, permission as a string)."""
 
@@ -47,6 +55,13 @@ class ClientInfo(BaseModel):
     backend: str
     model: str | None
     permission: str
+
+
+class ClientList(BaseModel):
+    """list_clients() result: the configured clients plus the fleet's driver-facing context."""
+
+    clients: list[ClientInfo]
+    driver_context: str | None = None
 
 
 class DoctorCheck(BaseModel):
@@ -105,16 +120,19 @@ class MarshalService:
             retries=RetryPolicy(max_attempts=config.retries + 1),
         )
 
-    def list_clients(self) -> list[ClientInfo]:
-        return [
-            ClientInfo(
-                name=c.name,
-                backend=c.backend,
-                model=resolve_model(c),
-                permission=c.permission.value,
-            )
-            for c in self._clients.values()
-        ]
+    def list_clients(self) -> ClientList:
+        return ClientList(
+            clients=[
+                ClientInfo(
+                    name=c.name,
+                    backend=c.backend,
+                    model=resolve_model(c),
+                    permission=c.permission.value,
+                )
+                for c in self._clients.values()
+            ],
+            driver_context=self.config.context.driver,
+        )
 
     def client_available(self, client_name: str) -> bool:
         client = self.config.clients.get(client_name)
@@ -122,6 +140,17 @@ class MarshalService:
             return False
         backend = self.fleet.backends.get(client.backend)
         return backend.check_available() if backend is not None else False
+
+    def _compose_goal(self, goal: str) -> str:
+        # Layered context: the worker preamble + the fleet's `worker` context prefix the user's
+        # goal. Everything (run_agent/run_many/spawn/benchmark/workflows) funnels through
+        # _request_for, so this is the single injection point.
+        parts = [_WORKER_PREAMBLE]
+        worker_ctx = self.config.context.worker
+        if worker_ctx:
+            parts.append(worker_ctx.strip())
+        parts.append(goal)
+        return "\n\n".join(parts)
 
     def _request_for(
         self,
@@ -140,7 +169,7 @@ class MarshalService:
         # Leave it unset until that policy exists, so the field never claims a role nothing assigned.
         task = TaskSpec(
             id=task_id or uuid.uuid4().hex[:8],
-            goal=goal,
+            goal=self._compose_goal(goal),
             context_files=context_files or [],
             files_touched=files_touched or [],
         )
