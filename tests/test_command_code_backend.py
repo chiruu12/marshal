@@ -27,7 +27,7 @@ def _opts(**kw: object) -> RunOpts:
 
 def test_map_permission(backend: CommandCodeBackend) -> None:
     assert backend.map_permission(PermissionMode.READ_ONLY) == ["--permission-mode", "plan"]
-    assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--permission-mode", "auto-accept"]
+    assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--yolo"]
     assert backend.map_permission(PermissionMode.YOLO) == ["--yolo"]
 
 
@@ -39,7 +39,7 @@ def test_build_invocation_basic(backend: CommandCodeBackend) -> None:
     assert "--skip-onboarding" in argv
     assert "-t" in argv
     assert "--max-turns" in argv and "50" in argv
-    assert "--permission-mode" in argv and "auto-accept" in argv
+    assert "--yolo" in argv  # headless auto-accept blocks writes, so safe-edit uses --yolo
 
 
 def test_build_invocation_model_and_readonly(backend: CommandCodeBackend) -> None:
