@@ -88,19 +88,24 @@ Add a **version probe** in `check_available` + **contract tests per backend** (t
 
 ---
 
-## 3. Per-backend cheat sheet (verified from docs, June 2026)
+## 3. Per-backend cheat sheet (all implemented backends)
 
-| | **Cursor (`cursor-agent`)** | **OpenCode (`opencode`)** | **Codex** | **Claude Code** |
-|---|---|---|---|---|
-| Headless run | `cursor-agent -p "..."` | `opencode run "..."` | `codex ...` | `claude --print` |
-| JSON | `--output-format json\|stream-json` | `--format json` (NDJSON event stream) | json | `--output-format json\|stream-json` |
-| Final text | `result.result` field | concat all `text` events' `part.text` | - | json field |
-| Tokens/cost in output | **NONE** (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | `total_cost_usd` + `usage{...}` |
-| File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | - |
-| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `session_id` returned |
-| Model select | `--model` / `--list-models` (default **Auto**) | `-m provider/model` / `opencode models` | - | - |
-| Working dir | **no `--cwd`**; `--workspace <path>`; `-w/--worktree [name]`, `--worktree-base` | `--dir <path>` (config walks up to git root) | - | - |
-| Server mode | no | **`opencode serve`** (OpenAPI on 127.0.0.1:4096) + `opencode acp` | no | no |
+| | **Cursor (`cursor-agent`)** | **OpenCode (`opencode`)** | **Codex** | **Command Code (`command-code`)** | **Antigravity (`agy`)** | **Claude Code** |
+|---|---|---|---|---|---|---|
+| Headless run | `cursor-agent -p "..."` | `opencode run "..."` | `codex ...` | `command-code -p "..."` | `agy -p "..."` | `claude --print` |
+| JSON | `--output-format json\|stream-json` | `--format json` (NDJSON event stream) | json | none (plain text only) | none (plain text only) | `--output-format json\|stream-json` |
+| Final text | `result.result` field | concat all `text` events' `part.text` | - | stdout (plain text, ANSI-stripped) | stdout (plain text) | json field |
+| Tokens/cost in output | **NONE** (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | none (hosted account → `unavailable`) | none (no native usage headless → `unavailable`) | `total_cost_usd` + `usage{...}` |
+| File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | diff worktree via git (`collect_run`); CLI emits none | diff worktree via git (`collect_run`); CLI emits none | - |
+| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>` (no headless session-id capture → `sessions=False`) | `session_id` returned |
+| Model select | `--model` / `--list-models` (default **Auto**) | `-m provider/model` / `opencode models` | - | `-m MODEL` / `--list-models` | `-m MODEL` | - |
+| Working dir | **no `--cwd`**; `--workspace <path>`; `-w/--worktree [name]`, `--worktree-base` | `--dir <path>` (config walks up to git root) | - | none (uses the process `cwd` the runner sets; `-t` trusts the project) | `--add-dir <path>` + `trustedWorkspaces` entry written by `prepare()` | - |
+| Server mode | no | **`opencode serve`** (OpenAPI on 127.0.0.1:4096) + `opencode acp` | no | no | no | no |
+
+> **File changes, every backend:** Marshal derives file changes the same way regardless of CLI —
+> after the run it diffs the worktree via git (`collect_run`). None of the CLIs emits a structured
+> file list, so the per-backend "File changes" cells name only an optional in-stream signal (when one
+> exists); the authoritative diff is always the worktree.
 
 ---
 
@@ -121,14 +126,14 @@ for lower latency, with subprocess `opencode run` as fallback (cmuxlayer-style f
 The single most reusable artifact (from shinpr/sub-agents-mcp). Headless = **no interactive
 approvals, ever** - "sub-agents have no stdin, so any approval prompt deadlocks the run."
 
-| Tier | Cursor | OpenCode | Codex | Claude Code | Gemini |
-|---|---|---|---|---|---|
-| **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | `--approval-mode plan` |
-| **safe-edit** (default) | `--force` (worktree is the boundary) | `--dangerously-skip-permissions` | `-s workspace-write` | `--permission-mode acceptEdits` | `--approval-mode auto_edit` |
-| **yolo** (opt-in) | `--force`/`--yolo` (no deny) | `--dangerously-skip-permissions` | workspace-write, no approval | bypass | bypass |
+| Tier | Cursor | OpenCode | Codex | Command Code | Antigravity | Claude Code | Gemini |
+|---|---|---|---|---|---|---|---|
+| **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | — (unsupported headless) | `--permission-mode plan` | `--approval-mode plan` |
+| **safe-edit** (default) | `--force` (worktree is the boundary) | `--dangerously-skip-permissions` | `-s workspace-write` | `--yolo` | `--dangerously-skip-permissions` (+ `trustedWorkspaces` via `prepare`) | `--permission-mode acceptEdits` | `--approval-mode auto_edit` |
+| **yolo** (opt-in) | `--force`/`--yolo` (no deny) | `--dangerously-skip-permissions` | workspace-write, no approval | `--yolo` | `--dangerously-skip-permissions` | bypass | bypass |
 
 Key per-backend detail:
-- **Today, safe-edit is process-equivalent to yolo for Cursor and OpenCode.** The engine emits no deny/allow config: Cursor's safe-edit is a bare `--force` and OpenCode's is `--dangerously-skip-permissions`. The **git worktree is the sole enforced boundary**; the scoped deny-list/allowlist grammar below is a **config layer that is not yet implemented**.
+- **Today, safe-edit is process-equivalent to yolo for Cursor, OpenCode, and Command Code.** The engine emits no deny/allow config: Cursor's safe-edit is a bare `--force`, OpenCode's is `--dangerously-skip-permissions`, and Command Code's is `--yolo` (its headless `auto-accept` blocks the write/shell tools, which have no TTY to confirm). The **git worktree is the sole enforced boundary**; the scoped deny-list/allowlist grammar below is a **config layer that is not yet implemented**.
 - **Cursor (future config layer):** `--force`/`--yolo` = "allow everything **not explicitly denied**" - so the intended safe pattern is `--force` + a curated `deny` list (`Shell(rm)`, `Write(**/.env)`, `Write(**/.git/**)`). Permission grammar lives in `~/.cursor/cli-config.json` / `.cursor/cli.json`: `Shell(git)`, `Read(glob)`, `Write(src/**)`, `WebFetch(*.github.com)`, `Mcp(server:tool)`. **Deny beats allow.** Redirections (`>`,`|`) can't be allowlisted inline. Also needs `--trust` (headless workspace trust) and `--approve-mcps` for MCP.
 - **OpenCode (future config layer):** `permission` keys: `read, edit, glob, grep, bash, task, skill, lsp, question, webfetch, websearch, external_directory, doom_loop`; values `allow|ask|deny`; **last matching rule wins**. **CRITICAL for server mode:** `serve`+`attach` **hangs if any permission is `ask`** → set all to `allow` + `question: deny` in a dedicated `opencode.json`. `--dangerously-skip-permissions` does NOT cover the `question` tool.
 - **Worktree isolation is the dominant safety primitive** across all serious tools (ORCH, Crystal, Orca). Main branch untouched until explicit merge. Worktrees share host FS/network → fine for trusted local use; for untrusted code use containers later (agentbox/scion).
@@ -304,7 +309,7 @@ and contract tests:
 | Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost `admin-api` via EastRouter `usage_api`, else estimated/unavailable) |
 | Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
 | OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` (native only when cost is positive; an unpriced custom provider stays `unavailable`) |
-| Command Code | `command-code -p` (text only) | `--permission-mode plan` / `--permission-mode auto-accept` / `--yolo` | none (hosted account → `unavailable`) |
+| Command Code | `command-code -p` (text only) | `--permission-mode plan` / `--yolo` / `--yolo` | none (hosted account → `unavailable`) |
 | Antigravity | `agy -p` (text only) | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
 | Claude Code | `claude -p --output-format json` | `--permission-mode plan` / `acceptEdits` / `bypassPermissions` | cost+tokens in JSON (native) |
 
