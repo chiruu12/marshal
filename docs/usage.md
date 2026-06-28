@@ -231,7 +231,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 
 ```
 .marshal/
-├── worktrees/<task>.<backend>/   # isolated checkout per run (kept until you integrate)
+├── worktrees/<task>.<backend>.<id>/   # isolated checkout per run (kept until you integrate)
 ├── runs/<run_id>.json            # one file per run: status + cost (single writer per run)
 └── usage/
     ├── events.jsonl              # one line per run
@@ -245,7 +245,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub. |
 | Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. |
 | Codex | yes | best-effort | `workspace-write` sandbox for safe-edit. |
-| Antigravity | reply-only today | no | Headless writes currently divert to a scratch dir. |
+| Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)

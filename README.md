@@ -25,12 +25,13 @@ It plugs into your driver two ways:
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (15
+> **Core feature set implemented (0.0.1, alpha) · pre-1.0, APIs may change.** The engine, CLI, and MCP server (15
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
 > fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
 > **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and
 > compare real cost/latency/outcome). OpenCode, Cursor, and Claude Code live-verified (Claude Code
-> with native cost); the Codex adapter verified on a fresh usage window (re-verify pending). See
+> with native cost); Codex live-verified end-to-end (including via a custom OpenAI-compatible
+> provider), its cost `unavailable` until the model is priced. See
 > [`docs/status.md`](docs/status.md).
 
 ## Getting started
@@ -73,7 +74,10 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
   not a rewrite. Backend choice is a per-call parameter.
 - **Parallel by default.** Each agent runs in its own git worktree; your main branch stays clean
   until you explicitly integrate.
-- **Per-provider usage tracking.** Token and cost accounting per backend, per client - a `usage`
+- **Per-provider usage tracking.** Token accounting for every backend, plus cost tagged by source:
+  **native** where the provider reports it (OpenCode, Claude Code), real **`admin-api`** cost for
+  Codex routed through EastRouter (read back from its usage API), **estimated** where a model is
+  priced, and `unavailable` otherwise (Cursor, Antigravity) - never a fake $0. A `usage`
   command most orchestrators don't have. `marshal doctor` also reports each authenticated backend's
   plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
@@ -82,8 +86,9 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 ## What the benchmark gives you
 
 Marshal's headline feature is a **measured** routing comparison, not a guess. Run one task through
-several strategies and `report` derives a source-honest table from each run's recorded facts. An
-example capture - Marshal benchmarking two OpenCode models on a real drafting task:
+several strategies and `report` derives a source-honest table from each run's recorded facts. The
+numbers below are **illustrative** - regenerate them with a real `benchmark` run before relying on
+them, not a committed measurement (two OpenCode models on a drafting task):
 
 | strategy | backend | status | cost | source | duration | out tokens |
 |---|---|---|---|---|---|---|

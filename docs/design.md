@@ -61,6 +61,7 @@ class CodingAgentBackend(ABC):
         native_usage: bool       # emits tokens/cost in output
         permission_modes: set[str]   # {"read-only","safe-edit","yolo"}
 
+    # four abstract hooks every backend implements:
     @abstractmethod
     def check_available(self) -> bool: ...           # which-binary + auth probe + version assert
 
@@ -71,11 +72,13 @@ class CodingAgentBackend(ABC):
     def map_permission(self, mode) -> list[str]: ...           # read-only|safe-edit|yolo -> native flags
 
     @abstractmethod
-    def parse_output(self, raw: str, exit_code: int) -> AgentResult: ...
+    def parse_output(self, raw_stdout, raw_stderr, exit_code) -> AgentResult: ...
         # normalize -> {text, session_id, usage:{in,out,cache,cost}, files_changed, status}
 
-    @abstractmethod
-    def extract_usage(self, result) -> UsageRecord | None: ...
+    # optional overridable hooks (have defaults):
+    def extract_usage(self, result) -> UsageRecord | None: ...   # default: result.usage; override to fetch/estimate
+    def prepare(self, opts) -> None: ...                         # default no-op; per-run setup before spawn
+    def account_info(self) -> dict[str, str] | None: ...         # default None; cheap account metadata (plan tier)
 
     # run() lives on the base: build_invocation -> spawn in worktree (timeout!) -> capture -> parse_output
 ```
@@ -121,12 +124,13 @@ approvals, ever** - "sub-agents have no stdin, so any approval prompt deadlocks 
 | Tier | Cursor | OpenCode | Codex | Claude Code | Gemini |
 |---|---|---|---|---|---|
 | **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | `--approval-mode plan` |
-| **safe-edit** (default) | `--force` + **deny list** scoped to worktree | `opencode.json` `permission` allowlist (deny-by-default) | `-s workspace-write` | `--permission-mode acceptEdits` | `--approval-mode auto_edit` |
+| **safe-edit** (default) | `--force` (worktree is the boundary) | `--dangerously-skip-permissions` | `-s workspace-write` | `--permission-mode acceptEdits` | `--approval-mode auto_edit` |
 | **yolo** (opt-in) | `--force`/`--yolo` (no deny) | `--dangerously-skip-permissions` | workspace-write, no approval | bypass | bypass |
 
 Key per-backend detail:
-- **Cursor:** `--force`/`--yolo` = "allow everything **not explicitly denied**" - so the safe pattern is `--force` + a curated `deny` list (`Shell(rm)`, `Write(**/.env)`, `Write(**/.git/**)`). Permission grammar lives in `~/.cursor/cli-config.json` / `.cursor/cli.json`: `Shell(git)`, `Read(glob)`, `Write(src/**)`, `WebFetch(*.github.com)`, `Mcp(server:tool)`. **Deny beats allow.** Redirections (`>`,`|`) can't be allowlisted inline. Also needs `--trust` (headless workspace trust) and `--approve-mcps` for MCP.
-- **OpenCode:** `permission` keys: `read, edit, glob, grep, bash, task, skill, lsp, question, webfetch, websearch, external_directory, doom_loop`; values `allow|ask|deny`; **last matching rule wins**. **CRITICAL for server mode:** `serve`+`attach` **hangs if any permission is `ask`** → set all to `allow` + `question: deny` in a dedicated `opencode.json`. `--dangerously-skip-permissions` does NOT cover the `question` tool.
+- **Today, safe-edit is process-equivalent to yolo for Cursor and OpenCode.** The engine emits no deny/allow config: Cursor's safe-edit is a bare `--force` and OpenCode's is `--dangerously-skip-permissions`. The **git worktree is the sole enforced boundary**; the scoped deny-list/allowlist grammar below is a **config layer that is not yet implemented**.
+- **Cursor (future config layer):** `--force`/`--yolo` = "allow everything **not explicitly denied**" - so the intended safe pattern is `--force` + a curated `deny` list (`Shell(rm)`, `Write(**/.env)`, `Write(**/.git/**)`). Permission grammar lives in `~/.cursor/cli-config.json` / `.cursor/cli.json`: `Shell(git)`, `Read(glob)`, `Write(src/**)`, `WebFetch(*.github.com)`, `Mcp(server:tool)`. **Deny beats allow.** Redirections (`>`,`|`) can't be allowlisted inline. Also needs `--trust` (headless workspace trust) and `--approve-mcps` for MCP.
+- **OpenCode (future config layer):** `permission` keys: `read, edit, glob, grep, bash, task, skill, lsp, question, webfetch, websearch, external_directory, doom_loop`; values `allow|ask|deny`; **last matching rule wins**. **CRITICAL for server mode:** `serve`+`attach` **hangs if any permission is `ask`** → set all to `allow` + `question: deny` in a dedicated `opencode.json`. `--dangerously-skip-permissions` does NOT cover the `question` tool.
 - **Worktree isolation is the dominant safety primitive** across all serious tools (ORCH, Crystal, Orca). Main branch untouched until explicit merge. Worktrees share host FS/network → fine for trusted local use; for untrusted code use containers later (agentbox/scion).
 
 ---
@@ -183,8 +187,8 @@ top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) prov
 after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
 
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
-Shipped today (14): `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`,
-`report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
+Shipped today (15): `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`,
+`benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
 `run_workflow`. Current state is tracked in `docs/status.md`.
 
 Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
@@ -267,8 +271,10 @@ become first-class and must be designed in (even if full logic lands in V2):
 3. **Policy / customer-config layer.** Extend `fleet.config.yaml` defaults with
    `strategy: quality-first|cost-first|balanced`, `budget` ceilings (per task/repo), a role→client
    map, and `require_approval_before_merge`. The user expresses intent; the engine enforces.
-4. **Context scoping per worker.** Each worker sees only its task + `context_files` + minimal repo
-   context - never the planner's whole session. Core value prop (token waste + drift), not an optimization.
+4. **Context scoping per worker.** Each worker runs in its own worktree with a **fresh context** -
+   never the planner's session. `context_files` are surfaced as prompt hints; restricting the
+   worker's visible file set is future work (the worktree is a full checkout). Aimed at token waste +
+   drift, not an optimization.
 
 **Fleet-state records** must capture (basis for reporting/benchmarking): task, role, client/backend,
 model, cost, tokens, duration, artifacts/diff, checks (test pass/fail), merged?, strategy label.

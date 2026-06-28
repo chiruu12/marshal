@@ -36,9 +36,9 @@ Quality gate: full unit suite passes; ruff and mypy (strict) clean across all so
 | Codex | yes | - | verified* | tokens only (cost unpriced) |
 | Antigravity | yes | verified (reply) | verified** | none |
 
-\* Codex safe-edit (worktree write) verified on a fresh usage window; the dev account is
-intermittently rate-limited, so a re-run may have to wait. Token counts are captured but cost is
-`unavailable` until the model is added to the price table.
+\* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
+writes land and the JSONL parser extracts text + tokens correctly. Token counts are captured but
+cost is `unavailable` until the model is added to the price table.
 \*\* Antigravity headless writes now land in the worktree (verified end-to-end 2026-06-27). The
 adapter's `prepare()` pre-registers the run's worktree in `~/.gemini/antigravity-cli/settings.json`
 `trustedWorkspaces` and passes `--add-dir <cwd>`; without the trust entry, agy diverts edits to its
@@ -96,5 +96,5 @@ native cost flows to the ledger.
 **Antigravity headless writes** (`backends/antigravity.py`) - `prepare()` registers the run's
 worktree in agy's `trustedWorkspaces` before launch, so headless edits land in the worktree instead
 of the scratch dir (live-verified 2026-06-27). This closes the prior known limitation.
-Remaining: Antigravity native usage; Cursor admin-API usage; Codex live re-verify; a Gemini
+Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
