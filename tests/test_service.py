@@ -303,6 +303,24 @@ def test_benchmark_cheapest_excludes_unknown_cost(repo: Path) -> None:
     assert result.cheapest == "known"  # not "mystery", despite its $0 unavailable cost
 
 
+def test_report_admin_api_cost_competes_for_cheapest(repo: Path) -> None:
+    # Regression: a real EastRouter (admin-api) cost is a KNOWN cost and must be comparable for
+    # `cheapest` - it was previously excluded (only native/estimated were), so a real cheaper run lost.
+    from marshal_engine.state import RunRecord
+
+    svc = _svc(repo)
+    svc.fleet.state.add(
+        RunRecord(run_id="b.cheap", task_id="b", backend="x", client="cheap",
+                  status="succeeded", cost_usd=0.01, source="admin-api")
+    )
+    svc.fleet.state.add(
+        RunRecord(run_id="b.dear", task_id="b", backend="x", client="dear",
+                  status="succeeded", cost_usd=0.05, source="native")
+    )
+    result = svc.report("b")
+    assert result.cheapest == "cheap"  # the admin-api run is the cheapest comparable strategy
+
+
 def test_run_many_runs_each_client_job(repo: Path) -> None:
     svc = _svc(repo)
     jobs = [

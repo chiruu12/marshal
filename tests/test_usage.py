@@ -93,6 +93,18 @@ def test_cost_per_outcome_and_source_split(tmp_path: Path) -> None:
     assert abs(tot.cost_per_succeeded - 0.03) < 1e-9  # 0.06 / 2 (failures/empties still cost)
 
 
+def test_admin_api_cost_has_its_own_bucket(tmp_path: Path) -> None:
+    # Regression: a real provider admin-api cost (EastRouter) is its own ground-truth bucket and the
+    # source buckets sum to the total (admin-api cost was previously dropped from native+estimated).
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="r1", cost_usd=0.01, status="succeeded", source="native"))
+    t.record(_ev(run_id="r2", cost_usd=0.02, status="succeeded", source="admin-api"))
+    t.record(_ev(run_id="r3", cost_usd=0.04, status="succeeded", source="estimated"))
+    tot = t.summary().totals
+    assert abs(tot.cost_admin_api - 0.02) < 1e-9
+    assert abs((tot.cost_native + tot.cost_admin_api + tot.cost_estimated) - tot.cost_usd) < 1e-9
+
+
 def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None:
     t = UsageTracker(tmp_path / "usage")
     t.record(_ev(run_id="s", cost_usd=0.02, status="succeeded", source="native"))

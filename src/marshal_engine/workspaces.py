@@ -184,8 +184,9 @@ defaults:
   permission: safe-edit
   timeout_s: 900
 
-clients: {}
-  # example - uncomment and edit, then run `marshal doctor` to verify the backend is available:
+# Add clients under `clients:` (an empty map = zero clients until you add one). Example - uncomment
+# and edit, then run `marshal doctor` to verify the backend is available:
+clients:
   # claude:
   #   backend: claude-code
   #   model: claude-sonnet-4-6
@@ -515,7 +516,9 @@ class WorkspaceRegistry:
             if configured:
                 try:
                     client_count = len(load_config(wdef.config_path).clients)
-                except ConfigError:
+                except (ConfigError, OSError, ValueError, yaml.YAMLError):
+                    # A broken/unreadable/binary config reports 0 clients rather than crashing
+                    # list_workspaces - the whole point is per-repo graceful degradation.
                     client_count = 0
             rows.append(
                 {

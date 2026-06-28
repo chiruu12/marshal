@@ -63,7 +63,7 @@ def _cmd_usage(args: argparse.Namespace) -> int:
     cps_str = f"${t.cost_per_succeeded:.4f}" if t.cost_per_succeeded is not None else "n/a"
     print(
         f"runs={t.runs}  succeeded={t.succeeded}  cost=${t.cost_usd:.4f} "
-        f"(native ${t.cost_native:.4f} / est ${t.cost_estimated:.4f})"
+        f"(native ${t.cost_native:.4f} / admin-api ${t.cost_admin_api:.4f} / est ${t.cost_estimated:.4f})"
     )
     print(f"  $/run=${t.cost_per_run:.4f}  $/succeeded={cps_str}  in={t.input_tokens} out={t.output_tokens}")
     for backend, v in sorted(s.by_backend.items()):

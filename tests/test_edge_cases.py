@@ -443,3 +443,20 @@ def test_cancel_real_spawned_run_kills_the_process(repo: Path) -> None:
             pytest.fail(f"process {pid} survived cancel_run")
     finally:
         fleet.shutdown()
+
+
+def test_cancel_status_survives_run_completion(repo: Path) -> None:
+    # Regression: after cancel stamps "cancelled", the run thread returning from the SIGTERM-killed
+    # subprocess must NOT overwrite it with failed/timed_out (the terminal write is now conditional).
+    fleet = Fleet(repo, {"sleeper": _LongSleeper()})
+    run_id = fleet.spawn(RunRequest(backend_name="sleeper", task=TaskSpec(id="sl", goal="x")))
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        r = fleet.state.get(run_id)
+        if r and r.pid is not None and r.status == "running":
+            break
+        time.sleep(0.05)
+    assert fleet.cancel_run(run_id).status == "cancelled"
+    fleet.shutdown()  # drain the bg run thread (it returns from the killed subprocess + stamps)
+    final = fleet.state.get(run_id)
+    assert final is not None and final.status == "cancelled"  # not clobbered to failed/timed_out

@@ -361,6 +361,17 @@ def test_describe_reports_configured_and_counts(tmp_path: Path) -> None:
     assert rows["beta"]["default"] is False
 
 
+def test_describe_survives_malformed_config(tmp_path: Path) -> None:
+    # Regression: a broken per-repo fleet.config.yaml must degrade to 0 clients, not crash
+    # list_workspaces / `marshal workspace list`.
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "fleet.config.yaml").write_text("clients: [broken: yaml: here")  # malformed YAML
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
+    rows = WorkspaceRegistry(defs, builder=_explode).describe()
+    assert rows[0]["configured"] is True and rows[0]["client_count"] == 0  # degraded, not raised
+
+
 def test_run_routes_to_correct_repo_and_resolves_cold(tmp_path: Path) -> None:
     repo_a, repo_b = tmp_path / "a", tmp_path / "b"
     for r in (repo_a, repo_b):

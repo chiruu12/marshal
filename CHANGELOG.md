@@ -9,6 +9,15 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **Cost-source + resilience fixes** (from a PR review pass). A real EastRouter `admin-api` cost now
+  counts toward the benchmark `cheapest` comparison and gets its own usage-summary bucket (it was
+  silently excluded from both, so real-cost runs could lose `cheapest` and the source split didn't
+  sum). `cancel_run`'s `cancelled` status is no longer clobbered when the killed run's thread returns
+  (the terminal write is conditional on the run still being RUNNING). `list_workspaces` /
+  `marshal workspace list` degrade to 0 clients on a malformed per-repo config instead of crashing.
+  EastRouter cost attribution normalizes a naive `created_at` to UTC (a swallowed `TypeError` was
+  silently dropping real costs). A CI test that assumed a backend CLI (cursor) was installed is now
+  environment-independent.
 - **Concurrency + merge-back hardening** (from an adversarial audit of the highest-consequence
   paths). The per-run state layer now serializes same-run writes with a per-run lock and writes via a
   *unique* temp file, so a `cancel_run` racing the executing run can no longer crash on `os.replace`

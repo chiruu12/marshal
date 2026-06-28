@@ -36,6 +36,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _still_running(rec: RunRecord) -> bool:
+    """update_if predicate: stamp a terminal status only if the run hasn't already reached one
+    (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
+    return rec.status == RunStatus.RUNNING.value
+
+
 def _load_default_prices() -> PriceTable:
     """Load the shipped price table; on any problem fall back to empty (everything unpriced)."""
     try:
@@ -94,8 +100,8 @@ class BenchmarkResult(BaseModel):
     """Same task run through N strategies, compared on measured cost/latency/outcome (derived).
 
     `cheapest`/`fastest` name the winning client among *comparable* strategies only - succeeded,
-    and (for cheapest) with a known cost (native/estimated, never `unavailable`). None when no
-    strategy qualifies. The per-strategy rows carry `source` so an estimate is never read as truth.
+    and (for cheapest) with a known cost (native/admin-api/estimated, never `unavailable`). None when
+    no strategy qualifies. The per-strategy rows carry `source` so an estimate is never read as truth.
     """
 
     task_id: str
@@ -292,8 +298,13 @@ class Fleet:
             )
             event.status = status.value              # report the authoritative outcome (incl. EMPTY)
             self.usage.record(event)
-            record = self.state.update(
+            # Stamp the terminal record ONLY if the run is still running, so a `cancel_run` that
+            # already marked it `cancelled` (the common cancel-wins-first race) is preserved rather
+            # than clobbered by this thread returning from the SIGTERM-killed subprocess. The usage
+            # event above is the immutable spend record regardless; this is the lifecycle status.
+            record = self.state.update_if(
                 run_id,
+                _still_running,
                 status=status.value,
                 cost_usd=event.cost_usd,
                 input_tokens=event.input_tokens,
@@ -306,8 +317,11 @@ class Fleet:
                 attempts=attempts,
             )
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
-            # Terminal-stamp the record before re-raising, so one failure can't leave a zombie.
-            self.state.update(run_id, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}")
+            # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
+            # only if still running, so a concurrent cancel's terminal status wins.
+            self.state.update_if(
+                run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}"
+            )
             raise
 
         if cleanup:

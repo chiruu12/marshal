@@ -24,8 +24,9 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+from . import __version__
 from .types import UsageSource
 
 DEFAULT_BASE_URL = "https://api.eastrouter.com/v1"
@@ -41,7 +42,7 @@ _RECONCILE_ABS_TOL = 200
 HttpGetter = Callable[[str, str, float], "str | None"]
 
 #: EastRouter 403s the default `Python-urllib/<ver>` User-Agent, so send an explicit one.
-_USER_AGENT = "marshal/0.0.1 (+https://github.com/chiruu12/marshal)"
+_USER_AGENT = f"marshal/{__version__} (+https://github.com/chiruu12/marshal)"
 
 
 @dataclass(frozen=True)
@@ -86,9 +87,13 @@ def _parse_dt(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value)
     except ValueError:
         return None
+    # Normalize to aware UTC: EastRouter may return a naive `created_at` (no offset), and comparing a
+    # naive datetime to the aware run window (`_now()` is always aware) raises TypeError - which the
+    # caller swallows, silently dropping real-cost attribution. Assume UTC for naive records.
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _parse_records(raw: str) -> list[_Rec]:

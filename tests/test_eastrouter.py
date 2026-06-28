@@ -140,6 +140,18 @@ def test_opencode_provider_prefixed_model_matches() -> None:
     assert ext.source is UsageSource.ADMIN_API
 
 
+def test_naive_created_at_is_treated_as_utc() -> None:
+    # Regression: EastRouter may return a created_at with no offset; comparing it to the aware run
+    # window used to raise TypeError (silently dropping the real cost). It must be treated as UTC.
+    body = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05"))  # naive, no +00:00
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=7000, output_tokens=150,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is not None and ext.cost_usd == 0.005
+
+
 def test_retry_picks_up_late_record(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("marshal_engine.eastrouter.time.sleep", lambda _s: None)
     body = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))

@@ -65,6 +65,7 @@ class Bucket(BaseModel):
     succeeded: int = 0
     cost_usd: float = 0.0
     cost_native: float = 0.0        # cost we know is real (backend-reported)
+    cost_admin_api: float = 0.0     # real cost from a provider admin-API (e.g. EastRouter) - also ground truth
     cost_estimated: float = 0.0     # cost derived from a price table - not ground truth
     input_tokens: int = 0
     output_tokens: int = 0
@@ -135,6 +136,8 @@ def _add(bucket: Bucket, e: UsageEvent) -> None:
     bucket.cost_usd = round(bucket.cost_usd + e.cost_usd, 6)
     if e.source == UsageSource.NATIVE.value:
         bucket.cost_native = round(bucket.cost_native + e.cost_usd, 6)
+    elif e.source == UsageSource.ADMIN_API.value:
+        bucket.cost_admin_api = round(bucket.cost_admin_api + e.cost_usd, 6)
     elif e.source == UsageSource.ESTIMATED.value:
         bucket.cost_estimated = round(bucket.cost_estimated + e.cost_usd, 6)
     bucket.input_tokens += e.input_tokens
