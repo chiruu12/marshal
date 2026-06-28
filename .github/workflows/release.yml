@@ -29,7 +29,7 @@ jobs:
       - name: Gate
         run: |
           uv sync --frozen --extra mcp --extra dev
-          uv run pytest -q && uv run ruff check src tests && uv run mypy
+          uv run pytest -q --cov=marshal_engine --cov-fail-under=90 && uv run ruff check src tests && uv run mypy
 
       - name: Build sdist + wheel
         run: uv build

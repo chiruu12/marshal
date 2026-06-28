@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
+from marshal_engine.backends import command_code as cc
 from marshal_engine.backends.command_code import CommandCodeBackend
 
 
@@ -93,3 +94,79 @@ def test_parse_output_cap_hit_is_failure(backend: CommandCodeBackend) -> None:
     assert res.status is RunStatus.FAILED
     assert "max-turns" in (res.error or "")
     assert res.text == "partial work"  # surfaced even on a cap hit
+
+
+# --- check_available (no real CLI; the spawn is mocked) --------------------------------------
+
+
+def test_check_available_false_when_binary_missing(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cc.shutil, "which", lambda _b: None)
+    assert backend.check_available() is False
+
+
+def test_check_available_false_on_subprocess_error(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cc.shutil, "which", lambda _b: "/usr/bin/command-code")
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise OSError("cannot exec")
+
+    monkeypatch.setattr(cc.subprocess, "run", _boom)
+    assert backend.check_available() is False
+
+
+def test_check_available_true_when_version_succeeds(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cc.shutil, "which", lambda _b: "/usr/bin/command-code")
+
+    class _Proc:
+        returncode = 0
+
+    monkeypatch.setattr(cc.subprocess, "run", lambda *_a, **_k: _Proc())
+    assert backend.check_available() is True
+
+
+# --- account_info (reads ~/.commandcode/config.json; HOME is redirected) ---------------------
+
+
+def test_account_info_reads_provider_and_model(
+    backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".commandcode"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text('{"provider": "zai", "model": "zai-org/GLM-5.2"}')
+    assert backend.account_info() == {"plan": "zai", "model": "zai-org/GLM-5.2"}
+
+
+def test_account_info_none_when_missing(
+    backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert backend.account_info() is None
+
+
+def test_account_info_none_on_bad_json(
+    backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".commandcode"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text("not valid json {")
+    assert backend.account_info() is None
+
+
+def test_account_info_none_when_non_dict_or_empty(
+    backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".commandcode"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text("[]")  # valid JSON but not a mapping
+    assert backend.account_info() is None
+    (cfg_dir / "config.json").write_text('{"unrelated": "x"}')  # no provider/model -> empty -> None
+    assert backend.account_info() is None
