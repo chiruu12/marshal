@@ -2,7 +2,7 @@
 
 > **Marshal** is the infrastructure layer: one "driver" agent (Claude Code) plans work, then
 > Marshal spawns and manages a **fleet of headless coding agents** (Cursor CLI, OpenCode, Codex,
-> Google Antigravity, Claude Code now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
+> Command Code, Google Antigravity, Claude Code now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
 > **MCP server + Skills**, with **per-provider usage tracking**. To *marshal* = to gather and
 > organize a force - exactly what this does to a fleet of agents.
 >
@@ -19,7 +19,7 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 ## 0. Locked decisions
 
 - **Execution model:** background **fleet** - N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
-- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Antigravity + Claude Code now. Gemini later = new adapter only.
+- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Command Code + Antigravity + Claude Code now. Gemini later = new adapter only.
 - **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) - optional fast path.
 - **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** - they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
 - **Differentiator:** **per-provider usage tracking** + a `usage` command. Nearly every competitor omits this.
@@ -142,6 +142,7 @@ Key per-backend detail:
 - **OpenCode - easy.** Per-step `cost`+`tokens` in the stream; `opencode stats --days --models`; on-disk store at `~/.local/share/opencode/storage/` (note: message files store `cost: 0` → recompute from tokens via price table). Caveat: stream may **drop the final `step_finish`** → read final accounting from on-disk store / `opencode export`, not the stream.
 - **Cursor - hard.** **No tokens, no cost in CLI output at all.** Programmatic usage only via the **Admin API** (`api.cursor.com`, HTTP Basic `-u KEY:`) - **Team/Enterprise only**. `POST /teams/filtered-usage-events` returns per-event tokens+cost with an **`isHeadless`** flag and **`serviceAccountId`**. Pattern: give each worker its own **service-account key**, attribute via `serviceAccountId`. Pro/individual accounts → dashboard only, no API.
 - **Codex/Gemini - likely no JSON usage** → fall back to terminal screen-scrape (cmuxlayer `read_screen` parses tokens/context% off output).
+- **EastRouter (real `admin-api` cost) - implemented.** A client may set `usage_api: eastrouter` to have its REAL per-run cost read from EastRouter's `/v1/usage` after the run (`eastrouter.py`), reported as `admin-api` rather than an estimate - EastRouter's price swings with prompt caching, so a static table would mislead. Attribution is by model + the run's `[start, end]` time window with a token-reconciliation guard; an unattributable run (e.g. two clients on the same EastRouter model concurrently) keeps its estimate/unavailable cost instead of asserting a wrong one. Codex routed through EastRouter uses this; OpenCode pointed at EastRouter (`eastrouter/<id>`) can't be priced by the CLI and stays `unavailable`.
 
 **Local schema (no DB; file-based like ORCH's `.orchestry/`):**
 
@@ -186,6 +187,11 @@ install and tests stale code. A fresh worktree has no `.venv` (it's gitignored),
 top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) provisions one right
 after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
 
+**Graceful backend skip.** `MarshalService.__init__` probes each configured backend's CLI at
+startup; a client whose backend is unavailable is **skipped** (stderr warning, recorded on
+`skipped_clients`) rather than failing a run mid-flight. The **full** backend set still goes to the
+Fleet, so `doctor` (which probes every configured backend) still reports a missing one as a FAIL.
+
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
 Shipped today (15): `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`,
 `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
@@ -204,7 +210,10 @@ the runner adds no new execution path.** Every run still flows through `Fleet.ru
 + process-group kill + worktree + usage ledger); the runner never spawns a process, touches git, or
 writes run state. Spec validation is pure (client names checked against the config, goal templates
 restricted to bare `{input}` placeholders, sources resolved) so a typo'd recipe fails before any
-agent runs. **Integration is gated off by default** (`auto: false`): a workflow surfaces succeeded
+agent runs. A `fan_out` phase first drops any client whose backend CLI is unavailable (a read-only
+`client_available` probe - the fifth method on the `WorkflowService` Protocol) and runs with whatever
+fleet remains, raising only if **all** are unavailable; non-succeeded runs surface as phase notes +
+`next_actions`. **Integration is gated off by default** (`auto: false`): a workflow surfaces succeeded
 runs as candidates with `next_actions`, and the driver merges the good ones after review - `succeeded`
 is not `correct`. The judgment (which recipe, when to merge) stays in the `marshal-workflow` Skill;
 the engine only sequences. Discover/validate with `marshal workflows`; run via `run_workflow`.
@@ -287,14 +296,15 @@ Keep V1 focused - the #1 risk is becoming "yet another agent framework."
 
 ### Backends in scope (built)
 
-Five adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
+Six adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
 and contract tests:
 
 | Backend | Headless invocation | read-only / safe-edit / yolo | Usage in output |
 |---|---|---|---|
-| Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost estimated) |
+| Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost `admin-api` via EastRouter `usage_api`, else estimated/unavailable) |
 | Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
-| OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` |
+| OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` (native only when cost is positive; an unpriced custom provider stays `unavailable`) |
+| Command Code | `command-code -p` (text only) | `--permission-mode plan` / `--permission-mode auto-accept` / `--yolo` | none (hosted account → `unavailable`) |
 | Antigravity | `agy -p` (text only) | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
 | Claude Code | `claude -p --output-format json` | `--permission-mode plan` / `acceptEdits` / `bypassPermissions` | cost+tokens in JSON (native) |
 
@@ -309,7 +319,11 @@ safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` auth
 **Antigravity ✅ writes fixed (2026-06-27):** headless edits used to divert to
 `~/.gemini/antigravity-cli/scratch` (no TTY → no workspace trust); the adapter's `prepare()` now
 pre-registers the run's worktree in agy's `trustedWorkspaces` (+ `--add-dir <cwd>`), so edits land in
-the worktree - live-verified end-to-end. Still text-only output (no native usage). Codex ⛔ adapter
-ready, blocked by the account usage limit (~Jul 18). **Claude Code ✅ fully (2026-06-26):**
+the worktree - live-verified end-to-end. Still text-only output (no native usage). **Codex ✅
+verified end-to-end through EastRouter:** worktree writes land, the JSONL parser extracts text +
+tokens, and a `usage_api: eastrouter` client puts its real `admin-api` cost on the ledger; a
+token-only Codex client stays `estimated`/`unavailable`. **Claude Code ✅ fully (2026-06-26):**
 read/safe-edit (`acceptEdits`) writes land in the worktree, native `total_cost_usd`+tokens flow to
-the ledger, and `-p` mode is non-blocking with stdin closed.
+the ledger, and `-p` mode is non-blocking with stdin closed. **Command Code ✅ live-verified headless
+(model `zai-org/GLM-5.2`):** `-p` prints plain text with no token/cost accounting, so usage is
+`unavailable` (hosted account; spend lives in its own dashboard).

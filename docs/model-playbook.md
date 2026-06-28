@@ -38,11 +38,18 @@ Pick a model for the *weight*, and note how its cost is known — Marshal never 
 | `opencode` | `opencode-go/minimax-m3` | Standard | native | General coder. |
 | `opencode` | `opencode-go/deepseek-v4-flash` | Light | native | Fast/cheap for bulk. |
 | `cursor` | `composer-2.5` | Standard–Heavy | **unavailable** | Strong coder; individual plans expose no per-run cost (`doctor` shows plan tier). |
-| `codex` | `gpt-5.5` | Standard–Heavy | **unavailable** (until priced) | Reports tokens but no cost; add a `gpt-5.5` entry to `prices.yaml` to get **estimated** cost. |
+| `codex` | `gpt-5.5` | Standard–Heavy | **unavailable** (until priced) | Reports tokens but no cost; route via EastRouter with `usage_api: eastrouter` for real **admin-api** cost, or add a `gpt-5.5` entry to `prices.yaml` to get **estimated** cost. |
+| `command-code` | `zai-org/glm-5.2` | Standard | **unavailable** | Hosted coding agent on its own account; `-p` prints text with no tokens/cost, so spend lives in its own dashboard (`doctor` surfaces its provider + default model). |
 | `antigravity` *(experimental)* | `gemini-3.1-pro` (heavy), `gemini-3.5-flash` (light), also `claude-sonnet-4.6` / `claude-opus-4.6` / `gpt-oss-120b` | varies | **unavailable** | Worktree **writes** now land correctly (worktree pre-registered as a trusted workspace); supports `safe-edit`/`yolo` only (no `read-only`). |
 
 > OpenCode must use an `opencode-go/*` model — a `fireworks-ai/*` model is rejected at config load so
 > you never burn Fireworks credits. Omitting `model` defaults to `opencode-go/glm-5.2`.
+
+> **Routing via EastRouter.** A `codex` client can point at EastRouter and set `usage_api: eastrouter`
+> to read its **real** per-run cost back from EastRouter's `/v1/usage` (reported `admin-api`, not an
+> estimate). `opencode` can also use EastRouter as a custom OpenAI-compatible provider (models named
+> `eastrouter/<id>`), but OpenCode can't price a custom provider, so that client's cost stays
+> `unavailable`.
 
 ## A tiered fleet you can copy
 
@@ -90,8 +97,9 @@ ground truth:
   for a token-only backend (e.g. a `codex` client with no `usage_api`) **whose model is in the table**.
   Those are values you own — set them to your providers' current prices; an estimate reflects the table
   at the moment of the run.
-- **unavailable** (`cursor`, and a token-only `codex` whose model isn't priced and has no `usage_api`) —
-  no per-run cost is known; tokens may still be recorded. Never a fake `$0`.
+- **unavailable** (`cursor`, `command-code`, a token-only `codex` whose model isn't priced and has no
+  `usage_api`, or `opencode` pointed at an unpriced custom provider like EastRouter) — no per-run cost
+  is known; tokens may still be recorded. Never a fake `$0`.
 
 When you need true cost accounting (e.g. for a benchmark you'll act on), prefer **native-cost**
 clients so "cheapest" ranks on facts, not estimates.

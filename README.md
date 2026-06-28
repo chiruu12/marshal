@@ -9,8 +9,8 @@ review, route execution to cheaper or specialized workers, isolate each task in 
 worktree, and measure what every routing strategy actually cost.
 
 One driver agent (e.g. Claude Code) plans the work. Marshal spawns and manages a fleet of
-*headless* coding agents - **Cursor CLI, OpenCode, Codex, and Claude Code** today (plus an
-experimental **Google Antigravity** adapter), more behind a single base class - each running
+*headless* coding agents - **Cursor CLI, OpenCode, Codex, Command Code, and Claude Code** today (plus
+an experimental **Google Antigravity** adapter), more behind a single base class - each running
 autonomously in its own isolated git worktree, in parallel. Marshal monitors
 them, collects their diffs, tracks per-provider usage, and hands results back for integration.
 
@@ -29,15 +29,16 @@ It plugs into your driver two ways:
 > tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
 > fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
 > **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and
-> compare real cost/latency/outcome). OpenCode, Cursor, and Claude Code live-verified (Claude Code
-> with native cost); Codex live-verified end-to-end (including via a custom OpenAI-compatible
-> provider), its cost `unavailable` until the model is priced. See
-> [`docs/status.md`](docs/status.md).
+> compare real cost/latency/outcome). OpenCode, Cursor, Claude Code, and Command Code live-verified
+> (Claude Code with native cost; Command Code usage `unavailable` - a hosted account reports no
+> tokens/cost in CLI output); Codex live-verified end-to-end, including through EastRouter where its
+> **real** per-run cost is read back from the provider's usage API (`admin-api`) - a token-only Codex
+> client stays `unavailable` until the model is priced. See [`docs/status.md`](docs/status.md).
 
 ## Getting started
 
 **Prerequisites:** Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), git, and the CLI for each
-backend you'll use (`opencode` / `cursor-agent` / `codex` / `claude` / `agy`) - each authenticated
+backend you'll use (`opencode` / `cursor-agent` / `codex` / `command-code` / `claude` / `agy`) - each authenticated
 via its own login. Marshal does **not** install the backend CLIs.
 
 ```bash
@@ -70,14 +71,15 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 
-- **One base class, many backends.** Cursor, OpenCode, Codex, Gemini - adding one is a new adapter,
+- **One base class, many backends.** Cursor, OpenCode, Codex, Command Code, Gemini - adding one is a new adapter,
   not a rewrite. Backend choice is a per-call parameter.
 - **Parallel by default.** Each agent runs in its own git worktree; your main branch stays clean
   until you explicitly integrate.
 - **Per-provider usage tracking.** Token accounting for every backend, plus cost tagged by source:
   **native** where the provider reports it (OpenCode, Claude Code), real **`admin-api`** cost for
   Codex routed through EastRouter (read back from its usage API), **estimated** where a model is
-  priced, and `unavailable` otherwise (Cursor, Antigravity) - never a fake $0. A `usage`
+  priced, and `unavailable` otherwise (Cursor, Antigravity, Command Code, and OpenCode on an unpriced
+  custom provider) - never a fake $0. A `usage`
   command most orchestrators don't have. `marshal doctor` also reports each authenticated backend's
   plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
@@ -140,7 +142,8 @@ Marshal MCP server  ──  fleet state (file-based)
    ▼
 engine ── base class ─┬─ Cursor adapter
                       ├─ OpenCode adapter
-                      ├─ Codex adapter        →  each runs headless in its own git worktree
+                      ├─ Codex adapter
+                      ├─ Command Code adapter  →  each runs headless in its own git worktree
                       ├─ Claude Code adapter
                       └─ Antigravity adapter
    │

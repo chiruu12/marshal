@@ -36,7 +36,7 @@ defaults:
 
 clients:
   implementer:
-    backend: opencode          # opencode | cursor | codex | claude-code | antigravity
+    backend: opencode          # opencode | cursor | codex | command-code | claude-code | antigravity
     model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model here is rejected
     permission: safe-edit
     secret_ref: env:OPENCODE_API_KEY
@@ -67,6 +67,11 @@ clients:
   **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
   exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
   (a timeout retry just burns another full window). A retried run records its `attempts` count.
+- **Missing backend CLI → the client is skipped, not fatal.** At startup Marshal probes each
+  configured backend's CLI; a client whose CLI is unavailable is **skipped** with a stderr warning
+  (and listed under `skipped_clients`) so the rest of the fleet still runs - a missing CLI never fails
+  a run mid-flight. `marshal doctor` still reports an unavailable backend as a FAIL so you can see
+  what's missing.
 
 ### Permission tiers
 
@@ -242,9 +247,10 @@ driver's playbook for authoring and running them; starter templates live in `exa
 
 | Backend | Edits | Usage in output | Notes |
 |---------|-------|-----------------|-------|
-| OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub. |
+| OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. |
 | Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. |
-| Codex | yes | best-effort | `workspace-write` sandbox for safe-edit. |
+| Codex | yes | best-effort | `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
+| Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan`/`auto-accept` for read-only/safe-edit. |
 | Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
 
