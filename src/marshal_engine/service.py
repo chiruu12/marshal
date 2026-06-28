@@ -130,6 +130,7 @@ class MarshalService:
             model=resolve_model(client),
             client=client.name,
             timeout_s=client.timeout_s,
+            usage_api=client.usage_api,
         )
 
     def run_agent(
@@ -149,6 +150,7 @@ class MarshalService:
             model=req.model,
             client=req.client,
             timeout_s=req.timeout_s,
+            usage_api=req.usage_api,
         )
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:

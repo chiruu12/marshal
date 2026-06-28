@@ -31,6 +31,10 @@ class ClientConfig(BaseModel):
     permission: PermissionMode = PermissionMode.SAFE_EDIT
     timeout_s: int = 600
     secret_ref: str | None = None
+    # Optional provider usage-API to read REAL cost from after a run (e.g. "eastrouter"). When set,
+    # the fleet fetches the actual charge for the run and reports cost as admin-api instead of an
+    # estimate. Unset = price from the local table (or unavailable). See eastrouter.py.
+    usage_api: str | None = None
 
 
 class FleetConfig(BaseModel):
@@ -65,6 +69,7 @@ def load_config(path: Path | str) -> FleetConfig:
             permission=PermissionMode(str(merged.get("permission", "safe-edit"))),
             timeout_s=int(merged.get("timeout_s", 600)),
             secret_ref=str(merged["secret_ref"]) if merged.get("secret_ref") else None,
+            usage_api=str(merged["usage_api"]) if merged.get("usage_api") else None,
         )
         # Enforce the Fireworks guard at LOAD so an invalid config can't be built via any entry
         # point (CLI / library / MCP), not only the MCP path that happens to call validate().

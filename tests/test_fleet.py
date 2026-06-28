@@ -20,6 +20,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.eastrouter import ExternalCost
 from marshal_engine.fleet import Fleet, RunRequest
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
@@ -510,6 +511,45 @@ def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:
     rec = fleet.run("tok", TaskSpec(id="p2", goal="x"))
     assert rec.cost_usd == 0.0
     assert rec.source == "unavailable"   # unpriced -> cost unknown, never shown as a real $0
+
+
+def test_usage_api_overrides_cost_with_admin_api(repo: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def resolver(**kw: object) -> ExternalCost:
+        seen.update(kw)
+        return ExternalCost(0.42, UsageSource.ADMIN_API, 1_000_000, 0, 1)
+
+    fleet = Fleet(
+        repo, {"tok": _Tokened()}, prices=PriceTable({}), cost_resolvers={"eastrouter": resolver}
+    )
+    rec = fleet.run("tok", TaskSpec(id="er1", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
+    assert rec.source == "admin-api"     # real provider cost replaces the unavailable estimate
+    assert rec.cost_usd == 0.42
+    assert seen["input_tokens"] == 1_000_000  # the run's real tokens were handed to the resolver
+    assert seen["model"] == "z-ai/glm-5.1"
+
+
+def test_usage_api_no_attribution_keeps_estimate(repo: Path) -> None:
+    prices = PriceTable({"z-ai/glm-5.1": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
+    fleet = Fleet(
+        repo, {"tok": _Tokened()}, prices=prices, cost_resolvers={"eastrouter": lambda **_kw: None}
+    )
+    rec = fleet.run("tok", TaskSpec(id="er2", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
+    assert rec.source == "estimated"     # resolver declined to attribute -> estimate stands
+    assert rec.cost_usd == 10.0
+
+
+def test_usage_api_resolver_failure_is_safe(repo: Path) -> None:
+    def boom(**_kw: object) -> ExternalCost:
+        raise RuntimeError("provider down")
+
+    prices = PriceTable({"z-ai/glm-5.1": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
+    fleet = Fleet(repo, {"tok": _Tokened()}, prices=prices, cost_resolvers={"eastrouter": boom})
+    rec = fleet.run("tok", TaskSpec(id="er3", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
+    assert rec.status == "succeeded"     # a resolver crash never fails a finished run...
+    assert rec.source == "estimated"     # ...and never corrupts the cost
+    assert rec.cost_usd == 10.0
 
 
 def test_collect_run_returns_diff_and_changed_files(repo: Path) -> None:

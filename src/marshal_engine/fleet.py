@@ -22,6 +22,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
+from .eastrouter import CostResolver, default_cost_resolvers
 from .pricing import PriceTable, PricingError
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
@@ -112,6 +113,7 @@ class RunRequest(BaseModel):
     model: str | None = None
     client: str | None = None
     timeout_s: int = 600
+    usage_api: str | None = None  # provider usage-API for real cost (e.g. "eastrouter"); see eastrouter.py
 
 
 class Fleet:
@@ -125,6 +127,7 @@ class Fleet:
         worktree_setup: list[str] | None = None,
         retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
+        cost_resolvers: Mapping[str, CostResolver] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
@@ -135,6 +138,11 @@ class Fleet:
         self.usage = UsageTracker(base / "usage")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()
+        # Provider usage-API resolvers (keyed by a client's `usage_api`) that backfill REAL cost from a
+        # provider's ledger after a run. Injectable for tests; defaults to the built-ins (EastRouter).
+        self.cost_resolvers: dict[str, CostResolver] = (
+            dict(cost_resolvers) if cost_resolvers is not None else default_cost_resolvers()
+        )
         # Retry only transient (infra/transport) failures. Default off so a bare Fleet behaves
         # exactly as before; the service turns it on from config (see MarshalService).
         self.retries = retries if retries is not None else RetryPolicy()
@@ -155,6 +163,7 @@ class Fleet:
         model: str | None = None,
         client: str | None = None,
         timeout_s: int = 600,
+        usage_api: str | None = None,
         ts: str | None = None,
         cleanup: bool = False,
     ) -> RunRecord:
@@ -166,6 +175,7 @@ class Fleet:
             model=model,
             client=client,
             timeout_s=timeout_s,
+            usage_api=usage_api,
         )
         run_id, wt, started = self._start(req, ts)
         return self._execute(req, run_id, wt, started, cleanup=cleanup)
@@ -244,7 +254,8 @@ class Fleet:
             )
             result, attempts = self._run_with_retries(backend, req.task, opts, run_id)
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
-            self._price_usage(usage, req.model)      # normalize cost + source
+            self._price_usage(usage, req.model)      # normalize cost + source (estimate/unavailable)
+            self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
             event = UsageEvent.from_result(
                 result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
@@ -379,6 +390,33 @@ class Fleet:
         else:
             usage.cost_usd = est
             usage.source = UsageSource.ESTIMATED
+
+    def _apply_external_cost(self, usage: UsageRecord | None, req: RunRequest, *, start_iso: str) -> None:
+        """Override cost with the REAL charge from a provider usage-API, when the client opts in.
+
+        Runs after `_price_usage`: if the client declares a `usage_api` (e.g. "eastrouter") and the
+        provider can attribute an actual cost to this run, replace the estimate with that real cost
+        (`source = admin-api`). A failure or an unattributable run is a no-op - the estimate/unavailable
+        cost stands. This must NEVER raise: a completed run is done, cost reconciliation is best-effort.
+        """
+        if usage is None or not req.usage_api:
+            return
+        resolver = self.cost_resolvers.get(req.usage_api)
+        if resolver is None:
+            return
+        try:
+            ext = resolver(
+                model=req.model,
+                start_iso=start_iso,
+                end_iso=_now(),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+        except Exception:  # noqa: BLE001 - external cost lookup must never break a finished run
+            return
+        if ext is not None:
+            usage.cost_usd = ext.cost_usd
+            usage.source = ext.source
 
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
         """A clean exit that produced no work (no text, no file changes) is EMPTY, not success."""
