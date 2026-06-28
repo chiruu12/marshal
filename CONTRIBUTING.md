@@ -1,7 +1,7 @@
 # Contributing to Marshal
 
 Thanks for your interest in Marshal. It is an orchestration engine for driving a fleet of
-headless coding agents (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver agent, exposed as an
+headless coding agents (Cursor, OpenCode, Codex, Antigravity, Claude Code, Command Code) from one driver agent, exposed as an
 MCP server and driver Skills. This guide covers the dev setup, the quality gate, and - most
 importantly - how to add a new backend, which is Marshal's core extension point.
 
@@ -61,13 +61,14 @@ src/marshal_engine/
   types.py            # TaskSpec, RunOpts, AgentResult, UsageRecord, Capabilities, enums (Pydantic v2)
   backends/
     base.py           # CodingAgentBackend - owns the safe run() loop (do not bypass)
-    cursor.py opencode.py codex.py antigravity.py claude_code.py
+    cursor.py opencode.py codex.py antigravity.py claude_code.py command_code.py
   worktree.py         # git worktree lifecycle (isolation boundary)
-  usage.py            # per-provider usage ledger (events.jsonl + summary)
-  pricing.py state.py fleet.py registry.py config.py
-  service.py          # MarshalService - the testable core the CLI/MCP call into
+  usage.py eastrouter.py  # usage ledger (events.jsonl + summary) + EastRouter real-cost reader
+  pricing.py state.py fleet.py registry.py config.py retry.py env.py
+  service.py          # MarshalService - the testable core the CLI/MCP call into (single-repo)
+  workspaces.py       # MCP-layer multi-repo registry (tenancy; the engine stays single-repo)
   doctor.py cli.py mcp_server.py
-skills/               # driver Skills (marshal-orchestrate, marshal-benchmark, marshal-workflow)
+skills/               # driver Skills (marshal-orchestrate/-benchmark/-workflow/-review-gate/-plan-consensus)
 tests/                # contract tests per backend + engine/service/MCP tests
 ```
 

@@ -25,6 +25,7 @@ backend you intend to use. Each one manages its *own* login; Marshal just shells
 | **codex** | install the OpenAI Codex CLI | `codex login` (ChatGPT account) or set `OPENAI_API_KEY` |
 | **antigravity** | install the Antigravity CLI (`agy`) | complete its OAuth login |
 | **claude-code** | install Claude Code (`claude`) | `claude` subscription or `ANTHROPIC_API_KEY` |
+| **command-code** | install the Command Code CLI (`command-code`) | its hosted account login (`~/.commandcode/config.json`) |
 
 You only need the backends your `fleet.config.yaml` references. One is enough to start.
 

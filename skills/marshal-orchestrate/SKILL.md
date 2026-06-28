@@ -37,6 +37,8 @@ If `list_workspaces` shows only `default`, ignore all of this: it behaves exactl
 single-repo server.
 
 ## 0. Know your clients
+Optionally run `doctor` first (read-only) to confirm the backends you'll use are installed +
+authenticated — catching a missing/unauthenticated CLI up front beats discovering it from a failed run.
 Call `list_clients` to see the configured workers (name, backend, model, permission). Each client is
 a routing choice the user set up (a cheap bulk worker, a careful reviewer, etc.). You route tasks to
 clients **by name** - you never choose backends directly. To decide *which* client a task should go
@@ -91,8 +93,8 @@ this step.
 
 ## Cost
 `usage()` shows per-provider cost (totals and by backend/client/model, with `$/run` and
-`$/succeeded`). Every figure is tagged by `source` (native / estimated / unavailable) - never treat
-an estimate as ground truth. To compare routing strategies head-to-head on a real task, use the
+`$/succeeded`). Every figure is tagged by `source` (native / admin-api / estimated / unavailable) -
+never treat an estimate (or an `unavailable` `$0`) as ground truth. To compare routing strategies head-to-head on a real task, use the
 **marshal-benchmark** skill.
 
 ## Invariants to respect

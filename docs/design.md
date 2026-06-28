@@ -198,9 +198,9 @@ startup; a client whose backend is unavailable is **skipped** (stderr warning, r
 Fleet, so `doctor` (which probes every configured backend) still reports a missing one as a FAIL.
 
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
-Shipped today (15): `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`,
-`benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`,
-`run_workflow`. Current state is tracked in `docs/status.md`.
+Shipped today (17): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`,
+`run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`,
+`status`, `usage`, `list_workflows`, `run_workflow`. Current state is tracked in `docs/status.md`.
 
 Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
 fleet works in both MCP and Skills hosts.

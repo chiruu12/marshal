@@ -241,7 +241,10 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any] | None:
-        """Get a run record by id, located across all workspaces (or via the `workspace` hint)."""
+        """Get a run record by id, located across all workspaces (or via the `workspace` hint).
+
+        status is one of: succeeded | empty (ran clean but produced no work - do NOT integrate) |
+        failed | timed_out | cancelled. Only `succeeded` runs are integration candidates."""
         resolved = await offload(registry.resolve_run, run_id, workspace)
         if resolved is None:
             return None
@@ -273,7 +276,12 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         cleanup: Annotated[bool, Field(description="Remove the worktree after a successful merge.")] = False,
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
-        """Merge a run's worktree branch into its workspace's current branch; reports merge conflicts."""
+        """Merge a run's worktree branch into its workspace's current branch.
+
+        REVIEW THE DIFF FIRST with collect_run - `succeeded` means the process exited cleanly, NOT
+        that the code is correct. Integrate one run at a time. Outcome status is one of: merged |
+        conflict (aborted, repo left clean) | blocked (target dirty/detached, or the run is still
+        running - fix and retry) | empty (nothing to integrate) | error (a git op needs a human)."""
         name, svc = await offload(registry.require_run, run_id, workspace)
         return tag((await offload(svc.integrate, run_id, cleanup=cleanup)).model_dump(mode="json"), name)
 
@@ -308,8 +316,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     async def status(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE + " Omit to list ALL workspaces.")] = None,
     ) -> list[dict[str, Any]]:
-        """List fleet runs with status and cost. Omit `workspace` to aggregate across every workspace
-        (each run tagged with its workspace); pass one to scope to it."""
+        """List fleet runs with status and cost (status ∈ succeeded/empty/failed/timed_out/cancelled).
+        Omit `workspace` to aggregate across every workspace (each run tagged with its workspace);
+        pass one to scope to it."""
         return [
             tag(rec.model_dump(mode="json"), ws)
             for ws, rec in await offload(registry.ledger_runs, workspace)

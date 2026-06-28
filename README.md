@@ -28,15 +28,13 @@ It plugs into your driver two ways:
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Core feature set implemented (0.0.1, alpha) · pre-1.0, APIs may change.** The engine, CLI, and MCP server (15
-> tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
-> fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
-> **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and
-> compare real cost/latency/outcome). OpenCode, Cursor, Claude Code, and Command Code live-verified
-> (Claude Code with native cost; Command Code usage `unavailable` - a hosted account reports no
-> tokens/cost in CLI output); Codex live-verified end-to-end, including through EastRouter where its
-> **real** per-run cost is read back from the provider's usage API (`admin-api`) - a token-only Codex
-> client stays `unavailable` until the model is priced. See [`docs/status.md`](docs/status.md).
+> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 17-tool MCP server work end to
+> end: parallel fan-out (`run_many`), non-blocking `spawn` + `cancel_run`, merge-back (`collect_run` +
+> `integrate`), **declarative YAML workflows**, **multi-workspace** (one server, many repos), and a
+> **measured savings benchmark** (`benchmark`/`report`). OpenCode, Cursor, Claude Code, and Command
+> Code are live-verified; Codex too (its **real** per-run cost read back from the provider usage API
+> where available). Cost is always tagged by `source` and never faked. See
+> [`docs/status.md`](docs/status.md).
 
 ## Getting started
 
