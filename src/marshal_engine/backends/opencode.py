@@ -147,9 +147,11 @@ class OpenCodeBackend(CodingAgentBackend):
                     found_cost = True
                 found_usage = True
 
-        # NATIVE only when the backend actually reported a cost (a real $0 counts); tokens without a
-        # cost stay UNAVAILABLE so the fleet prices them from the table instead of claiming $0 native.
-        if found_cost:
+        # NATIVE only when the backend reported a POSITIVE cost. A reported $0 alongside consumed
+        # tokens means the model is unpriced (e.g. a custom OpenAI-compatible provider opencode has no
+        # price table for, like EastRouter) - NOT a free run - so it stays UNAVAILABLE rather than
+        # claiming a fake $0. Tokens without any cost field also stay UNAVAILABLE (priced from the table).
+        if found_cost and usage.cost_usd > 0:
             usage.source = UsageSource.NATIVE
 
         ok = exit_code == 0 and error_msg is None

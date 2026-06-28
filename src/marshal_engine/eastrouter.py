@@ -145,6 +145,9 @@ def fetch_run_cost(
     key = api_key or os.environ.get("EASTROUTER_API_KEY")
     if not key or not model or input_tokens <= 0:
         return None
+    # OpenCode references an EastRouter model as `eastrouter/<id>` (provider-prefixed); Codex passes
+    # the bare `<id>`. `/v1/usage` always logs the bare id, so strip the provider prefix to match.
+    target_model = model.removeprefix("eastrouter/")
     start = _parse_dt(start_iso)
     end = _parse_dt(end_iso)
     if start is None or end is None:
@@ -162,7 +165,7 @@ def fetch_run_cost(
             matched = [
                 r
                 for r in _parse_records(raw)
-                if r.model == model and r.created is not None and lo <= r.created <= hi
+                if r.model == target_model and r.created is not None and lo <= r.created <= hi
             ]
             if matched:
                 matched_prompt = sum(r.prompt for r in matched)
