@@ -88,20 +88,28 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 ## What the benchmark gives you
 
 Marshal's headline feature is a **measured** routing comparison, not a guess. Run one task through
-several strategies and `report` derives a source-honest table from each run's recorded facts. The
-numbers below are **illustrative** - regenerate them with a real `benchmark` run before relying on
-them, not a committed measurement (two OpenCode models on a drafting task):
+several strategies and `report` derives a source-honest table from each run's recorded facts. A real
+run — implementing a `TokenBucket` rate limiter (stdlib, with injectable-clock tests) across four clients:
 
-| strategy | backend | status | cost | source | duration | out tokens |
+| strategy | backend | status | cost | source | duration | in/out tokens |
 |---|---|---|---|---|---|---|
-| `kimi` (opencode-go/kimi-k2.6) | opencode | succeeded | **$0.0111** | native | **14.1s** | 377 |
-| `glm` (opencode-go/glm-5.2) | opencode | succeeded | $0.0214 | native | 38.0s | 1561 |
+| `deepseek` (opencode-go/deepseek-v4-flash) | opencode | succeeded | **$0.0029** | native | **81.8s** | 11.7K / 2.0K |
+| `claude` (claude-sonnet-4-6) | claude-code | succeeded | $0.3374 | native | 121.4s | 17 / 6.8K |
+| `cmdcode` (zai-org/GLM-5.2) | command-code | succeeded | `unavailable` | unavailable | 252.6s | 0 / 0 |
+| `codex-glm` (z-ai/glm-5.1, via EastRouter) | codex | succeeded | `unavailable`\* | unavailable | 283.0s | 231K / 7.8K |
 
-**cheapest:** kimi ($0.0111) · **fastest:** kimi (14.1s)
+**cheapest:** deepseek ($0.0029) · **fastest:** deepseek (81.8s)
 
-Cost is tagged by **source** and never invented: a strategy whose provider reports no cost shows as
-`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. That honesty is the point - you
-route on evidence, not vibes. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
+We then ran each produced solution's tests: `deepseek`, `claude`, and `cmdcode` all passed 6/6 — and
+**`deepseek` did it cheapest, fastest, and correct, for ~1/115th of `claude`'s cost.** `codex-glm`
+burned **231K input tokens** over-exploring a simple task, ran slowest, and shipped code that doesn't
+even import. That's the point: **route on measured evidence, not vibes.**
+
+Cost is tagged by **source** and never invented: a client whose cost can't be attributed shows
+`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. \*`codex-glm`'s 16-request, 283s
+run through EastRouter exceeded the `/v1/usage` attribution window, so the ledger honestly recorded
+`unavailable` — the real charge (~$0.16, recoverable from the provider's usage API) is what motivates
+the usage-API pagination on the roadmap. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
 
 ## Workflows
 
