@@ -7,6 +7,7 @@ injected for tests; in production they come from the registry.
 from __future__ import annotations
 
 import sys
+import threading
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -91,6 +92,7 @@ class MarshalService:
         base_dir: Path | str | None = None,
         backends: Mapping[str, CodingAgentBackend] | None = None,
         config_path: Path | str | None = None,
+        run_gate: threading.Semaphore | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path(repo_root)
@@ -118,6 +120,7 @@ class MarshalService:
             base_dir=base_dir,
             worktree_setup=config.worktree_setup,
             retries=RetryPolicy(max_attempts=config.retries + 1),
+            run_gate=run_gate,
         )
 
     def list_clients(self) -> ClientList:

@@ -8,6 +8,7 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import sys
@@ -128,6 +129,7 @@ class Fleet:
         retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
+        run_gate: threading.Semaphore | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
@@ -146,6 +148,11 @@ class Fleet:
         # Retry only transient (infra/transport) failures. Default off so a bare Fleet behaves
         # exactly as before; the service turns it on from config (see MarshalService).
         self.retries = retries if retries is not None else RetryPolicy()
+        # Optional PROCESS-WIDE cap on concurrent agent runs. One Fleet per repo caps its own
+        # fan-out (run_many pool, spawn pool), but a multi-workspace server runs N Fleets - so the
+        # MCP layer shares ONE semaphore across all of them to bound total agent processes (each
+        # CLI is 150-400 MB). None = uncapped here (a single-repo Fleet keeps its prior behavior).
+        self._run_gate = run_gate
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
@@ -252,7 +259,12 @@ class Fleet:
                 timeout_s=req.timeout_s,
                 on_pid=_record_pid,
             )
-            result, attempts = self._run_with_retries(backend, req.task, opts, run_id)
+            # Hold a slot for the agent run (the heavy, memory-hungry part) - including any transient
+            # retry backoff, since the run is still in flight. Worktree creation/provision in _start
+            # already happened outside the slot; a no-op context when ungated.
+            gate = self._run_gate if self._run_gate is not None else contextlib.nullcontext()
+            with gate:
+                result, attempts = self._run_with_retries(backend, req.task, opts, run_id)
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
             self._price_usage(usage, req.model)      # normalize cost + source (estimate/unavailable)
             self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set

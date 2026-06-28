@@ -16,9 +16,12 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (15 tools):
-  `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`,
-  `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (17 tools):
+  `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`,
+  `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`,
+  `list_workflows`, `run_workflow`. One server can target several repos at once - every tool takes an
+  optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
+  add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
   a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
   `marshal-benchmark` (compare routing strategies on a real task), `marshal-workflow` (author

@@ -21,11 +21,13 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `registry.py` | Construct backends by name | done |
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
-| `service.py` | Testable core the MCP/CLI call into | done |
-| `cli.py` | `marshal doctor/backends/usage/status/workflows/mcp` | done |
-| `mcp_server.py` | 15-tool MCP surface over stdio (doctor/run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/…) | done |
+| `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |
+| `service.py` | Testable core the MCP/CLI call into (single-repo) | done |
+| `cli.py` | `marshal doctor/backends/usage/status/workflows/workspace/mcp` | done |
+| `mcp_server.py` | 17-tool MCP surface over stdio (list_workspaces/add_workspace/doctor/run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/…); each takes an optional `workspace` | done |
 
-Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files.
+Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files. CI
+enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) + macOS (py3.12).
 
 ## Backend verification matrix
 

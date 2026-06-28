@@ -89,8 +89,28 @@ Point your driver at `marshal mcp`. Environment:
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `MARSHAL_REPO` | `.` | The repo agents work in. |
-| `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | The fleet config. |
+| `MARSHAL_REPO` | `.` | The repo agents work in (the **default** workspace). |
+| `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | The default workspace's fleet config (scoped to `default` only). |
+| `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | The central registry of extra workspaces (the recommended way). |
+| `MARSHAL_WORKSPACES` | – | Extra workspaces inline: comma/newline-separated `name=/abs/path` entries. |
+| `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | Process-wide cap on concurrent agent runs across all workspaces. |
+
+**Multiple repos from one server.** Declare them in `~/.marshal/workspaces.yaml` (or the inline
+`MARSHAL_WORKSPACES` env). The file is the canonical "all config" for the registry:
+
+```yaml
+# ~/.marshal/workspaces.yaml
+max_concurrent: 8            # optional global cap
+workspaces:
+  frontend: /abs/path/to/web
+  backend:  /abs/path/to/api
+```
+
+Each workspace loads its **own** `<repo>/fleet.config.yaml` (clients travel with the repo). Every
+tool takes an optional `workspace` param (see `list_workspaces`); the run-handle tools take it as a
+hint. Add a repo with `marshal workspace add <name> [path]` or the `add_workspace` tool - it appears
+**without reconnecting** the server. With no file and no `MARSHAL_WORKSPACES`, it's the single-repo
+server it always was.
 
 Example Claude Code MCP entry. A bare `uv sync` does not put a `marshal` command on your PATH, so
 invoke it through uv with the absolute path to your Marshal checkout (or run `uv tool install .`
@@ -113,8 +133,14 @@ first to use a bare `"command": "marshal"`). Run `marshal doctor` before wiring 
 
 Tools exposed to the driver:
 
+Every action/query tool below takes an optional `workspace` (a name from `list_workspaces`); the
+run-handle tools (`get_run`/`collect_run`/`cancel_run`/`integrate`) take it as a hint. Omit it for
+the default workspace.
+
 | Tool | Purpose |
 |------|---------|
+| `list_workspaces()` | List the repos this server can target (name, path, configured, client_count). |
+| `add_workspace(name, path, scaffold?)` | Register a repo in the central registry; usable immediately (no reconnect). |
 | `list_clients` | List configured clients (name, backend, model, permission). |
 | `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
 | `run_many(jobs, max_concurrency?)` | Run several `{client, goal}` jobs in parallel, each in its own worktree; returns all records. |
@@ -133,12 +159,15 @@ Tools exposed to the driver:
 ## Use it as a CLI
 
 ```bash
-marshal doctor       # preflight: check the setup is ready to run agents
-marshal backends     # list backends and availability
-marshal status       # list fleet runs
-marshal usage        # per-provider usage summary
-marshal workflows    # list + validate workflow recipes against the config
-marshal mcp          # run the MCP server over stdio
+marshal doctor             # preflight: check the setup is ready to run agents
+marshal backends           # list backends and availability
+marshal status             # list fleet runs
+marshal usage              # per-provider usage summary
+marshal workflows          # list + validate workflow recipes against the config
+marshal workspace list     # show the workspace registry
+marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.yaml; path defaults to cwd)
+marshal workspace remove <name>      # drop a workspace from the registry
+marshal mcp                # run the MCP server over stdio
 ```
 
 The CLI is **inspection-only** (doctor/backends/status/usage/workflows) plus `mcp`. You *run* agents

@@ -1,7 +1,7 @@
 {
   "name": "marshal",
   "version": "0.0.1",
-  "description": "The control plane for AI coding agents. Drive a fleet of headless workers (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver: each task runs isolated in its own git worktree, in parallel, with per-provider cost tracking and measured routing benchmarks. Bundles the marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, and marshal-plan-consensus skills plus the Marshal MCP server (15 tools).",
+  "description": "The control plane for AI coding agents. Drive a fleet of headless workers (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver: each task runs isolated in its own git worktree, in parallel, with per-provider cost tracking and measured routing benchmarks. Bundles the marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, and marshal-plan-consensus skills plus the Marshal MCP server (17 tools, multi-workspace: one server drives several repos, registered in ~/.marshal/workspaces.yaml).",
   "author": {
     "name": "chiruu12",
     "url": "https://github.com/chiruu12"
