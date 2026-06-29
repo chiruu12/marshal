@@ -10,8 +10,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from uuid import UUID
+
 from marshal_engine.memory import CogneeMemory, MemoryConfig
-from marshal_engine.memory.store import _DIFF_TRUNCATE, _format_recall, _format_run_document
+from marshal_engine.memory.store import (
+    _DIFF_TRUNCATE,
+    _format_recall,
+    _format_run_document,
+)
 from marshal_engine.state import RunRecord
 
 
@@ -228,6 +234,99 @@ def test_format_recall_respects_max_chars() -> None:
     out = _format_recall(results, max_chars=1200)
     assert len(out) <= 1200
     assert out.endswith("...")
+
+
+def test_format_recall_extracts_search_result_from_cognee_dict() -> None:
+    dataset_id = UUID("12345678-1234-5678-1234-567812345678")
+    results = [
+        {
+            "dataset_id": dataset_id,
+            "dataset_name": "smoke-repo",
+            "dataset_tenant_id": None,
+            "search_result": [
+                "The login crash was fixed by adding a null check before parsing."
+            ],
+        }
+    ]
+    out = _format_recall(results, max_chars=1200)
+    assert "The login crash was fixed" in out
+    assert "null check" in out
+    assert str(dataset_id) not in out
+    assert "dataset_id" not in out
+    assert "smoke-repo" not in out
+
+
+def test_format_recall_handles_answer_text_attributes_and_strings() -> None:
+    class _AnswerObj:
+        def __init__(self, answer: str) -> None:
+            self.answer = answer
+
+    class _TextObj:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    results = [
+        _AnswerObj("Answer from attribute."),
+        _TextObj("Text from attribute."),
+        "Plain string result.",
+    ]
+    out = _format_recall(results, max_chars=1200)
+    assert "Answer from attribute." in out
+    assert "Text from attribute." in out
+    assert "Plain string result." in out
+
+
+def test_apply_cognee_config_fastembed_default_model(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    cfg = MemoryConfig(
+        enabled=True,
+        data_dir=str(tmp_path / "memory"),
+        embedding_provider="fastembed",
+        embedding_model=None,
+    )
+    mem = CogneeMemory(cfg)
+    _run(mem.recall("goal", "repo"))
+
+    emb_call = fake.config.set_embedding_config.call_args.args[0]
+    assert emb_call["embedding_provider"] == "fastembed"
+    assert emb_call["embedding_model"] == "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def test_apply_cognee_config_explicit_embedding_model_preserved(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    cfg = MemoryConfig(
+        enabled=True,
+        data_dir=str(tmp_path / "memory"),
+        embedding_provider="fastembed",
+        embedding_model="custom/model",
+    )
+    mem = CogneeMemory(cfg)
+    _run(mem.recall("goal", "repo"))
+
+    emb_call = fake.config.set_embedding_config.call_args.args[0]
+    assert emb_call["embedding_model"] == "custom/model"
+
+
+def test_apply_cognee_config_non_fastembed_no_default_model(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    cfg = MemoryConfig(
+        enabled=True,
+        data_dir=str(tmp_path / "memory"),
+        embedding_provider="openai",
+        embedding_model=None,
+    )
+    mem = CogneeMemory(cfg)
+    _run(mem.recall("goal", "repo"))
+
+    emb_call = fake.config.set_embedding_config.call_args.args[0]
+    assert emb_call["embedding_provider"] == "openai"
+    assert "embedding_model" not in emb_call
 
 
 def test_recall_sync_runs_without_running_loop(

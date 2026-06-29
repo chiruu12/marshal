@@ -77,19 +77,56 @@ def _format_run_document(record: RunRecord, diff: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def _flatten_recall_strings(value: Any) -> list[str]:
+    """Collect non-empty string fragments from nested recall payload values."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, list):
+        out: list[str] = []
+        for elem in value:
+            out.extend(_flatten_recall_strings(elem))
+        return out
+    return []
+
+
+def _extract_recall_part(item: Any) -> str:
+    if isinstance(item, dict):
+        if "search_result" in item:
+            parts = _flatten_recall_strings(item["search_result"])
+            if parts:
+                return "\n".join(parts)
+        for key in ("answer", "text"):
+            val = item.get(key)
+            if val:
+                parts = _flatten_recall_strings(val)
+                if parts:
+                    return "\n".join(parts)
+                stripped = str(val).strip()
+                if stripped:
+                    return stripped
+        return str(item)
+    if hasattr(item, "text") and item.text:
+        return str(item.text).strip()
+    if hasattr(item, "answer") and item.answer:
+        return str(item.answer).strip()
+    if isinstance(item, str):
+        return item.strip()
+    return str(item).strip()
+
+
 def _format_recall(results: list[Any], max_chars: int) -> str:
     """Format Cognee search results into a prompt-injectable snippet."""
     parts: list[str] = []
+    seen: set[str] = set()
     for item in results:
-        if isinstance(item, str):
-            parts.append(item)
-        elif hasattr(item, "text") and item.text:
-            parts.append(str(item.text))
-        elif hasattr(item, "answer") and item.answer:
-            parts.append(str(item.answer))
-        else:
-            parts.append(str(item))
-    text = "\n\n".join(p.strip() for p in parts if p and str(p).strip())
+        part = _extract_recall_part(item)
+        if part and part not in seen:
+            seen.add(part)
+            parts.append(part)
+    text = "\n\n".join(parts)
     return _truncate(text, max_chars)
 
 
@@ -142,6 +179,8 @@ class CogneeMemory:
             llm["llm_endpoint"] = self._config.llm_endpoint
         if self._config.llm_api_key:
             llm["llm_api_key"] = self._config.llm_api_key
+        # OpenAI-compatible LLM endpoints (e.g. EastRouter) need llm_model prefixed
+        # with "openai/<model>" so litellm routes correctly — set via llm_model.
         if llm:
             cognee.config.set_llm_config(llm)
 
@@ -150,6 +189,8 @@ class CogneeMemory:
             emb["embedding_provider"] = self._config.embedding_provider
         if self._config.embedding_model:
             emb["embedding_model"] = self._config.embedding_model
+        elif self._config.embedding_provider == "fastembed":
+            emb["embedding_model"] = "sentence-transformers/all-MiniLM-L6-v2"
         if emb:
             cognee.config.set_embedding_config(emb)
 
