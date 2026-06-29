@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .config import ClientConfig, ConfigError, FleetConfig, resolve_model
+from .memory import CogneeMemory
 from .doctor import run_checks, summarize
 from .fleet import (
     BenchmarkResult,
@@ -96,6 +97,8 @@ class MarshalService:
     ) -> None:
         self.config = config
         self.repo_root = Path(repo_root)
+        self._repo_key = self.repo_root.name
+        self._memory = CogneeMemory(self.config.memory)
         # Where the config was loaded from - the preflight re-checks this file parses on disk.
         self.config_path = Path(config_path) if config_path else self.repo_root / "fleet.config.yaml"
         if backends is None:
@@ -121,6 +124,7 @@ class MarshalService:
             worktree_setup=config.worktree_setup,
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
+            on_run_complete=self._on_run_complete_hook,
         )
 
     def list_clients(self) -> ClientList:
@@ -144,6 +148,9 @@ class MarshalService:
         backend = self.fleet.backends.get(client.backend)
         return backend.check_available() if backend is not None else False
 
+    def _on_run_complete_hook(self, record: RunRecord, diff: str | None) -> None:
+        self._memory.remember_sync(record, diff, repo=self._repo_key)
+
     def _compose_goal(self, goal: str) -> str:
         # Layered context: the worker preamble + the fleet's `worker` context prefix the user's
         # goal. Everything (run_agent/run_many/spawn/benchmark/workflows) funnels through
@@ -152,6 +159,9 @@ class MarshalService:
         worker_ctx = self.config.context.worker
         if worker_ctx:
             parts.append(worker_ctx.strip())
+        recalled = self._memory.recall_sync(goal, self._repo_key)
+        if recalled:
+            parts.append(f"## Memory from past runs\n\n{recalled}")
         parts.append(goal)
         return "\n\n".join(parts)
 

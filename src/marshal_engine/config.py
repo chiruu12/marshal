@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from marshal_engine.memory import MemoryConfig
 
 from .types import PermissionMode
 
@@ -59,6 +61,7 @@ class FleetConfig(BaseModel):
     # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
     # connection error). 0 disables retries. Genuine task failures and timeouts are never retried.
     retries: int = 2
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
 def load_config(path: Path | str) -> FleetConfig:
@@ -97,11 +100,15 @@ def load_config(path: Path | str) -> FleetConfig:
         worker=str(ctx_raw["worker"]) if ctx_raw.get("worker") else None,
         driver=str(ctx_raw["driver"]) if ctx_raw.get("driver") else None,
     )
+    mem_raw = raw.get("memory")
+    mem_raw = mem_raw if isinstance(mem_raw, dict) else {}
+    memory = MemoryConfig.model_validate(mem_raw) if mem_raw else MemoryConfig()
     return FleetConfig(
         clients=clients,
         context=context,
         worktree_setup=_parse_setup(raw.get("worktree_setup")),
         retries=_parse_retries(raw.get("retries")),
+        memory=memory,
     )
 
 

@@ -9,13 +9,14 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import signal
 import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,8 @@ from .state import FleetState, RunRecord
 from .types import AgentResult, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord, UsageSource
 from .usage import UsageEvent, UsageTracker
 from .worktree import Worktree, WorktreeError, WorktreeManager
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -136,6 +139,7 @@ class Fleet:
         prices: PriceTable | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
         run_gate: threading.Semaphore | None = None,
+        on_run_complete: Callable[[RunRecord, str | None], None] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
@@ -171,6 +175,7 @@ class Fleet:
         self._bg: ThreadPoolExecutor | None = None
         self._bg_lock = threading.Lock()
         self._bg_max = 4
+        self._on_run_complete = on_run_complete
 
     def run(
         self,
@@ -316,6 +321,17 @@ class Fleet:
                 error=result.error,
                 attempts=attempts,
             )
+            if self._on_run_complete is not None:
+                try:
+                    diff: str | None = None
+                    try:
+                        d = self.worktrees.diff(wt)
+                        diff = d if d else None
+                    except Exception:  # noqa: BLE001 - best-effort diff for memory hook
+                        pass
+                    self._on_run_complete(record, diff)
+                except Exception:  # noqa: BLE001 - memory hook must never fail a run
+                    logger.exception("marshal: on_run_complete hook failed for run %s", run_id)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
             # only if still running, so a concurrent cancel's terminal status wins.
