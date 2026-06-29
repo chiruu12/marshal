@@ -140,6 +140,23 @@ Validate recipes against your config with `marshal workflows`, then run one over
 time. The `marshal-workflow` Skill is the authoring + running playbook; templates live in
 [`examples/workflows/`](examples/workflows/).
 
+## Marshal Recall (persistent fleet memory)
+
+Fleet runs no longer have to start from zero. **Marshal Recall** is a Cognee-backed memory layer: after
+each run Marshal remembers the task, repo, client, status, and diff summary; before the next run it
+recalls relevant past learnings and injects them into the worker goal. Memory is partitioned by repo
+(dataset), tagged by client/status/task (node_set), and scoped per task group (session).
+
+Four operations: **remember** (automatic after runs), **recall** (automatic before runs),
+**improve** (enrich the graph), **forget** (drop a repo or wipe all). Enable via a `memory:` block in
+`fleet.config.yaml` (off by default); pair with Cognee env (`LLM_API_KEY`, optional `LLM_MODEL` with
+`openai/<model>` for OpenAI-compatible endpoints, `fastembed` for local embeddings). CLI:
+`marshal memory query|stats|improve|forget`. MCP: `memory_query`, `memory_stats`. Install:
+`pip install 'marshal[memory,fastembed]'`.
+
+Try it: [`examples/marshal_recall_demo.py`](examples/marshal_recall_demo.py). Full reference:
+[`docs/marshal-recall.md`](docs/marshal-recall.md).
+
 ## Architecture
 
 ```
@@ -167,6 +184,7 @@ top of it. See `docs/chauffeur-future.md`.
 
 - [`SETUP.md`](SETUP.md) - clone-to-first-run setup (prerequisites, install, auth, verify, wire in).
 - [`docs/usage.md`](docs/usage.md) - configure a fleet and drive it via MCP, CLI, or library.
+- [`docs/marshal-recall.md`](docs/marshal-recall.md) - persistent fleet memory (Cognee-backed recall).
 - [`docs/model-playbook.md`](docs/model-playbook.md) - which model/client to route a task to, by
   task weight (heavy/standard/light), with a copy-paste tiered fleet and cost-honesty notes.
 - [`docs/status.md`](docs/status.md) - what's built, the backend verification matrix, and the roadmap.
