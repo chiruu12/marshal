@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from .backends.base import CodingAgentBackend
 from .config import ClientConfig, ConfigError, FleetConfig, resolve_model
 from .memory import CogneeMemory
+from .memory.store import _resolve_data_dir, _run_async
 from .doctor import run_checks, summarize
 from .fleet import (
     BenchmarkResult,
@@ -334,6 +335,43 @@ class MarshalService:
 
     def usage(self) -> UsageSummary:
         return self.fleet.usage.summary()
+
+    # --- memory: Marshal Recall surface for CLI/MCP ----------------------------------------
+
+    def memory_query(self, text: str) -> str:
+        """Recall a memory snippet for ``text`` in this repo's dataset."""
+        return self._memory.recall_sync(text, self._repo_key)
+
+    def memory_stats(self) -> dict[str, Any]:
+        """Config-level memory stats for this workspace (best-effort; no Cognee required)."""
+        cfg = self.config.memory
+        stats: dict[str, Any] = {
+            "enabled": cfg.enabled,
+            "recall_enabled": cfg.recall_enabled,
+            "remember_enabled": cfg.remember_enabled,
+            "data_dir": str(_resolve_data_dir(cfg)),
+            "repo_key": self._repo_key,
+            "recall_top_k": cfg.recall_top_k,
+            "recall_max_chars": cfg.recall_max_chars,
+        }
+        try:
+            import importlib.util
+
+            stats["cognee_installed"] = importlib.util.find_spec("cognee") is not None
+        except Exception:
+            stats["cognee_installed"] = False
+        return stats
+
+    def memory_improve(self) -> None:
+        """Run memify on this repo's memory dataset."""
+        _run_async(self._memory.improve(self._repo_key))
+
+    def memory_forget(self, *, all: bool = False) -> None:
+        """Forget this repo's dataset, or wipe all memory when ``all`` is true."""
+        if all:
+            _run_async(self._memory.forget(everything=True))
+        else:
+            _run_async(self._memory.forget(self._repo_key))
 
     # --- workflows: run a declared recipe by sequencing the primitives above -----------------
 

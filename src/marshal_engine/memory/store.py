@@ -224,9 +224,13 @@ class CogneeMemory:
         diff: str | None = None,
         repo: str | None = None,
     ) -> None:
+        if not self._config.enabled or not self._config.remember_enabled:
+            return
         _run_async(self.remember(record, diff=diff, repo=repo))
 
     def recall_sync(self, goal: str, repo: str, top_k: int | None = None) -> str:
+        if not self._config.enabled or not self._config.recall_enabled:
+            return ""
         return _run_async(self.recall(goal, repo, top_k=top_k))
 
 

@@ -332,6 +332,29 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         svc = await offload(registry.get, workspace)
         return tag((await offload(svc.usage)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
+    @app.tool()
+    async def memory_query(
+        query: Annotated[str, Field(description="Natural-language query to recall from memory.")],
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> str:
+        """Recall a memory snippet from the workspace's past fleet runs for the given query.
+
+        Returns an empty string when memory is disabled or nothing relevant is found."""
+        svc = await offload(registry.get, workspace)
+        cfg = svc.config.memory
+        if not cfg.enabled or not cfg.recall_enabled:
+            return "memory is disabled; set memory.enabled (and recall_enabled) in fleet.config.yaml"
+        result = await offload(svc.memory_query, query)
+        return result if result else "(no relevant memory)"
+
+    @app.tool()
+    async def memory_stats(
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> dict[str, Any]:
+        """Memory configuration and data paths for a workspace (config-level; no Cognee required)."""
+        svc = await offload(registry.get, workspace)
+        return tag(await offload(svc.memory_stats), workspace or DEFAULT_WORKSPACE)
+
     return app
 
 

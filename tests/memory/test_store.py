@@ -256,3 +256,25 @@ def test_memory_config_disabled_factory() -> None:
     assert cfg.enabled is False
     assert cfg.recall_enabled is False
     assert cfg.remember_enabled is False
+
+
+def test_recall_sync_disabled_short_circuits_without_asyncio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("asyncio.run must not be called when memory is disabled")
+
+    monkeypatch.setattr("marshal_engine.memory.store.asyncio.run", _boom)
+    mem = CogneeMemory(MemoryConfig.disabled())
+    assert mem.recall_sync("goal", "repo") == ""
+
+
+def test_remember_sync_disabled_short_circuits_without_asyncio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("asyncio.run must not be called when memory is disabled")
+
+    monkeypatch.setattr("marshal_engine.memory.store.asyncio.run", _boom)
+    mem = CogneeMemory(MemoryConfig.disabled())
+    assert mem.remember_sync(_record()) is None
