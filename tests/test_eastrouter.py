@@ -8,6 +8,7 @@ claim a cost when the window is ambiguous, and the graceful no-ops (missing key,
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -138,6 +139,48 @@ def test_opencode_provider_prefixed_model_matches() -> None:
     assert ext is not None
     assert ext.cost_usd == 0.005
     assert ext.source is UsageSource.ADMIN_API
+
+
+def _paged_getter(pages: dict[int, str]) -> object:
+    def get(url: str, key: str, timeout_s: float) -> str | None:
+        m = re.search(r"offset=(\d+)", url)
+        return pages.get(int(m.group(1)) if m else 0)
+
+    return get
+
+
+def test_pagination_finds_records_beyond_the_first_page() -> None:
+    # busy account: page 0 (full at page_size=2) is unrelated records; the run's record is on page 1.
+    page0 = _usage(
+        _rec("other/model", 0.01, 100, 10, "2026-06-28T12:00:01+00:00"),
+        _rec("other/model", 0.01, 100, 10, "2026-06-28T12:00:02+00:00"),
+    )
+    page1 = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=7000, output_tokens=150,
+        api_key="sk-test", attempts=1, http=_paged_getter({0: page0, 2: page1}), page_size=2,  # type: ignore[arg-type]
+    )
+    assert ext is not None and ext.cost_usd == 0.005  # found despite being past the first page
+
+
+def test_pagination_terminates_when_offset_ignored() -> None:
+    # the API ignores `offset` and returns the same FULL page forever; the no-progress guard must
+    # stop the walk (not hang) and still attribute the in-window records on that page.
+    full = _usage(
+        _rec("z-ai/glm-5.1", 0.004, 4000, 100, "2026-06-28T12:00:03+00:00"),
+        _rec("z-ai/glm-5.1", 0.003, 3000, 80, "2026-06-28T12:00:07+00:00"),
+    )
+
+    def get(url: str, key: str, timeout_s: float) -> str | None:
+        return full
+
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=7000, output_tokens=180,
+        api_key="sk-test", attempts=1, http=get, page_size=2,  # type: ignore[arg-type]
+    )
+    assert ext is not None and ext.cost_usd == 0.007
 
 
 def test_naive_created_at_is_treated_as_utc() -> None:

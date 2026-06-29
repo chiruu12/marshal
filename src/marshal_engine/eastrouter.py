@@ -13,6 +13,13 @@ with a single client. If two clients drive the SAME EastRouter model concurrentl
 separate them; the token-reconciliation guard below detects the mismatch (matched prompt tokens won't
 equal the run's input tokens) and the run KEEPS its estimated/unavailable cost rather than asserting
 a wrong real cost. Honest-or-nothing.
+
+Pagination. ``/v1/usage`` returns the most recent records; a single page can miss a run's records
+when the account is busy (e.g. a long run + a concurrent benchmark push them past page 1). So we
+paginate (assumed newest-first), accumulating until a page is short (the last page), predates the
+window, repeats (the API ignored ``offset`` - a no-progress guard, so we never loop forever), or the
+page cap is hit. Without full pagination a long run's real cost would silently fall back to
+``unavailable`` even though the provider charged for it.
 """
 
 from __future__ import annotations
@@ -37,6 +44,11 @@ _WINDOW_BUFFER_S = 3.0
 #: else we assume the window caught the wrong records (concurrency) and decline to claim a cost.
 _RECONCILE_REL_TOL = 0.10
 _RECONCILE_ABS_TOL = 200
+
+#: /v1/usage pagination: records per page, and a hard cap on pages walked back in time (safety
+#: bound so a very busy account can't make one cost lookup page forever).
+_PAGE_SIZE = 1000
+_MAX_PAGES = 20
 
 #: (url, api_key, timeout_s) -> response body, or None on any transport failure. Injectable for tests.
 HttpGetter = Callable[[str, str, float], "str | None"]
@@ -121,6 +133,52 @@ def _parse_records(raw: str) -> list[_Rec]:
     return out
 
 
+def _rec_key(r: _Rec) -> tuple[str, str, float, int, int]:
+    """A dedup key so a record seen on two pages (or a repeated page) is counted once."""
+    return (r.model, r.created.isoformat() if r.created else "", r.amount, r.prompt, r.completion)
+
+
+def _collect_window_records(
+    getter: HttpGetter,
+    base: str,
+    key: str,
+    timeout_s: float,
+    lo: datetime,
+    *,
+    page_size: int,
+    max_pages: int,
+) -> list[_Rec] | None:
+    """Paginate ``/v1/usage`` (assumed newest-first), collecting records back to the window start.
+
+    Stops when a page is short (last page), is entirely older than ``lo`` (paged past the window),
+    repeats records (the API ignored ``offset`` - no-progress guard), is empty, or the page cap is
+    hit. Returns None ONLY when the FIRST page's request fails, so the caller can retry; a later-page
+    failure returns what was gathered so far.
+    """
+    out: list[_Rec] = []
+    seen: set[tuple[str, str, float, int, int]] = set()
+    for page in range(max_pages):
+        url = f"{base}/usage?limit={page_size}&offset={page * page_size}"
+        raw = getter(url, key, timeout_s)
+        if raw is None:
+            return None if page == 0 else out
+        recs = _parse_records(raw)
+        if not recs:
+            break
+        fresh = [r for r in recs if _rec_key(r) not in seen]
+        if not fresh:
+            break  # the API returned no new records (e.g. ignored offset) - stop, never loop forever
+        for r in fresh:
+            seen.add(_rec_key(r))
+            out.append(r)
+        if len(recs) < page_size:
+            break  # a short page is the last page
+        newest = max((r.created for r in recs if r.created is not None), default=None)
+        if newest is not None and newest < lo:
+            break  # the whole page is older than the window - no point paging further back
+    return out
+
+
 def _reconciles(matched_prompt: int, input_tokens: int) -> bool:
     """True if the matched records' prompt tokens agree with the run's input tokens."""
     if input_tokens <= 0:
@@ -140,9 +198,12 @@ def fetch_run_cost(
     timeout_s: float = 8.0,
     attempts: int = 2,
     http: HttpGetter | None = None,
+    page_size: int = _PAGE_SIZE,
+    max_pages: int = _MAX_PAGES,
 ) -> ExternalCost | None:
     """Real cost for one run from EastRouter ``/v1/usage``, or None if it can't be attributed.
 
+    Paginates ``/v1/usage`` so a long run's records aren't missed when they fall past the first page.
     Returns None (caller keeps its estimate/unavailable cost) on any of: missing key/model, no
     matching records, a usage record not yet propagated, or a token mismatch (concurrent same-model
     runs). Never raises - cost reconciliation must never break a completed run.
@@ -161,15 +222,16 @@ def fetch_run_cost(
     hi = end + timedelta(seconds=_WINDOW_BUFFER_S)
     base = base_url or os.environ.get("EASTROUTER_BASE_URL") or DEFAULT_BASE_URL
     getter = http or _http_get
-    url = f"{base}/usage?limit=1000"
 
     tries = max(1, attempts)
     for attempt in range(tries):
-        raw = getter(url, key, timeout_s)
-        if raw is not None:
+        records = _collect_window_records(
+            getter, base, key, timeout_s, lo, page_size=page_size, max_pages=max_pages
+        )
+        if records is not None:
             matched = [
                 r
-                for r in _parse_records(raw)
+                for r in records
                 if r.model == target_model and r.created is not None and lo <= r.created <= hi
             ]
             if matched:

@@ -9,6 +9,12 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **EastRouter cost reader now paginates `/v1/usage`.** A single page (`?limit=1000`) could miss a
+  long run's records when the account was busy (a 283s run + a concurrent benchmark pushed them past
+  page 1), so its **real** `admin-api` cost silently fell back to `unavailable`. The reader now walks
+  pages (assumed newest-first) back to the run's window, with safe termination (short/empty page,
+  past-window, a no-progress guard for an API that ignores `offset`, and a page cap) and the same
+  honest token-reconciliation guard. Naive `created_at` timestamps are also normalized to UTC.
 - **Cost-source + resilience fixes** (from a PR review pass). A real EastRouter `admin-api` cost now
   counts toward the benchmark `cheapest` comparison and gets its own usage-summary bucket (it was
   silently excluded from both, so real-cost runs could lose `cheapest` and the source split didn't

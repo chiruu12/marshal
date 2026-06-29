@@ -107,10 +107,10 @@ burned **231K input tokens** over-exploring a simple task, ran slowest, and ship
 even import. That's the point: **route on measured evidence, not vibes.**
 
 Cost is tagged by **source** and never invented: a client whose cost can't be attributed shows
-`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. \*`codex-glm`'s 16-request, 283s
-run through EastRouter exceeded the `/v1/usage` attribution window, so the ledger honestly recorded
-`unavailable` — the real charge (~$0.16, recoverable from the provider's usage API) is what motivates
-the usage-API pagination on the roadmap. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
+`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. \*In that early run `codex-glm`'s
+16-request, 283s EastRouter session fell past a single `/v1/usage` page, so the ledger honestly
+recorded `unavailable` rather than guess. The reader now **paginates** `/v1/usage` to recover a long
+run's real `admin-api` cost. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
 
 ## Workflows
 

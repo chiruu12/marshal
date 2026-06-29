@@ -29,9 +29,10 @@ What this demonstrates:
 
 - **Measured, not guessed.** Cost, latency, and token counts come from each run's recorded facts.
 - **Honest sourcing.** `cmdcode` (a hosted account that reports no tokens/cost) and `codex-glm` (whose
-  long EastRouter run exceeded the `/v1/usage` attribution window) both show `unavailable` and are
-  excluded from `cheapest` — never a misleading `$0`. `codex-glm`'s real charge (~$0.16, recoverable
-  from the provider's usage API) is what motivates usage-API pagination on the roadmap.
+  long EastRouter run fell past a single `/v1/usage` page in this early run) both show `unavailable`
+  and are excluded from `cheapest` — never a misleading `$0`. `codex-glm`'s real charge (~$0.16,
+  recoverable from the provider's usage API) motivated the `/v1/usage` **pagination** the cost reader
+  now does to recover a long run's real `admin-api` cost.
 - **More reasoning ≠ better.** `codex-glm` spent **231K input tokens** over-exploring a one-class
   task, ran slowest, and still shipped broken code. Benchmark; don't assume.
 - **Same goal, fair comparison.** Every strategy ran the identical goal in its own isolated worktree.
