@@ -16,18 +16,27 @@ class _FakeBackend(CodingAgentBackend):
     capabilities = Capabilities()
 
     def __init__(
-        self, name: str, *, available: bool, account: dict[str, str] | None = None
+        self,
+        name: str,
+        *,
+        available: bool,
+        account: dict[str, str] | None = None,
+        verifies_auth: bool = False,
     ) -> None:
         self.name = name
         self.binary = name
         self._available = available
         self._account = account
+        self._verifies_auth = verifies_auth
 
     def check_available(self) -> bool:
         return self._available
 
     def account_info(self) -> dict[str, str] | None:
         return self._account
+
+    def verifies_auth(self) -> bool:
+        return self._verifies_auth
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         return [self.binary]
@@ -146,6 +155,41 @@ def test_no_plan_check_when_account_info_absent_or_unavailable(tmp_path: Path) -
         backends={"opencode": _FakeBackend("opencode", available=False, account={"plan": "Pro"})},
     )
     assert "plan:opencode" not in _names(unavail)
+
+
+def test_present_but_unauthenticated_backend_fails(tmp_path: Path) -> None:
+    # A backend whose account_info() is an authenticated-only probe (verifies_auth=True): CLI is
+    # present but returns no account info -> not logged in. Doctor must FAIL it, not green-light it.
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    backend = _FakeBackend("opencode", available=True, account=None, verifies_auth=True)
+    checks = run_checks(repo, cfg, backends={"opencode": backend})
+    b = _by_name(checks, "backend:opencode")
+    assert b.status == FAIL
+    assert "not authenticated" in b.detail
+    assert "opencode auth login" in b.fix
+    assert "plan:opencode" not in _names(checks)
+
+
+def test_authenticated_probe_backend_is_ok_with_plan(tmp_path: Path) -> None:
+    # verifies_auth=True AND account info present -> authenticated: OK + a plan line.
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    backend = _FakeBackend(
+        "opencode", available=True, account={"plan": "Ultra", "model": "x"}, verifies_auth=True
+    )
+    checks = run_checks(repo, cfg, backends={"opencode": backend})
+    assert _by_name(checks, "backend:opencode").status == OK
+    assert _by_name(checks, "plan:opencode").detail == "Ultra (model x)"
+
+
+def test_no_auth_probe_backend_stays_available_without_account(tmp_path: Path) -> None:
+    # verifies_auth=False (the default for most backends): a None account_info is "no plan info",
+    # not "unauthenticated" - the CLI is still reported available (auth simply not verified).
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    assert _by_name(checks, "backend:opencode").status == OK
 
 
 def test_only_referenced_backends_are_probed(tmp_path: Path) -> None:

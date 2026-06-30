@@ -96,6 +96,12 @@ class CursorBackend(CodingAgentBackend):
             return None
         return _parse_about(proc.stdout)
 
+    def verifies_auth(self) -> bool:
+        # `cursor-agent about` only returns account info when logged in, so a None from
+        # account_info() (with the binary present) means "not authenticated" - which lets doctor
+        # flag a logged-out CLI instead of green-lighting it on a passing `--version`.
+        return True
+
     def map_permission(self, mode: PermissionMode) -> list[str]:
         try:
             return list(self._PERMISSION[mode])
