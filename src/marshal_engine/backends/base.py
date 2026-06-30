@@ -82,6 +82,18 @@ class CodingAgentBackend(ABC):
         """
         return None
 
+    def verifies_auth(self) -> bool:
+        """True if account_info() doubles as an authenticated-only probe.
+
+        When True, a None from account_info() *while the binary is on PATH* reliably means "not
+        logged in" (not "metadata unsupported") - so `marshal doctor` reports the backend as
+        present-but-unauthenticated rather than green-lighting it. This closes the gap where a CLI
+        passes `--version` (unauthenticated) but dies on the first real run. Default False: most
+        backends have no cheap authed probe, so doctor reports CLI presence without claiming the
+        credentials are valid.
+        """
+        return False
+
     def prepare(self, opts: RunOpts) -> None:
         """Optional per-run setup, run just before the process is spawned (default: no-op).
 

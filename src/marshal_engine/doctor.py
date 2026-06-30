@@ -168,20 +168,26 @@ def run_checks(
     probes = dict(backends) if backends is not None else default_backends()
     for name in sorted({c.backend for c in config.clients.values()}):
         backend = probes.get(name)
-        available = backend.check_available() if backend is not None else False
-        checks.append(
-            Check(
-                f"backend:{name}",
-                OK if available else FAIL,
-                "available" if available else "CLI not on PATH / not authenticated",
-                "" if available else BACKEND_HINTS.get(name, f"install the {name} CLI"),
+        hint = BACKEND_HINTS.get(name, f"install the {name} CLI")
+        if backend is None or not backend.check_available():
+            checks.append(Check(f"backend:{name}", FAIL, "CLI not on PATH / not runnable", hint))
+            continue
+        # The CLI is present. If the backend exposes an authenticated-only probe (account_info),
+        # use it to verify credentials too: a logged-out CLI still passes `--version` but dies on
+        # the first real run, so doctor must not green-light it as merely "available".
+        info = backend.account_info()
+        if info is None and backend.verifies_auth():
+            # account_info() is an authed-only probe that returned nothing: almost always "logged
+            # out", but a transient probe failure (timeout/blip) looks the same - so name both. FAIL
+            # (not WARN) is deliberate: a false FAIL costs a re-run; a false OK costs a wasted fan-out.
+            checks.append(
+                Check(f"backend:{name}", FAIL, "CLI present but not authenticated (or auth probe failed)", hint)
             )
-        )
+            continue
+        checks.append(Check(f"backend:{name}", OK, "available"))
         # Surface plan/account context for backends that expose it (e.g. Cursor's plan tier).
-        if available and backend is not None:
-            info = backend.account_info()
-            if info:
-                checks.append(Check(f"plan:{name}", OK, _format_plan(info)))
+        if info:
+            checks.append(Check(f"plan:{name}", OK, _format_plan(info)))
 
     # --- secrets (advisory: secret_ref is NOT injected; CLI login is the real auth path) ------
     for c in config.clients.values():
