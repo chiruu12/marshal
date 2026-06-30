@@ -40,9 +40,9 @@ marshal/
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
 │   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
-│   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier
-│   ├── mcp_server.py        # MCP server (FastMCP): list_workspaces/add_workspace + doctor/list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow (each takes an optional workspace)
-│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/workspace/mcp)
+│   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
+│   ├── mcp_server.py        # MCP server (FastMCP): list_workspaces/add_workspace + doctor/list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/commit_run/integrate/clean/status/usage/list_workflows/run_workflow (each takes an optional workspace)
+│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/workspace/clean/mcp)
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
 ├── SETUP.md                 # clone-to-first-run setup guide

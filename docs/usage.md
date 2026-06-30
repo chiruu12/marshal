@@ -164,7 +164,9 @@ the default workspace.
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
 | `get_run(run_id)` | Fetch one run record (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`). |
 | `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). Review before integrating. |
+| `commit_run(run_id, message?)` | Freeze a finished run's work onto its own branch (your branch untouched) so a dependent run can `spawn` with `base_branch` = that branch. Outcome ∈ `committed`/`clean`/`blocked`/`error`. |
 | `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
+| `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. |
 | `status()` | List all runs with status + cost. |
 | `usage()` | Per-provider usage summary (totals + by backend/client/model). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. |
@@ -176,6 +178,7 @@ the default workspace.
 marshal doctor             # preflight: check the setup is ready to run agents
 marshal backends           # list backends and availability
 marshal status             # list fleet runs
+marshal clean              # tear down finished runs' worktrees + branches (--scope/--dry-run/--older-than)
 marshal usage              # per-provider usage summary
 marshal workflows          # list + validate workflow recipes against the config
 marshal workspace list     # show the workspace registry

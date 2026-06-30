@@ -16,10 +16,11 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (17 tools):
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (19 tools):
   `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`,
-  `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`,
-  `list_workflows`, `run_workflow`. One server can target several repos at once - every tool takes an
+  `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `commit_run`, `integrate`, `clean`,
+  `status`, `usage`, `list_workflows`, `run_workflow`. One server can
+  target several repos at once - every tool takes an
   optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
   add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
@@ -28,7 +29,7 @@ It plugs into your driver two ways:
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 17-tool MCP server work end to
+> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 19-tool MCP server work end to
 > end: parallel fan-out (`run_many`), non-blocking `spawn` + `cancel_run`, merge-back (`collect_run` +
 > `integrate`), **declarative YAML workflows**, **multi-workspace** (one server, many repos), and a
 > **measured savings benchmark** (`benchmark`/`report`). OpenCode, Cursor, Claude Code, and Command

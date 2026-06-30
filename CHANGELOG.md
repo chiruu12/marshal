@@ -8,6 +8,30 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **`commit_run` - freeze a run's work onto its own branch for dependent chaining.** A new MCP tool +
+  `Fleet.commit_run(run_id)` commits a finished run's (otherwise uncommitted) work onto its
+  `marshal/<run_id>` branch **without touching your branch**, so a dependent run can `spawn` with
+  `base_branch` = that branch and build on the actual output. Previously, basing a run on a prior
+  run's branch saw only the spawn base (the agent left its work uncommitted). Returns
+  `committed`/`clean`/`blocked`/`error`; refuses a still-running run. (An adversarial design review
+  chose this explicit, driver-invoked primitive over auto-committing every run inside the engine -
+  it keeps `collect_run` honest/read-only and integration the only step that moves history into your
+  branch.)
+- **`marshal clean` - one-shot teardown of finished runs' worktrees + branches.** New CLI command +
+  MCP tool + `Fleet.clean(...)`. Reclaims the disk-heavy worktrees and their branches in one call
+  while keeping the immutable usage ledger **and** the run-state records (status/cost history stay
+  queryable). Never touches a running run. Scopes: `merged` (integrated only), `finished` (default -
+  also failed/timed_out/cancelled/empty, but **protects un-integrated `succeeded` work**), `all`.
+  Supports `--older-than`, explicit run ids, and `--dry-run`.
+
+### Changed
+- **`doctor` now verifies authentication, not just CLI presence.** For a backend that exposes an
+  authenticated-only probe (Cursor's `about`), a CLI that is installed but **logged out** - which
+  still answers `--version` - is now reported as `CLI present but not authenticated` (with the login
+  command) instead of a green `available` that then dies one second into a real run. Backends without
+  a cheap authed probe are unchanged (CLI presence reported; auth not claimed).
+
 ### Fixed
 - **EastRouter cost reader now paginates `/v1/usage`.** A single page (`?limit=1000`) could miss a
   long run's records when the account was busy (a 283s run + a concurrent benchmark pushed them past
