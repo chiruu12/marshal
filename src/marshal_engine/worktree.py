@@ -8,6 +8,7 @@ safety boundary of the whole system - keep it boring and reliable.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -317,6 +318,28 @@ class WorktreeManager:
     def prune(self) -> None:
         """Clean up administrative files for worktrees whose directories are gone."""
         self._git("worktree", "prune")
+
+    def discard(self, path: Path | str, branch: str | None) -> None:
+        """Tear down a finished run's worktree + branch, tolerant of a half-gone worktree.
+
+        Unlike `remove` (which needs a live worktree), this handles batch cleanup of a worktree in
+        any state: already gone (manually deleted / a prior partial clean), live, or *corrupt* (the
+        dir survives but git's admin entry was pruned, so `git worktree remove` refuses with "not a
+        working tree"). Reclaiming the disk is the whole point, so when git won't remove a still-
+        present dir we fall back to a best-effort `rmtree`. Then `prune` the admin files and delete
+        the branch (failures ignored - already gone, or checked out in a live worktree). The
+        immutable usage ledger and the run-state record are NOT touched here.
+        """
+        p = Path(path)
+        if p.exists():
+            rm = self._git("worktree", "remove", "--force", str(p))
+            if rm.returncode != 0 and p.exists():
+                # git refused (corrupt/missing admin entry); the dir is now just a plain directory -
+                # reclaim it directly so the disk isn't stranded under an `errors` entry forever.
+                shutil.rmtree(p, ignore_errors=True)
+        self.prune()
+        if branch:
+            self._git("branch", "-D", branch)
 
 
 def _setup_reason(exit_code: int, stderr: str, stdout: str) -> str:

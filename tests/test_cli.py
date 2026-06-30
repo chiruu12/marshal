@@ -85,6 +85,19 @@ def test_doctor_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     assert "python" in {c["name"] for c in data["checks"]}
 
 
+def test_clean_no_runs_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ret = cli.main(["clean", "--json", "--repo", str(tmp_path)])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["removed"] == [] and data["skipped"] == [] and data["errors"] == []
+
+
+def test_clean_human_no_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ret = cli.main(["clean", "--repo", str(tmp_path), "--dry-run"])
+    assert ret == 0
+    assert "would remove 0 run(s)" in capsys.readouterr()[0]
+
+
 _FLEET = "clients:\n  a:\n    backend: cursor\n  b:\n    backend: cursor\n"
 
 

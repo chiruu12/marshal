@@ -266,6 +266,24 @@ def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     assert collected.branch == rec.branch
 
 
+def test_commit_run_delegates(repo: Path) -> None:
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "do something", task_id="t1")
+    result = svc.commit_run(rec.run_id)
+    assert result.status in ("committed", "clean")  # _Echo writes nothing -> clean
+    assert result.commit  # a concrete branch-tip ref to chain on
+    assert svc.get_run(rec.run_id).commit == result.commit
+
+
+def test_clean_delegates(repo: Path) -> None:
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "do something", task_id="t1")  # succeeded, un-integrated
+    assert svc.clean().removed == []                  # default scope protects it
+    result = svc.clean(scope="all")                    # opt in to clean it
+    assert rec.run_id in result.removed
+    assert svc.get_run(rec.run_id) is not None         # state/history kept; only the worktree went
+
+
 def _bench_svc(repo: Path, backends: dict[str, object], **clients: str) -> MarshalService:
     cfg = FleetConfig(
         clients={

@@ -17,7 +17,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -40,6 +40,54 @@ def _still_running(rec: RunRecord) -> bool:
     """update_if predicate: stamp a terminal status only if the run hasn't already reached one
     (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
     return rec.status == RunStatus.RUNNING.value
+
+
+#: Terminal, non-success run statuses that `clean` reclaims by default (no un-landed work worth keeping).
+_CLEANABLE_NONSUCCESS = frozenset(
+    {
+        RunStatus.FAILED.value,
+        RunStatus.TIMED_OUT.value,
+        RunStatus.CANCELLED.value,
+        RunStatus.EMPTY.value,
+    }
+)
+
+
+def _is_terminal(rec: RunRecord) -> bool:
+    """True once a run has stopped - i.e. it is neither queued nor still running."""
+    return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
+
+
+def _in_clean_scope(rec: RunRecord, scope: str) -> bool:
+    """Whether `clean(scope=...)` should reclaim this run (a running/queued run never is)."""
+    if not _is_terminal(rec):
+        return False
+    if scope == "all":
+        return True
+    if scope == "merged":
+        return rec.merged_into is not None
+    if scope == "finished":
+        return rec.merged_into is not None or rec.status in _CLEANABLE_NONSUCCESS
+    raise ValueError(f"unknown clean scope: {scope!r} (use 'merged', 'finished', or 'all')")
+
+
+def _ended_before(rec: RunRecord, cutoff: datetime | None) -> bool:
+    """True if the run ended at or before `cutoff` (always True when no age filter is set).
+
+    A run with no parseable `ended_at` is treated as NOT old enough under an age filter - we don't
+    reclaim a run whose age we can't establish.
+    """
+    if cutoff is None:
+        return True
+    if not rec.ended_at:
+        return False
+    try:
+        ended = datetime.fromisoformat(rec.ended_at)
+    except ValueError:
+        return False
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+    return ended <= cutoff
 
 
 def _load_default_prices() -> PriceTable:
@@ -79,6 +127,37 @@ class IntegrateResult(BaseModel):
     conflicts: list[str] = []
     commit: str | None = None
     message: str = ""
+
+
+class CommitResult(BaseModel):
+    """Outcome of freezing a run's work onto its own branch (so a dependent run can chain off it).
+
+    status: "committed" (a new commit was made), "clean" (no *new* commit was needed - the working
+    tree was already clean; this is NOT "the branch is empty", e.g. an agent that self-committed),
+    "blocked" (the run is still in progress; wait for it to finish), or "error" (a git op failed -
+    see `message`). To chain, always use `branch`/`commit` regardless of status - `commit` is the
+    branch tip whenever it could be resolved, the concrete ref to base a dependent run on
+    (`spawn(..., base_branch=branch)`). Don't gate chaining on `status == "committed"`.
+    """
+
+    run_id: str
+    status: str
+    branch: str | None = None
+    commit: str | None = None
+    message: str = ""
+
+
+class CleanResult(BaseModel):
+    """Outcome of tearing down finished runs' worktrees + branches (the usage ledger is untouched).
+
+    Reclaims the disk-heavy worktrees; the run-state records are kept so status/history stay
+    queryable. A run that is still running is never cleaned (reported under `skipped`).
+    """
+
+    removed: list[str] = []
+    skipped: list[dict[str, str]] = []  # {run_id, reason}
+    errors: list[dict[str, str]] = []   # {run_id, error}
+    dry_run: bool = False
 
 
 class StrategyResult(BaseModel):
@@ -483,6 +562,97 @@ class Fleet:
             changed_files=self.worktrees.changed_files(wt),
             diff=self.worktrees.diff(wt),
         )
+
+    def commit_run(self, run_id: str, *, message: str | None = None) -> CommitResult:
+        """Freeze a finished run's work as a commit on its OWN branch, so a dependent run can chain
+        off it via ``spawn(..., base_branch=<that run's branch>)``.
+
+        This is integrate's first half without the merge: it commits the worktree's work onto
+        ``marshal/<run_id>`` but NEVER touches the driver's branch (worktree isolation holds).
+        Without it, basing a worktree on a prior run's branch gets only the spawn base, because the
+        agent left its work uncommitted and the branch ref never moved. Refuses a still-running run
+        (its files are half-written). The immutable usage ledger is untouched.
+        """
+        rec = self.state.get(run_id)
+        if rec is None:
+            raise ValueError(f"no such run: {run_id!r}")
+        if rec.status == RunStatus.RUNNING.value:
+            return CommitResult(
+                run_id=run_id,
+                status="blocked",
+                branch=rec.branch,
+                message="run is still in progress; wait for it to finish before committing",
+            )
+        wt = self._worktree_for(run_id)
+        if not wt.branch:
+            raise ValueError(f"run {run_id!r} has no branch to commit")
+        try:
+            sha = self.worktrees.commit_all(wt, message or f"marshal: {run_id}")
+            tip = self.worktrees.branch_tip(wt.branch)
+        except WorktreeError as exc:
+            return CommitResult(run_id=run_id, status="error", branch=wt.branch, message=str(exc))
+        self.state.update(run_id, commit=tip)
+        return CommitResult(
+            run_id=run_id,
+            status="committed" if sha is not None else "clean",
+            branch=wt.branch,
+            commit=tip,
+        )
+
+    def clean(
+        self,
+        *,
+        scope: str = "finished",
+        run_ids: list[str] | None = None,
+        older_than_hours: float | None = None,
+        dry_run: bool = False,
+    ) -> CleanResult:
+        """Tear down finished runs' worktrees + branches to reclaim disk; never a running run.
+
+        The immutable usage ledger is never touched, and run-state records are kept so status and
+        cost history stay queryable (a cleaned run's worktree path simply no longer exists, which is
+        what `collect_run`/`integrate` already report). ``scope`` (ignored when ``run_ids`` is given):
+          * ``"merged"``   - only runs already integrated (``merged_into`` set). Safest.
+          * ``"finished"`` - (default) merged runs + failed/timed_out/cancelled/empty runs; protects
+            un-integrated *succeeded* work (a candidate you may still want to review).
+          * ``"all"``      - every terminal run, including un-integrated succeeded ones. DESTRUCTIVE:
+            this ``git branch -D``\\s those branches too, so an un-reviewed succeeded run's commits
+            survive only in git's reflog until gc.
+        ``run_ids`` cleans exactly those (still refuses a running run, reported under ``skipped``;
+        ``older_than_hours`` is ignored in this mode). ``older_than_hours`` (scope mode only) keeps
+        only runs that ended at least that long ago. ``dry_run`` reports what would be removed
+        without touching anything.
+        """
+        result = CleanResult(dry_run=dry_run)
+        if run_ids is not None:
+            targets: list[RunRecord] = []
+            for rid in run_ids:
+                rec = self.state.get(rid)
+                if rec is None:
+                    result.skipped.append({"run_id": rid, "reason": "no such run"})
+                elif not _is_terminal(rec):
+                    result.skipped.append(
+                        {"run_id": rid, "reason": f"not finished (status={rec.status})"}
+                    )
+                else:
+                    targets.append(rec)
+        else:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours) \
+                if older_than_hours is not None else None
+            targets = [
+                r for r in self.state.list()
+                if _in_clean_scope(r, scope) and _ended_before(r, cutoff)
+            ]
+        for rec in targets:
+            if dry_run:
+                result.removed.append(rec.run_id)
+                continue
+            try:
+                self.worktrees.discard(rec.worktree or "", rec.branch)
+                result.removed.append(rec.run_id)
+            except WorktreeError as exc:
+                result.errors.append({"run_id": rec.run_id, "error": str(exc)})
+        return result
 
     def cancel_run(self, run_id: str) -> RunRecord:
         """Cancel a running run: SIGTERM its process group, then mark cancelled.
