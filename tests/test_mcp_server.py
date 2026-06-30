@@ -76,8 +76,8 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     names = {t.name for t in asyncio.run(app.list_tools())}
     expected = {
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "status", "usage",
-        "get_run", "collect_run", "integrate", "cancel_run", "list_workflows", "run_workflow",
-        "doctor",
+        "get_run", "collect_run", "commit_run", "integrate", "clean", "cancel_run",
+        "list_workflows", "run_workflow", "doctor",
     }
     assert expected <= names
 

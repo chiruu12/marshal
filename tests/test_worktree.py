@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -133,6 +134,43 @@ def test_create_duplicate_raises(repo: Path) -> None:
     m.create("dup")
     with pytest.raises(WorktreeError):
         m.create("dup")
+
+
+def test_discard_removes_worktree_and_branch(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("disc1")
+    m.discard(wt.path, wt.branch)
+    assert not wt.path.exists()
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/disc1"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "marshal/disc1" not in branches
+
+
+def test_discard_reclaims_dir_when_git_admin_entry_corrupt(repo: Path) -> None:
+    # The dir survives but git's admin entry is gone (a prior partial prune): `git worktree remove`
+    # refuses ("not a working tree"). discard must still reclaim the disk-heavy dir, not raise.
+    m = WorktreeManager(repo)
+    wt = m.create("disc3")
+    shutil.rmtree(repo / ".git" / "worktrees" / "disc3")  # corrupt: drop the admin entry, keep dir
+    assert wt.path.exists()
+    m.discard(wt.path, wt.branch)  # must not raise
+    assert not wt.path.exists()    # dir reclaimed via the rmtree fallback
+
+
+def test_discard_tolerates_already_gone_worktree(repo: Path) -> None:
+    # Batch cleanup must handle a worktree dir that's already gone (manually deleted / partial
+    # prior clean): no raise, and the dangling branch is still deleted.
+    m = WorktreeManager(repo)
+    wt = m.create("disc2")
+    shutil.rmtree(wt.path)  # nuke the dir behind git's back
+    m.discard(wt.path, wt.branch)  # must not raise
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/disc2"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "marshal/disc2" not in branches
 
 
 def test_current_branch_returns_checked_out_branch(repo: Path) -> None:

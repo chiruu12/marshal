@@ -12,6 +12,7 @@ from typing import Any
 from . import __version__
 from .config import ConfigError, load_config
 from .doctor import FAIL, OK, WARN, run_checks, summarize
+from .fleet import Fleet
 from .registry import backend_names, default_backends
 from .state import FleetState
 from .usage import UsageTracker
@@ -172,6 +173,31 @@ def _cmd_workspace(args: argparse.Namespace) -> int:
 _GLYPH = {OK: "✓", WARN: "⚠", FAIL: "✗"}
 
 
+def _cmd_clean(args: argparse.Namespace) -> int:
+    """Tear down finished runs' worktrees + branches (the usage ledger is never touched)."""
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    # clean needs no backends - a bare Fleet just reuses its state + worktree managers.
+    fleet = Fleet(repo, {}, base_dir=repo / ".marshal")
+    result = fleet.clean(
+        scope=args.scope,
+        run_ids=args.run_ids or None,
+        older_than_hours=args.older_than,
+        dry_run=args.dry_run,
+    )
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), indent=2))
+        return 1 if result.errors else 0
+    verb = "would remove" if result.dry_run else "removed"
+    print(f"{verb} {len(result.removed)} run(s); skipped {len(result.skipped)}; errors {len(result.errors)}")
+    for rid in result.removed:
+        print(f"  {verb}: {rid}")
+    for s in result.skipped:
+        print(f"  skipped: {s['run_id']} ({s['reason']})")
+    for e in result.errors:
+        print(f"  error: {e['run_id']} ({e['error']})")
+    return 1 if result.errors else 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
@@ -209,6 +235,19 @@ def main(argv: list[str] | None = None) -> int:
     ps = sub.add_parser("status", help="list fleet runs")
     ps.add_argument("--state", default=".marshal/runs", help="per-run state directory")
     ps.add_argument("--json", action="store_true", help="output JSON")
+    pc = sub.add_parser("clean", help="tear down finished runs' worktrees + branches")
+    pc.add_argument("run_ids", nargs="*", help="specific run ids to clean (default: by --scope)")
+    pc.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pc.add_argument(
+        "--scope",
+        default="finished",
+        choices=["merged", "finished", "all"],
+        help="merged (integrated only) | finished (default; keeps un-integrated succeeded) | all",
+    )
+    pc.add_argument("--older-than", type=float, default=None, metavar="HOURS",
+                    help="only clean runs that ended at least this many hours ago")
+    pc.add_argument("--dry-run", action="store_true", help="preview without removing anything")
+    pc.add_argument("--json", action="store_true", help="output JSON")
     pd = sub.add_parser("doctor", help="preflight: check the setup is ready to run agents")
     pd.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pd.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
@@ -240,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_usage(args)
     if args.cmd == "status":
         return _cmd_status(args)
+    if args.cmd == "clean":
+        return _cmd_clean(args)
     if args.cmd == "doctor":
         return _cmd_doctor(args)
     if args.cmd == "workflows":

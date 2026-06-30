@@ -674,3 +674,122 @@ def test_integrate_blocked_on_detached_head(repo: Path) -> None:
     result = fleet.integrate(rec.run_id)
     assert result.status == "blocked"            # refuses before committing, no orphaned merge
     assert "detached" in result.message.lower()
+
+
+# --- commit_run: freeze a run's work onto its branch so a dependent run can chain off it ---------
+
+def test_commit_run_freezes_work_on_branch(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cm1", goal="x"))
+    result = fleet.commit_run(rec.run_id)
+    assert result.status == "committed"
+    assert result.commit  # the branch tip, a concrete ref to chain on
+    assert result.branch == rec.branch
+    # the work is now a commit on the run's branch (base..branch shows it), and the tree is clean
+    assert "out.txt" in _git(repo, "diff", "--name-only", "HEAD", result.commit)
+    assert fleet.collect_run(rec.run_id).changed_files == []  # nothing uncommitted left
+    assert fleet.state.get(rec.run_id).commit == result.commit  # persisted for chaining/integrate
+
+
+def test_commit_run_enables_dependent_chaining(repo: Path) -> None:
+    # The whole point: B based on A's branch sees A's *committed* work (not just the spawn base).
+    fleet = Fleet(repo, {"writer": _Writer()})
+    a = fleet.run("writer", TaskSpec(id="chainA", goal="x"))
+    fleet.commit_run(a.run_id)
+    b = fleet.run("writer", TaskSpec(id="chainB", goal="y", base_branch=a.branch))
+    assert (Path(b.worktree) / "out.txt").read_text() == "hi"  # A's work is present in B's worktree
+
+
+def test_commit_run_clean_when_nothing_to_commit(repo: Path) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="cm2", goal="x"))  # EMPTY run: writes nothing
+    result = fleet.commit_run(rec.run_id)
+    assert result.status == "clean"
+    assert result.commit  # still reports the branch tip (== base) so the driver has a ref
+
+
+def test_commit_run_blocked_on_running_run(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cm3", goal="x"))
+    fleet.state.update(rec.run_id, status="running")  # simulate an in-flight run
+    result = fleet.commit_run(rec.run_id)
+    assert result.status == "blocked"
+    assert "progress" in result.message.lower()
+
+
+def test_commit_run_unknown_run_raises(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError):
+        fleet.commit_run("nope.writer")
+
+
+# --- clean: tear down finished runs' worktrees + branches, ledger + state untouched -------------
+
+def test_clean_default_scope_protects_unintegrated_succeeded(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl1", goal="x"))  # succeeded, NOT integrated
+    result = fleet.clean()  # scope="finished"
+    assert rec.run_id not in result.removed       # un-integrated succeeded work is protected
+    assert Path(rec.worktree).exists()            # worktree left intact
+
+
+def test_clean_all_scope_removes_unintegrated_succeeded(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl2", goal="x"))
+    result = fleet.clean(scope="all")
+    assert rec.run_id in result.removed
+    assert not Path(rec.worktree).exists()        # worktree reclaimed
+    assert fleet.state.get(rec.run_id) is not None  # but the state record (history) is kept
+
+
+def test_clean_merged_scope_removes_only_integrated(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    kept = fleet.run("writer", TaskSpec(id="cl3keep", goal="x"))       # not integrated
+    gone = fleet.run("writer", TaskSpec(id="cl3gone", goal="x"))
+    fleet.integrate(gone.run_id)                                        # merged_into set
+    result = fleet.clean(scope="merged")
+    assert gone.run_id in result.removed and kept.run_id not in result.removed
+    assert not Path(gone.worktree).exists() and Path(kept.worktree).exists()
+
+
+def test_clean_removes_failed_and_empty_by_default(repo: Path) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="cl4", goal="x"))  # EMPTY (terminal non-success)
+    assert rec.status == "empty"
+    result = fleet.clean()  # scope="finished" reclaims empty/failed/cancelled/timed_out
+    assert rec.run_id in result.removed
+    assert not Path(rec.worktree).exists()
+
+
+def test_clean_skips_running_run(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl5", goal="x"))
+    fleet.state.update(rec.run_id, status="running")
+    result = fleet.clean(run_ids=[rec.run_id])
+    assert rec.run_id not in result.removed
+    assert any(s["run_id"] == rec.run_id for s in result.skipped)
+    assert Path(rec.worktree).exists()  # a running run is never torn down
+
+
+def test_clean_dry_run_reports_without_removing(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl6", goal="x"))
+    result = fleet.clean(scope="all", dry_run=True)
+    assert result.dry_run and rec.run_id in result.removed
+    assert Path(rec.worktree).exists()  # nothing actually removed
+
+
+def test_clean_older_than_filters_recent_runs(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fresh = fleet.run("writer", TaskSpec(id="cl7fresh", goal="x"))
+    old = fleet.run("writer", TaskSpec(id="cl7old", goal="x"))
+    fleet.state.update(old.run_id, ended_at="2000-01-01T00:00:00+00:00")  # ancient
+    result = fleet.clean(scope="all", older_than_hours=24)
+    assert old.run_id in result.removed and fresh.run_id not in result.removed
+
+
+def test_clean_unknown_scope_raises(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.run("writer", TaskSpec(id="cl8", goal="x"))
+    with pytest.raises(ValueError):
+        fleet.clean(scope="bogus")

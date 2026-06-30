@@ -41,6 +41,7 @@ class RunRecord(BaseModel):
     ended_at: str | None = None
     error: str | None = None
     merged_into: str | None = None  # branch this run was integrated into, once merged
+    commit: str | None = None  # branch tip after commit_run froze the work (for chaining/integrate)
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
     attempts: int = 1  # how many times the backend was run (>1 means a transient failure was retried)
 

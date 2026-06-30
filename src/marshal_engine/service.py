@@ -20,7 +20,9 @@ from .config import ClientConfig, ConfigError, FleetConfig, resolve_model
 from .doctor import run_checks, summarize
 from .fleet import (
     BenchmarkResult,
+    CleanResult,
     CollectResult,
+    CommitResult,
     Fleet,
     IntegrateResult,
     RunRequest,
@@ -295,11 +297,28 @@ class MarshalService:
     def collect_run(self, run_id: str) -> CollectResult:
         return self.fleet.collect_run(run_id)
 
+    def commit_run(self, run_id: str, *, message: str | None = None) -> CommitResult:
+        """Freeze a finished run's work onto its branch so a dependent run can chain off it."""
+        return self.fleet.commit_run(run_id, message=message)
+
     def cancel_run(self, run_id: str) -> RunRecord:
         return self.fleet.cancel_run(run_id)
 
     def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult:
         return self.fleet.integrate(run_id, cleanup=cleanup)
+
+    def clean(
+        self,
+        *,
+        scope: str = "finished",
+        run_ids: list[str] | None = None,
+        older_than_hours: float | None = None,
+        dry_run: bool = False,
+    ) -> CleanResult:
+        """Tear down finished runs' worktrees + branches (the usage ledger is never touched)."""
+        return self.fleet.clean(
+            scope=scope, run_ids=run_ids, older_than_hours=older_than_hours, dry_run=dry_run
+        )
 
     def doctor(self) -> DoctorReport:
         """Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth).
