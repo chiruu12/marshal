@@ -28,8 +28,10 @@ def test_build_service_from_env_config(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     svc = build_service()
-    names = [c.name for c in svc.list_clients()]
-    assert "reviewer" in names
+    # Assert on the PARSED config, not list_clients(): the latter filters out clients whose backend
+    # CLI isn't installed (graceful skip), so a cursor-backed client vanishes on a clean CI runner
+    # that has no cursor-agent. This test's job is "build_service loaded the env-pointed config".
+    assert "reviewer" in svc.config.clients
 
 
 def test_build_service_without_config_starts_with_zero_clients(
@@ -42,7 +44,7 @@ def test_build_service_without_config_starts_with_zero_clients(
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     svc = build_service()
-    assert svc.list_clients() == []
+    assert svc.list_clients().clients == []
     assert "no fleet config" in capsys.readouterr().err
 
 

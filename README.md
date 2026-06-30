@@ -9,34 +9,37 @@ review, route execution to cheaper or specialized workers, isolate each task in 
 worktree, and measure what every routing strategy actually cost.
 
 One driver agent (e.g. Claude Code) plans the work. Marshal spawns and manages a fleet of
-*headless* coding agents - **Cursor CLI, OpenCode, Codex, and Claude Code** today (plus an
-experimental **Google Antigravity** adapter), more behind a single base class - each running
+*headless* coding agents - **Cursor CLI, OpenCode, Codex, Command Code, and Claude Code** today (plus
+an experimental **Google Antigravity** adapter), more behind a single base class - each running
 autonomously in its own isolated git worktree, in parallel. Marshal monitors
 them, collects their diffs, tracks per-provider usage, and hands results back for integration.
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (15 tools):
-  `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`,
-  `get_run`, `collect_run`, `integrate`, `status`, `usage`, `list_workflows`, `run_workflow`.
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (17 tools):
+  `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`,
+  `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`,
+  `list_workflows`, `run_workflow`. One server can target several repos at once - every tool takes an
+  optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
+  add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
   a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
   `marshal-benchmark` (compare routing strategies on a real task), `marshal-workflow` (author
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Status: V1 core complete · pre-1.0 (APIs may change).** The engine, CLI, and MCP server (15
-> tools) work: merge-back (`collect_run` + `integrate`), per-provider cost tracking, capped parallel
-> fan-out (`run_many`), non-blocking `spawn`, `cancel_run`, **declarative YAML workflows**, and a
-> **measured savings benchmark** (`benchmark`/`report` - run one task through N strategies and
-> compare real cost/latency/outcome). OpenCode, Cursor, and Claude Code live-verified (Claude Code
-> with native cost); the Codex adapter verified on a fresh usage window (re-verify pending). See
+> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 17-tool MCP server work end to
+> end: parallel fan-out (`run_many`), non-blocking `spawn` + `cancel_run`, merge-back (`collect_run` +
+> `integrate`), **declarative YAML workflows**, **multi-workspace** (one server, many repos), and a
+> **measured savings benchmark** (`benchmark`/`report`). OpenCode, Cursor, Claude Code, and Command
+> Code are live-verified; Codex too (its **real** per-run cost read back from the provider usage API
+> where available). Cost is always tagged by `source` and never faked. See
 > [`docs/status.md`](docs/status.md).
 
 ## Getting started
 
 **Prerequisites:** Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), git, and the CLI for each
-backend you'll use (`opencode` / `cursor-agent` / `codex` / `claude` / `agy`) - each authenticated
+backend you'll use (`opencode` / `cursor-agent` / `codex` / `command-code` / `claude` / `agy`) - each authenticated
 via its own login. Marshal does **not** install the backend CLIs.
 
 ```bash
@@ -69,11 +72,15 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 
-- **One base class, many backends.** Cursor, OpenCode, Codex, Gemini - adding one is a new adapter,
+- **One base class, many backends.** Cursor, OpenCode, Codex, Command Code, Gemini - adding one is a new adapter,
   not a rewrite. Backend choice is a per-call parameter.
 - **Parallel by default.** Each agent runs in its own git worktree; your main branch stays clean
   until you explicitly integrate.
-- **Per-provider usage tracking.** Token and cost accounting per backend, per client - a `usage`
+- **Per-provider usage tracking.** Token accounting for every backend, plus cost tagged by source:
+  **native** where the provider reports it (OpenCode, Claude Code), real **`admin-api`** cost for
+  Codex routed through EastRouter (read back from its usage API), **estimated** where a model is
+  priced, and `unavailable` otherwise (Cursor, Antigravity, Command Code, and OpenCode on an unpriced
+  custom provider) - never a fake $0. A `usage`
   command most orchestrators don't have. `marshal doctor` also reports each authenticated backend's
   plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
@@ -82,19 +89,28 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 ## What the benchmark gives you
 
 Marshal's headline feature is a **measured** routing comparison, not a guess. Run one task through
-several strategies and `report` derives a source-honest table from each run's recorded facts. An
-example capture - Marshal benchmarking two OpenCode models on a real drafting task:
+several strategies and `report` derives a source-honest table from each run's recorded facts. A real
+run — implementing a `TokenBucket` rate limiter (stdlib, with injectable-clock tests) across four clients:
 
-| strategy | backend | status | cost | source | duration | out tokens |
+| strategy | backend | status | cost | source | duration | in/out tokens |
 |---|---|---|---|---|---|---|
-| `kimi` (opencode-go/kimi-k2.6) | opencode | succeeded | **$0.0111** | native | **14.1s** | 377 |
-| `glm` (opencode-go/glm-5.2) | opencode | succeeded | $0.0214 | native | 38.0s | 1561 |
+| `deepseek` (opencode-go/deepseek-v4-flash) | opencode | succeeded | **$0.0029** | native | **81.8s** | 11.7K / 2.0K |
+| `claude` (claude-sonnet-4-6) | claude-code | succeeded | $0.3374 | native | 121.4s | 17 / 6.8K |
+| `cmdcode` (zai-org/GLM-5.2) | command-code | succeeded | `unavailable` | unavailable | 252.6s | 0 / 0 |
+| `codex-glm` (z-ai/glm-5.1, via EastRouter) | codex | succeeded | `unavailable`\* | unavailable | 283.0s | 231K / 7.8K |
 
-**cheapest:** kimi ($0.0111) · **fastest:** kimi (14.1s)
+**cheapest:** deepseek ($0.0029) · **fastest:** deepseek (81.8s)
 
-Cost is tagged by **source** and never invented: a strategy whose provider reports no cost shows as
-`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. That honesty is the point - you
-route on evidence, not vibes. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
+We then ran each produced solution's tests: `deepseek`, `claude`, and `cmdcode` all passed 6/6 — and
+**`deepseek` did it cheapest, fastest, and correct, for ~1/115th of `claude`'s cost.** `codex-glm`
+burned **231K input tokens** over-exploring a simple task, ran slowest, and shipped code that doesn't
+even import. That's the point: **route on measured evidence, not vibes.**
+
+Cost is tagged by **source** and never invented: a client whose cost can't be attributed shows
+`unavailable` (not `$0`) and is excluded from the `cheapest` ranking. \*In that early run `codex-glm`'s
+16-request, 283s EastRouter session fell past a single `/v1/usage` page, so the ledger honestly
+recorded `unavailable` rather than guess. The reader now **paginates** `/v1/usage` to recover a long
+run's real `admin-api` cost. (See [`examples/benchmark-output.md`](examples/benchmark-output.md).)
 
 ## Workflows
 
@@ -135,7 +151,8 @@ Marshal MCP server  ──  fleet state (file-based)
    ▼
 engine ── base class ─┬─ Cursor adapter
                       ├─ OpenCode adapter
-                      ├─ Codex adapter        →  each runs headless in its own git worktree
+                      ├─ Codex adapter
+                      ├─ Command Code adapter  →  each runs headless in its own git worktree
                       ├─ Claude Code adapter
                       └─ Antigravity adapter
    │

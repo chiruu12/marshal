@@ -6,6 +6,8 @@ injected for tests; in production they come from the registry.
 
 from __future__ import annotations
 
+import sys
+import threading
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,7 +16,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
-from .config import ConfigError, FleetConfig, resolve_model
+from .config import ClientConfig, ConfigError, FleetConfig, resolve_model
 from .doctor import run_checks, summarize
 from .fleet import (
     BenchmarkResult,
@@ -39,6 +41,14 @@ from .workflow import (
 from .workflow import list_workflows as _discover_workflows
 
 
+_WORKER_PREAMBLE = (
+    "You are a headless coding agent in a Marshal fleet, running in an isolated git worktree. "
+    "You cannot ask questions or wait for input - make reasonable decisions and proceed. "
+    "Make all edits inside this worktree only. "
+    "If the repo root has an AGENTS.md, CLAUDE.md, or GEMINI.md, read it first for project conventions."
+)
+
+
 class ClientInfo(BaseModel):
     """A configured client as surfaced to the driver (resolved model, permission as a string)."""
 
@@ -46,6 +56,13 @@ class ClientInfo(BaseModel):
     backend: str
     model: str | None
     permission: str
+
+
+class ClientList(BaseModel):
+    """list_clients() result: the configured clients plus the fleet's driver-facing context."""
+
+    clients: list[ClientInfo]
+    driver_context: str | None = None
 
 
 class DoctorCheck(BaseModel):
@@ -75,6 +92,7 @@ class MarshalService:
         base_dir: Path | str | None = None,
         backends: Mapping[str, CodingAgentBackend] | None = None,
         config_path: Path | str | None = None,
+        run_gate: threading.Semaphore | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path(repo_root)
@@ -83,24 +101,59 @@ class MarshalService:
         if backends is None:
             names = {c.backend for c in config.clients.values()}
             backends = {name: make_backend(name) for name in names}
+        # Keep the FULL backend set on the Fleet (doctor probes every configured backend, even
+        # ones whose CLI is currently unavailable). Partition clients by availability so a missing
+        # CLI skips that client instead of failing mid-run.
+        avail = {name: be.check_available() for name, be in backends.items()}
+        self._clients: dict[str, ClientConfig] = {
+            n: c for n, c in config.clients.items() if avail.get(c.backend, False)
+        }
+        self.skipped_clients: list[str] = [
+            n for n, c in config.clients.items() if not avail.get(c.backend, False)
+        ]
+        for n, c in config.clients.items():
+            if not avail.get(c.backend, False):
+                print(f"marshal: skipping client {n!r} (backend {c.backend!r} CLI unavailable)", file=sys.stderr)
         self.fleet = Fleet(
             repo_root,
             backends,
             base_dir=base_dir,
             worktree_setup=config.worktree_setup,
             retries=RetryPolicy(max_attempts=config.retries + 1),
+            run_gate=run_gate,
         )
 
-    def list_clients(self) -> list[ClientInfo]:
-        return [
-            ClientInfo(
-                name=c.name,
-                backend=c.backend,
-                model=resolve_model(c),
-                permission=c.permission.value,
-            )
-            for c in self.config.clients.values()
-        ]
+    def list_clients(self) -> ClientList:
+        return ClientList(
+            clients=[
+                ClientInfo(
+                    name=c.name,
+                    backend=c.backend,
+                    model=resolve_model(c),
+                    permission=c.permission.value,
+                )
+                for c in self._clients.values()
+            ],
+            driver_context=self.config.context.driver,
+        )
+
+    def client_available(self, client_name: str) -> bool:
+        client = self.config.clients.get(client_name)
+        if client is None:
+            return False
+        backend = self.fleet.backends.get(client.backend)
+        return backend.check_available() if backend is not None else False
+
+    def _compose_goal(self, goal: str) -> str:
+        # Layered context: the worker preamble + the fleet's `worker` context prefix the user's
+        # goal. Everything (run_agent/run_many/spawn/benchmark/workflows) funnels through
+        # _request_for, so this is the single injection point.
+        parts = [_WORKER_PREAMBLE]
+        worker_ctx = self.config.context.worker
+        if worker_ctx:
+            parts.append(worker_ctx.strip())
+        parts.append(goal)
+        return "\n\n".join(parts)
 
     def _request_for(
         self,
@@ -110,16 +163,16 @@ class MarshalService:
         files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
     ) -> RunRequest:
-        client = self.config.clients.get(client_name)
+        client = self._clients.get(client_name)
         if client is None:
-            known = ", ".join(self.config.clients) or "(none configured)"
+            known = ", ".join(self._clients) or "(none configured)"
             raise ValueError(f"no such client: {client_name!r}; known: {known}")
         # `role` is a semantic routing role (planner/coder/reviewer) that a future policy layer maps
         # to a backend - NOT the client name (the client is carried on RunRequest/RunRecord already).
         # Leave it unset until that policy exists, so the field never claims a role nothing assigned.
         task = TaskSpec(
             id=task_id or uuid.uuid4().hex[:8],
-            goal=goal,
+            goal=self._compose_goal(goal),
             context_files=context_files or [],
             files_touched=files_touched or [],
         )
@@ -130,6 +183,7 @@ class MarshalService:
             model=resolve_model(client),
             client=client.name,
             timeout_s=client.timeout_s,
+            usage_api=client.usage_api,
         )
 
     def run_agent(
@@ -149,6 +203,7 @@ class MarshalService:
             model=req.model,
             client=req.client,
             timeout_s=req.timeout_s,
+            usage_api=req.usage_api,
         )
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
@@ -222,8 +277,11 @@ class MarshalService:
             for r in self.fleet.state.list()
             if r.task_id == task_id
         ]
-        # cheapest: only strategies that succeeded AND have a known cost (never an "unavailable" one).
-        priced = [r for r in rows if r.status == "succeeded" and r.source in ("native", "estimated")]
+        # cheapest: only strategies that succeeded AND have a known cost - native, a real provider
+        # admin-api cost (e.g. EastRouter), or an estimate. Never an "unavailable" one.
+        priced = [
+            r for r in rows if r.status == "succeeded" and r.source in ("native", "admin-api", "estimated")
+        ]
         cheapest = min(priced, key=lambda r: r.cost_usd).client if priced else None
         timed = [r for r in rows if r.status == "succeeded" and r.duration_ms > 0]
         fastest = min(timed, key=lambda r: r.duration_ms).client if timed else None

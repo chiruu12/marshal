@@ -16,6 +16,13 @@ from .registry import backend_names, default_backends
 from .state import FleetState
 from .usage import UsageTracker
 from .workflow import load_workflow, validate_workflow, workflow_paths
+from .workspaces import (
+    WorkspaceRegistry,
+    register_workspace,
+    remove_workspace,
+    scaffold_fleet_config,
+    workspaces_file_path,
+)
 
 
 def _cmd_backends(args: argparse.Namespace) -> int:
@@ -56,7 +63,7 @@ def _cmd_usage(args: argparse.Namespace) -> int:
     cps_str = f"${t.cost_per_succeeded:.4f}" if t.cost_per_succeeded is not None else "n/a"
     print(
         f"runs={t.runs}  succeeded={t.succeeded}  cost=${t.cost_usd:.4f} "
-        f"(native ${t.cost_native:.4f} / est ${t.cost_estimated:.4f})"
+        f"(native ${t.cost_native:.4f} / admin-api ${t.cost_admin_api:.4f} / est ${t.cost_estimated:.4f})"
     )
     print(f"  $/run=${t.cost_per_run:.4f}  $/succeeded={cps_str}  in={t.input_tokens} out={t.output_tokens}")
     for backend, v in sorted(s.by_backend.items()):
@@ -120,6 +127,48 @@ def _cmd_workflows(args: argparse.Namespace) -> int:
     return 1 if any(r["error"] for r in rows) else 0
 
 
+def _cmd_workspace(args: argparse.Namespace) -> int:
+    """Manage the central workspace registry (~/.marshal/workspaces.yaml)."""
+    as_json = getattr(args, "json", False)
+    if args.ws_cmd == "add":
+        path = Path(args.path or os.getcwd())
+        # Register first - it validates the name + that the path is an existing dir - so a bad path
+        # errors cleanly instead of scaffolding a stray fleet.config.yaml into nowhere.
+        try:
+            wdef = register_workspace(args.name, path)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        scaffolded = scaffold_fleet_config(wdef.path) if not args.no_scaffold else False
+        if as_json:
+            print(json.dumps({"name": wdef.name, "path": str(wdef.path), "scaffolded": scaffolded}, indent=2))
+            return 0
+        print(f"registered workspace {wdef.name!r} -> {wdef.path}")
+        if scaffolded:
+            print(f"  scaffolded a starter {wdef.config_path.name} (edit it, then `marshal doctor`)")
+        elif not wdef.config_path.exists():
+            print(f"  note: no {wdef.config_path.name} yet (zero clients) - add one or re-run with scaffolding")
+        print(f"  registry: {workspaces_file_path()}")
+        return 0
+
+    if args.ws_cmd == "remove":
+        removed = remove_workspace(args.name)
+        print(f"removed workspace {args.name!r}" if removed else f"no workspace {args.name!r} in the registry")
+        return 0 if removed else 1
+
+    # default: list
+    rows = WorkspaceRegistry.from_env().describe()
+    if as_json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    print(f"registry: {workspaces_file_path()}")
+    for r in rows:
+        flag = " (default)" if r["default"] else ""
+        cfg = f"{r['client_count']} clients" if r["configured"] else "no config"
+        print(f"  {r['name']:14}{flag:10} {cfg:12} {r['path']}")
+    return 0
+
+
 _GLYPH = {OK: "✓", WARN: "⚠", FAIL: "✗"}
 
 
@@ -168,6 +217,17 @@ def main(argv: list[str] | None = None) -> int:
     pw.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     pw.add_argument("--json", action="store_true", help="output JSON")
+    pws = sub.add_parser("workspace", help="manage the workspace registry (~/.marshal/workspaces.yaml)")
+    wsub = pws.add_subparsers(dest="ws_cmd")
+    wadd = wsub.add_parser("add", help="register a repo as a workspace (path defaults to cwd)")
+    wadd.add_argument("name", help="short name to register the repo under")
+    wadd.add_argument("path", nargs="?", default=None, help="repo path (default: current directory)")
+    wadd.add_argument("--no-scaffold", action="store_true", help="don't create a starter fleet.config.yaml")
+    wadd.add_argument("--json", action="store_true", help="output JSON")
+    wls = wsub.add_parser("list", help="list registered workspaces")
+    wls.add_argument("--json", action="store_true", help="output JSON")
+    wrm = wsub.add_parser("remove", help="remove a workspace from the registry")
+    wrm.add_argument("name", help="workspace name to remove")
     sub.add_parser("mcp", help="run the MCP server over stdio")
     args = p.parse_args(argv)
 
@@ -184,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(args)
     if args.cmd == "workflows":
         return _cmd_workflows(args)
+    if args.cmd == "workspace":
+        return _cmd_workspace(args)
     if args.cmd == "mcp":
         try:
             from .mcp_server import main as serve

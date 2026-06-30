@@ -258,6 +258,7 @@ class WorkflowService(Protocol):
     def run_agent(self, client_name: str, goal: str, *, task_id: str | None = None) -> RunRecord: ...
     def collect_run(self, run_id: str) -> CollectResult: ...
     def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult: ...
+    def client_available(self, client_name: str) -> bool: ...
 
 
 class WorkflowRunner:
@@ -290,18 +291,30 @@ class WorkflowRunner:
             if phase.run == "fan_out":
                 goal = render_goal(phase.goal or "", inputs)
                 task_id = f"{workflow_run_id}.{label}"
-                jobs = [{"client": c, "goal": goal, "task_id": task_id} for c in phase.clients]
+                # Skip clients whose backend CLI is unavailable (instead of failing the run).
+                available = [c for c in phase.clients if self.service.client_available(c)]
+                skipped = [c for c in phase.clients if c not in available]
+                if not available:
+                    raise ConfigError(f"phase {idx} ({label}): all clients unavailable")
+                notes = [f"{c}: backend CLI unavailable, skipped" for c in skipped]
+                jobs = [{"client": c, "goal": goal, "task_id": task_id} for c in available]
                 records = self.service.run_many(jobs, max_concurrency=max_concurrency)
                 run_ids = [r.run_id for r in records]
                 runs_by_index[idx] = run_ids
                 for r in records:
                     status_by_run[r.run_id] = r.status
+                    if r.status != "succeeded":
+                        notes.append(f"{r.run_id}: run did not succeed ({r.status})")
+                        next_actions.append(
+                            f"inspect failed run: {r.run_id} (client {r.client}, {r.status})"
+                        )
                 phases.append(
                     PhaseResult(
                         name=phase.name,
                         run=phase.run,
                         run_ids=run_ids,
                         records=[r.model_dump(mode="json") for r in records],
+                        notes=notes,
                     )
                 )
             elif phase.run == "agent":
@@ -311,18 +324,25 @@ class WorkflowRunner:
                 rec = self.service.run_agent(phase.client, goal, task_id=task_id)
                 runs_by_index[idx] = [rec.run_id]
                 status_by_run[rec.run_id] = rec.status
+                notes = []
+                if rec.status != "succeeded":
+                    notes.append(f"{rec.run_id}: run did not succeed ({rec.status})")
+                    next_actions.append(
+                        f"inspect failed run: {rec.run_id} (client {rec.client}, {rec.status})"
+                    )
                 phases.append(
                     PhaseResult(
                         name=phase.name,
                         run=phase.run,
                         run_ids=[rec.run_id],
                         records=[rec.model_dump(mode="json")],
+                        notes=notes,
                     )
                 )
             elif phase.run == "collect":
                 source_ids = runs_by_index[resolve_source(spec, idx)]
                 collected: list[dict[str, Any]] = []
-                notes: list[str] = []
+                notes = []
                 for rid in source_ids:
                     try:
                         cr = self.service.collect_run(rid)

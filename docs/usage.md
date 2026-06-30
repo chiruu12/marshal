@@ -8,6 +8,19 @@ MCP server, as a CLI, or as a Python library.
 > (`collect_run` + `integrate`), capped parallel fan-out (`run_many`), and a measured savings
 > benchmark (`benchmark`/`report`). See [`status.md`](status.md).
 
+## Concepts
+
+| Term | What it is |
+|------|------------|
+| **driver** | The agent (e.g. Claude Code) that plans the work and calls Marshal. It keeps the expensive reasoning. |
+| **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, antigravity). Chosen per call, never global. |
+| **client** | A named worker in `fleet.config.yaml` pinning a backend + model + permission. You route tasks to clients by name. |
+| **run** | One execution of a client on a task; ends `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`. |
+| **worktree** | The isolated git checkout **one run** works in (under `.marshal/worktrees/`). The safety boundary — main is untouched until you integrate. |
+| **workspace** | A **whole repo** the server can target. Distinct from *worktree*: a workspace holds many runs, each in its own worktree. One server can target several workspaces (`list_workspaces`, `workspace=`). |
+| **integrate** | Merge a run's worktree branch back into the target repo's current branch (the only step that touches it). |
+| **workflow** | A declarative YAML recipe that sequences the primitives (fan-out → collect → gated integrate). |
+
 ## Install
 
 New here? Start with **[`../SETUP.md`](../SETUP.md)** for the full clone-to-first-run path:
@@ -36,7 +49,7 @@ defaults:
 
 clients:
   implementer:
-    backend: opencode          # opencode | cursor | codex | claude-code | antigravity
+    backend: opencode          # opencode | cursor | codex | command-code | claude-code | antigravity
     model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model here is rejected
     permission: safe-edit
     secret_ref: env:OPENCODE_API_KEY
@@ -67,6 +80,11 @@ clients:
   **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
   exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
   (a timeout retry just burns another full window). A retried run records its `attempts` count.
+- **Missing backend CLI → the client is skipped, not fatal.** At startup Marshal probes each
+  configured backend's CLI; a client whose CLI is unavailable is **skipped** with a stderr warning
+  (and listed under `skipped_clients`) so the rest of the fleet still runs - a missing CLI never fails
+  a run mid-flight. `marshal doctor` still reports an unavailable backend as a FAIL so you can see
+  what's missing.
 
 ### Permission tiers
 
@@ -84,8 +102,28 @@ Point your driver at `marshal mcp`. Environment:
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `MARSHAL_REPO` | `.` | The repo agents work in. |
-| `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | The fleet config. |
+| `MARSHAL_REPO` | `.` | The repo agents work in (the **default** workspace). |
+| `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | The default workspace's fleet config (scoped to `default` only). |
+| `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | The central registry of extra workspaces (the recommended way). |
+| `MARSHAL_WORKSPACES` | – | Extra workspaces inline: comma/newline-separated `name=/abs/path` entries. |
+| `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | Process-wide cap on concurrent agent runs across all workspaces. |
+
+**Multiple repos from one server.** Declare them in `~/.marshal/workspaces.yaml` (or the inline
+`MARSHAL_WORKSPACES` env). The file is the canonical "all config" for the registry:
+
+```yaml
+# ~/.marshal/workspaces.yaml
+max_concurrent: 8            # optional global cap
+workspaces:
+  frontend: /abs/path/to/web
+  backend:  /abs/path/to/api
+```
+
+Each workspace loads its **own** `<repo>/fleet.config.yaml` (clients travel with the repo). Every
+tool takes an optional `workspace` param (see `list_workspaces`); the run-handle tools take it as a
+hint. Add a repo with `marshal workspace add <name> [path]` or the `add_workspace` tool - it appears
+**without reconnecting** the server. With no file and no `MARSHAL_WORKSPACES`, it's the single-repo
+server it always was.
 
 Example Claude Code MCP entry. A bare `uv sync` does not put a `marshal` command on your PATH, so
 invoke it through uv with the absolute path to your Marshal checkout (or run `uv tool install .`
@@ -108,8 +146,15 @@ first to use a bare `"command": "marshal"`). Run `marshal doctor` before wiring 
 
 Tools exposed to the driver:
 
+Every action/query tool below takes an optional `workspace` (a name from `list_workspaces`); the
+run-handle tools (`get_run`/`collect_run`/`cancel_run`/`integrate`) take it as a hint. Omit it for
+the default workspace.
+
 | Tool | Purpose |
 |------|---------|
+| `list_workspaces()` | List the repos this server can target (name, path, configured, client_count). |
+| `add_workspace(name, path, scaffold?)` | Register a repo in the central registry; usable immediately (no reconnect). |
+| `doctor()` | Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth); read-only. Run it before spawning. |
 | `list_clients` | List configured clients (name, backend, model, permission). |
 | `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
 | `run_many(jobs, max_concurrency?)` | Run several `{client, goal}` jobs in parallel, each in its own worktree; returns all records. |
@@ -117,9 +162,9 @@ Tools exposed to the driver:
 | `cancel_run(run_id)` | Stop a running agent (process-group `SIGTERM`); returns the updated record. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
-| `get_run(run_id)` | Fetch one run record. |
-| `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). |
-| `integrate(run_id, cleanup?)` | Merge a run's worktree branch into the current branch; reports conflicts. |
+| `get_run(run_id)` | Fetch one run record (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`). |
+| `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). Review before integrating. |
+| `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
 | `status()` | List all runs with status + cost. |
 | `usage()` | Per-provider usage summary (totals + by backend/client/model). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. |
@@ -128,12 +173,15 @@ Tools exposed to the driver:
 ## Use it as a CLI
 
 ```bash
-marshal doctor       # preflight: check the setup is ready to run agents
-marshal backends     # list backends and availability
-marshal status       # list fleet runs
-marshal usage        # per-provider usage summary
-marshal workflows    # list + validate workflow recipes against the config
-marshal mcp          # run the MCP server over stdio
+marshal doctor             # preflight: check the setup is ready to run agents
+marshal backends           # list backends and availability
+marshal status             # list fleet runs
+marshal usage              # per-provider usage summary
+marshal workflows          # list + validate workflow recipes against the config
+marshal workspace list     # show the workspace registry
+marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.yaml; path defaults to cwd)
+marshal workspace remove <name>      # drop a workspace from the registry
+marshal mcp                # run the MCP server over stdio
 ```
 
 The CLI is **inspection-only** (doctor/backends/status/usage/workflows) plus `mcp`. You *run* agents
@@ -231,7 +279,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 
 ```
 .marshal/
-├── worktrees/<task>.<backend>/   # isolated checkout per run (kept until you integrate)
+├── worktrees/<task>.<backend>.<id>/   # isolated checkout per run (kept until you integrate)
 ├── runs/<run_id>.json            # one file per run: status + cost (single writer per run)
 └── usage/
     ├── events.jsonl              # one line per run
@@ -242,10 +290,11 @@ driver's playbook for authoring and running them; starter templates live in `exa
 
 | Backend | Edits | Usage in output | Notes |
 |---------|-------|-----------------|-------|
-| OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub. |
+| OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. |
 | Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. |
-| Codex | yes | best-effort | `workspace-write` sandbox for safe-edit. |
-| Antigravity | reply-only today | no | Headless writes currently divert to a scratch dir. |
+| Codex | yes | best-effort | `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
+| Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan`/`auto-accept` for read-only/safe-edit. |
+| Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)

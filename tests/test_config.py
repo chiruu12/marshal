@@ -11,6 +11,7 @@ from marshal_engine.config import (
     ClientConfig,
     ConfigError,
     FleetConfig,
+    FleetContext,
     load_config,
     resolve_model,
     validate,
@@ -150,3 +151,27 @@ def test_missing_secret_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     warnings = validate(cfg)
     assert any("not set" in w for w in warnings)
+
+
+def test_context_block_parses_into_fleet_context(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        _YAML
+        + "\ncontext:\n"
+        "  worker: Prefer small commits.\n"
+        "  driver: Fleet runs review + impl.\n"
+    )
+    cfg = load_config(p)
+    assert cfg.context == FleetContext(
+        worker="Prefer small commits.", driver="Fleet runs review + impl."
+    )
+
+
+def test_context_absent_yields_none_fields(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)  # no context block
+    cfg = load_config(p)
+    assert cfg.context.worker is None
+    assert cfg.context.driver is None
+    # and the default-constructed FleetConfig is also empty
+    assert FleetConfig().context == FleetContext(worker=None, driver=None)

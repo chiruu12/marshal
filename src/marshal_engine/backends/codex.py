@@ -13,8 +13,9 @@ Invocation reference (codex-cli 0.138.0):
     {"type":"turn.failed","error":{"message":"..."}}
     {"type":"error","message":"..."}
 
-The success-path message/token events are parsed best-effort below and should be
-re-verified against a live *successful* run (the probe account had hit its usage limit).
+The success-path schema is confirmed from a live *successful* run via an OpenAI-compatible
+provider, which emitted `thread.started`, `item.completed` (agent_message), and `turn.completed`
+with a `usage` object; the parser below extracts text and tokens correctly.
 The shared runner closes stdin, so Codex's "reading from stdin" path hits EOF immediately
 rather than blocking.
 """
@@ -116,7 +117,7 @@ class CodexBackend(CodingAgentBackend):
                     error_msg = err.get("message") or error_msg
                 error_msg = error_msg or ev.get("message")
             else:
-                # best-effort success-path extraction (re-verify schema against a live run)
+                # success-path extraction (schema confirmed from a live successful run)
                 txt = _extract_text(ev)
                 if txt:
                     text_parts.append(txt)

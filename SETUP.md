@@ -25,6 +25,7 @@ backend you intend to use. Each one manages its *own* login; Marshal just shells
 | **codex** | install the OpenAI Codex CLI | `codex login` (ChatGPT account) or set `OPENAI_API_KEY` |
 | **antigravity** | install the Antigravity CLI (`agy`) | complete its OAuth login |
 | **claude-code** | install Claude Code (`claude`) | `claude` subscription or `ANTHROPIC_API_KEY` |
+| **command-code** | install the Command Code CLI (`command-code`) | its hosted account login (`~/.commandcode/config.json`) |
 
 You only need the backends your `fleet.config.yaml` references. One is enough to start.
 
@@ -105,12 +106,39 @@ You can also list every backend and its availability with `uv run marshal backen
 
 ## 5. Wire Marshal into Claude Code (MCP)
 
-Marshal exposes its tools over an MCP server (`marshal mcp`, stdio). It reads two env vars:
+Marshal exposes its tools over an MCP server (`marshal mcp`, stdio). It reads these env vars:
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `MARSHAL_REPO` | `.` | the repo agents work in |
-| `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | the fleet config |
+| `MARSHAL_REPO` | `.` | the repo agents work in (the **default** workspace) |
+| `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | the default workspace's fleet config |
+| `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | the central registry of extra repos (recommended) |
+| `MARSHAL_WORKSPACES` | – | extra repos inline (`name=/abs/path`, comma/newline) |
+| `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | cap on concurrent agent runs across all workspaces |
+
+**Multiple repos from one server.** Marshal can target several repos at once, each fully isolated
+(own `fleet.config.yaml`, own worktrees, own ledger). Declare them once in the central registry:
+
+```yaml
+# ~/.marshal/workspaces.yaml
+max_concurrent: 8
+workspaces:
+  frontend: /abs/path/to/web
+  backend:  /abs/path/to/api
+```
+
+**Onboarding a new project is one command** - from the new repo:
+
+```bash
+marshal workspace add backend          # path defaults to the current dir; scaffolds fleet.config.yaml
+```
+
+That scaffolds a starter `fleet.config.yaml` (edit in your clients), registers the repo in
+`~/.marshal/workspaces.yaml`, and - because the running server hot-reloads the file - the driver sees
+it **without a reconnect**. The driver can also register one itself via the `add_workspace` tool, and
+discovers all of them with `list_workspaces`. Pass the name on any tool: `run_agent(...,
+workspace="backend")`; omitting it uses the default. (`marshal workspace list` / `remove` round it
+out.) With no registry file and no `MARSHAL_WORKSPACES`, the server is single-repo exactly as before.
 
 ### Option A - install the Claude Code plugin (one step)
 

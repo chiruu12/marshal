@@ -212,10 +212,17 @@ class WorktreeManager:
         return branch
 
     def has_unmerged_commits(self, branch: str, target: str) -> bool:
-        """True if `branch` has commits not reachable from `target` (work awaiting merge)."""
+        """True if `branch` has commits not reachable from `target` (work awaiting merge).
+
+        Raises on a git error rather than returning False: integrate uses this to decide "empty",
+        and a silent False there would report "empty" (and drop committed work) when we actually
+        cannot tell. Failing here surfaces as integrate's "error" status - never a false "empty".
+        """
         proc = self._git("rev-list", "--count", f"{target}..{branch}")
         if proc.returncode != 0:
-            return False
+            raise WorktreeError(
+                f"could not count unmerged commits {target}..{branch}: {proc.stderr.strip()}"
+            )
         return proc.stdout.strip() not in ("", "0")
 
     def branch_tip(self, branch: str) -> str:

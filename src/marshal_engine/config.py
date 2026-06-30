@@ -31,10 +31,28 @@ class ClientConfig(BaseModel):
     permission: PermissionMode = PermissionMode.SAFE_EDIT
     timeout_s: int = 600
     secret_ref: str | None = None
+    # Optional provider usage-API to read REAL cost from after a run (e.g. "eastrouter"). When set,
+    # the fleet fetches the actual charge for the run and reports cost as admin-api instead of an
+    # estimate. Unset = price from the local table (or unavailable). See eastrouter.py.
+    usage_api: str | None = None
+
+
+class FleetContext(BaseModel):
+    """Fleet-wide layered context.
+
+    `worker` is prepended to every worker agent's goal (shared operating assumptions); `driver` is
+    surfaced back to the driver (e.g. over MCP) so it knows how the fleet is configured to behave.
+    """
+
+    worker: str | None = None
+    driver: str | None = None
 
 
 class FleetConfig(BaseModel):
     clients: dict[str, ClientConfig] = {}
+    # Fleet-wide layered context: `worker` prefixes every worker goal; `driver` is shown to the
+    # driver. See FleetContext.
+    context: FleetContext = FleetContext()
     # Optional command run once in each fresh worktree before the agent starts (e.g. to provision a
     # venv). None = no setup step. Repo-wide, not per-client - it sets up the checkout, not a run.
     worktree_setup: list[str] | None = None
@@ -65,13 +83,23 @@ def load_config(path: Path | str) -> FleetConfig:
             permission=PermissionMode(str(merged.get("permission", "safe-edit"))),
             timeout_s=int(merged.get("timeout_s", 600)),
             secret_ref=str(merged["secret_ref"]) if merged.get("secret_ref") else None,
+            usage_api=str(merged["usage_api"]) if merged.get("usage_api") else None,
         )
         # Enforce the Fireworks guard at LOAD so an invalid config can't be built via any entry
         # point (CLI / library / MCP), not only the MCP path that happens to call validate().
         _reject_fireworks(client)
         clients[name] = client
+    # Fleet-wide layered context (tolerate it being absent or not a mapping). `worker` prefixes
+    # every worker goal; `driver` is surfaced to the driver.
+    ctx_raw = raw.get("context")
+    ctx_raw = ctx_raw if isinstance(ctx_raw, dict) else {}
+    context = FleetContext(
+        worker=str(ctx_raw["worker"]) if ctx_raw.get("worker") else None,
+        driver=str(ctx_raw["driver"]) if ctx_raw.get("driver") else None,
+    )
     return FleetConfig(
         clients=clients,
+        context=context,
         worktree_setup=_parse_setup(raw.get("worktree_setup")),
         retries=_parse_retries(raw.get("retries")),
     )

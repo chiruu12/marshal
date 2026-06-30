@@ -65,3 +65,23 @@ def test_ci_matrix_tests_the_minimum_supported_python() -> None:
     # CLAUDE.md / pyproject pin Python >= 3.11; the floor must actually be exercised in CI.
     matrix = _load(_CI)["jobs"]["gate"]["strategy"]["matrix"]["python-version"]
     assert "3.11" in matrix
+
+
+def test_ci_matrix_exercises_macos() -> None:
+    # The engine's process-group logic (killpg/start_new_session/worktrees) is POSIX-specific;
+    # macOS (the dev platform) must be exercised, not only Linux.
+    matrix = _load(_CI)["jobs"]["gate"]["strategy"]["matrix"]
+    oses = list(matrix.get("os", [])) + [inc.get("os") for inc in matrix.get("include", [])]
+    assert any("macos" in (o or "") for o in oses), oses
+
+
+def test_ci_enforces_a_coverage_floor() -> None:
+    # A coverage gate must run in CI so an untested regression fails the build, not slips through.
+    runs = " ".join(step.get("run") or "" for step in _steps(_load(_CI)))
+    assert "--cov-fail-under" in runs
+
+
+def test_release_enforces_a_coverage_floor() -> None:
+    # The release gate matches CI: never cut a release under the coverage floor.
+    runs = " ".join(step.get("run") or "" for step in _steps(_load(_RELEASE)))
+    assert "--cov-fail-under" in runs

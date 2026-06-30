@@ -124,3 +124,51 @@ def test_workflows_none_present(tmp_path: Path, capsys: pytest.CaptureFixture[st
     ret = cli.main(["workflows", "--repo", str(repo)])
     assert ret == 0
     assert "no workflows" in capsys.readouterr()[0]
+
+
+# --- workspace registry subcommand ----------------------------------------------------------
+
+
+def test_workspace_add_list_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    monkeypatch.setenv("MARSHAL_REPO", str(tmp_path))
+    monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(tmp_path / "w.yaml"))
+
+    assert cli.main(["workspace", "add", "alpha", str(repo)]) == 0
+    assert (repo / "fleet.config.yaml").exists()  # scaffolded by default
+    assert "registered workspace 'alpha'" in capsys.readouterr()[0]
+
+    assert cli.main(["workspace", "list"]) == 0
+    out = capsys.readouterr()[0]
+    assert "alpha" in out and "default" in out
+
+    assert cli.main(["workspace", "remove", "alpha"]) == 0
+    assert "removed workspace 'alpha'" in capsys.readouterr()[0]
+    assert cli.main(["workspace", "remove", "alpha"]) == 1  # already gone -> nonzero
+    assert "no workspace" in capsys.readouterr()[0]
+
+
+def test_workspace_add_json_and_no_scaffold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    monkeypatch.setenv("MARSHAL_REPO", str(tmp_path))
+    monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(tmp_path / "w.yaml"))
+
+    assert cli.main(["workspace", "add", "alpha", str(repo), "--no-scaffold", "--json"]) == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["name"] == "alpha" and data["scaffolded"] is False
+    assert not (repo / "fleet.config.yaml").exists()  # --no-scaffold honored
+
+
+def test_workspace_bare_lists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MARSHAL_REPO", str(tmp_path))
+    monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(tmp_path / "w.yaml"))
+    assert cli.main(["workspace"]) == 0  # no subcommand -> lists, must not crash
+    assert "default" in capsys.readouterr()[0]

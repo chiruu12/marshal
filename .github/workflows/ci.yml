@@ -15,12 +15,18 @@ permissions:
 
 jobs:
   gate:
-    name: gate (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: gate (${{ matrix.os }} py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: ["ubuntu-latest"]
         python-version: ["3.11", "3.12", "3.13"]
+        # Also exercise the POSIX process-group logic (killpg / start_new_session / worktrees) on
+        # macOS, the platform Marshal is developed on, for one Python version.
+        include:
+          - os: "macos-latest"
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v7
 
@@ -33,8 +39,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --extra mcp --extra dev
 
-      - name: Tests
-        run: uv run pytest -q
+      - name: Tests (with coverage gate)
+        run: uv run pytest -q --cov=marshal_engine --cov-report=term-missing --cov-fail-under=90
 
       - name: Lint (ruff)
         run: uv run ruff check src tests

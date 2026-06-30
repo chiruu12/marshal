@@ -24,10 +24,16 @@ playbook runs one goal through N strategies and compares them.
 3. `report(task_id)` re-derives the same comparison later from the ledger (read-only) - reproducible
    and auditable.
 
+> **Multi-workspace:** `benchmark` and `report` are scoped to one workspace, and `task_id`s are
+> per-workspace. If you benchmark with `workspace=<name>`, pass the **same** `workspace` to
+> `report(task_id, workspace=<name>)` - otherwise it reads the wrong repo's ledger and finds nothing.
+
 ## Read it honestly
-- Check `source` on each row. `native` = the backend reported the cost; `estimated` = computed from
-  tokens via the price table (only as good as the table - keep it current); `unavailable` = unknown
-  (e.g. Cursor without the Admin API, or an unpriced model). Never read an `unavailable` `$0` as free.
+- Check `source` on each row. `native` = the backend reported the cost; `admin-api` = the **real**
+  charge read back from a provider usage API (e.g. EastRouter) - also ground truth; `estimated` =
+  computed from tokens via the price table (only as good as the table - keep it current);
+  `unavailable` = unknown (e.g. Cursor without the Admin API, or an unpriced model). Never read an
+  `unavailable` `$0` as free.
 - The benchmark measures cost, latency, and outcome **status** - not correctness. A cheapest strategy
   can still produce worse code. Review the diffs (`collect_run`) before drawing conclusions.
 - `empty` / `failed` strategies still cost tokens; they appear in per-run cost but are excluded from

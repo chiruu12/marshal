@@ -28,7 +28,13 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0"]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "types-PyYAML>=6"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6",
+    "pytest-cov>=5",
+]
 
 [project.scripts]
 marshal = "marshal_engine.cli:main"
@@ -65,3 +71,14 @@ ignore_missing_imports = true
 # duplicate test modules and collection explodes.
 testpaths = ["tests"]
 norecursedirs = ["marshal-runs", ".marshal", ".venv", "tmp", "build", "dist"]
+
+# Coverage is opt-in via a flag (CI passes --cov) so a bare local `pytest -q` stays fast; this
+# block just configures what gets measured and how it's reported when the flag is on.
+[tool.coverage.run]
+source = ["src/marshal_engine"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+# The whole package is measured; the floor is enforced in CI via --cov-fail-under (see ci.yml).
+precision = 0

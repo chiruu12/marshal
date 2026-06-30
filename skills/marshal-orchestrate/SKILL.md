@@ -16,7 +16,29 @@ own git worktree. Your job is to decide *who works, on what, with how much conte
 result was worth keeping.* Marshal is exposed as MCP tools; the loop is **plan → spawn → monitor →
 collect → integrate.**
 
+## Targeting a workspace (when the server has more than one repo)
+One Marshal server can be wired to several repos at once. Call `list_workspaces` first to see them
+(name, path, `configured`, `client_count`). **Every action tool takes an optional `workspace`** -
+pass a name to target that repo; omit it to use the default (primary) workspace. Workspaces are
+fully isolated: each has its own clients (`list_clients(workspace=…)`), its own worktrees, its own
+run ledger.
+- Each run record you get back carries a `workspace` field. When you later `collect_run`,
+  `integrate`, or `cancel_run`, pass that same `workspace` so the call routes to the right repo (it
+  still resolves correctly if you omit it - the id is looked up across workspaces).
+- `status()` with no `workspace` lists runs across **all** workspaces (each tagged); pass a name to
+  scope to one.
+- Don't mix repos in a single `run_many` - issue one `run_many` per workspace.
+- Need a repo that isn't registered yet? `add_workspace(name, path, scaffold?)` registers it in the
+  central `~/.marshal/workspaces.yaml` and it's usable immediately (no reconnect). Pass
+  `scaffold=true` to drop a starter `fleet.config.yaml` if the repo has none; then check
+  `list_clients(workspace=name)` and have the user fill in clients before routing real work.
+
+If `list_workspaces` shows only `default`, ignore all of this: it behaves exactly like the
+single-repo server.
+
 ## 0. Know your clients
+Optionally run `doctor` first (read-only) to confirm the backends you'll use are installed +
+authenticated — catching a missing/unauthenticated CLI up front beats discovering it from a failed run.
 Call `list_clients` to see the configured workers (name, backend, model, permission). Each client is
 a routing choice the user set up (a cheap bulk worker, a careful reviewer, etc.). You route tasks to
 clients **by name** - you never choose backends directly. To decide *which* client a task should go
@@ -71,11 +93,13 @@ this step.
 
 ## Cost
 `usage()` shows per-provider cost (totals and by backend/client/model, with `$/run` and
-`$/succeeded`). Every figure is tagged by `source` (native / estimated / unavailable) - never treat
-an estimate as ground truth. To compare routing strategies head-to-head on a real task, use the
+`$/succeeded`). Every figure is tagged by `source` (native / admin-api / estimated / unavailable) -
+never treat an estimate (or an `unavailable` `$0`) as ground truth. To compare routing strategies head-to-head on a real task, use the
 **marshal-benchmark** skill.
 
 ## Invariants to respect
+- When several repos are wired, pick the right `workspace` per call; a run integrates into **its own**
+  workspace's repo, never another.
 - Workers are headless - prompts must be self-sufficient (no questions are possible).
 - Review diffs before integrating; `succeeded` is not `correct`.
 - Keep tasks independent to avoid merge conflicts; sequence dependent work in rounds.

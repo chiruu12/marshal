@@ -8,6 +8,7 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import sys
@@ -22,6 +23,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
+from .eastrouter import CostResolver, default_cost_resolvers
 from .pricing import PriceTable, PricingError
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
@@ -32,6 +34,12 @@ from .worktree import Worktree, WorktreeError, WorktreeManager
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _still_running(rec: RunRecord) -> bool:
+    """update_if predicate: stamp a terminal status only if the run hasn't already reached one
+    (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
+    return rec.status == RunStatus.RUNNING.value
 
 
 def _load_default_prices() -> PriceTable:
@@ -92,8 +100,8 @@ class BenchmarkResult(BaseModel):
     """Same task run through N strategies, compared on measured cost/latency/outcome (derived).
 
     `cheapest`/`fastest` name the winning client among *comparable* strategies only - succeeded,
-    and (for cheapest) with a known cost (native/estimated, never `unavailable`). None when no
-    strategy qualifies. The per-strategy rows carry `source` so an estimate is never read as truth.
+    and (for cheapest) with a known cost (native/admin-api/estimated, never `unavailable`). None when
+    no strategy qualifies. The per-strategy rows carry `source` so an estimate is never read as truth.
     """
 
     task_id: str
@@ -112,6 +120,7 @@ class RunRequest(BaseModel):
     model: str | None = None
     client: str | None = None
     timeout_s: int = 600
+    usage_api: str | None = None  # provider usage-API for real cost (e.g. "eastrouter"); see eastrouter.py
 
 
 class Fleet:
@@ -125,6 +134,8 @@ class Fleet:
         worktree_setup: list[str] | None = None,
         retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
+        cost_resolvers: Mapping[str, CostResolver] | None = None,
+        run_gate: threading.Semaphore | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
@@ -135,15 +146,30 @@ class Fleet:
         self.usage = UsageTracker(base / "usage")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()
+        # Provider usage-API resolvers (keyed by a client's `usage_api`) that backfill REAL cost from a
+        # provider's ledger after a run. Injectable for tests; defaults to the built-ins (EastRouter).
+        self.cost_resolvers: dict[str, CostResolver] = (
+            dict(cost_resolvers) if cost_resolvers is not None else default_cost_resolvers()
+        )
         # Retry only transient (infra/transport) failures. Default off so a bare Fleet behaves
         # exactly as before; the service turns it on from config (see MarshalService).
         self.retries = retries if retries is not None else RetryPolicy()
+        # Optional PROCESS-WIDE cap on concurrent agent runs. One Fleet per repo caps its own
+        # fan-out (run_many pool, spawn pool), but a multi-workspace server runs N Fleets - so the
+        # MCP layer shares ONE semaphore across all of them to bound total agent processes (each
+        # CLI is 150-400 MB). None = uncapped here (a single-repo Fleet keeps its prior behavior).
+        self._run_gate = run_gate
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
+        # integrate() commits + merges in the SHARED repo checkout; serialize it so two concurrent
+        # integrates can't race git's index.lock and leave the repo mid-merge.
+        self._integrate_lock = threading.Lock()
         # Persistent pool for non-blocking spawn(); lives as long as this Fleet (i.e. the long-lived
-        # MCP server) so background runs outlive the driver turn that started them.
+        # MCP server) so background runs outlive the driver turn that started them. Guard its lazy
+        # init so concurrent first spawns don't build two pools (one would leak, undrained).
         self._bg: ThreadPoolExecutor | None = None
+        self._bg_lock = threading.Lock()
         self._bg_max = 4
 
     def run(
@@ -155,6 +181,7 @@ class Fleet:
         model: str | None = None,
         client: str | None = None,
         timeout_s: int = 600,
+        usage_api: str | None = None,
         ts: str | None = None,
         cleanup: bool = False,
     ) -> RunRecord:
@@ -166,6 +193,7 @@ class Fleet:
             model=model,
             client=client,
             timeout_s=timeout_s,
+            usage_api=usage_api,
         )
         run_id, wt, started = self._start(req, ts)
         return self._execute(req, run_id, wt, started, cleanup=cleanup)
@@ -178,7 +206,15 @@ class Fleet:
         the driver turn that started them. The driver polls for the terminal status.
         """
         run_id, wt, started = self._start(request, ts)
-        self._executor().submit(self._execute_bg, request, run_id, wt, started)
+        try:
+            self._executor().submit(self._execute_bg, request, run_id, wt, started)
+        except RuntimeError as exc:
+            # The pool was shut down between _start and submit; don't strand a RUNNING record.
+            self.state.update(
+                run_id, status=RunStatus.FAILED.value, ended_at=_now(),
+                error=f"spawn: executor unavailable: {exc}",
+            )
+            raise
         return run_id
 
     def spawn_many(self, requests: list[RunRequest], *, ts: str | None = None) -> list[str]:
@@ -193,7 +229,11 @@ class Fleet:
 
     def _executor(self) -> ThreadPoolExecutor:
         if self._bg is None:
-            self._bg = ThreadPoolExecutor(max_workers=self._bg_max, thread_name_prefix="marshal-spawn")
+            with self._bg_lock:
+                if self._bg is None:
+                    self._bg = ThreadPoolExecutor(
+                        max_workers=self._bg_max, thread_name_prefix="marshal-spawn"
+                    )
         return self._bg
 
     def _start(self, req: RunRequest, ts: str | None) -> tuple[str, Worktree, str]:
@@ -242,9 +282,15 @@ class Fleet:
                 timeout_s=req.timeout_s,
                 on_pid=_record_pid,
             )
-            result, attempts = self._run_with_retries(backend, req.task, opts, run_id)
+            # Hold a slot for the agent run (the heavy, memory-hungry part) - including any transient
+            # retry backoff, since the run is still in flight. Worktree creation/provision in _start
+            # already happened outside the slot; a no-op context when ungated.
+            gate = self._run_gate if self._run_gate is not None else contextlib.nullcontext()
+            with gate:
+                result, attempts = self._run_with_retries(backend, req.task, opts, run_id)
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
-            self._price_usage(usage, req.model)      # normalize cost + source
+            self._price_usage(usage, req.model)      # normalize cost + source (estimate/unavailable)
+            self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
             event = UsageEvent.from_result(
                 result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
@@ -252,8 +298,13 @@ class Fleet:
             )
             event.status = status.value              # report the authoritative outcome (incl. EMPTY)
             self.usage.record(event)
-            record = self.state.update(
+            # Stamp the terminal record ONLY if the run is still running, so a `cancel_run` that
+            # already marked it `cancelled` (the common cancel-wins-first race) is preserved rather
+            # than clobbered by this thread returning from the SIGTERM-killed subprocess. The usage
+            # event above is the immutable spend record regardless; this is the lifecycle status.
+            record = self.state.update_if(
                 run_id,
+                _still_running,
                 status=status.value,
                 cost_usd=event.cost_usd,
                 input_tokens=event.input_tokens,
@@ -266,8 +317,11 @@ class Fleet:
                 attempts=attempts,
             )
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
-            # Terminal-stamp the record before re-raising, so one failure can't leave a zombie.
-            self.state.update(run_id, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}")
+            # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
+            # only if still running, so a concurrent cancel's terminal status wins.
+            self.state.update_if(
+                run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}"
+            )
             raise
 
         if cleanup:
@@ -380,6 +434,33 @@ class Fleet:
             usage.cost_usd = est
             usage.source = UsageSource.ESTIMATED
 
+    def _apply_external_cost(self, usage: UsageRecord | None, req: RunRequest, *, start_iso: str) -> None:
+        """Override cost with the REAL charge from a provider usage-API, when the client opts in.
+
+        Runs after `_price_usage`: if the client declares a `usage_api` (e.g. "eastrouter") and the
+        provider can attribute an actual cost to this run, replace the estimate with that real cost
+        (`source = admin-api`). A failure or an unattributable run is a no-op - the estimate/unavailable
+        cost stands. This must NEVER raise: a completed run is done, cost reconciliation is best-effort.
+        """
+        if usage is None or not req.usage_api:
+            return
+        resolver = self.cost_resolvers.get(req.usage_api)
+        if resolver is None:
+            return
+        try:
+            ext = resolver(
+                model=req.model,
+                start_iso=start_iso,
+                end_iso=_now(),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+        except Exception:  # noqa: BLE001 - external cost lookup must never break a finished run
+            return
+        if ext is not None:
+            usage.cost_usd = ext.cost_usd
+            usage.source = ext.source
+
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
         """A clean exit that produced no work (no text, no file changes) is EMPTY, not success."""
         if result.status is not RunStatus.SUCCEEDED:
@@ -421,11 +502,12 @@ class Fleet:
                 os.killpg(rec.pid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
                 pass  # already exited
-        # Re-read: the run may have finished between the check and the kill.
-        after = self.state.get(run_id)
-        if after is not None and after.status == "running":
-            return self.state.update(run_id, status="cancelled", ended_at=_now())
-        return after if after is not None else rec
+        # Stamp cancelled ONLY if the run is still running - update_if does the re-check and the
+        # write atomically under the per-run lock, so a run that finished (succeeded/failed) between
+        # the kill and now is never overwritten with "cancelled".
+        return self.state.update_if(
+            run_id, lambda r: r.status == "running", status="cancelled", ended_at=_now()
+        )
 
     def integrate(
         self, run_id: str, *, message: str | None = None, cleanup: bool = False
@@ -437,7 +519,26 @@ class Fleet:
         repo left clean), "blocked" (target dirty/colliding or detached HEAD - fix it and retry),
         or "empty" (nothing to integrate). The blocked/conflict commit stays on the branch, so a
         retry after fixing the target re-merges it instead of reporting "empty".
+
+        Serialized per Fleet (it commits + merges in the shared repo checkout, so two concurrent
+        integrates would race git's index.lock and could leave the repo mid-merge).
         """
+        with self._integrate_lock:
+            return self._integrate_locked(run_id, message=message, cleanup=cleanup)
+
+    def _integrate_locked(
+        self, run_id: str, *, message: str | None = None, cleanup: bool = False
+    ) -> IntegrateResult:
+        rec = self.state.get(run_id)
+        if rec is not None and rec.status == RunStatus.RUNNING.value:
+            # Never commit a still-running agent's half-written files into the user's branch; the
+            # run must reach a terminal state first. Recoverable -> "blocked" (wait, then retry).
+            return IntegrateResult(
+                run_id=run_id,
+                status="blocked",
+                branch=rec.branch,
+                message="run is still in progress; wait for it to finish before integrating",
+            )
         wt = self._worktree_for(run_id)
         if not wt.branch:
             raise ValueError(f"run {run_id!r} has no branch to integrate")
@@ -447,18 +548,19 @@ class Fleet:
             return IntegrateResult(run_id=run_id, status="blocked", branch=wt.branch, message=str(exc))
 
         try:
-            changed = self.worktrees.changed_files(wt)
             commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
             # "empty" only when the worktree is clean AND the branch has no commits past target.
             # (A prior blocked/conflict already committed the work, so a retry still has work to merge.)
             if commit is None and not self.worktrees.has_unmerged_commits(wt.branch, target):
                 return IntegrateResult(run_id=run_id, status="empty", branch=wt.branch)
+            # Report the FULL set of files this branch lands - every commit past the merge-base, not
+            # just the last uncommitted delta (an agent may have self-committed). Computed BEFORE the
+            # merge, since afterwards target...branch is empty.
+            changed = self.worktrees.merged_diff_files(wt.branch, target)
             if commit is None:
                 # retry: a prior blocked/conflict attempt already committed the work, so the
-                # worktree is clean now. Report what the branch actually lands, not the empty
-                # worktree state. (Compute before the merge - afterwards target..branch is empty.)
+                # worktree is clean now - report the branch tip it lands.
                 commit = self.worktrees.branch_tip(wt.branch)
-                changed = self.worktrees.merged_diff_files(wt.branch, target)
             merge = self.worktrees.merge(wt.branch)
         except WorktreeError as exc:
             # a git op failed in a way we can't classify as cleanly recoverable (commit failure,

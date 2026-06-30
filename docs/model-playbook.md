@@ -9,9 +9,10 @@ Two rules before the tables:
 1. **Route by task weight, not habit.** Heavy reasoning → a frontier model; mechanical bulk → a
    small fast one. Paying Opus rates to rename a variable is waste; asking Haiku to redesign an
    architecture is rework you'll pay for twice.
-2. **Measure, don't guess.** Model "strength" shifts release to release and varies by task. Run
-   `marshal benchmark "<goal>" client_a client_b ...` to put the same task through several clients
-   and compare *real* cost / latency / outcome from the ledger. Treat the tiers below as sensible
+2. **Measure, don't guess.** Model "strength" shifts release to release and varies by task. Have the
+   driver call the `benchmark` tool — `benchmark("<goal>", ["client_a", "client_b"])` — to put the
+   same task through several clients and compare *real* cost / latency / outcome from the ledger.
+   Treat the tiers below as sensible
    defaults to benchmark against — not gospel.
 
 ## The three weights
@@ -37,11 +38,18 @@ Pick a model for the *weight*, and note how its cost is known — Marshal never 
 | `opencode` | `opencode-go/minimax-m3` | Standard | native | General coder. |
 | `opencode` | `opencode-go/deepseek-v4-flash` | Light | native | Fast/cheap for bulk. |
 | `cursor` | `composer-2.5` | Standard–Heavy | **unavailable** | Strong coder; individual plans expose no per-run cost (`doctor` shows plan tier). |
-| `codex` | `gpt-5.5` | Standard–Heavy | **unavailable** (until priced) | Reports tokens but no cost; add a `gpt-5.5` entry to `prices.yaml` to get **estimated** cost. |
-| `antigravity` *(experimental)* | `gemini-3.1-pro` (heavy), `gemini-3.5-flash` (light), also `claude-sonnet-4.6` / `claude-opus-4.6` / `gpt-oss-120b` | varies | none | Headless **writes** currently divert under workspace-trust; use read-only/reply until fixed. |
+| `codex` | `gpt-5.5` | Standard–Heavy | **unavailable** (until priced) | Reports tokens but no cost; route via EastRouter with `usage_api: eastrouter` for real **admin-api** cost, or add a `gpt-5.5` entry to `prices.yaml` to get **estimated** cost. |
+| `command-code` | `zai-org/glm-5.2` | Standard | **unavailable** | Hosted coding agent on its own account; `-p` prints text with no tokens/cost, so spend lives in its own dashboard (`doctor` surfaces its provider + default model). |
+| `antigravity` *(experimental)* | `gemini-3.1-pro` (heavy), `gemini-3.5-flash` (light), also `claude-sonnet-4.6` / `claude-opus-4.6` / `gpt-oss-120b` | varies | **unavailable** | Worktree **writes** now land correctly (worktree pre-registered as a trusted workspace); supports `safe-edit`/`yolo` only (no `read-only`). |
 
 > OpenCode must use an `opencode-go/*` model — a `fireworks-ai/*` model is rejected at config load so
 > you never burn Fireworks credits. Omitting `model` defaults to `opencode-go/glm-5.2`.
+
+> **Routing via EastRouter.** A `codex` client can point at EastRouter and set `usage_api: eastrouter`
+> to read its **real** per-run cost back from EastRouter's `/v1/usage` (reported `admin-api`, not an
+> estimate). `opencode` can also use EastRouter as a custom OpenAI-compatible provider (models named
+> `eastrouter/<id>`), but OpenCode can't price a custom provider, so that client's cost stays
+> `unavailable`.
 
 ## A tiered fleet you can copy
 
@@ -80,11 +88,18 @@ clients:
 ground truth:
 
 - **native** (`claude-code`, `opencode`) — the backend reported real tokens **and** cost. Trust it.
+- **admin-api** — the real per-run charge read back from a provider's usage API. A `codex` client with
+  `usage_api: eastrouter` reports its actual EastRouter `/v1/usage` cost this way — exact even though
+  EastRouter's price swings with prompt caching (a static table would mislead). Runs are attributed by
+  model + time window with a token-reconciliation guard; a run that can't be uniquely attributed falls
+  back rather than claim a wrong cost.
 - **estimated** — cost computed from tokens × `src/marshal_engine/data/prices.yaml` (USD per Mtok),
-  for a token-only backend (e.g. `codex`) **whose model is in the table**. Those are values you own —
-  set them to your providers' current prices; an estimate reflects the table at the moment of the run.
-- **unavailable** (`cursor`, and `codex` until you price its model) — no per-run cost is known; tokens
-  may still be recorded. A model absent from the price table stays `unavailable`, never a fake `$0`.
+  for a token-only backend (e.g. a `codex` client with no `usage_api`) **whose model is in the table**.
+  Those are values you own — set them to your providers' current prices; an estimate reflects the table
+  at the moment of the run.
+- **unavailable** (`cursor`, `command-code`, a token-only `codex` whose model isn't priced and has no
+  `usage_api`, or `opencode` pointed at an unpriced custom provider like EastRouter) — no per-run cost
+  is known; tokens may still be recorded. Never a fake `$0`.
 
 When you need true cost accounting (e.g. for a benchmark you'll act on), prefer **native-cost**
 clients so "cheapest" ranks on facts, not estimates.

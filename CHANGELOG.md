@@ -9,6 +9,33 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **EastRouter cost reader now paginates `/v1/usage`.** A single page (`?limit=1000`) could miss a
+  long run's records when the account was busy (a 283s run + a concurrent benchmark pushed them past
+  page 1), so its **real** `admin-api` cost silently fell back to `unavailable`. The reader now walks
+  pages (assumed newest-first) back to the run's window, with safe termination (short/empty page,
+  past-window, a no-progress guard for an API that ignores `offset`, and a page cap) and the same
+  honest token-reconciliation guard. Naive `created_at` timestamps are also normalized to UTC.
+- **Cost-source + resilience fixes** (from a PR review pass). A real EastRouter `admin-api` cost now
+  counts toward the benchmark `cheapest` comparison and gets its own usage-summary bucket (it was
+  silently excluded from both, so real-cost runs could lose `cheapest` and the source split didn't
+  sum). `cancel_run`'s `cancelled` status is no longer clobbered when the killed run's thread returns
+  (the terminal write is conditional on the run still being RUNNING). `list_workspaces` /
+  `marshal workspace list` degrade to 0 clients on a malformed per-repo config instead of crashing.
+  EastRouter cost attribution normalizes a naive `created_at` to UTC (a swallowed `TypeError` was
+  silently dropping real costs). A CI test that assumed a backend CLI (cursor) was installed is now
+  environment-independent.
+- **Concurrency + merge-back hardening** (from an adversarial audit of the highest-consequence
+  paths). The per-run state layer now serializes same-run writes with a per-run lock and writes via a
+  *unique* temp file, so a `cancel_run` racing the executing run can no longer crash on `os.replace`
+  or lose an update; cancel uses a conditional `update_if` that never overwrites a terminal status.
+  `integrate` refuses a still-running run (never commits half-written files), serializes concurrent
+  integrates (no `index.lock` race / mid-merge repo), reports the **full** set of files a branch
+  lands (self-committed *and* uncommitted, previously under-reported), and treats a
+  `has_unmerged_commits` git error as `error` rather than a false `empty` that silently drops work.
+  An `on_pid` callback failure no longer leaks the spawned process, a `spawn` onto a shut-down pool
+  stamps the run `failed` instead of leaving a RUNNING zombie, and `FleetState.list()` skips a
+  binary/foreign ledger file instead of crashing. Each fix has a regression test in
+  `tests/test_edge_cases.py`.
 - **Antigravity headless writes now land in the worktree** (were diverting to agy's scratch dir).
   Headless `agy` can't establish workspace trust without a TTY, so it wrote edits into
   `~/.gemini/antigravity-cli/scratch` instead of `cwd`. A new `CodingAgentBackend.prepare(opts)` hook
@@ -18,6 +45,20 @@ versions may include breaking API changes until 1.0.
   was insufficient (the prior known limitation).
 
 ### Added
+- **Multi-workspace MCP server** - one running server can now target several repos, selected per
+  call, instead of being bound to the single `MARSHAL_REPO` it launched against. Workspaces are
+  declared in a central registry (`~/.marshal/workspaces.yaml`, override with
+  `MARSHAL_WORKSPACES_FILE`; or the `MARSHAL_WORKSPACES` env), each loading its **own**
+  `fleet.config.yaml` with its own isolated `.marshal` worktrees + ledger. Every action/query tool
+  takes an optional `workspace` param; the run-handle tools (`get_run`/`collect_run`/`cancel_run`/
+  `integrate`) resolve a run's owning workspace by a cheap, service-free ledger scan. New
+  `list_workspaces` and `add_workspace` MCP tools and a `marshal workspace add/list/remove` CLI - the
+  registry **hot-reloads**, so a repo added via `add_workspace` or `marshal workspace add` is usable
+  without reconnecting the server. A process-wide concurrency cap (`MARSHAL_MAX_CONCURRENT`, default
+  8 when multi-repo) bounds total agent runs across all workspaces. Tenancy lives in the MCP layer;
+  the engine (`MarshalService`/`Fleet`) stays single-repo. The MCP surface is now **17 tools**. Fully
+  backward compatible - with no registry file and no `workspace` arg, behavior is identical to the
+  single-repo server.
 - **Transient-failure retries** - a run that fails for a transient infra/transport reason (backend
   state-DB lock, rate limit, 5xx, dropped connection) is now re-run with exponential backoff,
   configurable via a top-level `retries` key (default 2; `0` disables). Genuine task failures and
@@ -84,6 +125,11 @@ versions may include breaking API changes until 1.0.
   `status` / `get_run` and `cancel_run` an in-flight run, not only ones started with `spawn`. Tool
   parameters now carry per-parameter descriptions in the schema, and `run_many` takes a typed job
   shape (`{client, goal, task_id?, context_files?}`) instead of an untyped object.
+- **CI: coverage floor + macOS.** CI now enforces a **90%** coverage gate (`--cov-fail-under=90`;
+  currently ~92%) and runs the suite on **macOS** (py3.12) in addition to Linux (py3.11-3.13), so
+  the POSIX process-group paths (`killpg`/`start_new_session`/worktrees) are exercised on the dev
+  platform. Both are locked by the workflow contract tests; the coverage gate is opt-in via a flag so
+  a bare local `pytest -q` stays fast.
 
 ## [0.0.1]
 

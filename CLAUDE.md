@@ -12,8 +12,10 @@ Marshal clean and embeddable.
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
 > **V1 complete**: merge-back, per-provider cost-proof, capped parallel `run_many`, non-blocking
 > `spawn`, `cancel_run`, the **measured savings benchmark** (`benchmark`/`report`), **declarative
-> YAML workflows**, and driver Skills. 15 MCP tools. OpenCode + Cursor + Claude Code live-verified
-> (Claude Code with native cost). Remaining work is coverage/polish. See `docs/status.md`.
+> YAML workflows**, and driver Skills. 17 MCP tools (incl. multi-workspace: one server targets
+> several repos, selected per call, registered in `~/.marshal/workspaces.yaml` + hot-reloaded).
+> OpenCode + Cursor + Claude Code live-verified (Claude Code with native cost). Remaining work is
+> coverage/polish. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -27,6 +29,7 @@ marshal/
 │   │   ├── opencode.py      # OpenCode (opencode run / serve)
 │   │   ├── codex.py         # OpenAI Codex (codex exec)
 │   │   ├── antigravity.py   # Google Antigravity (agy)
+│   │   ├── command_code.py  # Command Code CLI - safe-edit maps to --yolo (headless auto-accept blocks writes)
 │   │   └── claude_code.py   # Claude Code (claude -p) - native cost
 │   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
 │   ├── usage.py             # per-provider usage: events.jsonl + summary.json
@@ -35,10 +38,11 @@ marshal/
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
-│   ├── service.py           # MarshalService - the testable core the MCP/CLI call into
+│   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
+│   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier
-│   ├── mcp_server.py        # MCP server (FastMCP): doctor/list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow
-│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/mcp)
+│   ├── mcp_server.py        # MCP server (FastMCP): list_workspaces/add_workspace + doctor/list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/integrate/status/usage/list_workflows/run_workflow (each takes an optional workspace)
+│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/workspace/mcp)
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
 ├── SETUP.md                 # clone-to-first-run setup guide
@@ -58,13 +62,17 @@ strict models there would reject on an unexpected upstream field. MCP server via
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`doctor` · `backends` · `usage` · `status` · `workflows` · `mcp`)
+- Run CLI: `uv run marshal` (`doctor` · `backends` · `usage` · `status` · `workflows` · `workspace` · `mcp`)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)
 
 The gate every commit must pass (single-line; `git -C`/`uv --directory` from outside the dir):
 `uv --directory . run pytest -q && uv --directory . run ruff check src tests && uv --directory . run mypy`
+
+CI additionally enforces a **90% coverage floor** (`--cov-fail-under=90`) and runs the suite on
+Linux (py3.11-3.13) + macOS (py3.12, for the POSIX process-group paths). Check coverage locally with
+`uv run pytest --cov=marshal_engine --cov-report=term-missing` (the bare `pytest -q` stays fast).
 
 ## Core invariants (do not violate)
 
@@ -82,6 +90,10 @@ The gate every commit must pass (single-line; `git -C`/`uv --directory` from out
 - **Worktree isolation** is the safety boundary. Main branch is untouched until explicit integrate.
 - The **engine is mechanism**; planning/routing/merge judgment lives in **Skills** (and later
   Chauffeur). Don't put decomposition logic in the engine.
+- **Tenancy (multi-workspace) lives in the MCP layer** (`workspaces.py`), not the engine.
+  `MarshalService`/`Fleet` stay single-repo; the registry builds one per repo and keys it on the
+  resolved path. Each workspace keeps its own config, worktrees, and ledger - never share run state
+  across them. Chauffeur replaces the registry later with real multi-tenancy; the engine is untouched.
 
 Full architecture, per-backend cheat sheets, permission tables, and the edge-case hardening
 checklist are in `docs/design.md`. Read it before implementing a backend.
