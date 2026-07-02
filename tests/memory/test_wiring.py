@@ -149,6 +149,33 @@ def test_run_agent_triggers_on_run_complete(repo: Path, monkeypatch: pytest.Monk
     assert kwargs["repo"] == "my-project"
 
 
+def test_memory_remember_wires_through_to_remember_note_sync(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remember_note = MagicMock()
+    monkeypatch.setattr("marshal_engine.service.CogneeMemory.remember_note_sync", remember_note)
+
+    cfg = _base_cfg(memory=MemoryConfig(enabled=True))
+    svc = MarshalService(repo, cfg, backends={"stub": _Stub()})
+    result = svc.memory_remember("worth remembering", ["idea"])
+
+    remember_note.assert_called_once_with("worth remembering", repo="my-project", tags=["idea"])
+    assert result == "stored note in memory for my-project"
+
+
+def test_memory_remember_disabled_returns_message_without_calling_cognee(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remember_note = MagicMock()
+    monkeypatch.setattr("marshal_engine.service.CogneeMemory.remember_note_sync", remember_note)
+
+    svc = MarshalService(repo, _base_cfg(), backends={"stub": _Stub()})
+    result = svc.memory_remember("should not be stored")
+
+    remember_note.assert_not_called()
+    assert "memory is disabled" in result
+
+
 def test_disabled_memory_does_not_import_cognee(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delitem(sys.modules, "cognee", raising=False)
     svc = MarshalService(repo, _base_cfg(), backends={"stub": _Stub()})

@@ -60,6 +60,27 @@ def test_memory_query_empty_prints_placeholder(
     assert "(no relevant memory)" in capsys.readouterr()[0]
 
 
+def test_memory_add_calls_service_with_parsed_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path, _ENABLED)
+    remember = MagicMock(return_value="stored note in memory for my-project")
+    monkeypatch.setattr("marshal_engine.service.MarshalService.memory_remember", remember)
+    assert cli.main(_mem_args(repo, "add", "worth remembering", "--tags", "idea, style")) == 0
+    remember.assert_called_once_with("worth remembering", ["idea", "style"])
+    assert "stored note in memory for my-project" in capsys.readouterr()[0]
+
+
+def test_memory_add_without_tags_passes_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path, _ENABLED)
+    remember = MagicMock(return_value="stored note in memory for my-project")
+    monkeypatch.setattr("marshal_engine.service.MarshalService.memory_remember", remember)
+    assert cli.main(_mem_args(repo, "add", "worth remembering")) == 0
+    remember.assert_called_once_with("worth remembering", None)
+
+
 def test_memory_stats_prints_config(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

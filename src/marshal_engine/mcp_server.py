@@ -348,6 +348,18 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         return result if result else "(no relevant memory)"
 
     @app.tool()
+    async def memory_add(
+        text: Annotated[str, Field(description="Freeform note text to store in memory.")],
+        tags: Annotated[list[str] | None, Field(description="Optional tags to attach to the note.")] = None,
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> str:
+        """Store a freeform note into the workspace's shared memory graph, recallable via memory_query.
+
+        Returns a short confirmation, or a disabled message when memory is off."""
+        svc = await offload(registry.get, workspace)
+        return await offload(svc.memory_remember, text, tags)
+
+    @app.tool()
     async def memory_stats(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:

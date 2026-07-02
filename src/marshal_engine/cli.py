@@ -197,6 +197,11 @@ def _cmd_memory(args: argparse.Namespace) -> int:
         print(result if result else "(no relevant memory)")
         return 0
 
+    if args.mem_cmd == "add":
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+        print(svc.memory_remember(args.text, tags))
+        return 0
+
     if args.mem_cmd == "stats":
         stats = svc.memory_stats()
         if args.json:
@@ -297,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
     msub = pm.add_subparsers(dest="mem_cmd", required=True)
     pmq = msub.add_parser("query", parents=[mem_common], help="recall memory for a query")
     pmq.add_argument("text", help="natural-language query")
+    pma = msub.add_parser("add", parents=[mem_common], help="store a freeform note in memory")
+    pma.add_argument("text", help="note text to remember")
+    pma.add_argument("--tags", default=None, help="comma-separated tags to attach to the note")
     msub.add_parser("improve", parents=[mem_common], help="run memify on this repo's memory dataset")
     pmf = msub.add_parser("forget", parents=[mem_common], help="forget memory for this repo (or --all)")
     pmf.add_argument("--all", action="store_true", help="wipe all memory datasets")

@@ -342,6 +342,14 @@ class MarshalService:
         """Recall a memory snippet for ``text`` in this repo's dataset."""
         return self._memory.recall_sync(text, self._repo_key)
 
+    def memory_remember(self, text: str, tags: list[str] | None = None) -> str:
+        """Store a freeform note in this repo's memory dataset."""
+        cfg = self.config.memory
+        if not cfg.enabled or not cfg.remember_enabled:
+            return "memory is disabled; set memory.enabled (and remember_enabled) in fleet.config.yaml"
+        self._memory.remember_note_sync(text, repo=self._repo_key, tags=tags)
+        return f"stored note in memory for {self._repo_key}"
+
     def memory_stats(self) -> dict[str, Any]:
         """Config-level memory stats for this workspace (best-effort; no Cognee required)."""
         cfg = self.config.memory

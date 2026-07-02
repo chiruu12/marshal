@@ -54,6 +54,24 @@ def test_mcp_memory_query_returns_snippet(
     assert "Prior run used pattern X." in text
 
 
+def test_mcp_memory_add_routes_to_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+
+    from marshal_engine.mcp_server import build_app, build_service
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    remember = MagicMock(return_value="stored note in memory for repo")
+    monkeypatch.setattr("marshal_engine.service.MarshalService.memory_remember", remember)
+    app = build_app(build_service())
+    text = _call_tool(app, "memory_add", {"text": "worth remembering", "tags": ["idea"]})
+    assert text == "stored note in memory for repo"
+    remember.assert_called_once_with("worth remembering", ["idea"])
+
+
 def test_mcp_memory_stats_returns_dict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -85,4 +103,4 @@ def test_build_app_registers_memory_tools(
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
     names = {t.name for t in asyncio.run(app.list_tools())}
-    assert {"memory_query", "memory_stats"} <= names
+    assert {"memory_query", "memory_add", "memory_stats"} <= names

@@ -131,6 +131,64 @@ def test_remember_disabled_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     fake.cognify.assert_not_called()
 
 
+def test_remember_note_adds_and_cognifies(
+    enabled_config: MemoryConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    mem = CogneeMemory(enabled_config)
+
+    _run(mem.remember_note("Prefer small PRs.", repo="my-repo", tags=["style", "reviews"]))
+
+    fake.add.assert_awaited_once()
+    add_kwargs = fake.add.call_args.kwargs
+    assert add_kwargs["dataset_name"] == "my-repo"
+    assert add_kwargs["node_set"] == ["note", "style", "reviews"]
+    assert "Prefer small PRs." in fake.add.call_args.args[0]
+    fake.cognify.assert_awaited_once_with(datasets="my-repo", run_in_background=True)
+
+
+def test_remember_note_defaults_repo_and_tags(
+    enabled_config: MemoryConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    mem = CogneeMemory(enabled_config)
+
+    _run(mem.remember_note("A note without a repo."))
+
+    assert fake.add.call_args.kwargs["dataset_name"] == "default"
+    assert fake.add.call_args.kwargs["node_set"] == ["note"]
+
+
+def test_remember_note_disabled_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    mem = CogneeMemory(MemoryConfig.disabled())
+    _run(mem.remember_note("should not be stored", repo="my-repo"))
+    fake.add.assert_not_called()
+    fake.cognify.assert_not_called()
+
+
+def test_cognee_exception_in_remember_note_is_swallowed(
+    enabled_config: MemoryConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    fake.add = AsyncMock(side_effect=RuntimeError("boom"))
+    mem = CogneeMemory(enabled_config)
+    with caplog.at_level("ERROR"):
+        _run(mem.remember_note("note text", repo="my-repo"))  # must not raise
+    assert "remember_note failed" in caplog.text
+
+
+def test_remember_note_sync_disabled_short_circuits_without_asyncio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("asyncio.run must not be called when memory is disabled")
+
+    monkeypatch.setattr("marshal_engine.memory.store.asyncio.run", _boom)
+    mem = CogneeMemory(MemoryConfig.disabled())
+    assert mem.remember_note_sync("note text", repo="repo") is None
+
+
 def test_recall_returns_formatted_snippet(
     enabled_config: MemoryConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -348,6 +406,16 @@ def test_recall_sync_with_running_loop(
 
     out = asyncio.run(_run())
     assert "Prior run" in out
+
+
+def test_remember_note_sync_runs_without_running_loop(
+    enabled_config: MemoryConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    mem = CogneeMemory(enabled_config)
+    mem.remember_note_sync("note text", repo="my-repo", tags=["idea"])
+    fake.add.assert_awaited_once()
+    assert fake.add.call_args.kwargs["node_set"] == ["note", "idea"]
 
 
 def test_memory_config_disabled_factory() -> None:

@@ -77,6 +77,11 @@ def _format_run_document(record: RunRecord, diff: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def _format_note_document(text: str) -> str:
+    """Build a readable markdown document for a freeform memory note."""
+    return f"# Note\n\n{text}"
+
+
 def _flatten_recall_strings(value: Any) -> list[str]:
     """Collect non-empty string fragments from nested recall payload values."""
     if value is None:
@@ -220,6 +225,28 @@ class CogneeMemory:
         except Exception:
             logger.exception("marshal recall: remember failed for run %s", record.run_id)
 
+    async def remember_note(
+        self,
+        text: str,
+        *,
+        repo: str | None = None,
+        tags: list[str] | None = None,
+    ) -> None:
+        if not self._config.enabled or not self._config.remember_enabled:
+            return
+        try:
+            cognee, _ = self._ensure_cognee()
+            dataset = repo or "default"
+            doc = _format_note_document(text)
+            node_set = ["note", *(tags or [])]
+            await cognee.add(doc, dataset_name=dataset, node_set=node_set)
+            await cognee.cognify(
+                datasets=dataset,
+                run_in_background=self._config.remember_in_background,
+            )
+        except Exception:
+            logger.exception("marshal recall: remember_note failed for repo %s", repo or "default")
+
     async def recall(self, goal: str, repo: str, top_k: int | None = None) -> str:
         if not self._config.enabled or not self._config.recall_enabled:
             return ""
@@ -268,6 +295,17 @@ class CogneeMemory:
         if not self._config.enabled or not self._config.remember_enabled:
             return
         _run_async(self.remember(record, diff=diff, repo=repo))
+
+    def remember_note_sync(
+        self,
+        text: str,
+        *,
+        repo: str | None = None,
+        tags: list[str] | None = None,
+    ) -> None:
+        if not self._config.enabled or not self._config.remember_enabled:
+            return
+        _run_async(self.remember_note(text, repo=repo, tags=tags))
 
     def recall_sync(self, goal: str, repo: str, top_k: int | None = None) -> str:
         if not self._config.enabled or not self._config.recall_enabled:
