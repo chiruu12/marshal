@@ -142,20 +142,32 @@ time. The `marshal-workflow` Skill is the authoring + running playbook; template
 
 ## Marshal Recall (persistent fleet memory)
 
-Fleet runs no longer have to start from zero. **Marshal Recall** is a Cognee-backed memory layer: after
-each run Marshal remembers the task, repo, client, status, and diff summary; before the next run it
-recalls relevant past learnings and injects them into the worker goal. Memory is partitioned by repo
-(dataset), tagged by client/status/task (node_set), and scoped per task group (session).
+Fleet runs no longer have to start from zero. **Marshal Recall** is a Cognee-backed memory layer that
+gives the fleet a shared second self: after each run Marshal remembers the task, repo, client, status,
+and diff summary; before the next run it recalls relevant past learnings and injects them into the
+worker goal - so the next agent starts already knowing what the last one figured out, instead of you
+re-supplying context. Memory is partitioned by repo (dataset), tagged by client/status/task
+(node_set), and scoped per task group (session).
 
-Four operations: **remember** (automatic after runs), **recall** (automatic before runs),
-**improve** (enrich the graph), **forget** (drop a repo or wipe all). Enable via a `memory:` block in
-`fleet.config.yaml` (off by default); pair with Cognee env (`LLM_API_KEY`, optional `LLM_MODEL` with
-`openai/<model>` for OpenAI-compatible endpoints, `fastembed` for local embeddings). CLI:
-`marshal memory query|stats|improve|forget`. MCP: `memory_query`, `memory_stats`. Install:
-`pip install 'marshal[memory,fastembed]'`.
+It carries across tools, not just runs. Any MCP-capable session can write to and read from the same
+repo-scoped graph: note a learning from one tool with `marshal memory add "..."` and a later run in
+another tool recalls it.
+
+Operations: **remember** (automatic after runs), **recall** (automatic before runs), **add** (store a
+freeform note from any session), **improve** (enrich the graph), **forget** (drop a repo or wipe all).
+Enable via a `memory:` block in `fleet.config.yaml` (off by default); pair with Cognee env
+(`LLM_API_KEY`, optional `LLM_MODEL` with `openai/<model>` for OpenAI-compatible endpoints, `fastembed`
+for local embeddings). CLI: `marshal memory query|add|stats|improve|forget`. MCP: `memory_query`,
+`memory_add`, `memory_stats`. Install: `pip install 'marshal[memory,fastembed]'`.
+
+Cheaper at scale: extraction dominates Cognee's per-run token cost, so we contributed per-stage model
+routing upstream ([topoteretes/cognee#3806](https://github.com/topoteretes/cognee/pull/3806)) to route
+a cheap or local model to extraction. Marshal Recall is its first consumer.
 
 Try it: [`examples/marshal_recall_demo.py`](examples/marshal_recall_demo.py). Full reference:
-[`docs/marshal-recall.md`](docs/marshal-recall.md).
+[`docs/marshal-recall.md`](docs/marshal-recall.md). The same memory design is also available
+standalone for any MCP harness as [second-self](https://github.com/chiruu12/second-self);
+Marshal Recall is its fleet-scale sibling.
 
 ## Architecture
 
