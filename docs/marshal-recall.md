@@ -18,7 +18,7 @@ You can also query, enrich, or wipe memory explicitly via CLI or MCP.
 | Concept | Maps to |
 |---|---|
 | **Dataset** | One git repo (workspace) |
-| **node_set tags** | `client:…`, `status:…`, `task:…`, plus `fleet-run` |
+| **node_set tags** | `client:...`, `status:...`, `task:...`, plus `fleet-run` |
 | **Session** | Task group within a run (Cognee session metadata) |
 
 Runs from different clients, statuses, and tasks remain distinguishable in the graph while sharing one repo-level dataset.
@@ -94,6 +94,7 @@ Use `--repo` and `--config` like other `marshal` subcommands when not in the pro
 | Tool | Description |
 |---|---|
 | `memory_query` | Recall a snippet for a natural-language query in the selected workspace |
+| `memory_add` | Store a freeform note into the workspace's shared memory graph, recallable via `memory_query` |
 | `memory_stats` | Enabled flags, data directory, recall limits, Cognee install status |
 
 Both accept an optional `workspace` argument (multi-repo servers).

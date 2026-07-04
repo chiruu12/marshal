@@ -16,7 +16,7 @@ MCP server, as a CLI, or as a Python library.
 | **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, antigravity). Chosen per call, never global. |
 | **client** | A named worker in `fleet.config.yaml` pinning a backend + model + permission. You route tasks to clients by name. |
 | **run** | One execution of a client on a task; ends `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`. |
-| **worktree** | The isolated git checkout **one run** works in (under `.marshal/worktrees/`). The safety boundary — main is untouched until you integrate. |
+| **worktree** | The isolated git checkout **one run** works in (under `.marshal/worktrees/`). The safety boundary - main is untouched until you integrate. |
 | **workspace** | A **whole repo** the server can target. Distinct from *worktree*: a workspace holds many runs, each in its own worktree. One server can target several workspaces (`list_workspaces`, `workspace=`). |
 | **integrate** | Merge a run's worktree branch back into the target repo's current branch (the only step that touches it). |
 | **workflow** | A declarative YAML recipe that sequences the primitives (fan-out → collect → gated integrate). |
@@ -105,7 +105,7 @@ Point your driver at `marshal mcp`. Environment:
 | `MARSHAL_REPO` | `.` | The repo agents work in (the **default** workspace). |
 | `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | The default workspace's fleet config (scoped to `default` only). |
 | `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | The central registry of extra workspaces (the recommended way). |
-| `MARSHAL_WORKSPACES` | – | Extra workspaces inline: comma/newline-separated `name=/abs/path` entries. |
+| `MARSHAL_WORKSPACES` | - | Extra workspaces inline: comma/newline-separated `name=/abs/path` entries. |
 | `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | Process-wide cap on concurrent agent runs across all workspaces. |
 
 **Multiple repos from one server.** Declare them in `~/.marshal/workspaces.yaml` (or the inline

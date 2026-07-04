@@ -20,7 +20,7 @@ collect → integrate.**
 One Marshal server can be wired to several repos at once. Call `list_workspaces` first to see them
 (name, path, `configured`, `client_count`). **Every action tool takes an optional `workspace`** -
 pass a name to target that repo; omit it to use the default (primary) workspace. Workspaces are
-fully isolated: each has its own clients (`list_clients(workspace=…)`), its own worktrees, its own
+fully isolated: each has its own clients (`list_clients(workspace=...)`), its own worktrees, its own
 run ledger.
 - Each run record you get back carries a `workspace` field. When you later `collect_run`,
   `integrate`, or `cancel_run`, pass that same `workspace` so the call routes to the right repo (it
@@ -38,7 +38,7 @@ single-repo server.
 
 ## 0. Know your clients
 Optionally run `doctor` first (read-only) to confirm the backends you'll use are installed +
-authenticated — catching a missing/unauthenticated CLI up front beats discovering it from a failed run.
+authenticated - catching a missing/unauthenticated CLI up front beats discovering it from a failed run.
 Call `list_clients` to see the configured workers (name, backend, model, permission). Each client is
 a routing choice the user set up (a cheap bulk worker, a careful reviewer, etc.). You route tasks to
 clients **by name** - you never choose backends directly. To decide *which* client a task should go

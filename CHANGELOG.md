@@ -15,7 +15,7 @@ versions may include breaking API changes until 1.0.
   pages (assumed newest-first) back to the run's window, with safe termination (short/empty page,
   past-window, a no-progress guard for an API that ignores `offset`, and a page cap) and the same
   honest token-reconciliation guard. Naive `created_at` timestamps are also normalized to UTC.
-- **Cost-source + resilience fixes** (from a PR review pass). A real EastRouter `admin-api` cost now
+- **Cost-source + resilience fixes.** A real EastRouter `admin-api` cost now
   counts toward the benchmark `cheapest` comparison and gets its own usage-summary bucket (it was
   silently excluded from both, so real-cost runs could lose `cheapest` and the source split didn't
   sum). `cancel_run`'s `cancelled` status is no longer clobbered when the killed run's thread returns
@@ -24,8 +24,7 @@ versions may include breaking API changes until 1.0.
   EastRouter cost attribution normalizes a naive `created_at` to UTC (a swallowed `TypeError` was
   silently dropping real costs). A CI test that assumed a backend CLI (cursor) was installed is now
   environment-independent.
-- **Concurrency + merge-back hardening** (from an adversarial audit of the highest-consequence
-  paths). The per-run state layer now serializes same-run writes with a per-run lock and writes via a
+- **Concurrency + merge-back hardening.** The per-run state layer now serializes same-run writes with a per-run lock and writes via a
   *unique* temp file, so a `cancel_run` racing the executing run can no longer crash on `os.replace`
   or lose an update; cancel uses a conditional `update_if` that never overwrites a terminal status.
   `integrate` refuses a still-running run (never commits half-written files), serializes concurrent
@@ -45,6 +44,16 @@ versions may include breaking API changes until 1.0.
   was insufficient (the prior known limitation).
 
 ### Added
+- **Marshal Recall (persistent fleet memory)** - a Cognee-backed memory layer so fleet runs carry
+  learnings across runs and tools instead of starting cold. After each run Marshal remembers the
+  task, repo, client, status, and diff summary; before the next run it recalls relevant past
+  learnings and injects them into the worker goal. Memory is partitioned by repo (dataset), tagged by
+  client/status/task, and scoped per task group. Any MCP-capable session can write a freeform note
+  (`marshal memory add`) that a later run recalls. Off by default; enable via a `memory:` block in
+  `fleet.config.yaml`. CLI: `marshal memory query|add|stats|improve|forget`; MCP: `memory_query`,
+  `memory_add`, `memory_stats`. Install with `pip install 'marshal[memory,fastembed]'`. Also
+  available standalone as [second-self](https://github.com/chiruu12/second-self). See
+  [`docs/marshal-recall.md`](docs/marshal-recall.md).
 - **Multi-workspace MCP server** - one running server can now target several repos, selected per
   call, instead of being bound to the single `MARSHAL_REPO` it launched against. Workspaces are
   declared in a central registry (`~/.marshal/workspaces.yaml`, override with

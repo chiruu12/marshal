@@ -113,7 +113,7 @@ Marshal exposes its tools over an MCP server (`marshal mcp`, stdio). It reads th
 | `MARSHAL_REPO` | `.` | the repo agents work in (the **default** workspace) |
 | `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | the default workspace's fleet config |
 | `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | the central registry of extra repos (recommended) |
-| `MARSHAL_WORKSPACES` | – | extra repos inline (`name=/abs/path`, comma/newline) |
+| `MARSHAL_WORKSPACES` | - | extra repos inline (`name=/abs/path`, comma/newline) |
 | `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | cap on concurrent agent runs across all workspaces |
 
 **Multiple repos from one server.** Marshal can target several repos at once, each fully isolated
@@ -209,9 +209,9 @@ until you `integrate`. State and usage live under `.marshal/`.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `marshal: command not found` | console script not on PATH after `uv sync` | use `uv run marshal …`, or `uv tool install .` |
+| `marshal: command not found` | console script not on PATH after `uv sync` | use `uv run marshal ...`, or `uv tool install .` |
 | `doctor` says a backend's CLI is not available | the CLI isn't installed or isn't authenticated | install + log into that CLI (Prerequisites table) |
-| `no fleet config at …` | no `fleet.config.yaml` | `cp fleet.config.example.yaml fleet.config.yaml` |
+| `no fleet config at ...` | no `fleet.config.yaml` | `cp fleet.config.example.yaml fleet.config.yaml` |
 | `marshal mcp` exits with an extra message | the `mcp` extra isn't installed | `uv sync --extra mcp` |
 | OpenCode model rejected at load | a `fireworks-ai/*` model bills Fireworks credits | use an `opencode-go/*` model |
 | a backend run shows cost `unavailable` | the backend reports no native cost and its model isn't priced | add the model to `src/marshal_engine/data/prices.yaml` |

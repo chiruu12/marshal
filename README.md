@@ -16,10 +16,11 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (17 tools):
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (20 tools):
   `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`,
   `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`,
-  `list_workflows`, `run_workflow`. One server can target several repos at once - every tool takes an
+  `list_workflows`, `run_workflow`, plus three memory tools (`memory_query`, `memory_add`,
+  `memory_stats`) for Marshal Recall. One server can target several repos at once - every tool takes an
   optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
   add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
@@ -28,7 +29,7 @@ It plugs into your driver two ways:
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 17-tool MCP server work end to
+> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 20-tool MCP server work end to
 > end: parallel fan-out (`run_many`), non-blocking `spawn` + `cancel_run`, merge-back (`collect_run` +
 > `integrate`), **declarative YAML workflows**, **multi-workspace** (one server, many repos), and a
 > **measured savings benchmark** (`benchmark`/`report`). OpenCode, Cursor, Claude Code, and Command
@@ -90,7 +91,7 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 
 Marshal's headline feature is a **measured** routing comparison, not a guess. Run one task through
 several strategies and `report` derives a source-honest table from each run's recorded facts. A real
-run — implementing a `TokenBucket` rate limiter (stdlib, with injectable-clock tests) across four clients:
+run - implementing a `TokenBucket` rate limiter (stdlib, with injectable-clock tests) across four clients:
 
 | strategy | backend | status | cost | source | duration | in/out tokens |
 |---|---|---|---|---|---|---|
@@ -101,7 +102,7 @@ run — implementing a `TokenBucket` rate limiter (stdlib, with injectable-clock
 
 **cheapest:** deepseek ($0.0029) · **fastest:** deepseek (81.8s)
 
-We then ran each produced solution's tests: `deepseek`, `claude`, and `cmdcode` all passed 6/6 — and
+We then ran each produced solution's tests: `deepseek`, `claude`, and `cmdcode` all passed 6/6 - and
 **`deepseek` did it cheapest, fastest, and correct, for ~1/115th of `claude`'s cost.** `codex-glm`
 burned **231K input tokens** over-exploring a simple task, ran slowest, and shipped code that doesn't
 even import. That's the point: **route on measured evidence, not vibes.**

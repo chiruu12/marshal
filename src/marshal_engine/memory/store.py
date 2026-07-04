@@ -185,7 +185,7 @@ class CogneeMemory:
         if self._config.llm_api_key:
             llm["llm_api_key"] = self._config.llm_api_key
         # OpenAI-compatible LLM endpoints (e.g. EastRouter) need llm_model prefixed
-        # with "openai/<model>" so litellm routes correctly — set via llm_model.
+        # with "openai/<model>" so litellm routes correctly - set via llm_model.
         if llm:
             cognee.config.set_llm_config(llm)
 
