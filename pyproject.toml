@@ -68,6 +68,10 @@ files = ["src"]
 module = "mcp.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "cognee.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 # Only ever collect the real suite. Live agent runs drop git worktrees (full repo copies,
 # tests included) under marshal-runs/ and .marshal/; without this, pytest discovers those

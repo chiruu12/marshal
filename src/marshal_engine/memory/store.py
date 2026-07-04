@@ -7,7 +7,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .config import MemoryConfig
 
@@ -310,7 +310,7 @@ class CogneeMemory:
     def recall_sync(self, goal: str, repo: str, top_k: int | None = None) -> str:
         if not self._config.enabled or not self._config.recall_enabled:
             return ""
-        return _run_async(self.recall(goal, repo, top_k=top_k))
+        return cast(str, _run_async(self.recall(goal, repo, top_k=top_k)))
 
 
 def _run_async(coro: Any) -> Any:
