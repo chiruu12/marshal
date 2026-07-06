@@ -9,6 +9,7 @@ import pytest
 from marshal_engine.config import (
     DEFAULT_OPENCODE_MODEL,
     DURATION_PRESETS,
+    BudgetSpec,
     ClientConfig,
     ConfigError,
     FleetConfig,
@@ -154,6 +155,21 @@ def test_missing_secret_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     warnings = validate(cfg)
     assert any("not set" in w for w in warnings)
+
+
+def test_validate_warns_on_budget_scope_that_never_fires(tmp_path: Path) -> None:
+    # A budget scoped to a client/backend nothing runs under would silently never fire - validate()
+    # surfaces it as a soft warning (the same posture as the unset-secret warning).
+    cfg = FleetConfig(
+        clients={"impl": ClientConfig(name="impl", backend="opencode", model="opencode-go/glm-5.2")},
+        budgets=[
+            BudgetSpec(client="ghost", window="week", limit_usd=5.0),
+            BudgetSpec(backend="nonexistent", window="month", limit_usd=5.0),
+        ],
+    )
+    warnings = validate(cfg)
+    assert any("ghost" in w and "never fires" in w for w in warnings)
+    assert any("nonexistent" in w and "never fires" in w for w in warnings)
 
 
 def test_context_block_parses_into_fleet_context(tmp_path: Path) -> None:
@@ -316,3 +332,95 @@ def test_resolve_duration_wrong_type_raises() -> None:
         resolve_duration(1.5)  # type: ignore[arg-type]
     with pytest.raises(ConfigError, match="got bool"):
         resolve_duration(True)  # type: ignore[arg-type]
+
+
+# --- budgets: advisory $ caps per scope (backend / client / global) per window -----------------
+
+
+def test_budgets_block_absent_yields_empty_list(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)  # no `budgets:` key
+    cfg = load_config(p)
+    assert cfg.budgets == []  # absent -> empty list, no error
+    assert FleetConfig().budgets == []  # default-constructed too
+
+
+def test_budgets_block_parses_each_scope(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        _YAML
+        + "\nbudgets:\n"
+        "  - client: implementer\n"
+        "    window: week\n"
+        "    limit_usd: 5.00\n"
+        "  - backend: cursor\n"
+        "    window: session\n"
+        "    limit_usd: 1.00\n"
+        "  - window: month\n"  # global: neither backend nor client
+        "    limit_usd: 25.00\n"
+    )
+    cfg = load_config(p)
+    assert cfg.budgets == [
+        BudgetSpec(client="implementer", window="week", limit_usd=5.00),
+        BudgetSpec(backend="cursor", window="session", limit_usd=1.00),
+        BudgetSpec(window="month", limit_usd=25.00),  # backend + client both None
+    ]
+
+
+def test_budgets_block_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("budgets: 42\n" + _YAML)
+    with pytest.raises(ConfigError, match="budgets must be a list"):
+        load_config(p)
+
+
+def test_budgets_block_entry_not_a_mapping_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("budgets:\n  - not-a-mapping\n" + _YAML)
+    with pytest.raises(ConfigError, match="must be a mapping"):
+        load_config(p)
+
+
+def test_budgets_block_invalid_window_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("budgets:\n  - window: year\n    limit_usd: 1.0\n" + _YAML)
+    with pytest.raises(ConfigError, match=r"window must be one of"):
+        load_config(p)
+
+
+def test_budgets_block_both_backend_and_client_set_raises(tmp_path: Path) -> None:
+    # A budget is scoped to ONE of backend / client / global - never two of them.
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "budgets:\n"
+        "  - backend: cursor\n"
+        "    client: implementer\n"
+        "    window: week\n"
+        "    limit_usd: 1.0\n" + _YAML
+    )
+    with pytest.raises(ConfigError, match="at most one of 'backend' or 'client'"):
+        load_config(p)
+
+
+def test_budgets_block_non_positive_limit_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("budgets:\n  - window: week\n    limit_usd: 0\n" + _YAML)
+    with pytest.raises(ConfigError, match="limit_usd must be > 0"):
+        load_config(p)
+    p.write_text("budgets:\n  - window: week\n    limit_usd: -1.0\n" + _YAML)
+    with pytest.raises(ConfigError, match="limit_usd must be > 0"):
+        load_config(p)
+
+
+def test_budgets_block_missing_window_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("budgets:\n  - limit_usd: 1.0\n" + _YAML)
+    with pytest.raises(ConfigError, match="window must be one of"):
+        load_config(p)
+
+
+def test_budgets_block_non_numeric_limit_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("budgets:\n  - window: week\n    limit_usd: many\n" + _YAML)
+    with pytest.raises(ConfigError, match="limit_usd must be a positive number"):
+        load_config(p)

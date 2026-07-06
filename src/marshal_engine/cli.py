@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
-from .config import ConfigError, DURATION_PRESETS, FleetConfig, load_config, validate
+from .config import BudgetSpec, ConfigError, DURATION_PRESETS, FleetConfig, load_config, validate
 from .doctor import FAIL, OK, WARN, run_checks, summarize
 from .env import merge_user_path
-from .fleet import Fleet
+from .fleet import BudgetStatus, Fleet, compute_budget_status
 from .logs import RunLogStore
 from .registry import backend_names, default_backends
 from .service import MarshalService
@@ -163,7 +163,21 @@ def _print_bucket_table(title: str, buckets: dict[str, Bucket]) -> None:
 
 def _cmd_usage(args: argparse.Namespace) -> int:
     since = _usage_window_since(args.window)
-    s = UsageTracker(args.dir).summary(since=since)
+    tracker = UsageTracker(args.dir)
+    s = tracker.summary(since=since)
+    # Optional: load the fleet config to surface any advisory `budgets:` alongside the ledger.
+    # Absent / unreadable / empty -> `[]` (the "no behavior change" contract for users who don't opt in).
+    budgets: list[BudgetSpec] = []
+    if args.config:
+        try:
+            budgets = load_config(args.config).budgets
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    # The CLI has no long-lived Fleet, so a `session` budget window reads as $0 (the process
+    # just started). Pass `now` as both ends - honest "since this CLI invocation".
+    now = datetime.now(timezone.utc)
+    budget_rows = compute_budget_status(tracker, now, budgets, now)
     if args.json:
         payload = {
             "totals": s.totals.model_dump(mode="json"),
@@ -176,6 +190,8 @@ def _cmd_usage(args: argparse.Namespace) -> int:
             "window": args.window,
             "since": since.isoformat() if since is not None else None,
         }
+        if budget_rows:
+            payload["budgets"] = [b.model_dump(mode="json") for b in budget_rows]
         print(json.dumps(payload, indent=2))
         return 0
     t = s.totals
@@ -194,7 +210,32 @@ def _cmd_usage(args: argparse.Namespace) -> int:
     _print_bucket_table("by_client", s.by_client)
     _print_bucket_table("by_model", s.by_model)
     _print_bucket_table("by_backend_model", s.by_backend_model)
+    _print_budget_table(budget_rows)
     return 0
+
+
+def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
+    """Print the configured budgets as an aligned table. No-op when no budgets.
+
+    A subscription / unknown-cost backend reports $0, so a $ budget on it shows `$0.0000` spent
+    (not a fake percentage); the table just makes that explicit.
+    """
+    if not rows:
+        return
+    print("\nbudgets")
+    header = ("scope", "window", "spent", "limit", "remaining")
+    table_rows = [
+        (
+            r.scope,
+            r.window,
+            f"${r.spent_usd:.4f}",
+            f"${r.limit_usd:.4f}",
+            f"${r.remaining_usd:.4f}",
+        )
+        for r in rows
+    ]
+    for line in _align_rows(header, table_rows):
+        print(f"  {line}")
 
 
 def _usage_window_since(window: str) -> datetime | None:
@@ -461,6 +502,10 @@ def main(argv: list[str] | None = None) -> int:
         default="all",
         choices=["day", "week", "month", "all"],
         help="rolling time window: day=last 24h, week=7d, month=30d, all=everything (default)",
+    )
+    pu.add_argument(
+        "--config", default=None,
+        help="optional fleet config path; when set, also surfaces any configured advisory `budgets:`",
     )
     pu.add_argument("--json", action="store_true", help="output JSON")
     ps = sub.add_parser("status", help="list fleet runs")

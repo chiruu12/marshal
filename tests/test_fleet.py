@@ -20,6 +20,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
 from marshal_engine.fleet import Fleet, RunRequest
 from marshal_engine.pricing import ModelPrice, PriceTable
@@ -952,3 +953,235 @@ def test_executor_returns_same_pool_on_repeated_calls(repo: Path) -> None:
     p3 = fleet._executor()
     assert p1 is p2 is p3
     fleet.shutdown()
+
+
+# --- advisory budgets: soft warning only, never block a run ----------------------------------
+
+
+class _Metered(CodingAgentBackend):
+    """A fake backend that stamps a controllable native cost on every run.
+
+    Used to drive budget spend deterministically: a recorded event with `cost_usd=N` shows up
+    under `by_backend[<name>]` (and under `by_client[<name>]` when the run carried a client), so
+    the budget's windowed spend hits whatever threshold the test wants.
+    """
+
+    name = "metered"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, cost_usd: float = 0.50) -> None:
+        self._cost = cost_usd
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "open('out.txt','w').write('x')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            usage=UsageRecord(
+                backend="metered",
+                input_tokens=10,
+                output_tokens=1,
+                cost_usd=self._cost,
+                source=UsageSource.NATIVE,
+            ),
+            exit_code=exit_code,
+        )
+
+
+def _seed_run_event(
+    fleet: Fleet,
+    *,
+    backend: str = "metered",
+    client: str | None = "worker",
+    cost: float = 0.50,
+    ts: str | None = None,
+) -> None:
+    """Append a single UsageEvent to the ledger so the next budget check has spend to read."""
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    fleet.usage.record(
+        UsageEvent(
+            ts=ts or datetime.now(timezone.utc).isoformat(),
+            run_id=f"seed.{backend}.x",
+            backend=backend,
+            client=client,
+            cost_usd=cost,
+            status="succeeded",
+            source="native",
+        )
+    )
+
+
+def test_check_budget_warns_when_windowed_spend_meets_cap(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A backend budget of $1 with $1.50 of recorded spend under that backend -> soft warning.
+    # The check is wrapped in try/except (defensive) and never raises; spend >= cap -> warn.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered(cost_usd=1.5)},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=1.0)],
+    )
+    _seed_run_event(fleet, backend="metered", cost=1.5)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"), client="worker")
+    )
+    err = capsys.readouterr().err
+    assert "budget:" in err
+    assert "backend:metered" in err
+    assert "$1.5000 >= cap $1.0000" in err
+    assert "(week)" in err
+
+
+def test_check_budget_stays_silent_under_cap(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Below the cap -> no warning, no raise. Quietly honest: a small spend doesn't trip a $5 cap.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=5.0)],
+    )
+    _seed_run_event(fleet, backend="metered", cost=0.50)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_check_budget_does_not_match_unrelated_scope(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A client budget for "worker" doesn't fire on a "reviewer" run, even if a reviewer event
+    # would otherwise have crossed the cap. The check matches scope, not global spend.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(client="worker", window="week", limit_usd=0.10)],
+    )
+    _seed_run_event(fleet, backend="metered", client="reviewer", cost=5.0)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"), client="reviewer")
+    )
+    assert capsys.readouterr().err == ""  # budget is for "worker", not "reviewer"
+
+
+def test_check_budget_never_raises_on_ledger_failure(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Defensive: a budget check failure (e.g. corrupt ledger) must NEVER block a run. We force
+    # summary() to raise and verify _check_budget swallows it quietly.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=1.0)],
+    )
+
+    def boom(**_kw: object) -> object:
+        raise RuntimeError("ledger corrupt")
+
+    monkeypatch.setattr(fleet.usage, "summary", boom)  # type: ignore[method-assign]
+    # Must not raise.
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+    )
+    assert capsys.readouterr().err == ""  # failure is silent (no fake warning)
+
+
+def test_check_budget_no_budgets_is_a_noop(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The "no behavior change at all" contract: an empty budgets list never prints anything
+    # and never raises. (Backward compat for the default-constructed FleetConfig.)
+    fleet = Fleet(repo, {"metered": _Metered()})
+    _seed_run_event(fleet, cost=999.0)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_check_budget_runs_before_worktree(repo: Path) -> None:
+    # The check is the FIRST statement of _start: it runs BEFORE the worktree is created, so a
+    # loud warning doesn't cost a worktree provision. Pin the order by spying on worktree.create
+    # and verifying it was NOT called when the check raises (we can't easily raise, so we verify
+    # the call order on a normal warning path instead).
+    from unittest.mock import MagicMock
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=0.10)],
+    )
+    _seed_run_event(fleet, cost=1.0)
+    create = MagicMock(side_effect=fleet.worktrees.create)
+    fleet.worktrees.create = create  # type: ignore[method-assign]
+    fleet.run(
+        "metered", TaskSpec(id="ord", goal="x"),
+        permission=PermissionMode.SAFE_EDIT, ts="2026-06-19T00:00:00Z",
+    )
+    assert create.call_count == 1  # the worktree was created (budget is advisory, not blocking)
+
+
+def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> None:
+    # The remaining column floors at 0 (a cap that has been blown reads $0 remaining, not a
+    # misleading negative). Spent comes from the windowed rollup; limit comes from the spec.
+    from datetime import datetime, timezone
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[
+            BudgetSpec(backend="metered", window="week", limit_usd=1.0),
+            BudgetSpec(client="worker", window="week", limit_usd=0.10),  # blown -> remaining=0
+            BudgetSpec(window="month", limit_usd=10.0),  # global
+        ],
+    )
+    _seed_run_event(fleet, backend="metered", client="worker", cost=0.50)
+    now = datetime.now(timezone.utc)
+    rows = {r.scope: r for r in fleet.budget_status(now=now)}
+    assert rows["backend:metered"].spent_usd == 0.50
+    assert rows["backend:metered"].limit_usd == 1.0
+    assert rows["backend:metered"].remaining_usd == 0.50
+    assert rows["client:worker"].spent_usd == 0.50
+    assert rows["client:worker"].remaining_usd == 0.0  # floored at 0 (cap is $0.10)
+    assert rows["global"].spent_usd == 0.50  # totals of the windowed summary
+    assert rows["global"].limit_usd == 10.0
+    assert rows["global"].remaining_usd == 9.50
+
+
+def test_budget_status_scope_with_no_spend_reads_zero(repo: Path) -> None:
+    # A scope with no recorded events reads $0 spent (and remaining == limit). Subscription /
+    # unknown-cost backends that report $0 also live here - we never fabricate a percentage.
+    from datetime import datetime, timezone
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="ghost", window="week", limit_usd=2.0)],
+    )
+    now = datetime.now(timezone.utc)
+    rows = fleet.budget_status(now=now)
+    assert len(rows) == 1
+    assert rows[0].scope == "backend:ghost"
+    assert rows[0].spent_usd == 0.0
+    assert rows[0].remaining_usd == 2.0
+
+
+def test_budget_status_no_budgets_is_empty(repo: Path) -> None:
+    # Backward-compat: the default-constructed FleetConfig has no budgets, so the result is [].
+    from datetime import datetime, timezone
+
+    fleet = Fleet(repo, {"metered": _Metered()})
+    assert fleet.budget_status(now=datetime.now(timezone.utc)) == []

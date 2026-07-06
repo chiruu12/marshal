@@ -302,6 +302,83 @@ def test_workspace_bare_lists(
     assert "default" in capsys.readouterr()[0]
 
 
+# --- `marshal usage` budgets: optional `--config` surfaces the configured `budgets:` -----
+
+
+def test_usage_json_includes_budgets_when_configured(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # When --config points at a fleet.config.yaml that declares `budgets:`, the JSON usage
+    # response includes a `budgets` list with scope / window / spent / limit / remaining. This
+    # is additive: tests that don't set --config still see the legacy four-key shape.
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="opencode", client="worker", model="<provider>/<model-a>",
+            cost_usd=0.40, status="succeeded", source="native",
+        ).model_dump_json() + "\n"
+    )
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text(
+        "clients:\n  worker:\n    backend: opencode\n"
+        "budgets:\n"
+        "  - client: worker\n    window: week\n    limit_usd: 1.0\n"
+        "  - backend: opencode\n    window: session\n    limit_usd: 0.50\n"
+    )
+    ret = cli.main(["usage", "--json", "--dir", str(u), "--config", str(cfg), "--window", "week"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert "budgets" in data
+    assert {b["scope"] for b in data["budgets"]} == {"client:worker", "backend:opencode"}
+    # The worker event booked $0.40 against the $1.0 cap -> $0.60 remaining.
+    worker = next(b for b in data["budgets"] if b["scope"] == "client:worker")
+    assert abs(worker["spent_usd"] - 0.40) < 1e-6
+    assert worker["limit_usd"] == 1.0
+    assert abs(worker["remaining_usd"] - 0.60) < 1e-6
+    # The backend budget under session has no spend (CLI session_start == now) -> $0.50 remaining.
+    be = next(b for b in data["budgets"] if b["scope"] == "backend:opencode")
+    assert be["spent_usd"] == 0.0
+    assert be["limit_usd"] == 0.5
+    assert be["remaining_usd"] == 0.5
+
+
+def test_usage_json_omits_budgets_when_no_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The "no behavior change" contract: without --config, the JSON response has NO `budgets`
+    # key (preserves the existing tests' assertions on the four legacy keys).
+    ret = cli.main(["usage", "--json", "--dir", str(tmp_path / "usage")])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert "budgets" not in data
+
+
+def test_usage_human_includes_budgets_section(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The human output gets a "budgets" table when budgets are configured, aligned via _align_rows.
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text(
+        "clients:\n  worker:\n    backend: opencode\n"
+        "budgets:\n"
+        "  - window: month\n    limit_usd: 5.0\n"
+    )
+    ret = cli.main(["usage", "--dir", str(tmp_path / "usage"), "--config", str(cfg)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "\nbudgets" in out
+    assert "global" in out  # scope label
+    assert "month" in out
+    assert "$5.0000" in out  # the limit column
+    assert "$0.0000" in out  # spent column (empty ledger, session collapse)
+
+
 # --- `marshal models` subcommand -------------------------------------------------------------
 
 

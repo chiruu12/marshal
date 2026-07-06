@@ -80,6 +80,29 @@ clients:
   **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
   exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
   (a timeout retry just burns another full window). A retried run records its `attempts` count.
+- **`budgets`** (optional, top-level): advisory $ caps per scope (a backend, a client, or the
+  whole fleet) and time window (`session` | `week` | `month`). **Soft-warn only — a cap never
+  blocks a run.** When a scope's windowed spend meets or exceeds its cap, Marshal prints a stderr
+  warning at the start of the next run on that scope. Set at most one of `backend` / `client` per
+  entry (omit both for a global cap); `limit_usd` must be positive; the scope's `cost_usd` comes
+  from the usage ledger, so subscription / unknown-cost backends (which report `$0`) never
+  trigger a $ cap and show `$0.00` spent (no fake percentage, no fabricated "remaining").
+
+  ```yaml
+  budgets:
+    - client: implementer      # cap the implementer client
+      window: week
+      limit_usd: 5.00
+    - backend: cursor          # cap the cursor backend
+      window: session
+      limit_usd: 1.00
+    - window: month            # global: no backend / client
+      limit_usd: 25.00
+  ```
+
+  The MCP `usage` tool's response (and `marshal usage --config fleet.config.yaml --json`) includes
+  a `budgets` list with `scope / window / spent_usd / limit_usd / remaining_usd` per budget, so
+  the driver can see how much room is left alongside the spend.
 - **Missing backend CLI → the client is skipped, not fatal.** At startup Marshal probes each
   configured backend's CLI; a client whose CLI is unavailable is **skipped** with a stderr warning
   (and listed under `skipped_clients`) so the rest of the fleet still runs - a missing CLI never fails
@@ -168,7 +191,7 @@ the default workspace.
 | `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
 | `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. |
 | `status()` | List all runs with status + cost. |
-| `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger). The resolved `window` and `since` are echoed back. |
+| `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger). The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd` (advisory only - caps never block a run). |
 | `get_run_log(run_id)` | The full raw stdout/stderr persisted for a run (under `<base>/logs/<run_id>.log`), or `null` when no log was written. The 16KB-truncated `text` on the run record is the agent's *final message*; the log preserves the *whole* stream so a driver can inspect what the agent actually did (esp. on a failure). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
@@ -204,6 +227,15 @@ equivalent; the MCP `usage` tool's `window="session"` maps to the server's actua
 timestamp. With `--json` the existing `totals / by_backend / by_client / by_model` shape is
 preserved (the test that pins it still passes); the response adds `by_backend_model`, the resolved
 `window`, and the `since` timestamp used to filter.
+
+Add `--config fleet.config.yaml` to also surface any advisory `budgets:` declared there. The
+human output gets a `budgets` table with columns `scope · window · spent · limit · remaining`
+(aligned via `_align_rows`); the JSON output adds a `budgets` list. No `budgets:` configured =
+no `budgets` section / key (the "no behavior change" contract for users who don't opt in).
+**Budgets are advisory only**: a cap that has been met never blocks a run, just prints a stderr
+warning at the start of the next run on that scope. Budgets are also only meaningful for
+backends that report cost - subscription / unknown-cost backends report `$0`, so a $ cap on them
+never triggers and reads `$0.00` spent (no fake percentage, no fabricated "remaining").
 
 ### `marshal logs`
 

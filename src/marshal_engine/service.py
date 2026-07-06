@@ -30,6 +30,7 @@ from .doctor import run_checks, summarize
 from .env import merge_user_path
 from .fleet import (
     BenchmarkResult,
+    BudgetStatus,
     CleanResult,
     CollectResult,
     CommitResult,
@@ -152,6 +153,7 @@ class MarshalService:
             worktree_setup=config.worktree_setup,
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
+            budgets=config.budgets,
         )
         # Serializes lazy ad-hoc backend registration (_ensure_backend) so concurrent MCP tool
         # threads don't race the fleet.backends mutation or a doctor() snapshot of it.
@@ -480,6 +482,16 @@ class MarshalService:
         event's `ts` (see `UsageTracker.summary`).
         """
         return self.fleet.usage.summary(since=since, until=until)
+
+    def budget_status(self, now: datetime | None = None) -> list[BudgetStatus]:
+        """Snapshot the configured advisory budgets: scope, window, windowed spend, limit, remaining.
+
+        `remaining` = ``max(0, limit - spend)`` - so a $0 spend (e.g. a subscription backend that
+        reports no cost, or a scope with no runs) reads ``limit`` remaining rather than a misleading
+        negative. Returns an empty list when no budgets are configured (the "no behavior change"
+        contract for users who don't opt in).
+        """
+        return self.fleet.budget_status(now=now)
 
     @property
     def session_start(self) -> datetime:

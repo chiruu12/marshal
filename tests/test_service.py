@@ -22,6 +22,7 @@ from marshal_engine import (
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.config import (
     DEFAULT_OPENCODE_MODEL,
+    BudgetSpec,
     ClientConfig,
     ConfigError,
     FleetConfig,
@@ -747,3 +748,35 @@ def test_run_many_duration_invalid_preset_fails_fast(repo: Path) -> None:
     with pytest.raises(ConfigError, match="unknown duration"):
         svc.run_many([{"client": "a", "goal": "x", "duration": "xl"}])
     assert svc.status() == []  # nothing ran
+
+
+# --- advisory budgets: MarshalService passes them through to the Fleet ----------------------
+
+
+def test_service_budget_status_passes_config_through_to_fleet(repo: Path) -> None:
+    # The service threads FleetConfig.budgets into the Fleet so the MCP `usage` tool and any
+    # library caller see the same snapshot. A no-config-budgets service returns [].
+    cfg = FleetConfig(
+        clients={"a": ClientConfig(name="a", backend="echo", permission=PermissionMode.SAFE_EDIT)},
+        budgets=[
+            BudgetSpec(backend="echo", window="week", limit_usd=1.0),
+            BudgetSpec(window="month", limit_usd=5.0),
+        ],
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    assert [b.model_dump() for b in svc.fleet.budgets] == [
+        {"backend": "echo", "client": None, "window": "week", "limit_usd": 1.0},
+        {"backend": None, "client": None, "window": "month", "limit_usd": 5.0},
+    ]
+    rows = svc.budget_status()
+    assert [r.scope for r in rows] == ["backend:echo", "global"]
+    assert [r.limit_usd for r in rows] == [1.0, 5.0]
+    # No runs yet -> $0 spent, full limit remaining on every budget.
+    assert all(r.spent_usd == 0.0 for r in rows)
+    assert [r.remaining_usd for r in rows] == [1.0, 5.0]
+
+
+def test_service_no_budgets_returns_empty_list(repo: Path) -> None:
+    # Backward-compat: a service built from a config without `budgets:` returns [].
+    svc = _svc(repo)
+    assert svc.budget_status() == []

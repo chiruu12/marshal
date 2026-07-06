@@ -115,6 +115,28 @@ class FleetContext(BaseModel):
     driver: str | None = None
 
 
+#: Allowed values for `BudgetSpec.window`. Anything else fails fast at load (the same posture as
+#: the other config errors - a typo should never silently disable a budget).
+BUDGET_WINDOWS: frozenset[str] = frozenset({"session", "week", "month"})
+
+
+class BudgetSpec(BaseModel):
+    """An advisory $ cap for a scope (a backend, a client, or the fleet as a whole).
+
+    Budgets are **advisory only** - `Fleet._start` checks them, but a run is never blocked by a
+    cap. The check reads the usage ledger's `cost_usd`, which is real for meterable backends
+    (source native / admin-api / estimated); subscription / unknown-cost backends report $0, so
+    a $ budget on them simply never triggers (and shows $0 spent - we do NOT fabricate a fake
+    percentage or "remaining"). Exactly one of `backend` / `client` may be set; neither = a
+    global cap.
+    """
+
+    backend: str | None = None
+    client: str | None = None
+    window: str  # one of BUDGET_WINDOWS - validated by the parser, not pydantic (gives a clean error)
+    limit_usd: float
+
+
 class FleetConfig(BaseModel):
     clients: dict[str, ClientConfig] = {}
     # Fleet-wide layered context: `worker` prefixes every worker goal; `driver` is shown to the
@@ -130,6 +152,9 @@ class FleetConfig(BaseModel):
     # does NOT influence routing (clients still own backend+model). Absent/empty by default so
     # existing configs load unchanged.
     models: list[ModelSpec] = []
+    # Optional advisory $ budgets per scope (backend / client / global) and time window
+    # (session / week / month). Absent/empty = no budgets, no behavior change. See BudgetSpec.
+    budgets: list[BudgetSpec] = []
 
 
 def load_config(path: Path | str) -> FleetConfig:
@@ -174,6 +199,7 @@ def load_config(path: Path | str) -> FleetConfig:
         worktree_setup=_parse_setup(raw.get("worktree_setup")),
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
+        budgets=_parse_budgets(raw.get("budgets")),
     )
 
 
@@ -224,6 +250,55 @@ def _parse_retries(value: Any) -> int:
     if value < 0:
         raise ConfigError(f"retries must be >= 0, got {value}")
     return value
+
+
+def _parse_budgets(value: Any) -> list[BudgetSpec]:
+    """Normalize the optional top-level ``budgets:`` advisory caps. Absent -> ``[]``.
+
+    Each entry: optional ``backend`` OR optional ``client`` (not both, not neither), a ``window``
+    in {session, week, month}, and a positive ``limit_usd``. A malformed entry raises
+    ``ConfigError`` so a typo fails fast at load (same posture as the other config errors),
+    instead of silently dropping a budget.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError(f"budgets must be a list, got {type(value).__name__}")
+    out: list[BudgetSpec] = []
+    for i, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"budgets[{i}] must be a mapping, got {type(entry).__name__}")
+        backend_raw = entry.get("backend")
+        client_raw = entry.get("client")
+        backend = str(backend_raw) if backend_raw else None
+        client = str(client_raw) if client_raw else None
+        if backend is not None and client is not None:
+            raise ConfigError(
+                f"budgets[{i}]: set at most one of 'backend' or 'client' (got both); "
+                "a budget is scoped to a backend, a client, or the whole fleet - never two"
+            )
+        window_raw = entry.get("window")
+        if not isinstance(window_raw, str) or window_raw not in BUDGET_WINDOWS:
+            valid = ", ".join(sorted(BUDGET_WINDOWS))
+            raise ConfigError(
+                f"budgets[{i}].window must be one of {valid}, got {window_raw!r}"
+            )
+        limit_raw = entry.get("limit_usd")
+        if isinstance(limit_raw, bool) or not isinstance(limit_raw, (int, float)):
+            raise ConfigError(
+                f"budgets[{i}].limit_usd must be a positive number, got {type(limit_raw).__name__}"
+            )
+        if limit_raw <= 0:
+            raise ConfigError(f"budgets[{i}].limit_usd must be > 0, got {limit_raw}")
+        out.append(
+            BudgetSpec(
+                backend=backend,
+                client=client,
+                window=window_raw,
+                limit_usd=float(limit_raw),
+            )
+        )
+    return out
 
 
 def _parse_setup(value: Any) -> list[str] | None:
@@ -283,4 +358,21 @@ def validate(cfg: FleetConfig) -> list[str]:
             )
         if c.secret_ref and c.secret_ref.startswith("env:") and resolve_secret(c.secret_ref) is None:
             warnings.append(f"client {c.name!r}: secret {c.secret_ref!r} is not set in the environment")
+    # An advisory budget scoped to a name nothing runs under would silently never fire - warn (the
+    # same "a typo should never silently disable a budget" posture the parser takes for window/limit).
+    known_backends: set[str] | None = None
+    for b in cfg.budgets:
+        if b.client is not None and b.client not in cfg.clients:
+            warnings.append(
+                f"budget scope client {b.client!r} is not a configured client; this cap never fires"
+            )
+        if b.backend is not None:
+            if known_backends is None:
+                from .registry import backend_names  # lazy: avoid a module-level import cycle
+
+                known_backends = set(backend_names())
+            if b.backend not in known_backends:
+                warnings.append(
+                    f"budget scope backend {b.backend!r} is not a known backend; this cap never fires"
+                )
     return warnings
