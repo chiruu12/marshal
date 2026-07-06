@@ -16,7 +16,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
-from .config import ClientConfig, ConfigError, FleetConfig, resolve_model
+from .config import ClientConfig, ConfigError, FleetConfig, _reject_fireworks, resolve_model
 from .doctor import run_checks, summarize
 from .env import merge_user_path
 from .fleet import (
@@ -132,6 +132,9 @@ class MarshalService:
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
         )
+        # Serializes lazy ad-hoc backend registration (_ensure_backend) so concurrent MCP tool
+        # threads don't race the fleet.backends mutation or a doctor() snapshot of it.
+        self._adhoc_lock = threading.Lock()
 
     def list_clients(self) -> ClientList:
         return ClientList(
@@ -167,16 +170,23 @@ class MarshalService:
 
     def _request_for(
         self,
-        client_name: str,
+        client_name: str | None,
         goal: str,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
+        *,
+        model: str | None = None,
+        backend: str | None = None,
     ) -> RunRequest:
-        client = self._clients.get(client_name)
-        if client is None:
-            known = ", ".join(self._clients) or "(none configured)"
-            raise ValueError(f"no such client: {client_name!r}; known: {known}")
+        # Harness-first model selection: pick the strategy by (client, [model], [backend]).
+        #   - client only: today's path (lookup + resolve_model).
+        #   - client + model: same, but the caller's model overrides the client's resolved model.
+        #   - backend only: synthesize an ad-hoc client (does NOT need to exist in fleet.config.yaml);
+        #     uses ClientConfig's safe defaults (safe-edit, 600s). Validated against the backend
+        #     registry and the Fireworks guard.
+        #   - client + backend: client wins; backend is ignored.
+        #   - neither: fail loud.
         # `role` is a semantic routing role (planner/coder/reviewer) that a future policy layer maps
         # to a backend - NOT the client name (the client is carried on RunRequest/RunRecord already).
         # Leave it unset until that policy exists, so the field never claims a role nothing assigned.
@@ -186,26 +196,76 @@ class MarshalService:
             context_files=context_files or [],
             files_touched=files_touched or [],
         )
-        return RunRequest(
-            backend_name=client.backend,
-            task=task,
-            permission=client.permission,
-            model=resolve_model(client),
-            client=client.name,
-            timeout_s=client.timeout_s,
-            usage_api=client.usage_api,
-        )
+        if client_name:
+            client = self._clients.get(client_name)
+            if client is None:
+                known = ", ".join(self._clients) or "(none configured)"
+                raise ValueError(f"no such client: {client_name!r}; known: {known}")
+            resolved_model = model if model is not None else resolve_model(client)
+            if model is not None:
+                # A model override bypasses load_config's guard, so re-check it here (same rule):
+                # pointing an opencode client at a fireworks-ai/* model would bill Fireworks credits.
+                _reject_fireworks(
+                    ClientConfig(name=client.name, backend=client.backend, model=resolved_model)
+                )
+            return RunRequest(
+                backend_name=client.backend,
+                task=task,
+                permission=client.permission,
+                model=resolved_model,
+                client=client.name,
+                timeout_s=client.timeout_s,
+                usage_api=client.usage_api,
+            )
+        if backend:
+            # Ad-hoc: synthesize a client that doesn't need to be in fleet.config.yaml. It uses
+            # ClientConfig's own defaults (permission=safe-edit, timeout_s=600) - the safe defaults
+            # for an unconfigured run, NOT the repo's `defaults:` block (which is merged into named
+            # clients at load time and not retained on FleetConfig).
+            ephemeral = ClientConfig(name=f"adhoc-{backend}", backend=backend, model=model)
+            _reject_fireworks(ephemeral)  # same hard guard load_config applies; a typo'd model fails fast
+            self._ensure_backend(backend)  # lazy-add so the Fleet knows the backend; raises ValueError on unknown
+            return RunRequest(
+                backend_name=ephemeral.backend,
+                task=task,
+                permission=ephemeral.permission,
+                model=resolve_model(ephemeral),
+                client=ephemeral.name,
+                timeout_s=ephemeral.timeout_s,
+                usage_api=ephemeral.usage_api,
+            )
+        raise ValueError("must provide either a configured 'client' or a bare 'backend' (with optional 'model')")
+
+    def _ensure_backend(self, name: str) -> CodingAgentBackend:
+        """Lazily add a backend to the Fleet for ad-hoc (backend, model) spawns.
+
+        Returns the live instance. Raises ValueError if the name is not in the backend registry
+        (the registry's own message already lists the valid backend names). Guarded by
+        `_adhoc_lock` so concurrent MCP tool threads don't race the mutation or a doctor() read.
+        """
+        with self._adhoc_lock:
+            existing = self.fleet.backends.get(name)
+            if existing is not None:
+                return existing
+            be = make_backend(name)  # raises ValueError("unknown backend ...; known: ...")
+            self.fleet.backends[name] = be
+            return be
 
     def run_agent(
         self,
-        client_name: str,
-        goal: str,
+        client_name: str | None = None,
+        goal: str = "",
         *,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
+        model: str | None = None,
+        backend: str | None = None,
     ) -> RunRecord:
-        req = self._request_for(client_name, goal, task_id, files_touched, context_files)
+        req = self._request_for(
+            client_name, goal, task_id, files_touched, context_files,
+            model=model, backend=backend,
+        )
         return self.fleet.run(
             req.backend_name,
             req.task,
@@ -218,14 +278,16 @@ class MarshalService:
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
         """Run several clients in parallel. Each job is
-        {client, goal, task_id?, files_touched?, context_files?}.
+        {client, goal, task_id?, files_touched?, context_files?, model?, backend?}.
 
-        Client names are validated up front, so a typo fails fast before any run starts.
+        Client names are validated up front, so a typo fails fast before any run starts. A job may
+        also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key.
         """
         requests = [
             self._request_for(
-                j["client"], j["goal"], j.get("task_id"), j.get("files_touched"),
+                j.get("client"), j["goal"], j.get("task_id"), j.get("files_touched"),
                 j.get("context_files"),
+                model=j.get("model"), backend=j.get("backend"),
             )
             for j in jobs
         ]
@@ -233,15 +295,20 @@ class MarshalService:
 
     def spawn(
         self,
-        client_name: str,
-        goal: str,
+        client_name: str | None = None,
+        goal: str = "",
         *,
         task_id: str | None = None,
         files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
+        model: str | None = None,
+        backend: str | None = None,
     ) -> RunRecord:
         """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
-        req = self._request_for(client_name, goal, task_id, files_touched, context_files)
+        req = self._request_for(
+            client_name, goal, task_id, files_touched, context_files,
+            model=model, backend=backend,
+        )
         run_id = self.fleet.spawn(req)
         rec = self.fleet.state.get(run_id)
         assert rec is not None  # _start just recorded it RUNNING
@@ -337,7 +404,9 @@ class MarshalService:
         check a backend is ready *before* spawning, instead of learning it from a failed run. Probes
         the fleet's configured backends (the same instances runs use).
         """
-        checks = run_checks(self.repo_root, self.config_path, backends=self.fleet.backends)
+        with self._adhoc_lock:
+            probed = dict(self.fleet.backends)
+        checks = run_checks(self.repo_root, self.config_path, backends=probed)
         fails, warns = summarize(checks)
         return DoctorReport(
             checks=[

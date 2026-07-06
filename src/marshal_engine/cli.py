@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import ConfigError, load_config
+from .config import ConfigError, FleetConfig, load_config, validate
 from .doctor import FAIL, OK, WARN, run_checks, summarize
 from .env import merge_user_path
 from .fleet import Fleet
 from .registry import backend_names, default_backends
+from .service import MarshalService
 from .state import FleetState
 from .usage import UsageTracker
 from .workflow import load_workflow, validate_workflow, workflow_paths
@@ -222,6 +223,66 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if fails else 0
 
 
+def _build_cli_service(args: argparse.Namespace) -> MarshalService:
+    """Build a MarshalService for `run`/`spawn` from CLI args (mirrors mcp_server.build_service).
+
+    A repo with no fleet.config.yaml still builds, with zero clients, so `marshal run --backend ...
+    --model ...` works ad-hoc without ever editing a config file.
+    """
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    if not cfg_path.exists():
+        return MarshalService(repo, FleetConfig(), config_path=cfg_path)
+    config = load_config(cfg_path)
+    for warning in validate(config):
+        print(f"[marshal] config warning: {warning}", file=sys.stderr)
+    return MarshalService(repo, config, config_path=cfg_path)
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Run a task synchronously on a configured client (or ad-hoc by bare backend + model)."""
+    try:
+        svc = _build_cli_service(args)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        rec = svc.run_agent(
+            args.client, args.goal, task_id=args.task_id,
+            model=args.model, backend=args.backend,
+        )
+    except (ValueError, ConfigError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(rec.model_dump(mode="json"), indent=2))
+        return 0
+    print(f"{rec.run_id}  {rec.backend}/{rec.model or '-'}  {rec.status}")
+    return 0
+
+
+def _cmd_spawn(args: argparse.Namespace) -> int:
+    """Start a run in the background; returns its RUNNING record at once."""
+    try:
+        svc = _build_cli_service(args)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        rec = svc.spawn(
+            args.client, args.goal, task_id=args.task_id,
+            model=args.model, backend=args.backend,
+        )
+    except (ValueError, ConfigError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(rec.model_dump(mode="json"), indent=2))
+        return 0
+    print(f"{rec.run_id}  {rec.backend}/{rec.model or '-'}  {rec.status}  (poll: marshal status)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Recover the user's interactive PATH if the CLI was launched from a context that didn't
     # source their rc files (a non-interactive SSH session, a launchd job). For the normal case of
@@ -262,6 +323,24 @@ def main(argv: list[str] | None = None) -> int:
     pw.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     pw.add_argument("--json", action="store_true", help="output JSON")
+    prun = sub.add_parser("run", help="run a task on a configured client (or ad-hoc by backend+model)")
+    prun.add_argument("--client", default=None, help="name of a configured client (from list_clients)")
+    prun.add_argument("--backend", default=None, help="ad-hoc backend name (e.g. 'opencode', 'claude-code'); ignored when --client is also set")
+    prun.add_argument("--model", default=None, help="model to pass (overrides the client's resolved model)")
+    prun.add_argument("--goal", required=True, help="natural-language task for the agent")
+    prun.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
+    prun.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    prun.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    prun.add_argument("--json", action="store_true", help="output JSON")
+    pspwn = sub.add_parser("spawn", help="start a task in the background and return its RUNNING record at once")
+    pspwn.add_argument("--client", default=None, help="name of a configured client (from list_clients)")
+    pspwn.add_argument("--backend", default=None, help="ad-hoc backend name (e.g. 'opencode', 'claude-code'); ignored when --client is also set")
+    pspwn.add_argument("--model", default=None, help="model to pass (overrides the client's resolved model)")
+    pspwn.add_argument("--goal", required=True, help="natural-language task for the agent")
+    pspwn.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
+    pspwn.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pspwn.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    pspwn.add_argument("--json", action="store_true", help="output JSON")
     pws = sub.add_parser("workspace", help="manage the workspace registry (~/.marshal/workspaces.yaml)")
     wsub = pws.add_subparsers(dest="ws_cmd")
     wadd = wsub.add_parser("add", help="register a repo as a workspace (path defaults to cwd)")
@@ -291,6 +370,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(args)
     if args.cmd == "workflows":
         return _cmd_workflows(args)
+    if args.cmd == "run":
+        return _cmd_run(args)
+    if args.cmd == "spawn":
+        return _cmd_spawn(args)
     if args.cmd == "workspace":
         return _cmd_workspace(args)
     if args.cmd == "mcp":

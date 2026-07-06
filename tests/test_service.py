@@ -20,7 +20,14 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, FleetConfig, FleetContext, load_config
+from marshal_engine.config import (
+    DEFAULT_OPENCODE_MODEL,
+    ClientConfig,
+    ConfigError,
+    FleetConfig,
+    FleetContext,
+    load_config,
+)
 from marshal_engine.service import MarshalService
 
 
@@ -439,3 +446,144 @@ def test_all_available_skipped_is_empty(repo: Path) -> None:
     svc = _svc(repo)  # single 'echo' client, _Echo.check_available() is True
     assert svc.skipped_clients == []
     assert {c.name for c in svc.list_clients().clients} == {"worker"}
+
+
+# --- harness-first model selection: model override + ad-hoc (backend, model) spawn ------------
+
+
+def _opencode_svc(repo: Path) -> MarshalService:
+    """A service whose configured client uses the opencode backend (the Fireworks guard is opencode-specific)."""
+    cfg = FleetConfig(
+        clients={
+            "impl": ClientConfig(
+                name="impl", backend="opencode", model="opencode-go/anything",
+                permission=PermissionMode.SAFE_EDIT,
+            )
+        }
+    )
+    # Inject a no-op opencode backend so the service doesn't try to call the real `opencode` CLI
+    # in CI; the synthesis path only consults make_backend() for ad-hoc, but the configured client
+    # is the one that exercises the Fireworks guard via the override channel.
+    from marshal_engine.backends.opencode import OpenCodeBackend
+
+    fake = OpenCodeBackend()
+    fake.check_available = lambda: True  # type: ignore[method-assign]
+    return MarshalService(repo, cfg, backends={"opencode": fake})
+
+
+def test_request_for_adhoc_synthesizes_ephemeral_config(repo: Path) -> None:
+    # Ad-hoc: backend=echo (already on the fleet via _Echo), no client. The synthesized request
+    # uses fleet-default permission + timeout, the caller's model, and an `adhoc-<backend>` client
+    # name. resolve_model still applies its opencode default for ad-hoc opencode without a model.
+    svc = _svc(repo)
+    req = svc._request_for(None, "x", backend="echo", model="custom-model")
+    assert req.backend_name == "echo"
+    assert req.model == "custom-model"
+    assert req.client == "adhoc-echo"
+    assert req.permission == PermissionMode.SAFE_EDIT  # fleet default
+    assert req.timeout_s == 600  # fleet default
+
+    # Ad-hoc opencode without an explicit model: resolve_model defaults to the Go subscription.
+    req2 = svc._request_for(None, "x", backend="opencode")
+    assert req2.backend_name == "opencode"
+    assert req2.model == DEFAULT_OPENCODE_MODEL
+
+
+def test_request_for_both_client_and_backend_prefers_client(repo: Path) -> None:
+    # When both `client_name` and `backend` are given, client wins (backend is ignored). The
+    # client's resolved backend/model are used; `model` still overrides the resolved model.
+    svc = _svc(repo)
+    # The service's "worker" client is backend="echo" with no model. Ad-hoc would be "opencode".
+    # Passing both -> the run uses "echo" (client's), not "opencode".
+    req = svc._request_for("worker", "x", backend="opencode")
+    assert req.backend_name == "echo"
+    assert req.client == "worker"
+    # And the explicit model still overrides whatever the client resolves to.
+    req2 = svc._request_for("worker", "x", backend="opencode", model="explicit")
+    assert req2.backend_name == "echo"
+    assert req2.model == "explicit"
+
+
+def test_request_for_neither_client_nor_backend_raises(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="client.*backend|backend.*client"):
+        svc._request_for(None, "x")
+
+
+def test_request_for_unknown_backend_raises_with_valid_names(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError) as exc:
+        svc._request_for(None, "x", backend="nonexistent")
+    # The registry's own message lists the valid backends; the test asserts the names are surfaced.
+    msg = str(exc.value)
+    assert "nonexistent" in msg
+    assert "known" in msg
+    # Each registered backend name appears in the error so the driver can fix the typo.
+    from marshal_engine.registry import backend_names
+
+    for name in backend_names():
+        assert name in msg
+
+
+def test_request_for_adhoc_opencode_fireworks_model_raises(repo: Path) -> None:
+    # The Fireworks guard applies to ad-hoc opencode configs the same way it does to configured
+    # ones - synthesized at request-time, so a typo'd model fails fast before any spawn.
+    svc = _svc(repo)
+    with pytest.raises(ConfigError, match="Fireworks"):
+        svc._request_for(None, "x", backend="opencode", model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+
+
+def test_run_agent_model_override_on_configured_client(repo: Path) -> None:
+    # end-to-end: a configured client with model "configured-model", then call with model="override";
+    # the override reaches the RunRecord (which is what get_run / status / usage / report see).
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(
+                name="worker", backend="echo", model="configured-model",
+                permission=PermissionMode.SAFE_EDIT,
+            )
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    rec = svc.run_agent("worker", "do x", task_id="t1", model="override")
+    assert rec.status == "succeeded"
+    assert rec.model == "override"  # override reaches the persisted record
+
+    # And without the override, the client's resolved model is used.
+    rec2 = svc.run_agent("worker", "do x", task_id="t2")
+    assert rec2.model == "configured-model"  # resolve_model(client)
+
+
+def test_run_agent_adhoc_backend_runs_without_configured_client(repo: Path) -> None:
+    # A service with NO clients (e.g. an empty config) can still spawn by bare (backend, model).
+    cfg = FleetConfig()  # no clients
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    rec = svc.run_agent(backend="echo", goal="do x", task_id="t1", model="adhoc-model")
+    assert rec.status == "succeeded"
+    assert rec.backend == "echo"
+    assert rec.model == "adhoc-model"
+    assert rec.client == "adhoc-echo"
+
+
+def test_run_agent_unknown_backend_raises(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="nonexistent"):
+        svc.run_agent(backend="nonexistent", goal="x", task_id="t1")
+
+
+def test_run_agent_opencode_fireworks_model_raises_config_error(repo: Path) -> None:
+    # Ad-hoc path: run_agent propagates the same ConfigError the synthesis raises, so a
+    # Fireworks-billed run never starts on the Fleet.
+    svc = _opencode_svc(repo)
+    with pytest.raises(ConfigError, match="Fireworks"):
+        svc.run_agent(backend="opencode", goal="x", task_id="t1",
+                      model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+
+
+def test_run_agent_client_model_override_fireworks_raises(repo: Path) -> None:
+    # Override path: a model override on a CONFIGURED opencode client must hit the same Fireworks
+    # guard as an ad-hoc opencode run. Overrides bypass load_config, so _request_for re-checks.
+    svc = _opencode_svc(repo)  # configured client "impl" is backend=opencode
+    with pytest.raises(ConfigError, match="Fireworks"):
+        svc.run_agent("impl", "x", task_id="t1",
+                      model="fireworks-ai/accounts/fireworks/models/glm-5p2")
