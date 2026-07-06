@@ -26,6 +26,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .config import ConfigError, FleetConfig
+from .types import RunStatus
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
     from .fleet import CollectResult, IntegrateResult
@@ -298,12 +299,31 @@ class WorkflowRunner:
                     raise ConfigError(f"phase {idx} ({label}): all clients unavailable")
                 notes = [f"{c}: backend CLI unavailable, skipped" for c in skipped]
                 jobs = [{"client": c, "goal": goal, "task_id": task_id} for c in available]
-                records = self.service.run_many(jobs, max_concurrency=max_concurrency)
+                # A primitive raising here (e.g. run_many blowing up because every available
+                # backend vanished at the last second) must NOT abort the whole workflow - the
+                # driver needs the full picture. Record the failure as a phase note + next
+                # action, mark had_error, and keep going so subsequent phases still execute.
+                try:
+                    records = self.service.run_many(jobs, max_concurrency=max_concurrency)
+                except Exception as exc:  # noqa: BLE001 - the runner swallows + reports, doesn't crash
+                    had_error = True
+                    msg = f"phase {idx} ({label}): run_many failed: {exc}"
+                    notes.append(msg)
+                    next_actions.append(msg)
+                    # Seed the source map with an empty list so a later collect/integrate that
+                    # sources from THIS phase iterates over nothing instead of KeyError-raising.
+                    runs_by_index[idx] = []
+                    phases.append(
+                        PhaseResult(
+                            name=phase.name, run=phase.run, run_ids=[], records=[], notes=notes
+                        )
+                    )
+                    continue
                 run_ids = [r.run_id for r in records]
                 runs_by_index[idx] = run_ids
                 for r in records:
                     status_by_run[r.run_id] = r.status
-                    if r.status != "succeeded":
+                    if r.status != RunStatus.SUCCEEDED.value:
                         notes.append(f"{r.run_id}: run did not succeed ({r.status})")
                         next_actions.append(
                             f"inspect failed run: {r.run_id} (client {r.client}, {r.status})"
@@ -318,14 +338,40 @@ class WorkflowRunner:
                     )
                 )
             elif phase.run == "agent":
-                assert phase.client is not None  # validate_workflow guarantees this
+                # validate_workflow normally guarantees this; raise explicitly so a future
+                # caller that constructs a WorkflowSpec without going through validate_workflow
+                # gets a clean ConfigError instead of an AttributeError on `None.client` (and
+                # so the check survives `python -O`, which silently strips `assert`).
+                if phase.client is None:
+                    raise ConfigError(
+                        f"phase {idx} ({label}): `run: agent` requires a `client`"
+                    )
                 goal = render_goal(phase.goal or "", inputs)
                 task_id = f"{workflow_run_id}.{label}"
-                rec = self.service.run_agent(phase.client, goal, task_id=task_id)
+                # Same survival contract as fan_out: a service failure becomes a phase note,
+                # not a workflow crash. (collect/integrate were already wrapped - this
+                # closes the gap.)
+                try:
+                    rec = self.service.run_agent(phase.client, goal, task_id=task_id)
+                except Exception as exc:  # noqa: BLE001
+                    had_error = True
+                    msg = f"phase {idx} ({label}): run_agent failed: {exc}"
+                    runs_by_index[idx] = []  # see note in fan_out above
+                    phases.append(
+                        PhaseResult(
+                            name=phase.name,
+                            run=phase.run,
+                            run_ids=[],
+                            records=[],
+                            notes=[msg],
+                        )
+                    )
+                    next_actions.append(msg)
+                    continue
                 runs_by_index[idx] = [rec.run_id]
                 status_by_run[rec.run_id] = rec.status
                 notes = []
-                if rec.status != "succeeded":
+                if rec.status != RunStatus.SUCCEEDED.value:
                     notes.append(f"{rec.run_id}: run did not succeed ({rec.status})")
                     next_actions.append(
                         f"inspect failed run: {rec.run_id} (client {rec.client}, {rec.status})"
@@ -358,7 +404,7 @@ class WorkflowRunner:
                 )
             else:  # integrate
                 source_ids = runs_by_index[resolve_source(spec, idx)]
-                candidates = [rid for rid in source_ids if status_by_run.get(rid) == "succeeded"]
+                candidates = [rid for rid in source_ids if status_by_run.get(rid) == RunStatus.SUCCEEDED.value]
                 pr = PhaseResult(name=phase.name, run=phase.run)
                 if not phase.auto:
                     # default safety gate: never merge automatically; hand candidates to the driver.
@@ -384,7 +430,7 @@ class WorkflowRunner:
                             next_actions.append(
                                 f"integrate blocked, fix then retry: {rid}: {ir.message}"
                             )
-                        elif ir.status == "empty":
+                        elif ir.status == RunStatus.EMPTY.value:
                             # nothing landed and nothing to review - informational, not a gate.
                             pr.notes.append(f"{rid}: nothing to integrate (empty)")
                         # "merged" → no follow-up needed

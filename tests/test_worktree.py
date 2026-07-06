@@ -54,6 +54,44 @@ def test_setup_is_noop_without_setup_cmd(repo: Path) -> None:
     assert wt.path.exists()
 
 
+# --- path-traversal security: task_id is a public input, so it must be sanitized -----------
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../escape",
+        "../../etc/evil",
+        "ok/../../escape",
+        "/absolute/path",
+        "with spaces/../../escape",
+    ],
+)
+def test_create_rejects_path_traversal_in_task_id(repo: Path, bad_id: str) -> None:
+    # The MCP surface (and workflows) accept an arbitrary `task_id` from the driver / spec. A
+    # `..` segment, an absolute path, or a slash that escapes the base dir must NOT be allowed
+    # to write the worktree anywhere on disk - that would be a real path-traversal hole.
+    m = WorktreeManager(repo)
+    base_resolved = m.base_dir.resolve()
+    with pytest.raises(WorktreeError):
+        m.create(bad_id)
+    # nothing landed outside the base dir
+    assert (base_resolved.parent).exists()  # the parent dir was never the target
+    # the escape target, if it would have been a child of the parent, must not exist either
+    for candidate in (base_resolved.parent / "escape", base_resolved.parent / "evil"):
+        assert not candidate.exists()
+
+
+def test_create_accepts_normal_ids_after_a_traversal_attempt(repo: Path) -> None:
+    # A rejected traversal attempt must leave no orphan state - the manager is reusable.
+    m = WorktreeManager(repo)
+    with pytest.raises(WorktreeError):
+        m.create("../escape")
+    wt = m.create("normal-after")
+    assert wt.path.exists()
+    assert wt.branch == "marshal/normal-after"
+
+
 def test_setup_failure_tears_down_and_raises(repo: Path) -> None:
     m = WorktreeManager(repo, setup_cmd=[sys.executable, "-c", "import sys; sys.exit(1)"])
     wt = m.create("setup_fail")

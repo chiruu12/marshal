@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .eastrouter import CostResolver, default_cost_resolvers
+from .env import merge_user_path
 from .pricing import PriceTable, PricingError
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
@@ -216,6 +217,14 @@ class Fleet:
         cost_resolvers: Mapping[str, CostResolver] | None = None,
         run_gate: threading.Semaphore | None = None,
     ) -> None:
+        # Recover the user's interactive PATH so a Fleet constructed in a context that didn't
+        # source the user's rc files (an MCP server with a stripped PATH) still spawns agent
+        # CLIs from user-managed locations (Homebrew, npm-global, ~/.local/bin). mcp_server.main
+        # and cli.main already do this at process entry, but Fleet is a public engine primitive -
+        # a library caller (or test) that constructs a Fleet directly without going through the
+        # CLI/MCP entry would otherwise spawn agents against a broken PATH. Idempotent + cached,
+        # so the duplicate call is a no-op. MARSHAL_NO_PATH_FIX=1 still opts out.
+        merge_user_path()
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
         self.worktrees = WorktreeManager(
@@ -665,7 +674,7 @@ class Fleet:
         rec = self.state.get(run_id)
         if rec is None:
             raise ValueError(f"no such run: {run_id!r}")
-        if rec.status != "running":
+        if rec.status != RunStatus.RUNNING.value:
             return rec
         if rec.pid is not None:
             try:
@@ -676,7 +685,7 @@ class Fleet:
         # write atomically under the per-run lock, so a run that finished (succeeded/failed) between
         # the kill and now is never overwritten with "cancelled".
         return self.state.update_if(
-            run_id, lambda r: r.status == "running", status="cancelled", ended_at=_now()
+            run_id, lambda r: r.status == RunStatus.RUNNING.value, status="cancelled", ended_at=_now()
         )
 
     def integrate(

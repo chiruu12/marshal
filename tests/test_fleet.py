@@ -793,3 +793,47 @@ def test_clean_unknown_scope_raises(repo: Path) -> None:
     fleet.run("writer", TaskSpec(id="cl8", goal="x"))
     with pytest.raises(ValueError):
         fleet.clean(scope="bogus")
+
+
+# --- _executor: lazy-init + double-checked locking is safe under contention ------------------
+
+
+def test_executor_lazy_init_under_concurrent_first_touch(repo: Path) -> None:
+    # Fleet._executor uses double-checked locking to build its background-spawn pool on
+    # first use. Eight threads racing to call it must build exactly ONE pool - a duplicate
+    # build would leak a ThreadPoolExecutor (one of the two would never be shutdown(),
+    # holding its workers forever). Locks the safety property Fleet.spawn relies on.
+    import threading
+    from marshal_engine.fleet import Fleet as _Fleet  # local alias for clarity
+
+    fleet = _Fleet(repo, {"writer": _Writer()})
+    assert fleet._bg is None  # precondition: not yet built
+
+    seen: list[object] = []
+    barrier = threading.Barrier(8)
+
+    def touch() -> None:
+        barrier.wait()  # all 8 threads release at the same instant
+        seen.append(fleet._executor())
+
+    threads = [threading.Thread(target=touch) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    pools = set(seen)
+    assert len(pools) == 1, f"expected exactly one pool, got {len(pools)}"
+    assert fleet._bg is not None and fleet._bg in pools
+    fleet.shutdown()  # cleanup so the suite doesn't leak the pool
+
+
+def test_executor_returns_same_pool_on_repeated_calls(repo: Path) -> None:
+    # Sanity counterpart to the concurrent test: serial calls reuse the same pool (no
+    # re-init). Pins the contract _executor advertises via its docstring.
+    fleet = Fleet(repo, {"writer": _Writer()})
+    p1 = fleet._executor()
+    p2 = fleet._executor()
+    p3 = fleet._executor()
+    assert p1 is p2 is p3
+    fleet.shutdown()

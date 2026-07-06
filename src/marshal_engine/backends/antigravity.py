@@ -32,8 +32,10 @@ Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-op
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -157,10 +159,11 @@ class AntigravityBackend(CodingAgentBackend):
 def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
     """Add `cwd` to agy's `trustedWorkspaces` in `settings_path`, preserving other settings.
 
-    Merge-preserving (other keys untouched), idempotent (no duplicate entry), and atomic (temp +
-    replace, so a concurrent agy read never sees a torn file). Dead paths are pruned so the trust
-    list stays bounded to live worktrees. The lock serializes concurrent writers (parallel runs all
-    share this one global file).
+    Merge-preserving (other keys untouched), idempotent (no duplicate entry), and atomic (unique
+    temp + replace, so a concurrent agy read never sees a torn file even if a writer dies
+    between write + replace). Dead paths are pruned so the trust list stays bounded to live
+    worktrees. The lock serializes concurrent writers (parallel runs all share this one
+    global file).
     """
     cwd_str = str(cwd.resolve())
     with lock:
@@ -178,6 +181,22 @@ def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> No
         kept = [t for t in trusted if t != cwd_str and Path(t).exists()]
         data["trustedWorkspaces"] = [*kept, cwd_str]
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = settings_path.with_name(settings_path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(settings_path)  # atomic: a concurrent reader sees old or whole-new, never torn
+        # Atomic temp + replace. The temp MUST be uniquely named (mkstemp) so a partial write
+        # that crashes between write_text and replace can't be confused with a later writer's
+        # temp - a fixed `.tmp` filename would also race under any future code path that
+        # releases the lock between phases.
+        fd, tmp_str = tempfile.mkstemp(
+            dir=str(settings_path.parent), prefix=f"{settings_path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, indent=2))
+            os.replace(tmp_str, settings_path)
+        except BaseException:
+            # Never leave a half-written temp file under a unique name (mkstemp gives us the
+            # chance to clean up properly - a fixed name would mask the next writer).
+            try:
+                os.unlink(tmp_str)
+            except OSError:
+                pass
+            raise

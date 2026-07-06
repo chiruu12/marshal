@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from .types import AgentResult, UsageRecord, UsageSource
+from .types import AgentResult, RunStatus, UsageRecord, UsageSource
 
 
 class UsageEvent(BaseModel):
@@ -131,7 +131,7 @@ class UsageTracker:
 
 def _add(bucket: Bucket, e: UsageEvent) -> None:
     bucket.runs += 1
-    if e.status == "succeeded":
+    if e.status == RunStatus.SUCCEEDED.value:
         bucket.succeeded += 1
     bucket.cost_usd = round(bucket.cost_usd + e.cost_usd, 6)
     if e.source == UsageSource.NATIVE.value:

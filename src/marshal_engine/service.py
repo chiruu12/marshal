@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from .backends.base import CodingAgentBackend
 from .config import ClientConfig, ConfigError, FleetConfig, resolve_model
 from .doctor import run_checks, summarize
+from .env import merge_user_path
 from .fleet import (
     BenchmarkResult,
     CleanResult,
@@ -31,7 +32,7 @@ from .fleet import (
 from .retry import RetryPolicy
 from .state import RunRecord
 from .registry import make_backend
-from .types import TaskSpec
+from .types import RunStatus, TaskSpec, UsageSource
 from .usage import UsageSummary
 from .workflow import (
     WorkflowResult,
@@ -96,6 +97,13 @@ class MarshalService:
         config_path: Path | str | None = None,
         run_gate: threading.Semaphore | None = None,
     ) -> None:
+        # Defense-in-depth: mcp_server.main() and cli.main() already call this at process entry,
+        # but a library user (or any future code path) that constructs a MarshalService directly
+        # would otherwise skip the recovery and hit the "doctor says backend missing" trap when
+        # PATH was stripped at launch. merge_user_path() is idempotent and cached, so a redundant
+        # call is a no-op. Honor MARSHAL_NO_PATH_FIX=1 (hermetic CI / users who want engine to
+        # match the host's PATH exactly).
+        merge_user_path()
         self.config = config
         self.repo_root = Path(repo_root)
         # Where the config was loaded from - the preflight re-checks this file parses on disk.
@@ -282,10 +290,12 @@ class MarshalService:
         # cheapest: only strategies that succeeded AND have a known cost - native, a real provider
         # admin-api cost (e.g. EastRouter), or an estimate. Never an "unavailable" one.
         priced = [
-            r for r in rows if r.status == "succeeded" and r.source in ("native", "admin-api", "estimated")
+            r for r in rows
+            if r.status == RunStatus.SUCCEEDED.value
+            and r.source in (UsageSource.NATIVE, UsageSource.ADMIN_API, UsageSource.ESTIMATED)
         ]
         cheapest = min(priced, key=lambda r: r.cost_usd).client if priced else None
-        timed = [r for r in rows if r.status == "succeeded" and r.duration_ms > 0]
+        timed = [r for r in rows if r.status == RunStatus.SUCCEEDED.value and r.duration_ms > 0]
         fastest = min(timed, key=lambda r: r.duration_ms).client if timed else None
         return BenchmarkResult(
             task_id=task_id, goal=goal, strategies=rows, cheapest=cheapest, fastest=fastest

@@ -152,3 +152,52 @@ def test_prepare_preserves_other_settings_and_prunes_dead(
     assert tw.count(str(wt.resolve())) == 1                 # added exactly once
     assert str(live.resolve()) in tw                        # still-existing trust kept
     assert str(dead.resolve()) not in tw                    # dead path pruned
+
+
+# --- _trust_workspace internals: unique temp filename, no torn writes under failure ---------
+
+
+def test_trust_workspace_uses_unique_temp_filename(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    # Regression for the H1 finding: the previous implementation used a fixed
+    # `settings.json.tmp` filename, which (a) left a stale partial file after a crash and
+    # (b) raced if any future code path released the lock between write and replace. The
+    # fix uses tempfile.mkstemp to mint a unique temp; this test asserts that the only file
+    # left in the settings dir is the final `settings.json` - no temp leftovers.
+    backend.settings_path = tmp_path / "settings.json"
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt))
+    leftover = [p.name for p in (tmp_path).iterdir() if p.name.startswith("settings.json")]
+    assert leftover == ["settings.json"], f"unexpected files: {leftover}"
+
+
+def test_trust_workspace_no_temp_leftover_after_concurrent_prepares(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    # N parallel prepare() calls (under the class lock) must end with ONE settings.json and
+    # no orphaned .tmp files. Catches a regression where a future refactor reintroduces a
+    # fixed temp name and a racing crash leaves a stale .tmp behind.
+    import threading
+    from marshal_engine.backends.antigravity import AntigravityBackend as _AB
+
+    backend.settings_path = tmp_path / "settings.json"
+    _AB._settings_lock = threading.Lock()  # fresh lock so this test doesn't share state
+
+    def make_and_prepare(i: int) -> None:
+        wt = tmp_path / f"wt{i}"
+        wt.mkdir()
+        backend.prepare(_opts(cwd=wt))
+
+    threads = [threading.Thread(target=make_and_prepare, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    settings_files = sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("settings.json"))
+    assert settings_files == ["settings.json"], f"orphaned temps remain: {settings_files}"
+    # The final settings.json has all 8 worktrees trusted.
+    data = json.loads((tmp_path / "settings.json").read_text())
+    assert len(data["trustedWorkspaces"]) == 8

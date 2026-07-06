@@ -12,6 +12,7 @@ from typing import Any
 from . import __version__
 from .config import ConfigError, load_config
 from .doctor import FAIL, OK, WARN, run_checks, summarize
+from .env import merge_user_path
 from .fleet import Fleet
 from .registry import backend_names, default_backends
 from .state import FleetState
@@ -222,6 +223,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Recover the user's interactive PATH if the CLI was launched from a context that didn't
+    # source their rc files (a non-interactive SSH session, a launchd job). For the normal case of
+    # `marshal ...` from a terminal this is a no-op: PATH is already complete and the cache keeps
+    # `user_path()` from re-spawning a shell. No-op entirely when MARSHAL_NO_PATH_FIX=1.
+    merge_user_path()
     p = argparse.ArgumentParser(
         prog="marshal", description="Marshal - control plane for headless coding agents"
     )

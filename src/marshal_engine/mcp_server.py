@@ -35,6 +35,7 @@ from typing import Annotated, Any, Literal, TypeVar
 from pydantic import BaseModel, Field
 
 from .config import FleetConfig, load_config, validate
+from .env import merge_user_path
 from .service import MarshalService
 from .workspaces import DEFAULT_WORKSPACE, WorkspaceRegistry, scaffold_fleet_config
 
@@ -374,6 +375,12 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
 
 def main() -> None:
+    # The MCP host (Claude Code, Cursor, ...) often spawns us with a stripped PATH that lacks the
+    # user's zshrc-managed directories (Homebrew, ~/.local/bin, npm-global). Backend CLIs installed
+    # there then look missing to shutil.which and `marshal doctor` falsely FAILs them. Augment PATH
+    # from the user's login shell *before* the registry builds backends, so every tool sees the
+    # real environment. No-op if PATH is already complete or MARSHAL_NO_PATH_FIX=1.
+    merge_user_path()
     registry = WorkspaceRegistry.from_env()
     # Build the default workspace eagerly so the connect-time config message + warnings still fire at
     # startup (named workspaces build lazily on first touch).

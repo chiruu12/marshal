@@ -33,6 +33,27 @@ versions may include breaking API changes until 1.0.
   a cheap authed probe are unchanged (CLI presence reported; auth not claimed).
 
 ### Fixed
+- **MCP server + CLI + `MarshalService` + `Fleet` now recover the user's PATH before spawning
+  backends.** An MCP host (Claude Code, Cursor, etc.) typically spawns Marshal with a stripped
+  PATH that lacks the user's zshrc-managed directories (Homebrew, `~/.local/bin`, npm-global), so
+  user-installed CLIs (`opencode`, `cursor-agent`, ...) looked missing to `shutil.which` and
+  `marshal doctor` falsely FAILed them, AND the spawned agent subprocess inherited the same
+  broken PATH and died with "binary not found". All four entry points (`mcp_server.main`,
+  `cli.main`, `MarshalService.__init__`, `Fleet.__init__`) now derive the user's interactive
+  PATH from `$SHELL -ilc 'echo $PATH'` and union it into `os.environ['PATH']` (in place,
+  additive only, idempotent, cached). Opt out with `MARSHAL_NO_PATH_FIX=1` for hermetic CI
+  environments where the user PATH is wrong.
+- **OpenCode backend now reconciles the final report from `opencode export`.** Opencode's
+  `--format json` stream can drop the final `text` part on long replies (the agent's full final
+  report is missing from stdout, observed with the GLM-5.2 / kimi models — the user had to
+  finish the thread manually to recover the result), and can also drop the final `step-finish`
+  (so cost/tokens drift to zero). On a successful run the backend now shells out once to
+  `opencode export <session_id>` (~100-500ms, reads the same on-disk session the CLI itself
+  wrote) and uses its authoritative `info.tokens`/`info.cost` and full `messages[].parts[].text`
+  to override whatever the live stream gave us. Failed runs, runs without a `sessionID`, and
+  exports that fail (no binary, old CLI without `export`, corrupt session) all fall back to the
+  live stream — never crash a run over recovery. Opt out per-instance with
+  `backend.reconcile_from_export = False` (hermetic tests / power users).
 - **EastRouter cost reader now paginates `/v1/usage`.** A single page (`?limit=1000`) could miss a
   long run's records when the account was busy (a 283s run + a concurrent benchmark pushed them past
   page 1), so its **real** `admin-api` cost silently fell back to `unavailable`. The reader now walks
