@@ -58,6 +58,95 @@ def test_usage_human_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert "runs=0" in out
 
 
+def test_usage_json_includes_breakdowns_and_window(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Backward-compat: the four pinned keys (totals/by_backend/by_client/by_model) stay. The new
+    # by_backend_model + window metadata is additive (the original test_usage_json only checked
+    # the four legacy keys; this one extends, doesn't break).
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="opencode", model="<provider>/<model-a>",
+            cost_usd=0.01, input_tokens=100, output_tokens=10, status="succeeded", source="native",
+        ).model_dump_json() + "\n"
+    )
+    ret = cli.main(["usage", "--json", "--dir", str(u), "--window", "week"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    # The four legacy keys still present
+    assert {"totals", "by_backend", "by_client", "by_model"} <= set(data)
+    # The new additive fields
+    assert "by_backend_model" in data
+    assert "opencode/<provider>/<model-a>" in data["by_backend_model"]
+    assert data["window"] == "week"
+    assert data["since"] is not None  # resolved window -> a concrete since
+
+
+def test_usage_human_surfaces_by_model_and_tokens(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The previous human output silently dropped by_client/by_model/cache_read tokens. This locks
+    # the fix: the by_model section appears, and an in/out token count is visible in the header.
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="opencode", model="<provider>/<model-a>",
+            client="worker", cost_usd=0.01, input_tokens=100, output_tokens=10,
+            cache_read_tokens=5, status="succeeded", source="native",
+        ).model_dump_json() + "\n"
+    )
+    ret = cli.main(["usage", "--dir", str(u)])
+    assert ret == 0
+    out, _ = capsys.readouterr()
+    assert "by_model" in out  # the previously-hidden section is now printed
+    assert "by_client" in out
+    assert "by_backend_model" in out
+    assert "input_tokens" in out  # the token columns are labeled
+    assert "output_tokens" in out
+    assert "cache_read_tokens" in out
+    # The actual token counts are visible too (the by_model row)
+    assert "100" in out and "10" in out
+
+
+def test_usage_window_flag_is_wired(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # --window goes through to UsageTracker.summary(since=...); verify it produces a valid windowed
+    # JSON response with the resolved since populated.
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts="2020-01-01T00:00:00Z", run_id="old", backend="opencode", cost_usd=1.00,
+        ).model_dump_json() + "\n"
+        + UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="new", backend="opencode", cost_usd=0.01,
+        ).model_dump_json() + "\n"
+    )
+    ret = cli.main(["usage", "--json", "--dir", str(u), "--window", "month"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["window"] == "month"
+    assert data["since"] is not None
+    # The 2020 event is outside any 30d window -> only the recent event is aggregated
+    assert data["totals"]["runs"] == 1
+    assert abs(data["totals"]["cost_usd"] - 0.01) < 1e-9
+
+
 def test_status_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ret = cli.main(["status", "--json", "--state", str(tmp_path / "runs")])
     assert ret == 0

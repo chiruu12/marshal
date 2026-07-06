@@ -6,8 +6,9 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from . import __version__
 from .config import ConfigError, DURATION_PRESETS, FleetConfig, load_config, validate
@@ -17,7 +18,7 @@ from .fleet import Fleet
 from .registry import backend_names, default_backends
 from .service import MarshalService
 from .state import FleetState
-from .usage import UsageTracker
+from .usage import Bucket, UsageTracker
 from .workflow import load_workflow, validate_workflow, workflow_paths
 from .workspaces import (
     WorkspaceRegistry,
@@ -90,21 +91,124 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _align_rows(header: Sequence[str], rows: Sequence[Sequence[Any]]) -> list[str]:
+    """Render a header + rows of strings as column-aligned lines (no border).
+
+    Each column is sized to the widest cell; values are stringified and left-aligned. Keeps the
+    fixed-width f-string convention used in `_cmd_status` / `_cmd_backends` so the existing
+    stdlib-only, no-deps posture holds.
+    """
+    if not header:
+        return []
+    widths = [len(str(h)) for h in header]
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(str(cell)))
+    out = ["  ".join(str(h).ljust(widths[i]) for i, h in enumerate(header))]
+    for row in rows:
+        # Clamp: a row with more cells than the header renders the extras unpadded rather than
+        # raising IndexError (this is a general-purpose helper, so guard against future misuse).
+        out.append(
+            "  ".join(
+                str(c).ljust(widths[i]) if i < len(widths) else str(c)
+                for i, c in enumerate(row)
+            )
+        )
+    return out
+
+
+def _format_cost(b: Bucket) -> str:
+    return f"${b.cost_usd:.4f}"
+
+
+def _format_cost_split(b: Bucket) -> str:
+    """Compact native/admin-api/est split; zeros collapsed so the row stays readable."""
+    parts: list[str] = []
+    for label, val in (
+        ("native", b.cost_native),
+        ("admin-api", b.cost_admin_api),
+        ("est", b.cost_estimated),
+    ):
+        if val > 0:
+            parts.append(f"{label} ${val:.4f}")
+    return " ".join(parts) if parts else "-"
+
+
+def _print_bucket_table(title: str, buckets: dict[str, Bucket]) -> None:
+    if not buckets:
+        return
+    print(f"\n{title}")
+    header = (
+        "name", "runs", "succeeded", "cost_usd", "cost split",
+        "input_tokens", "output_tokens", "cache_read_tokens",
+    )
+    rows = [
+        (
+            name,
+            str(v.runs),
+            str(v.succeeded),
+            _format_cost(v),
+            _format_cost_split(v),
+            str(v.input_tokens),
+            str(v.output_tokens),
+            str(v.cache_read_tokens),
+        )
+        for name, v in sorted(buckets.items())
+    ]
+    for line in _align_rows(header, rows):
+        print(f"  {line}")
+
+
 def _cmd_usage(args: argparse.Namespace) -> int:
-    s = UsageTracker(args.dir).summary()
+    since = _usage_window_since(args.window)
+    s = UsageTracker(args.dir).summary(since=since)
     if args.json:
-        print(json.dumps(s.model_dump(mode="json"), indent=2))
+        payload = {
+            "totals": s.totals.model_dump(mode="json"),
+            "by_backend": {k: v.model_dump(mode="json") for k, v in s.by_backend.items()},
+            "by_client": {k: v.model_dump(mode="json") for k, v in s.by_client.items()},
+            "by_model": {k: v.model_dump(mode="json") for k, v in s.by_model.items()},
+            "by_backend_model": {
+                k: v.model_dump(mode="json") for k, v in s.by_backend_model.items()
+            },
+            "window": args.window,
+            "since": since.isoformat() if since is not None else None,
+        }
+        print(json.dumps(payload, indent=2))
         return 0
     t = s.totals
     cps_str = f"${t.cost_per_succeeded:.4f}" if t.cost_per_succeeded is not None else "n/a"
+    window_label = f"  window={args.window}" if args.window != "all" else ""
     print(
         f"runs={t.runs}  succeeded={t.succeeded}  cost=${t.cost_usd:.4f} "
         f"(native ${t.cost_native:.4f} / admin-api ${t.cost_admin_api:.4f} / est ${t.cost_estimated:.4f})"
+        f"{window_label}"
     )
-    print(f"  $/run=${t.cost_per_run:.4f}  $/succeeded={cps_str}  in={t.input_tokens} out={t.output_tokens}")
-    for backend, v in sorted(s.by_backend.items()):
-        print(f"  {backend:13} runs={v.runs:<4} succ={v.succeeded:<4} cost=${v.cost_usd:.4f}")
+    print(
+        f"  $/run=${t.cost_per_run:.4f}  $/succeeded={cps_str}  "
+        f"in={t.input_tokens}  out={t.output_tokens}  cache_read={t.cache_read_tokens}"
+    )
+    _print_bucket_table("by_backend", s.by_backend)
+    _print_bucket_table("by_client", s.by_client)
+    _print_bucket_table("by_model", s.by_model)
+    _print_bucket_table("by_backend_model", s.by_backend_model)
     return 0
+
+
+def _usage_window_since(window: str) -> datetime | None:
+    """Map the CLI `--window` name to a UTC `since` (None for "all"). The CLI has no server
+    reference, so it uses rolling windows; "day" (last 24h) is the session-equivalent."""
+    if window == "all":
+        return None
+    now = datetime.now(timezone.utc)
+    if window == "day":
+        return now - timedelta(hours=24)
+    if window == "week":
+        return now - timedelta(days=7)
+    if window == "month":
+        return now - timedelta(days=30)
+    raise ValueError(f"unknown usage window: {window!r} (use day|week|month|all)")
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -335,6 +439,12 @@ def main(argv: list[str] | None = None) -> int:
     pm.add_argument("--json", action="store_true", help="output JSON")
     pu = sub.add_parser("usage", help="show usage summary")
     pu.add_argument("--dir", default=".marshal/usage")
+    pu.add_argument(
+        "--window",
+        default="all",
+        choices=["day", "week", "month", "all"],
+        help="rolling time window: day=last 24h, week=7d, month=30d, all=everything (default)",
+    )
     pu.add_argument("--json", action="store_true", help="output JSON")
     ps = sub.add_parser("status", help="list fleet runs")
     ps.add_argument("--state", default=".marshal/runs", help="per-run state directory")

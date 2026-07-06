@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeVar
 
@@ -101,6 +102,19 @@ def build_service() -> MarshalService:
     for warning in validate(config):
         print(f"[marshal] config warning: {warning}", file=sys.stderr)
     return MarshalService(repo, config, config_path=cfg_path)
+
+
+def _window_since(session_start: datetime, now: datetime, window: str) -> datetime | None:
+    """Map a `usage` window name to the [since, now) start (UTC). None for "all" (no filter)."""
+    if window == "all":
+        return None
+    if window == "session":
+        return session_start
+    if window == "week":
+        return now - timedelta(days=7)
+    if window == "month":
+        return now - timedelta(days=30)
+    raise ValueError(f"unknown usage window: {window!r} (use session|week|month|all)")
 
 
 def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
@@ -399,11 +413,29 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
     @app.tool()
     async def usage(
+        window: Annotated[
+            Literal["session", "week", "month", "all"],
+            Field(description=(
+                "Time window: 'session' (since the MCP server started - the Fleet's session_start), "
+                "'week' (last 7d), 'month' (last 30d), 'all' (the full ledger, default). The "
+                "resolved window and `since` are echoed back in the response."
+            )),
+        ] = "all",
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """Per-provider usage summary (totals + by backend/client/model) for one workspace."""
+        """Per-provider usage summary (totals + by backend/client/model, plus a per-backend/model
+        breakdown and token totals) for one workspace. Time-windowed via `window`; default is the
+        full ledger. `by_backend_model` is keyed like 'opencode/<model-a>'."""
         svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.usage)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        now = datetime.now(timezone.utc)
+        since = _window_since(svc.session_start, now, window)
+        summary = await offload(svc.usage, since, None)
+        payload = {
+            "window": window,
+            "since": since.isoformat() if since is not None else None,
+            **summary.model_dump(mode="json"),
+        }
+        return tag(payload, workspace or DEFAULT_WORKSPACE)
 
     return app
 

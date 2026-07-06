@@ -9,6 +9,16 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **`marshal usage` time windows + per-breakdown token table.** A new `UsageTracker.summary(since,
+  until)` window (compared in UTC over each event's `ts`), surfaced via `MarshalService.usage(...)`
+  and a new MCP `usage(window: session|week|month|all)` parameter (`session` = since the Fleet's
+  `session_start` stamped at process start). The CLI gets `--window day|week|month|all` (rolling
+  windows, since the CLI has no server reference). The human `marshal usage` output now prints
+  aligned `by_backend`, `by_client`, `by_model`, and the new compound `by_backend_model` tables
+  with `name · runs · succeeded · cost_usd · cost split · input_tokens · output_tokens ·
+  cache_read_tokens` columns - the per-client/model/cache-read spend the previous output silently
+  dropped. `--json` keeps the existing `totals / by_backend / by_client / by_model` shape (the
+  test that pins it still passes) and adds `by_backend_model`, `window`, and the resolved `since`.
 - **`commit_run` - freeze a run's work onto its own branch for dependent chaining.** A new MCP tool +
   `Fleet.commit_run(run_id)` commits a finished run's (otherwise uncommitted) work onto its
   `marshal/<run_id>` branch **without touching your branch**, so a dependent run can `spawn` with

@@ -158,11 +158,11 @@ Key per-backend detail:
  "cost_usd":0.041,"duration_ms":8200,"status":"success",
  "source":"native|admin-api|estimated|unavailable"}
 ```
-`usage/summary.json` (cumulative rollup, updated each run): `by_client`, `by_backend`, `by_model`, `totals`.
+`usage/summary.json` (cumulative rollup, updated each run): `by_client`, `by_backend`, `by_model`, `totals`, plus a compound `by_backend_model` keyed `<backend>/<model>` for when one backend runs multiple models.
 
 Apply a local `(backend, model) → price` table for backends that report tokens but not cost.
 **Tag every record `source`** so estimated/scraped costs are auditable and never presented as ground truth.
-Surface a `usage` MCP tool / `<name> usage` CLI with `--since` and `--by client|backend|model`.
+Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via `--window day|week|month|all` (CLI) or `window session|week|month|all` (MCP). The MCP `usage` tool's `window` (`session` / `week` / `month` / `all`) maps to a `since`; the Fleet stamps its `session_start` at process start, so a driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
 
 ---
 

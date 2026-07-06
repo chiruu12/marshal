@@ -10,6 +10,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -458,8 +459,26 @@ class MarshalService:
     def status(self) -> list[RunRecord]:
         return self.fleet.state.list()
 
-    def usage(self) -> UsageSummary:
-        return self.fleet.usage.summary()
+    def usage(
+        self,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> UsageSummary:
+        """Roll up this workspace's usage ledger, optionally restricted to a [since, until] window.
+
+        No args = every event (unchanged behavior). `since`/`until` are compared in UTC against each
+        event's `ts` (see `UsageTracker.summary`).
+        """
+        return self.fleet.usage.summary(since=since, until=until)
+
+    @property
+    def session_start(self) -> datetime:
+        """When this Fleet (the long-lived MCP server) started - a stable "session" anchor.
+
+        The MCP `usage` tool maps `window="session"` to this instant, so a driver can ask "what
+        have I spent since you woke up?" without restating the timestamp.
+        """
+        return self.fleet.session_start
 
     # --- workflows: run a declared recipe by sequencing the primitives above -----------------
 

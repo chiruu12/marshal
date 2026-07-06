@@ -259,6 +259,10 @@ class Fleet:
         self._bg: ThreadPoolExecutor | None = None
         self._bg_lock = threading.Lock()
         self._bg_max = 4
+        # When this Fleet (the long-lived MCP server) started. The MCP `usage` tool maps a `window`
+        # of "session" to this instant, so the driver can see what it has spent THIS session
+        # without restating the timestamp.
+        self.session_start: datetime = datetime.now(timezone.utc)
 
     def run(
         self,

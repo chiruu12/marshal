@@ -168,7 +168,7 @@ the default workspace.
 | `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
 | `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. |
 | `status()` | List all runs with status + cost. |
-| `usage()` | Per-provider usage summary (totals + by backend/client/model). |
+| `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger). The resolved `window` and `since` are echoed back. |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
 
@@ -179,13 +179,29 @@ marshal doctor             # preflight: check the setup is ready to run agents
 marshal backends           # list backends and availability
 marshal status             # list fleet runs
 marshal clean              # tear down finished runs' worktrees + branches (--scope/--dry-run/--older-than)
-marshal usage              # per-provider usage summary
+marshal usage              # per-provider usage summary (--window day|week|month|all, --json)
 marshal workflows          # list + validate workflow recipes against the config
 marshal workspace list     # show the workspace registry
 marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.yaml; path defaults to cwd)
 marshal workspace remove <name>      # drop a workspace from the registry
 marshal mcp                # run the MCP server over stdio
 ```
+
+### `marshal usage`
+
+`marshal usage` rolls up the immutable `usage/events.jsonl` ledger into a human-friendly table with
+columns `name · runs · succeeded · cost_usd · cost split · input_tokens · output_tokens ·
+cache_read_tokens`, printed for `by_backend`, `by_client`, `by_model`, and `by_backend_model` (the
+compound `<backend>/<model>` breakdown - useful when one backend runs multiple models). The token
+columns make the previously-hidden per-client/model/cache-read spend visible; the cost split
+collapses the native / admin-api / estimated zeros so a row stays readable.
+
+Use `--window` to scope to a rolling time window - `day` (last 24h), `week` (7d), `month` (30d), or
+`all` (default; the full ledger). The CLI has no server reference, so `day` is the rolling session
+equivalent; the MCP `usage` tool's `window="session"` maps to the server's actual `session_start`
+timestamp. With `--json` the existing `totals / by_backend / by_client / by_model` shape is
+preserved (the test that pins it still passes); the response adds `by_backend_model`, the resolved
+`window`, and the `since` timestamp used to filter.
 
 The CLI is **inspection-only** (doctor/backends/status/usage/workflows) plus `mcp`. You *run* agents
 by driving the MCP tools from your driver (see above), not from the CLI. `marshal doctor` also

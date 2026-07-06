@@ -82,7 +82,10 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
   Codex routed through EastRouter (read back from its usage API), **estimated** where a model is
   priced, and `unavailable` otherwise (Cursor, Antigravity, Command Code, and OpenCode on an unpriced
   custom provider) - never a fake $0. A `usage`
-  command most orchestrators don't have. `marshal doctor` also reports each authenticated backend's
+  command most orchestrators don't have - per-backend/client/model/`backend×model` tables with
+  input/output/cache-read token columns and a native/admin-api/estimated cost split, time-windowed
+  via `--window day|week|month|all` (CLI) or `window: session|week|month|all` (MCP - `session`
+  means "since the server started"). `marshal doctor` also reports each authenticated backend's
   plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
   defenses for the real-world hangs and quirks documented in `docs/design.md`.
