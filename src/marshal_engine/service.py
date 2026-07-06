@@ -410,6 +410,16 @@ class MarshalService:
     def get_run(self, run_id: str) -> RunRecord | None:
         return self.fleet.state.get(run_id)
 
+    def run_log(self, run_id: str) -> str | None:
+        """The full raw stdout/stderr persisted for a run, or None if no log was written.
+
+        Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
+        a clear `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---`
+        section - the FULL streams, not the truncated `text` on the run record. None when no log
+        exists (e.g. a run predating log storage, or a backend that crashed before producing one).
+        """
+        return self.fleet.logs.read(run_id)
+
     def collect_run(self, run_id: str) -> CollectResult:
         return self.fleet.collect_run(run_id)
 

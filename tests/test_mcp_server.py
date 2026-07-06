@@ -76,7 +76,7 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     names = {t.name for t in asyncio.run(app.list_tools())}
     expected = {
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
-        "status", "usage", "get_run", "collect_run", "commit_run", "integrate", "clean",
+        "status", "usage", "get_run", "get_run_log", "collect_run", "commit_run", "integrate", "clean",
         "cancel_run", "list_workflows", "run_workflow", "doctor",
     }
     assert expected <= names
@@ -154,6 +154,49 @@ def test_tool_params_carry_schema_descriptions(
     props = tools["run_agent"].inputSchema["properties"]
     assert props["client"].get("description")
     assert props["context_files"].get("description")
+
+
+def test_get_run_log_round_trips_via_call_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # get_run_log is the per-run durable-log equivalent of get_run: it locates the run by id
+    # across workspaces, reads <base>/logs/<run_id>.log, and returns it stamped with the workspace.
+    # `log` is the stored text when present and null when the run is known but no log was written.
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.logs import RunLogStore
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    svc = build_service()
+
+    # Stamp a synthetic log under the Fleet's logs dir (built off the service's repo_root).
+    logs_dir = repo / ".marshal" / "logs"
+    RunLogStore(logs_dir).write("synthetic.run", "the-stdout\n", "the-stderr\n")
+    # And: the run must exist in state too, so resolve_run() can find it (otherwise the tool
+    # short-circuits to log=null without ever consulting RunLogStore).
+    from marshal_engine.state import RunRecord
+    svc.fleet.state.add(
+        RunRecord(run_id="synthetic.run", task_id="synthetic", backend="cursor", status="succeeded")
+    )
+
+    app = build_app(svc)
+    _content, structured = asyncio.run(app.call_tool("get_run_log", {"run_id": "synthetic.run"}))
+    out = structured.get("result", structured) if isinstance(structured, dict) else structured
+    assert out["run_id"] == "synthetic.run"
+    assert "the-stdout" in out["log"]
+    assert "the-stderr" in out["log"]
+    assert "=== run synthetic.run ===" in out["log"]
+    assert out["workspace"] == "default"  # tag() stamps the owning workspace
+
+    # And: a run id no workspace owns returns log=null with the requested workspace stamp
+    _content2, structured2 = asyncio.run(app.call_tool("get_run_log", {"run_id": "nope.run"}))
+    out2 = structured2.get("result", structured2) if isinstance(structured2, dict) else structured2
+    assert out2["log"] is None
+    assert out2["run_id"] == "nope.run"
 
 
 def test_usage_window_param_is_in_schema(

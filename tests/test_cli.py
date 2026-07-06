@@ -159,8 +159,34 @@ def test_status_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
 def test_status_human_no_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ret = cli.main(["status", "--state", str(tmp_path / "runs")])
     assert ret == 0
-    out, _ = capsys.readouterr()
+    out = capsys.readouterr()[0]
     assert "no runs recorded" in out
+
+
+# --- `marshal logs` subcommand: print the persisted run log -----------------------------------
+
+
+def test_logs_prints_stored_log(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from marshal_engine.logs import RunLogStore
+
+    log_dir = tmp_path / "logs"
+    RunLogStore(log_dir).write("r1", "out-line\n", "err-line\n")
+    ret = cli.main(["logs", "r1", "--dir", str(log_dir)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "=== run r1 ===" in out
+    assert "out-line" in out
+    assert "err-line" in out
+
+
+def test_logs_absent_returns_nonzero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # No log under the dir -> clear stderr message and non-zero exit so a wrapper / shell can
+    # detect the miss without parsing stdout. Mirrors `usage`/`status` posture on absent input.
+    ret = cli.main(["logs", "missing", "--dir", str(tmp_path / "logs")])
+    assert ret != 0
+    err = capsys.readouterr()[1]
+    assert "no log for run" in err
+    assert "missing" in err
 
 
 def test_doctor_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -15,6 +15,7 @@ from .config import ConfigError, DURATION_PRESETS, FleetConfig, load_config, val
 from .doctor import FAIL, OK, WARN, run_checks, summarize
 from .env import merge_user_path
 from .fleet import Fleet
+from .logs import RunLogStore
 from .registry import backend_names, default_backends
 from .service import MarshalService
 from .state import FleetState
@@ -221,6 +222,22 @@ def _cmd_status(args: argparse.Namespace) -> int:
         return 0
     for r in runs:
         print(f"{r.run_id:24} {r.backend:12} {r.status:10} ${r.cost_usd:.4f}  {r.worktree or ''}")
+    return 0
+
+
+def _cmd_logs(args: argparse.Namespace) -> int:
+    """Print the persisted stdout/stderr for one run. Non-zero when no log exists for the id."""
+    try:
+        text = RunLogStore(args.dir).read(args.run_id)
+    except ValueError as exc:  # unsafe run_id (path separators) - fail clean, not a traceback
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if text is None:
+        print(f"no log for run {args.run_id!r} under {Path(args.dir).resolve()}", file=sys.stderr)
+        return 1
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
     return 0
 
 
@@ -449,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
     ps = sub.add_parser("status", help="list fleet runs")
     ps.add_argument("--state", default=".marshal/runs", help="per-run state directory")
     ps.add_argument("--json", action="store_true", help="output JSON")
+    pl = sub.add_parser("logs", help="print the persisted stdout/stderr for one run")
+    pl.add_argument("run_id", help="the run id to fetch the log for")
+    pl.add_argument("--dir", default=".marshal/logs", help="per-run logs directory")
     pc = sub.add_parser("clean", help="tear down finished runs' worktrees + branches")
     pc.add_argument("run_ids", nargs="*", help="specific run ids to clean (default: by --scope)")
     pc.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
@@ -521,6 +541,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_usage(args)
     if args.cmd == "status":
         return _cmd_status(args)
+    if args.cmd == "logs":
+        return _cmd_logs(args)
     if args.cmd == "clean":
         return _cmd_clean(args)
     if args.cmd == "doctor":

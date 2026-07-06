@@ -160,6 +160,15 @@ Key per-backend detail:
 ```
 `usage/summary.json` (cumulative rollup, updated each run): `by_client`, `by_backend`, `by_model`, `totals`, plus a compound `by_backend_model` keyed `<backend>/<model>` for when one backend runs multiple models.
 
+**Per-run raw logs** (`logs/<run_id>.log`): one file per terminal run (success or failure) with the
+agent's full raw stdout + stderr under a `=== run <id> ===` / `--- stdout ---` / `--- stderr ---`
+header. The run record's `text` field is the agent's *final message* truncated to 16 KB - useful
+for a reply/analysis task but rarely enough to debug a failure. The log file preserves the *whole*
+stream so a driver can `get_run_log` (MCP) or `marshal logs <run_id>` (CLI) and inspect tool calls,
+tracebacks, and stderr noise after the fact. Writes are atomic (unique temp + `os.replace`, same
+idiom as `FleetState`); a write failure is swallowed in `Fleet._execute` and stderr-logged, so
+the log store is best-effort and never breaks a finished run.
+
 Apply a local `(backend, model) → price` table for backends that report tokens but not cost.
 **Tag every record `source`** so estimated/scraped costs are auditable and never presented as ground truth.
 Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via `--window day|week|month|all` (CLI) or `window session|week|month|all` (MCP). The MCP `usage` tool's `window` (`session` / `week` / `month` / `all`) maps to a `since`; the Fleet stamps its `session_start` at process start, so a driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
@@ -197,7 +206,7 @@ default. Same idea for the CLI: `marshal run --duration large ...`. Validation h
 in `_request_for` (via `resolve_duration`), so a typo or non-positive value fails fast before
 any worktree is created.
 
-Runtime state - worktrees, per-run JSON, usage - lands under `.marshal/`. Auth is per-CLI login;
+Runtime state - worktrees, per-run JSON, usage, **per-run raw logs** - lands under `.marshal/`. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
 **Worktree environment isolation.** The driver usually runs inside its own activated venv, so
@@ -214,10 +223,10 @@ startup; a client whose backend is unavailable is **skipped** (stderr warning, r
 Fleet, so `doctor` (which probes every configured backend) still reports a missing one as a FAIL.
 
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
-Shipped today (20): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `list_models`,
-`run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`,
-`commit_run`, `integrate`, `clean`, `status`, `usage`, `list_workflows`, `run_workflow`. Current
-state is tracked in `docs/status.md`.
+Shipped today (21): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `list_models`,
+`run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `get_run_log`,
+`collect_run`, `commit_run`, `integrate`, `clean`, `status`, `usage`, `list_workflows`,
+`run_workflow`. Current state is tracked in `docs/status.md`.
 
 Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
 fleet works in both MCP and Skills hosts.
@@ -256,6 +265,7 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 10. **Worktree lifecycle:** spec creation, naming, owner-tracking, orphan detection, `git worktree prune` on crash. Track which run owns which worktree in the usage log.
 11. **Concurrency caps:** each CLI is 150-400 MB RAM → cap parallel runs per fleet and per client or a fan-out OOMs the host.
 12. **Secrets by reference** (`env:VAR`/file), validate presence at load, fail fast with a clear message. Never inline.
+13. **Durable per-run logs are best-effort.** `RunLogStore.write` is atomic (unique temp + `os.replace`, same idiom as `FleetState`), so a torn read never sees partial content; but a *write failure* (disk full, permission) must never break a finished run — `Fleet._execute` wraps the write in `try/except` and stderr-logs the cause. A run that predates log storage simply has no file (the CLI returns non-zero, the MCP tool returns `log=null`).
 
 ---
 

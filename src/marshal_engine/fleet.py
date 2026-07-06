@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from .backends.base import CodingAgentBackend
 from .eastrouter import CostResolver, default_cost_resolvers
 from .env import merge_user_path
+from .logs import RunLogStore
 from .pricing import PriceTable, PricingError
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
@@ -232,6 +233,7 @@ class Fleet:
         )
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")
+        self.logs = RunLogStore(base / "logs")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()
         # Provider usage-API resolvers (keyed by a client's `usage_api`) that backfill REAL cost from a
@@ -363,6 +365,8 @@ class Fleet:
     ) -> RunRecord:
         """Execute suffix: run the backend, price + classify, persist the terminal record."""
         backend = self.backends[req.backend_name]
+        result: AgentResult | None = None
+        record: RunRecord | None = None
         try:
             def _record_pid(pid: int) -> None:
                 self.state.update(run_id, pid=pid)
@@ -415,6 +419,22 @@ class Fleet:
                 run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}"
             )
             raise
+        finally:
+            # Persist the FULL raw stdout/stderr for every terminal run (success OR failure) so a
+            # driver can inspect what the agent actually did after the fact. Best-effort: a logging
+            # failure (disk full, permission, ...) must never break a finished run; stderr the cause
+            # for visibility. Skipped when no AgentResult was produced (e.g. the backend crashed
+            # before parse_output returned - there is nothing to log). On a retried run this is the
+            # final attempt's output.
+            if result is not None:
+                try:
+                    self.logs.write(
+                        run_id,
+                        result.raw_stdout or "",
+                        result.raw_stderr or "",
+                    )
+                except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
+                    print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
 
         if cleanup:
             self.worktrees.remove(wt)
@@ -622,7 +642,8 @@ class Fleet:
     ) -> CleanResult:
         """Tear down finished runs' worktrees + branches to reclaim disk; never a running run.
 
-        The immutable usage ledger is never touched, and run-state records are kept so status and
+        The run's persisted log is reclaimed alongside its worktree (both disk-heavy). The immutable
+        usage ledger is never touched, and run-state records are kept so status and
         cost history stay queryable (a cleaned run's worktree path simply no longer exists, which is
         what `collect_run`/`integrate` already report). ``scope`` (ignored when ``run_ids`` is given):
           * ``"merged"``   - only runs already integrated (``merged_into`` set). Safest.
@@ -662,6 +683,7 @@ class Fleet:
                 continue
             try:
                 self.worktrees.discard(rec.worktree or "", rec.branch)
+                self.logs.remove(rec.run_id)  # reclaim the (untruncated) run log too; best-effort
                 result.removed.append(rec.run_id)
             except WorktreeError as exc:
                 result.errors.append({"run_id": rec.run_id, "error": str(exc)})

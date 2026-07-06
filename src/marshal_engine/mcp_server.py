@@ -302,6 +302,26 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         return tag(rec.model_dump(mode="json"), name) if rec else None
 
     @app.tool()
+    async def get_run_log(
+        run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
+        workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
+    ) -> dict[str, Any]:
+        """Return a run's persisted full stdout/stderr (or null if no log was written).
+
+        Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
+        a `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---` section -
+        the FULL streams, not the 16KB-truncated `text` on the run record. `log` is null when no
+        log exists (a run that pre-dates log storage, or a backend that crashed before producing
+        one). The owning workspace is resolved by the same scan as `get_run`, with the same
+        `workspace` hint."""
+        resolved = await offload(registry.resolve_run, run_id, workspace)
+        if resolved is None:
+            return tag({"run_id": run_id, "log": None}, workspace or DEFAULT_WORKSPACE)
+        name, svc = resolved
+        text = await offload(svc.run_log, run_id)
+        return tag({"run_id": run_id, "log": text}, name)
+
+    @app.tool()
     async def collect_run(
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,

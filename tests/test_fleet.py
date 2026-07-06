@@ -234,6 +234,46 @@ class _Exploder(CodingAgentBackend):
         raise RuntimeError("kaboom")
 
 
+class _Loudy(CodingAgentBackend):
+    """Returns canned raw_stdout/raw_stderr on its AgentResult - the durably-persisted run log.
+
+    `run()` is overridden, so no subprocess is spawned. The loudy streams are sized to prove no
+    truncation (well past the 16KB cap on the run record's `text`).
+    """
+
+    name = "loudy"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, stdout: str = "", stderr: str = "", fail: bool = False) -> None:
+        self._stdout = stdout
+        self._stderr = stderr
+        self._fail = fail
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "pass"]  # any no-op; run() is overridden below
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if not self._fail else RunStatus.FAILED,
+            text="short",
+            raw_stdout=self._stdout,
+            raw_stderr=self._stderr,
+            error="forced failure" if self._fail else None,
+        )
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        # Skip the subprocess: return the canned AgentResult directly. The full base.run() path
+        # is exercised by the other dummy backends; this one exists purely to feed the log writer.
+        return self.parse_output("", "", 0)
+
+
 class _Flaky(CodingAgentBackend):
     """Returns canned results per call to drive the transient-retry loop deterministically.
 
@@ -389,6 +429,81 @@ def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
     assert len(runs) == 1
     assert runs[0].status == "failed"  # not left stranded as RUNNING
     assert runs[0].error and "kaboom" in runs[0].error
+
+
+# --- per-run log storage: full raw stdout/stderr persisted for every terminal run -------------
+
+
+def test_fleet_persists_full_raw_log_on_success(repo: Path) -> None:
+    # A succeeded run gets its full raw_stdout + raw_stderr written to <base>/logs/<run_id>.log.
+    # The 16KB-truncated `text` on the run record is the agent's *final message*; the log file
+    # preserves the *full* streams so a driver can inspect what the agent actually did.
+    loud = "OUT-" + ("x" * 50_000)
+    err = "ERR-" + ("y" * 50_000)
+    fleet = Fleet(repo, {"loudy": _Loudy(stdout=loud, stderr=err)})
+    rec = fleet.run("loudy", TaskSpec(id="lg1", goal="x"))
+    log_path = fleet.logs.path(rec.run_id)
+    assert log_path.exists()
+    text = log_path.read_text(encoding="utf-8")
+    assert f"=== run {rec.run_id} ===" in text
+    assert "--- stdout ---" in text
+    assert "--- stderr ---" in text
+    assert loud in text  # full, untruncated
+    assert err in text
+    # the read API agrees with the file on disk
+    assert fleet.logs.read(rec.run_id) == text
+
+
+def test_fleet_persists_full_raw_log_on_failure(repo: Path) -> None:
+    # A FAILED run (parse_output returned FAILED) still gets its log persisted - the whole point
+    # of durable logs is to debug failures, not just celebrate successes.
+    loud = "OUT-yep"
+    err = "ERR-yep"
+    fleet = Fleet(repo, {"loudy": _Loudy(stdout=loud, stderr=err, fail=True)})
+    rec = fleet.run("loudy", TaskSpec(id="lg2", goal="x"))
+    assert rec.status == "failed"
+    log_path = fleet.logs.path(rec.run_id)
+    assert log_path.exists()
+    text = log_path.read_text(encoding="utf-8")
+    assert loud in text and err in text
+
+
+def test_run_with_no_result_writes_no_log(repo: Path) -> None:
+    # When the backend raises before producing an AgentResult, there is nothing to log - the run is
+    # stamped FAILED but no log file is written (the documented no-log case).
+    fleet = Fleet(repo, {"boom": _Exploder()})
+    with pytest.raises(RuntimeError):
+        fleet.run("boom", TaskSpec(id="nolog1", goal="x"))
+    run_id = fleet.state.list()[0].run_id
+    assert fleet.logs.read(run_id) is None
+    assert not fleet.logs.path(run_id).exists()
+
+
+def test_clean_removes_run_log(repo: Path) -> None:
+    # clean() reclaims the (disk-heavy, untruncated) run log alongside the worktree.
+    fleet = Fleet(repo, {"loudy": _Loudy(stdout="OUT-z", stderr="ERR-z", fail=True)})
+    rec = fleet.run("loudy", TaskSpec(id="cllog", goal="x"))
+    assert rec.status == "failed"
+    assert fleet.logs.path(rec.run_id).exists()  # log written
+    result = fleet.clean()  # finished scope reclaims failed runs
+    assert rec.run_id in result.removed
+    assert not fleet.logs.path(rec.run_id).exists()  # log reclaimed too
+
+
+def test_fleet_log_write_failure_does_not_break_run(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A logging failure (disk full, permission, ...) must NEVER crash the run - the spec
+    # guards the write defensively. Pin the contract: a run that would otherwise succeed
+    # still reports succeeded when the log write raises.
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _boom(run_id: str, stdout: str, stderr: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(fleet.logs, "write", _boom)
+    rec = fleet.run("writer", TaskSpec(id="lg3", goal="x"))
+    assert rec.status == "succeeded"  # run succeeded, log write swallowed
 
 
 def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:

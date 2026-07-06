@@ -169,6 +169,7 @@ the default workspace.
 | `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. |
 | `status()` | List all runs with status + cost. |
 | `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger). The resolved `window` and `since` are echoed back. |
+| `get_run_log(run_id)` | The full raw stdout/stderr persisted for a run (under `<base>/logs/<run_id>.log`), or `null` when no log was written. The 16KB-truncated `text` on the run record is the agent's *final message*; the log preserves the *whole* stream so a driver can inspect what the agent actually did (esp. on a failure). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
 
@@ -178,6 +179,7 @@ the default workspace.
 marshal doctor             # preflight: check the setup is ready to run agents
 marshal backends           # list backends and availability
 marshal status             # list fleet runs
+marshal logs <run_id>      # print the persisted stdout/stderr for one run (full, not truncated)
 marshal clean              # tear down finished runs' worktrees + branches (--scope/--dry-run/--older-than)
 marshal usage              # per-provider usage summary (--window day|week|month|all, --json)
 marshal workflows          # list + validate workflow recipes against the config
@@ -203,9 +205,21 @@ timestamp. With `--json` the existing `totals / by_backend / by_client / by_mode
 preserved (the test that pins it still passes); the response adds `by_backend_model`, the resolved
 `window`, and the `since` timestamp used to filter.
 
-The CLI is **inspection-only** (doctor/backends/status/usage/workflows) plus `mcp`. You *run* agents
-by driving the MCP tools from your driver (see above), not from the CLI. `marshal doctor` also
-reports a backend's plan tier where the CLI exposes it (e.g. a `plan:cursor` line with the
+### `marshal logs`
+
+`marshal logs <run_id>` prints the full raw stdout/stderr that an agent emitted on a run - the
+whole stream, NOT the 16KB-truncated `text` on the run record. The 16KB cap is fine for the
+agent's *final message* (the summary text the run record shows), but a failure is rarely the last
+sentence; the log file preserves everything the subprocess said, so a driver can `grep` the
+agent's tool calls, error tracebacks, and stderr noise after the fact. The MCP `get_run_log` tool
+returns the same content. Logs are best-effort: a write failure (disk full, permission) is
+swallowed in `Fleet._execute` so a run is never broken by the logger, and any existing run predating
+log storage has no file (the CLI returns non-zero and the MCP tool returns `log=null` in that
+case).
+
+The CLI is **inspection-only** (doctor/backends/status/usage/logs/workflows) plus `mcp`. You *run*
+agents by driving the MCP tools from your driver (see above), not from the CLI. `marshal doctor`
+also reports a backend's plan tier where the CLI exposes it (e.g. a `plan:cursor` line with the
 subscription tier + current model).
 
 ## Use it as a library
@@ -222,7 +236,10 @@ print(service.usage()["totals"])
 ```
 
 Each run lands in its own git worktree under `.marshal/worktrees/`, with state in
-`.marshal/runs/<run_id>.json` (one file per run) and usage in `.marshal/usage/`.
+`.marshal/runs/<run_id>.json` (one file per run), usage in `.marshal/usage/`, and the **full raw
+stdout/stderr** in `.marshal/logs/<run_id>.log` (so a driver can `marshal logs <run_id>` to
+inspect what the agent actually did — esp. on a failure, where the 16KB-truncated `text` on the
+run record is rarely enough).
 
 ## Collect and integrate a run
 
@@ -300,6 +317,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 .marshal/
 ├── worktrees/<task>.<backend>.<id>/   # isolated checkout per run (kept until you integrate)
 ├── runs/<run_id>.json            # one file per run: status + cost (single writer per run)
+├── logs/<run_id>.log             # one file per run: full raw stdout/stderr (success or failure)
 └── usage/
     ├── events.jsonl              # one line per run
     └── summary.json              # rolled-up totals
