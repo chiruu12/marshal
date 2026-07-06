@@ -43,6 +43,8 @@ _T = TypeVar("_T")
 # Shared parameter descriptions so the tool schema the driver sees is self-describing (not just
 # title + type). Reused across the tools and the run_many Job model.
 _DESC_CLIENT = "Name of a configured client (from list_clients)."
+_DESC_MODEL = "Optional model override; when set with a client, replaces the client's resolved model. When set with `backend` (ad-hoc), is the model to run."
+_DESC_BACKEND = "Optional bare backend name for an ad-hoc spawn (e.g. 'opencode', 'claude-code'); bypasses fleet.config.yaml. Ignored if `client` is also set."
 _DESC_GOAL = "Natural-language task for the worker agent."
 _DESC_TASK_ID = "Optional grouping id; runs sharing a task_id can be compared head-to-head by report()."
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt)."
@@ -58,13 +60,17 @@ class Job(BaseModel):
     """One parallel job for run_many: which client runs what, optionally scoped.
 
     All jobs in a run_many call run in the call's `workspace` (cross-workspace batches are not yet
-    supported - issue separate run_many calls per workspace).
+    supported - issue separate run_many calls per workspace). A job may also be specified ad-hoc
+    (omit `client`, set `backend` + optional `model`) for harness-first routing without a configured
+    fleet.config.yaml client.
     """
 
-    client: Annotated[str, Field(description=_DESC_CLIENT)]
+    client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
     goal: Annotated[str, Field(description=_DESC_GOAL)]
     task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
+    model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
+    backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
 
 
 def build_service() -> MarshalService:
@@ -163,19 +169,24 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
     @app.tool()
     async def run_agent(
-        client: Annotated[str, Field(description=_DESC_CLIENT)],
         goal: Annotated[str, Field(description=_DESC_GOAL)],
+        client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
+        backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Run a task on a client's backend in an isolated git worktree (in `workspace`'s repo);
         returns the run record stamped with its workspace.
 
-        Blocks until the run finishes; for long work prefer spawn (returns at once + cancellable)."""
+        Blocks until the run finishes; for long work prefer spawn (returns at once + cancellable).
+        `model` overrides the client's resolved model when `client` is set; for an ad-hoc spawn,
+        pass `backend` (+ optional `model`) with no `client`."""
         svc = await offload(registry.get, workspace)
         rec = await offload(
-            svc.run_agent, client, goal, task_id=task_id, context_files=context_files
+            svc.run_agent, client, goal, task_id=task_id, context_files=context_files,
+            model=model, backend=backend,
         )
         return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
@@ -196,17 +207,21 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
     @app.tool()
     async def spawn(
-        client: Annotated[str, Field(description=_DESC_CLIENT)],
         goal: Annotated[str, Field(description=_DESC_GOAL)],
+        client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
+        backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Start a run in the background in `workspace`'s repo; returns its RUNNING record immediately.
-        Poll get_run/status, and cancel_run to stop it."""
+        Poll get_run/status, and cancel_run to stop it. `model`/`backend` follow the same rules as
+        run_agent (override the client's model, or ad-hoc spawn by bare backend)."""
         svc = await offload(registry.get, workspace)
         rec = await offload(
-            svc.spawn, client, goal, task_id=task_id, context_files=context_files
+            svc.spawn, client, goal, task_id=task_id, context_files=context_files,
+            model=model, backend=backend,
         )
         return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
