@@ -185,3 +185,67 @@ def test_workspace_bare_lists(
     monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(tmp_path / "w.yaml"))
     assert cli.main(["workspace"]) == 0  # no subcommand -> lists, must not crash
     assert "default" in capsys.readouterr()[0]
+
+
+# --- `marshal models` subcommand -------------------------------------------------------------
+
+
+_CATALOG = (
+    "models:\n"
+    "  - id: <provider>/<model-a>\n"
+    "    backends: [opencode, claude-code]\n"
+    "    cost: native\n"
+    "    quota_type: subscription\n"
+    "    notes: placeholder\n"
+    "  - id: <provider>/<model-b>\n"
+    "    backends: [cursor]\n"
+    "    cost: estimated\n"
+)
+
+
+def test_models_json_with_catalog(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text(_CATALOG)
+    ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg), "--json"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert set(data) == {"models", "driver_context"}
+    assert data["models"] == [
+        {"id": "<provider>/<model-a>", "backends": ["opencode", "claude-code"],
+         "cost": "native", "quota_type": "subscription", "notes": "placeholder"},
+        {"id": "<provider>/<model-b>", "backends": ["cursor"],
+         "cost": "estimated", "quota_type": "", "notes": ""},
+    ]
+    assert data["driver_context"] is None
+
+
+def test_models_human_prints_each_row(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text(_CATALOG)
+    ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "<provider>/<model-a>" in out
+    assert "opencode,claude-code" in out
+    assert "native" in out
+    assert "<provider>/<model-b>" in out
+    assert "cursor" in out
+
+
+def test_models_no_catalog_prints_friendly_message(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Repo with no config file: `marshal models` is a no-op-ish view that explains the absence.
+    ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(tmp_path / "none.yaml")])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "no `models:` catalog" in out
+
+
+def test_models_malformed_config_returns_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("models: 42\nclients: {}\n")  # malformed catalog -> ConfigError
+    ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg)])
+    assert ret == 1
+    err = capsys.readouterr()[1]
+    assert "models must be a list" in err

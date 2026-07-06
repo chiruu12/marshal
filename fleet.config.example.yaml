@@ -35,6 +35,23 @@ retries: 2
 #     Target Python 3.12; do not introduce new dependencies.
 #   driver: Fleet runs read-only review + safe-edit implementation; integrate manually.
 
+# Optional model catalog - pure data the driver can read with `marshal models` / `list_models`.
+# Each entry: id (provider/model), backends that can run it, and short free-form strings for cost
+# (e.g. native|admin-api|estimated|unavailable), quota_type (metered|subscription|unavailable), and
+# notes. The catalog is metadata only - it does NOT change routing (clients still own backend+model).
+# Absent or empty = no catalog to expose.
+# models:
+#   - id: <provider>/<model-a>
+#     backends: [opencode]
+#     cost: native
+#     quota_type: subscription
+#     notes: placeholder
+#   - id: <provider>/<model-b>
+#     backends: [claude-code, cursor]
+#     cost: estimated
+#     quota_type: metered
+#     notes: placeholder
+
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
   # fireworks-ai/* model is rejected at load so you never burn Fireworks credits.

@@ -16,7 +16,15 @@ from typing import Any
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
-from .config import ClientConfig, ConfigError, FleetConfig, _reject_fireworks, resolve_model
+from .config import (
+    ClientConfig,
+    ConfigError,
+    FleetConfig,
+    ModelSpec,
+    _reject_fireworks,
+    resolve_duration,
+    resolve_model,
+)
 from .doctor import run_checks, summarize
 from .env import merge_user_path
 from .fleet import (
@@ -65,6 +73,18 @@ class ClientList(BaseModel):
     """list_clients() result: the configured clients plus the fleet's driver-facing context."""
 
     clients: list[ClientInfo]
+    driver_context: str | None = None
+
+
+class ModelList(BaseModel):
+    """list_models() result: the optional `models:` catalog plus the fleet's driver context.
+
+    Parallel to ClientList: the catalog is pure data (it does not influence routing - clients
+    still own backend+model), and the driver_context is surfaced so the driver can render
+    fleet-level instructions alongside the model sheet.
+    """
+
+    models: list[ModelSpec]
     driver_context: str | None = None
 
 
@@ -150,6 +170,15 @@ class MarshalService:
             driver_context=self.config.context.driver,
         )
 
+    def list_models(self) -> ModelList:
+        # Mirror list_clients: the catalog from FleetConfig (the same dict the CLI/MCP surface)
+        # plus the fleet's driver context, so a driver can render fleet-level instructions
+        # alongside the model sheet.
+        return ModelList(
+            models=list(self.config.models),
+            driver_context=self.config.context.driver,
+        )
+
     def client_available(self, client_name: str) -> bool:
         client = self.config.clients.get(client_name)
         if client is None:
@@ -178,6 +207,7 @@ class MarshalService:
         *,
         model: str | None = None,
         backend: str | None = None,
+        duration: str | int | None = None,
     ) -> RunRequest:
         # Harness-first model selection: pick the strategy by (client, [model], [backend]).
         #   - client only: today's path (lookup + resolve_model).
@@ -190,12 +220,16 @@ class MarshalService:
         # `role` is a semantic routing role (planner/coder/reviewer) that a future policy layer maps
         # to a backend - NOT the client name (the client is carried on RunRequest/RunRecord already).
         # Leave it unset until that policy exists, so the field never claims a role nothing assigned.
+        # `duration` is a per-spawn timeout override: a preset name (short/medium/large/long) or a
+        # positive int of seconds. When set, it OVERRIDES the resolved timeout_s on the RunRequest.
+        # Validated up front so a typo fails fast before any worktree is created.
         task = TaskSpec(
             id=task_id or uuid.uuid4().hex[:8],
             goal=self._compose_goal(goal),
             context_files=context_files or [],
             files_touched=files_touched or [],
         )
+        timeout_override = resolve_duration(duration) if duration is not None else None
         if client_name:
             client = self._clients.get(client_name)
             if client is None:
@@ -214,7 +248,7 @@ class MarshalService:
                 permission=client.permission,
                 model=resolved_model,
                 client=client.name,
-                timeout_s=client.timeout_s,
+                timeout_s=timeout_override if timeout_override is not None else client.timeout_s,
                 usage_api=client.usage_api,
             )
         if backend:
@@ -231,7 +265,7 @@ class MarshalService:
                 permission=ephemeral.permission,
                 model=resolve_model(ephemeral),
                 client=ephemeral.name,
-                timeout_s=ephemeral.timeout_s,
+                timeout_s=timeout_override if timeout_override is not None else ephemeral.timeout_s,
                 usage_api=ephemeral.usage_api,
             )
         raise ValueError("must provide either a configured 'client' or a bare 'backend' (with optional 'model')")
@@ -261,10 +295,11 @@ class MarshalService:
         context_files: list[str] | None = None,
         model: str | None = None,
         backend: str | None = None,
+        duration: str | int | None = None,
     ) -> RunRecord:
         req = self._request_for(
             client_name, goal, task_id, files_touched, context_files,
-            model=model, backend=backend,
+            model=model, backend=backend, duration=duration,
         )
         return self.fleet.run(
             req.backend_name,
@@ -278,16 +313,18 @@ class MarshalService:
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
         """Run several clients in parallel. Each job is
-        {client, goal, task_id?, files_touched?, context_files?, model?, backend?}.
+        {client, goal, task_id?, files_touched?, context_files?, model?, backend?, duration?}.
 
         Client names are validated up front, so a typo fails fast before any run starts. A job may
-        also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key.
+        also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's
+        optional `duration` (preset name or positive seconds) overrides the resolved timeout_s.
         """
         requests = [
             self._request_for(
                 j.get("client"), j["goal"], j.get("task_id"), j.get("files_touched"),
                 j.get("context_files"),
                 model=j.get("model"), backend=j.get("backend"),
+                duration=j.get("duration"),
             )
             for j in jobs
         ]
@@ -303,11 +340,12 @@ class MarshalService:
         context_files: list[str] | None = None,
         model: str | None = None,
         backend: str | None = None,
+        duration: str | int | None = None,
     ) -> RunRecord:
         """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
         req = self._request_for(
             client_name, goal, task_id, files_touched, context_files,
-            model=model, backend=backend,
+            model=model, backend=backend, duration=duration,
         )
         run_id = self.fleet.spawn(req)
         rec = self.fleet.state.get(run_id)

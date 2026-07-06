@@ -8,11 +8,14 @@ import pytest
 
 from marshal_engine.config import (
     DEFAULT_OPENCODE_MODEL,
+    DURATION_PRESETS,
     ClientConfig,
     ConfigError,
     FleetConfig,
     FleetContext,
+    ModelSpec,
     load_config,
+    resolve_duration,
     resolve_model,
     validate,
 )
@@ -175,3 +178,141 @@ def test_context_absent_yields_none_fields(tmp_path: Path) -> None:
     assert cfg.context.driver is None
     # and the default-constructed FleetConfig is also empty
     assert FleetConfig().context == FleetContext(worker=None, driver=None)
+
+
+# --- models: catalog parse (present / absent / malformed) ------------------------------------
+
+
+def test_models_block_absent_yields_empty_catalog(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)  # no `models:` key
+    cfg = load_config(p)
+    assert cfg.models == []  # absent -> empty list, no error
+
+
+def test_default_fleetconfig_has_empty_models() -> None:
+    # The default-constructed FleetConfig also has an empty catalog, so library code can rely on
+    # the field always being a list (not None) regardless of how the config was built.
+    assert FleetConfig().models == []
+
+
+def test_models_block_parses_into_modelspec_list(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        _YAML
+        + "\nmodels:\n"
+        "  - id: <provider>/<model-a>\n"
+        "    backends: [opencode, claude-code]\n"
+        "    cost: native\n"
+        "    quota_type: subscription\n"
+        "    notes: placeholder\n"
+        "  - id: <provider>/<model-b>\n"
+        "    backends: [cursor]\n"
+    )
+    cfg = load_config(p)
+    assert cfg.models == [
+        ModelSpec(
+            id="<provider>/<model-a>",
+            backends=["opencode", "claude-code"],
+            cost="native",
+            quota_type="subscription",
+            notes="placeholder",
+        ),
+        ModelSpec(
+            id="<provider>/<model-b>",
+            backends=["cursor"],
+            cost="",
+            quota_type="",
+            notes="",
+        ),
+    ]
+
+
+def test_models_block_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("models: 42\n" + _YAML)
+    with pytest.raises(ConfigError, match="models must be a list"):
+        load_config(p)
+
+
+def test_models_block_entry_not_a_mapping_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("models:\n  - not-a-mapping\n" + _YAML)
+    with pytest.raises(ConfigError, match="must be a mapping"):
+        load_config(p)
+
+
+def test_models_block_missing_id_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("models:\n  - backends: [opencode]\n" + _YAML)
+    with pytest.raises(ConfigError, match="missing required 'id'"):
+        load_config(p)
+
+
+def test_models_block_backends_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("models:\n  - id: <provider>/<model>\n    backends: opencode\n" + _YAML)
+    with pytest.raises(ConfigError, match="backends must be a non-empty list of strings"):
+        load_config(p)
+
+
+def test_models_block_empty_backends_raises(tmp_path: Path) -> None:
+    # A catalog row that names no backend can't run anything, so it's as malformed as a wrong type.
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("models:\n  - id: <provider>/<model>\n    backends: []\n" + _YAML)
+    with pytest.raises(ConfigError, match="backends must be a non-empty list"):
+        load_config(p)
+
+
+# --- resolve_duration: preset / int / numeric string / errors --------------------------------
+
+
+def test_resolve_duration_each_preset() -> None:
+    for name, seconds in DURATION_PRESETS.items():
+        assert resolve_duration(name) == seconds
+
+
+def test_resolve_duration_raw_int_passes_through() -> None:
+    assert resolve_duration(600) == 600
+    assert resolve_duration(1) == 1  # smallest valid positive value
+
+
+def test_resolve_duration_numeric_string() -> None:
+    assert resolve_duration("600") == 600
+    assert resolve_duration("  300  ") == 300  # surrounding whitespace is stripped
+
+
+def test_resolve_duration_unknown_preset_lists_valid_names() -> None:
+    with pytest.raises(ConfigError) as exc:
+        resolve_duration("xl")
+    msg = str(exc.value)
+    assert "xl" in msg
+    # every valid preset appears in the error so the driver can fix the typo without consulting docs
+    for name in DURATION_PRESETS:
+        assert name in msg
+
+
+def test_resolve_duration_non_numeric_string_raises() -> None:
+    with pytest.raises(ConfigError, match="unknown duration"):
+        resolve_duration("five-minutes")
+
+
+def test_resolve_duration_non_positive_int_raises() -> None:
+    with pytest.raises(ConfigError, match="must be > 0"):
+        resolve_duration(0)
+    with pytest.raises(ConfigError, match="must be > 0"):
+        resolve_duration(-10)
+
+
+def test_resolve_duration_non_positive_numeric_string_raises() -> None:
+    with pytest.raises(ConfigError, match="must be > 0"):
+        resolve_duration("0")
+    with pytest.raises(ConfigError, match="must be > 0"):
+        resolve_duration("-5")
+
+
+def test_resolve_duration_wrong_type_raises() -> None:
+    with pytest.raises(ConfigError, match="got float"):
+        resolve_duration(1.5)  # type: ignore[arg-type]
+    with pytest.raises(ConfigError, match="got bool"):
+        resolve_duration(True)  # type: ignore[arg-type]

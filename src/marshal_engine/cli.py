@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import ConfigError, FleetConfig, load_config, validate
+from .config import ConfigError, DURATION_PRESETS, FleetConfig, load_config, validate
 from .doctor import FAIL, OK, WARN, run_checks, summarize
 from .env import merge_user_path
 from .fleet import Fleet
@@ -54,6 +54,39 @@ def _cmd_backends(args: argparse.Namespace) -> int:
             f"{name:13} available={str(b.check_available()):5} "
             f"json={str(c.json_output):5} usage={str(c.native_usage):5} modes={modes}"
         )
+    return 0
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    """Print the optional `models:` catalog from the fleet config (the driver's "sheet")."""
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    config = FleetConfig()  # empty default - same posture as a repo with no config file
+    if cfg_path.exists():
+        try:
+            config = load_config(cfg_path)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if args.json:
+        payload = {
+            "models": [m.model_dump() for m in config.models],
+            "driver_context": config.context.driver,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    if not config.models:
+        print(
+            f"no `models:` catalog in {cfg_path} (add a top-level `models:` list to expose one)"
+        )
+        return 0
+    for m in config.models:
+        backends = ",".join(m.backends)
+        cost = m.cost or "-"
+        quota = m.quota_type or "-"
+        print(f"{m.id:40} backends={backends:30} cost={cost:12} quota={quota:14} {m.notes}")
+    if config.context.driver:
+        print(f"\ndriver context: {config.context.driver}")
     return 0
 
 
@@ -249,7 +282,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         rec = svc.run_agent(
             args.client, args.goal, task_id=args.task_id,
-            model=args.model, backend=args.backend,
+            model=args.model, backend=args.backend, duration=args.duration,
         )
     except (ValueError, ConfigError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -271,7 +304,7 @@ def _cmd_spawn(args: argparse.Namespace) -> int:
     try:
         rec = svc.spawn(
             args.client, args.goal, task_id=args.task_id,
-            model=args.model, backend=args.backend,
+            model=args.model, backend=args.backend, duration=args.duration,
         )
     except (ValueError, ConfigError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -296,6 +329,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd")
     pb = sub.add_parser("backends", help="list backends and availability")
     pb.add_argument("--json", action="store_true", help="output JSON")
+    pm = sub.add_parser("models", help="list the optional `models:` catalog from fleet.config.yaml")
+    pm.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pm.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    pm.add_argument("--json", action="store_true", help="output JSON")
     pu = sub.add_parser("usage", help="show usage summary")
     pu.add_argument("--dir", default=".marshal/usage")
     pu.add_argument("--json", action="store_true", help="output JSON")
@@ -327,6 +364,10 @@ def main(argv: list[str] | None = None) -> int:
     prun.add_argument("--client", default=None, help="name of a configured client (from list_clients)")
     prun.add_argument("--backend", default=None, help="ad-hoc backend name (e.g. 'opencode', 'claude-code'); ignored when --client is also set")
     prun.add_argument("--model", default=None, help="model to pass (overrides the client's resolved model)")
+    prun.add_argument(
+        "--duration", default=None,
+        help=f"per-spawn timeout override: a preset ({','.join(DURATION_PRESETS)}) or positive seconds",
+    )
     prun.add_argument("--goal", required=True, help="natural-language task for the agent")
     prun.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
     prun.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
@@ -336,6 +377,10 @@ def main(argv: list[str] | None = None) -> int:
     pspwn.add_argument("--client", default=None, help="name of a configured client (from list_clients)")
     pspwn.add_argument("--backend", default=None, help="ad-hoc backend name (e.g. 'opencode', 'claude-code'); ignored when --client is also set")
     pspwn.add_argument("--model", default=None, help="model to pass (overrides the client's resolved model)")
+    pspwn.add_argument(
+        "--duration", default=None,
+        help=f"per-spawn timeout override: a preset ({','.join(DURATION_PRESETS)}) or positive seconds",
+    )
     pspwn.add_argument("--goal", required=True, help="natural-language task for the agent")
     pspwn.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
     pspwn.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
@@ -360,6 +405,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "backends":
         return _cmd_backends(args)
+    if args.cmd == "models":
+        return _cmd_models(args)
     if args.cmd == "usage":
         return _cmd_usage(args)
     if args.cmd == "status":

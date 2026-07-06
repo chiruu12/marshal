@@ -3,6 +3,11 @@
 Each client pins a backend + permission + model. Secrets are referenced (`env:VAR`), never
 inlined. Includes a Fireworks guard: an OpenCode client must use a Go model (`opencode-go/...`),
 never a `fireworks-ai/...` model, so runs bill the Go subscription rather than Fireworks credits.
+
+The optional top-level `models:` block is a catalog the driver can read (`list_models` / `marshal
+models`) - it describes which model ids the fleet exposes, which backends they run on, and the
+`cost`/`quota_type` provenance strings the driver can surface. The catalog is data only; it does
+NOT change routing (clients still own backend+model).
 """
 
 from __future__ import annotations
@@ -19,9 +24,53 @@ from .types import PermissionMode
 
 DEFAULT_OPENCODE_MODEL = "opencode-go/glm-5.2"
 
+# Per-spawn timeout presets (seconds). The driver can pass a preset name to `run_agent`/`spawn`/
+# `run_many`/`marshal run` to override the client's configured `timeout_s` for that one run.
+# A raw int (or numeric string) is also accepted; the same value flows to RunRequest.timeout_s.
+DURATION_PRESETS: dict[str, int] = {
+    "short": 300,    #  5 min
+    "medium": 1200,  # 20 min - the typical safe-edit run
+    "large": 6000,   # 100 min - heavier multi-file work
+    "long": 24000,   # 400 min - benchmark / cross-repo refactors
+}
+
 
 class ConfigError(ValueError):
     """The fleet config is invalid."""
+
+
+def resolve_duration(value: str | int) -> int:
+    """Map a per-spawn `duration` override to a positive integer of seconds.
+
+    Accepts a known preset name (e.g. ``"short"``), a positive int, or a numeric string. Raises
+    ``ConfigError`` on an unknown preset, a non-positive value, or a non-numeric string - the
+    same error type ``load_config`` raises, so the call site can treat them uniformly.
+    """
+    if isinstance(value, bool):
+        # `bool` is a subclass of `int`; a flag-like True/False has no meaning here.
+        raise ConfigError(
+            f"duration must be a preset name or positive seconds, got bool: {value!r}"
+        )
+    if isinstance(value, int):
+        seconds = value
+    elif isinstance(value, str):
+        key = value.strip()
+        if key in DURATION_PRESETS:
+            return DURATION_PRESETS[key]
+        try:
+            seconds = int(key)
+        except ValueError:
+            valid = ", ".join(sorted(DURATION_PRESETS))
+            raise ConfigError(
+                f"unknown duration {value!r}; valid presets: {valid} (or a positive int of seconds)"
+            ) from None
+    else:
+        raise ConfigError(
+            f"duration must be a preset name or positive seconds, got {type(value).__name__}"
+        )
+    if seconds <= 0:
+        raise ConfigError(f"duration must be > 0 seconds, got {seconds}")
+    return seconds
 
 
 class ClientConfig(BaseModel):
@@ -35,6 +84,24 @@ class ClientConfig(BaseModel):
     # the fleet fetches the actual charge for the run and reports cost as admin-api instead of an
     # estimate. Unset = price from the local table (or unavailable). See eastrouter.py.
     usage_api: str | None = None
+
+
+class ModelSpec(BaseModel):
+    """One entry in the optional `models:` catalog the driver can read.
+
+    `id` is a provider+model string (the same one a client would set in its `model:` field).
+    `backends` lists the backends that can run it. `cost` / `quota_type` / `notes` are short
+    free-form strings the driver surfaces verbatim - cost mirrors the UsageSource values
+    (``native`` | ``admin-api`` | ``estimated`` | ``scraped`` | ``unavailable``) and quota_type the billing
+    shape (``metered`` | ``subscription`` | ``unavailable``). All fields after `id` and
+    `backends` are optional so a minimal catalog entry is just ``{id, backends}``.
+    """
+
+    id: str
+    backends: list[str]
+    cost: str = ""
+    quota_type: str = ""
+    notes: str = ""
 
 
 class FleetContext(BaseModel):
@@ -59,6 +126,10 @@ class FleetConfig(BaseModel):
     # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
     # connection error). 0 disables retries. Genuine task failures and timeouts are never retried.
     retries: int = 2
+    # Optional model catalog the driver can read (`list_models` / `marshal models`). Pure data -
+    # does NOT influence routing (clients still own backend+model). Absent/empty by default so
+    # existing configs load unchanged.
+    models: list[ModelSpec] = []
 
 
 def load_config(path: Path | str) -> FleetConfig:
@@ -102,7 +173,46 @@ def load_config(path: Path | str) -> FleetConfig:
         context=context,
         worktree_setup=_parse_setup(raw.get("worktree_setup")),
         retries=_parse_retries(raw.get("retries")),
+        models=_parse_models(raw.get("models")),
     )
+
+
+def _parse_models(value: Any) -> list[ModelSpec]:
+    """Normalize the optional top-level ``models:`` catalog. Absent/empty -> ``[]``.
+
+    Each entry must have a non-empty ``id`` and a ``backends`` list of strings; the other fields
+    default to empty strings. A malformed entry raises ``ConfigError`` so a typo fails fast at
+    load (same as the other config errors), instead of silently dropping a catalog row.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError(f"models must be a list, got {type(value).__name__}")
+    out: list[ModelSpec] = []
+    for i, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"models[{i}] must be a mapping, got {type(entry).__name__}")
+        if not entry.get("id"):
+            raise ConfigError(f"models[{i}]: missing required 'id'")
+        backends_raw = entry.get("backends", [])
+        if (
+            not isinstance(backends_raw, list)
+            or not backends_raw
+            or not all(isinstance(b, str) for b in backends_raw)
+        ):
+            raise ConfigError(
+                f"models[{i}].backends must be a non-empty list of strings, got {backends_raw!r}"
+            )
+        out.append(
+            ModelSpec(
+                id=str(entry["id"]),
+                backends=list(backends_raw),
+                cost=str(entry.get("cost", "") or ""),
+                quota_type=str(entry.get("quota_type", "") or ""),
+                notes=str(entry.get("notes", "") or ""),
+            )
+        )
+    return out
 
 
 def _parse_retries(value: Any) -> int:

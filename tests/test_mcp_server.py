@@ -75,9 +75,9 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     app = build_app(build_service())
     names = {t.name for t in asyncio.run(app.list_tools())}
     expected = {
-        "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "status", "usage",
-        "get_run", "collect_run", "commit_run", "integrate", "clean", "cancel_run",
-        "list_workflows", "run_workflow", "doctor",
+        "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
+        "status", "usage", "get_run", "collect_run", "commit_run", "integrate", "clean",
+        "cancel_run", "list_workflows", "run_workflow", "doctor",
     }
     assert expected <= names
 
@@ -98,6 +98,43 @@ def test_tools_are_async_and_round_trip_via_call_tool(
     app = build_app(build_service())
     result = asyncio.run(app.call_tool("list_clients", {}))
     assert result is not None
+
+
+def test_list_models_round_trips_via_call_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The catalog tool mirrors list_clients: it must round-trip through call_tool and return
+    # cleanly (empty models on a config with no `models:` block, but the tool must exist).
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    result = asyncio.run(app.call_tool("list_models", {}))
+    assert result is not None
+
+
+def test_duration_param_is_wired_into_spawn_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The per-spawn `duration` override must be exposed on the tool schema so a driver can pass a
+    # preset; assert the schema (not calling spawn, which would start a real run).
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    assert "duration" in tools["spawn"].inputSchema["properties"]
+    assert "duration" in tools["run_agent"].inputSchema["properties"]
 
 
 def test_tool_params_carry_schema_descriptions(

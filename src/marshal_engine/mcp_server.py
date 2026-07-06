@@ -46,6 +46,10 @@ _T = TypeVar("_T")
 _DESC_CLIENT = "Name of a configured client (from list_clients)."
 _DESC_MODEL = "Optional model override; when set with a client, replaces the client's resolved model. When set with `backend` (ad-hoc), is the model to run."
 _DESC_BACKEND = "Optional bare backend name for an ad-hoc spawn (e.g. 'opencode', 'claude-code'); bypasses fleet.config.yaml. Ignored if `client` is also set."
+_DESC_DURATION = (
+    "Optional per-spawn timeout override. A preset name (short=300s, medium=1200s, large=6000s, "
+    "long=24000s) or a positive integer of seconds. When set, it overrides the resolved timeout."
+)
 _DESC_GOAL = "Natural-language task for the worker agent."
 _DESC_TASK_ID = "Optional grouping id; runs sharing a task_id can be compared head-to-head by report()."
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt)."
@@ -72,6 +76,7 @@ class Job(BaseModel):
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
+    duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
 
 
 def build_service() -> MarshalService:
@@ -159,6 +164,16 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         return tag((await offload(svc.list_clients)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
+    async def list_models(
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> dict[str, Any]:
+        """List the optional `models:` catalog (id, backends, cost, quota_type, notes) plus the
+        fleet's driver-facing context, for the chosen workspace. Pure data - does NOT influence
+        routing (clients still own backend+model). Returns {models, driver_context, workspace}."""
+        svc = await offload(registry.get, workspace)
+        return tag((await offload(svc.list_models)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+
+    @app.tool()
     async def doctor(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
@@ -176,6 +191,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
+        duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Run a task on a client's backend in an isolated git worktree (in `workspace`'s repo);
@@ -183,11 +199,12 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
         Blocks until the run finishes; for long work prefer spawn (returns at once + cancellable).
         `model` overrides the client's resolved model when `client` is set; for an ad-hoc spawn,
-        pass `backend` (+ optional `model`) with no `client`."""
+        pass `backend` (+ optional `model`) with no `client`. `duration` overrides the resolved
+        timeout (a preset name or positive seconds)."""
         svc = await offload(registry.get, workspace)
         rec = await offload(
             svc.run_agent, client, goal, task_id=task_id, context_files=context_files,
-            model=model, backend=backend,
+            model=model, backend=backend, duration=duration,
         )
         return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
@@ -214,15 +231,17 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
+        duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Start a run in the background in `workspace`'s repo; returns its RUNNING record immediately.
-        Poll get_run/status, and cancel_run to stop it. `model`/`backend` follow the same rules as
-        run_agent (override the client's model, or ad-hoc spawn by bare backend)."""
+        Poll get_run/status, and cancel_run to stop it. `model`/`backend`/`duration` follow the
+        same rules as run_agent (override the client's model, ad-hoc spawn by bare backend, or
+        per-spawn timeout override)."""
         svc = await offload(registry.get, workspace)
         rec = await offload(
             svc.spawn, client, goal, task_id=task_id, context_files=context_files,
-            model=model, backend=backend,
+            model=model, backend=backend, duration=duration,
         )
         return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 

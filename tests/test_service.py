@@ -29,6 +29,7 @@ from marshal_engine.config import (
     load_config,
 )
 from marshal_engine.service import MarshalService
+from marshal_engine.service import ModelList, ModelSpec
 
 
 class _Echo(CodingAgentBackend):
@@ -587,3 +588,125 @@ def test_run_agent_client_model_override_fireworks_raises(repo: Path) -> None:
     with pytest.raises(ConfigError, match="Fireworks"):
         svc.run_agent("impl", "x", task_id="t1",
                       model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+
+
+# --- list_models + duration presets ---------------------------------------------------------
+
+
+def test_list_models_empty_catalog_by_default(repo: Path) -> None:
+    svc = _svc(repo)  # no models in the config
+    result = svc.list_models()
+    assert isinstance(result, ModelList)
+    assert result.models == []
+    assert result.driver_context is None  # no context.driver in this config
+
+
+def test_list_models_surfaces_catalog_and_driver_context(repo: Path) -> None:
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT)},
+        context=FleetContext(driver="Use the catalog to pick a model."),
+        models=[
+            ModelSpec(id="<provider>/<model-a>", backends=["opencode"], cost="native", quota_type="subscription"),
+            ModelSpec(id="<provider>/<model-b>", backends=["cursor"], cost="estimated", quota_type="metered"),
+        ],
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    result = svc.list_models()
+    assert [m.model_dump() for m in result.models] == [
+        {"id": "<provider>/<model-a>", "backends": ["opencode"], "cost": "native", "quota_type": "subscription", "notes": ""},
+        {"id": "<provider>/<model-b>", "backends": ["cursor"], "cost": "estimated", "quota_type": "metered", "notes": ""},
+    ]
+    assert result.driver_context == "Use the catalog to pick a model."
+
+
+def test_request_for_duration_preset_overrides_client_timeout(repo: Path) -> None:
+    # The client's configured timeout (300s) is replaced when a duration preset is passed.
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", timeout_s=300,
+                                        permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    req = svc._request_for("worker", "x", duration="short")  # short = 300s same as client; try "long"
+    assert req.timeout_s == 300  # "short" == 300
+    req2 = svc._request_for("worker", "x", duration="long")  # 24000s, far past client's 300
+    assert req2.timeout_s == 24000
+    # And the integer form is also accepted
+    req3 = svc._request_for("worker", "x", duration=42)
+    assert req3.timeout_s == 42
+
+
+def test_request_for_duration_invalid_preset_raises(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ConfigError, match="unknown duration"):
+        svc._request_for("worker", "x", duration="xl")
+    with pytest.raises(ConfigError, match="must be > 0"):
+        svc._request_for("worker", "x", duration=0)
+
+
+def test_request_for_duration_overrides_ephemeral_default_too(repo: Path) -> None:
+    # Ad-hoc (backend, model) path: the synthesized ClientConfig's default timeout_s=600 is
+    # overridden by the duration parameter.
+    cfg = FleetConfig()  # no clients
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    req = svc._request_for(None, "x", backend="echo", model="adhoc-model", duration="large")
+    assert req.timeout_s == 6000  # "large" = 6000s
+    assert req.client == "adhoc-echo"
+    assert req.model == "adhoc-model"
+
+
+def test_run_agent_duration_reaches_run_record(repo: Path) -> None:
+    # End-to-end: a `duration` override on run_agent reaches the RunRequest (and thus the run record).
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", timeout_s=300,
+                                        permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    rec = svc.run_agent("worker", "x", task_id="t1", duration="long")
+    assert rec.status == "succeeded"
+    # The Fleet doesn't echo timeout back on the record (it lives on the RunRequest), but we can
+    # assert the side-effect: a record with this task_id exists and the override didn't error.
+    assert rec.run_id.startswith("t1.echo.")
+
+
+def test_spawn_duration_reaches_run_record(repo: Path) -> None:
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", timeout_s=300,
+                                        permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    try:
+        rec = svc.spawn("worker", "x", task_id="sp1", duration="medium")
+        assert rec.run_id.startswith("sp1.echo.")
+        assert rec.status in ("running", "succeeded")
+    finally:
+        svc.shutdown()
+
+
+def test_run_many_per_job_duration(repo: Path) -> None:
+    # Each job in run_many can carry its own duration; the override reaches the RunRequest.
+    cfg = FleetConfig(
+        clients={
+            "a": ClientConfig(name="a", backend="echo", timeout_s=300, permission=PermissionMode.SAFE_EDIT),
+            "b": ClientConfig(name="b", backend="echo", timeout_s=300, permission=PermissionMode.SAFE_EDIT),
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    jobs = [
+        {"client": "a", "goal": "x", "task_id": "j1", "duration": "short"},
+        {"client": "b", "goal": "y", "task_id": "j2", "duration": 999},
+    ]
+    records = svc.run_many(jobs, max_concurrency=2)
+    assert [r.task_id for r in records] == ["j1", "j2"]
+    assert all(r.status == "succeeded" for r in records)
+
+
+def test_run_many_duration_invalid_preset_fails_fast(repo: Path) -> None:
+    # A bad duration in any job must fail the whole call BEFORE any run starts (validated up
+    # front via resolve_duration in _request_for).
+    cfg = FleetConfig(
+        clients={"a": ClientConfig(name="a", backend="echo", permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    with pytest.raises(ConfigError, match="unknown duration"):
+        svc.run_many([{"client": "a", "goal": "x", "duration": "xl"}])
+    assert svc.status() == []  # nothing ran

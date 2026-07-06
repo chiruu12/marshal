@@ -16,10 +16,10 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (19 tools):
-  `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`,
-  `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `commit_run`, `integrate`, `clean`,
-  `status`, `usage`, `list_workflows`, `run_workflow`. One server can
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (20 tools):
+  `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `list_models`, `run_agent`,
+  `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `commit_run`,
+  `integrate`, `clean`, `status`, `usage`, `list_workflows`, `run_workflow`. One server can
   target several repos at once - every tool takes an
   optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
   add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
@@ -140,6 +140,19 @@ Validate recipes against your config with `marshal workflows`, then run one over
 `awaiting_review` status with concrete next-actions; the driver integrates the good runs one at a
 time. The `marshal-workflow` Skill is the authoring + running playbook; templates live in
 [`examples/workflows/`](examples/workflows/).
+
+## Model catalog and duration presets
+
+- **Model catalog** (`models:` in `fleet.config.yaml`) is a sheet the driver can read with
+  `marshal models` (or the `list_models` MCP tool) - one row per `id` (provider/model), with
+  `backends` it runs on and short free-form strings for `cost` / `quota_type` / `notes`. The
+  catalog is pure data; it does NOT change routing (clients still own backend+model). Absent or
+  empty = no catalog to expose; a malformed row raises `ConfigError` at load.
+- **Duration presets** are per-spawn timeout overrides for `run_agent` / `spawn` / `run_many` (and
+  `marshal run` / `marshal spawn` with `--duration`). Pass a preset name (`short`=300s,
+  `medium`=1200s, `large`=6000s, `long`=24000s) or a positive integer of seconds. The override
+  replaces the resolved `timeout_s` on the `RunRequest` for that one call; validation happens up
+  front so a typo fails fast before any worktree is created.
 
 ## Architecture
 

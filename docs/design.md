@@ -181,6 +181,22 @@ clients:
   refactorer:  { backend: codex,    permission: safe-edit }
 ```
 
+**Optional model catalog (the driver's "sheet").** A top-level `models:` list is pure data the
+driver can read (`list_models` MCP tool / `marshal models` CLI) — `id` (provider/model), which
+`backends` can run it, and short free-form strings for `cost` (e.g. `native`/`admin-api`/
+`estimated`/`unavailable`), `quota_type` (e.g. `metered`/`subscription`/`unavailable`), and
+`notes`. **The catalog is metadata only — it does NOT change routing** (clients still own
+backend+model). Absent or empty = no catalog to expose; a malformed entry raises `ConfigError`
+at load (the same hard-fail behavior as the other config errors).
+
+**Per-spawn timeout override (duration presets).** `run_agent`, `spawn`, and `run_many` accept
+an optional `duration` — either a preset name (`short`=300s, `medium`=1200s, `large`=6000s,
+`long`=24000s) or a positive integer of seconds. The override replaces the resolved `timeout_s`
+on the `RunRequest` for that one call; the client's `timeout_s` in `fleet.config.yaml` stays the
+default. Same idea for the CLI: `marshal run --duration large ...`. Validation happens up front
+in `_request_for` (via `resolve_duration`), so a typo or non-positive value fails fast before
+any worktree is created.
+
 Runtime state - worktrees, per-run JSON, usage - lands under `.marshal/`. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
@@ -198,9 +214,10 @@ startup; a client whose backend is unavailable is **skipped** (stderr warning, r
 Fleet, so `doctor` (which probes every configured backend) still reports a missing one as a FAIL.
 
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
-Shipped today (17): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`,
-`run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`,
-`status`, `usage`, `list_workflows`, `run_workflow`. Current state is tracked in `docs/status.md`.
+Shipped today (20): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `list_models`,
+`run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`,
+`commit_run`, `integrate`, `clean`, `status`, `usage`, `list_workflows`, `run_workflow`. Current
+state is tracked in `docs/status.md`.
 
 Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
 fleet works in both MCP and Skills hosts.
@@ -256,7 +273,7 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 - **Phase 0 - repo:** lay down `pyproject.toml` (uv), the package skeleton, and `docs/`.
 - **Phase 1 - engine:** base class + `CursorBackend` + `OpenCodeBackend` + `CodexBackend` (pure `build_invocation`/`map_permission` + `parse_output`), worktree manager, process runner (timeout!), result collector. CLI-testable standalone before any MCP. Contract tests per backend.
 - **Phase 2 - usage:** `events.jsonl` + `summary.json`, price table, `source` tagging, OpenCode native + on-disk reconciliation, Cursor Admin-API path, `usage` command.
-- **Phase 3 - MCP server:** the 19 tools (incl. `list_workspaces`/`add_workspace`, `commit_run` for dependent chaining, `clean` for worktree teardown; each action/query tool takes an optional `workspace`) + `fleet.config.yaml` loader + persistent fleet state + localhost hardening. Multi-workspace tenancy lives in `workspaces.py` (one server, several repos via `~/.marshal/workspaces.yaml`, hot-reloaded); the engine stays single-repo.
+- **Phase 3 - MCP server:** the 20 tools (incl. `list_workspaces`/`add_workspace`, `commit_run` for dependent chaining, `clean` for worktree teardown; each action/query tool takes an optional `workspace`) + `fleet.config.yaml` loader + persistent fleet state + localhost hardening. Multi-workspace tenancy lives in `workspaces.py` (one server, several repos via `~/.marshal/workspaces.yaml`, hot-reloaded); the engine stays single-repo.
 - **Phase 4 - Skills:** the `marshal-*` driver playbooks - `marshal-orchestrate` (decompose → spawn → review → integrate), `marshal-benchmark` (measured strategy comparison), `marshal-workflow` (declarative YAML recipes), `marshal-review-gate` + `marshal-plan-consensus` (consensus review / approach convergence).
 - **Phase 5 - harden + docs:** retries/backoff, concurrency caps, worktree cleanup, dry-run, OpenCode warm-server fast path, README/onboarding → flip public.
 
