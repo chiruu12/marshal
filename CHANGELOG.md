@@ -9,6 +9,42 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Ad-hoc backend spawn and per-run `model` override** on `run_agent`/`spawn`/`marshal run`/`marshal
+  spawn` — pass `backend` (+ optional `model`) with no `client`, or override a configured client's
+  model for one call.
+- **Model catalog + duration presets** — optional `models:` block in `fleet.config.yaml` surfaced
+  via `list_models` / `marshal models`; per-spawn `duration` presets (`short`/`medium`/`large`/`long`
+  or positive seconds) on MCP and CLI run entrypoints.
+- **Durable per-run logs** — full stdout/stderr under `.marshal/logs/<run_id>.log`, with
+  `get_run_log` (MCP) and `marshal logs` (CLI).
+- **Advisory `budgets:`** — soft-warn dollar caps per backend/client/fleet window; spend surfaced
+  in `usage` / `marshal usage --config`.
+- **Workspace config hot-reload** — the registry rebuilds a workspace's service when its
+  `fleet.config.yaml` appears/changes/vanishes (mtime+size signature).
+- **`verify:` post-run gate** — optional per-workspace command after a would-be-succeeded run with
+  file changes; failure lands as `verify_failed` with output tail on the run record.
+- **Repo-shape-aware scaffold** — `add_workspace`/`marshal workspace add` drops starter config with
+  commented `worktree_setup` suggestions detected from the repo layout.
+- **Orphaned-worktree reaping** — scope-mode `clean` reconciles `.marshal/worktrees` against the
+  ledger and reaps dirs with no readable run record (`orphans_removed`).
+- **Actionable resolution-error hints** — ad-hoc `backend=` escape hatch, `doctor`, `add_workspace`.
+- **Reference docs** — `docs/config.md` (every config key) and `docs/mcp-tools.md` (MCP tool census).
+
+### Changed
+- **`run_many` preserves client `usage_api`** and runs permission preflight before worktree creation.
+- **Backend adapter boilerplate consolidated** into the base class; OpenCode export reconciliation
+  moved to a post-success finalize hook.
+- **`base_branch` on MCP `spawn`/`run_agent`** for dependent chaining; `files_touched` removed.
+- **Unified service construction** (`build_service_for`) and workflow recipe errors surfaced over
+  MCP (`list_workflows` returns `{workflows, errors, workspace}`).
+- **Centralized `.marshal` layout** (`layout.py`) and CLI `--repo` path resolution for
+  `usage`/`status`/`logs`/`models`/….
+- **Budgets extracted** to `budgets.py`.
+- **`doctor` PATH fallback + self-healing skipped clients** — `user_path()` unions well-known user
+  bin dirs when the login-shell probe fails; clients skipped at startup re-probe on
+  resolution/`list_clients`.
+
+### Added
 - **`marshal usage` time windows + per-breakdown token table.** A new `UsageTracker.summary(since,
   until)` window (compared in UTC over each event's `ts`), surfaced via `MarshalService.usage(...)`
   and a new MCP `usage(window: session|week|month|all)` parameter (`session` = since the Fleet's

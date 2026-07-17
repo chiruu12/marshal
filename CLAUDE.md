@@ -12,10 +12,10 @@ Marshal clean and embeddable.
 > **Current status:** full vertical slice built (engine → service → CLI → MCP); suite green.
 > **V1 complete**: merge-back, per-provider cost-proof, capped parallel `run_many`, non-blocking
 > `spawn`, `cancel_run`, the **measured savings benchmark** (`benchmark`/`report`), **declarative
-> YAML workflows**, and driver Skills. 17 MCP tools (incl. multi-workspace: one server targets
-> several repos, selected per call, registered in `~/.marshal/workspaces.yaml` + hot-reloaded).
-> OpenCode + Cursor + Claude Code live-verified (Claude Code with native cost). Remaining work is
-> coverage/polish. See `docs/status.md`.
+> YAML workflows**, and driver Skills. MCP tools are documented in `docs/mcp-tools.md` (incl.
+> multi-workspace: one server targets several repos, selected per call, registered in
+> `~/.marshal/workspaces.yaml` + hot-reloaded). OpenCode + Cursor + Claude Code live-verified
+> (Claude Code with native cost). Remaining work is coverage/polish. See `docs/status.md`.
 
 ## Directory Structure
 
@@ -33,20 +33,28 @@ marshal/
 │   │   └── claude_code.py   # Claude Code (claude -p) - native cost
 │   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
 │   ├── usage.py             # per-provider usage: events.jsonl + summary.json
+│   ├── pricing.py           # token → cost price table (the ESTIMATED path)
+│   ├── eastrouter.py        # read real per-run cost from EastRouter /v1/usage (the ADMIN_API path)
 │   ├── state.py             # persistent fleet state (one runs/<run_id>.json per run)
 │   ├── fleet.py             # orchestrator: worktree → run backend → record usage → persist
 │   ├── registry.py          # construct backends by name
-│   ├── config.py            # fleet.config.yaml loader + Fireworks guard
+│   ├── config.py            # fleet.config.yaml loader + Fireworks guard + duration presets
+│   ├── retry.py             # transient-failure classifier + backoff for run retries
+│   ├── env.py               # child env hygiene (VIRTUAL_ENV scrub) + user PATH recovery
+│   ├── logs.py              # durable per-run stdout/stderr persistence
+│   ├── layout.py            # centralized .marshal directory layout helpers
+│   ├── scaffold.py          # repo-shape-aware fleet.config.yaml scaffold
+│   ├── budgets.py           # advisory budget caps (soft-warn only)
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
 │   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
-│   ├── mcp_server.py        # MCP server (FastMCP): list_workspaces/add_workspace + doctor/list_clients/run_agent/run_many/spawn/cancel_run/benchmark/report/get_run/collect_run/commit_run/integrate/clean/status/usage/list_workflows/run_workflow (each takes an optional workspace)
-│   └── cli.py               # `marshal` CLI (doctor/backends/usage/status/workflows/workspace/clean/mcp)
+│   ├── mcp_server.py        # MCP server (FastMCP) - see docs/mcp-tools.md for the tool reference
+│   └── cli.py               # `marshal` CLI (doctor/backends/models/run/spawn/usage/status/logs/workflows/workspace/clean/mcp)
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
 ├── SETUP.md                 # clone-to-first-run setup guide
-├── docs/                    # design · status · usage · chauffeur-future · sources (docs/internal/ is local-only, gitignored)
+├── docs/                    # design · status · usage · config · mcp-tools · chauffeur-future · sources (docs/internal/ is local-only, gitignored)
 └── tests/                   # contract tests per backend + engine/service/mcp tests
 # .claude/ is local tooling (gitignored); the public copies of the Marshal Skills live in skills/.
 ```
@@ -62,7 +70,7 @@ strict models there would reject on an unexpected upstream field. MCP server via
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`doctor` · `backends` · `usage` · `status` · `workflows` · `workspace` · `mcp`)
+- Run CLI: `uv run marshal` (`doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` · `logs` · `workflows` · `workspace` · `clean` · `mcp`)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)
@@ -73,6 +81,19 @@ The gate every commit must pass (single-line; `git -C`/`uv --directory` from out
 CI additionally enforces a **90% coverage floor** (`--cov-fail-under=90`) and runs the suite on
 Linux (py3.11-3.13) + macOS (py3.12, for the POSIX process-group paths). Check coverage locally with
 `uv run pytest --cov=marshal_engine --cov-report=term-missing` (the bare `pytest -q` stays fast).
+
+### Development rules
+
+- **Docs + CHANGELOG ride the feature commit.** Ship user-facing doc updates and `[Unreleased]`
+  entries in the same PR as the code they describe.
+- **Never hardcode counts in prose** (tool counts, client counts, etc.) — link the normative home
+  (`docs/mcp-tools.md` for MCP tools, `docs/config.md` for config keys).
+- **One normative home per fact:** `docs/design.md` = architecture; `docs/usage.md` = user manual;
+  `docs/config.md` = config census; `docs/mcp-tools.md` = MCP tool reference; `CHANGELOG.md` =
+  history; `skills/` = driver playbooks.
+- **YAGNI gate** — no new field/param/config key without a consumer wired in the same PR.
+- **Shared builders** — any operation exposed on 2+ of library/CLI/MCP goes through one shared
+  builder/serializer.
 
 ## Core invariants (do not violate)
 

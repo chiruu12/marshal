@@ -56,7 +56,8 @@ Split the goal into tasks that can run in parallel **without colliding**:
 - Write a self-contained prompt per task: the goal, acceptance criteria, and the *minimal* files and
   context the worker needs. The worker sees only what you give it plus its worktree - not your whole
   session. Scope tightly; that is the point (less drift, less token waste).
-- When you know it, declare `files_touched` per task - it documents the intended scope.
+- When you know the intended file scope, pass `context_files` on the task so the worker sees only
+  what it needs.
 
 **Never fan out a dependency chain in one `run_many`.** Marshal shines on *independent* work. If task
 B needs A's output, batching them in parallel makes each branch off the same base, blind to the

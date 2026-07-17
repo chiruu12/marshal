@@ -6,7 +6,8 @@ MCP server, as a CLI, or as a Python library.
 
 > **Status:** V1 core complete, pre-1.0. The engine, CLI, and MCP server work, including merge-back
 > (`collect_run` + `integrate`), capped parallel fan-out (`run_many`), and a measured savings
-> benchmark (`benchmark`/`report`). See [`status.md`](status.md).
+> benchmark (`benchmark`/`report`). See [`status.md`](status.md). For every config key see
+> [`config.md`](config.md); for MCP parameters and return shapes see [`mcp-tools.md`](mcp-tools.md).
 
 ## Concepts
 
@@ -15,7 +16,7 @@ MCP server, as a CLI, or as a Python library.
 | **driver** | The agent (e.g. Claude Code) that plans the work and calls Marshal. It keeps the expensive reasoning. |
 | **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, antigravity). Chosen per call, never global. |
 | **client** | A named worker in `fleet.config.yaml` pinning a backend + model + permission. You route tasks to clients by name. |
-| **run** | One execution of a client on a task; ends `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`. |
+| **run** | One execution of a client on a task; ends `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`. |
 | **worktree** | The isolated git checkout **one run** works in (under `.marshal/worktrees/`). The safety boundary — main is untouched until you integrate. |
 | **workspace** | A **whole repo** the server can target. Distinct from *worktree*: a workspace holds many runs, each in its own worktree. One server can target several workspaces (`list_workspaces`, `workspace=`). |
 | **integrate** | Merge a run's worktree branch back into the target repo's current branch (the only step that touches it). |
@@ -80,6 +81,23 @@ clients:
   **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
   exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
   (a timeout retry just burns another full window). A retried run records its `attempts` count.
+- **`verify`** (optional, top-level): a gate command run in the worktree **after** a run that would
+  otherwise be `succeeded` and actually changed files (e.g. the repo's full test suite). Text-only
+  replies are never gated. A non-zero exit marks the run `verify_failed` instead of `succeeded`; the
+  worktree and diff are kept for review, and the command's output tail lands on the run record
+  (`verify_output`). Same string-or-argv shape and env hygiene as `worktree_setup`.
+- **`context`** (optional, top-level): fleet-wide layered context strings.
+  - `worker` — prepended to every worker agent's goal (shared operating assumptions).
+  - `driver` — surfaced back to the driver via `list_clients` / `list_models` as `driver_context`.
+- **`models`** (optional, top-level): a catalog the driver reads with `list_models` / `marshal models`.
+  Each entry has `id` (provider/model), `backends` it runs on, and short free-form strings for
+  `cost` / `quota_type` / `notes`. Pure metadata — does **not** change routing (clients still own
+  backend+model). Absent or empty = no catalog to expose.
+- **Duration presets** — per-spawn timeout overrides for `run_agent` / `spawn` / `run_many` (and
+  `marshal run` / `marshal spawn` with `--duration`). Pass a preset name (`short`=300s,
+  `medium`=1200s, `large`=6000s, `long`=24000s) or a positive integer of seconds. The override
+  replaces the resolved `timeout_s` on the `RunRequest` for that one call; validation happens up
+  front so a typo fails fast before any worktree is created. See also [`config.md`](config.md).
 - **`budgets`** (optional, top-level): advisory $ caps per scope (a backend, a client, or the
   whole fleet) and time window (`session` | `week` | `month`). **Soft-warn only — a cap never
   blocks a run.** When a scope's windowed spend meets or exceeds its cap, Marshal prints a stderr
@@ -168,7 +186,7 @@ first to use a bare `"command": "marshal"`). Run `marshal doctor` before wiring 
 }
 ```
 
-Tools exposed to the driver:
+Tools exposed to the driver (full parameter and return reference: [`mcp-tools.md`](mcp-tools.md)):
 
 Every action/query tool below takes an optional `workspace` (a name from `list_workspaces`); the
 run-handle tools (`get_run`/`collect_run`/`cancel_run`/`integrate`) take it as a hint. Omit it for
@@ -179,22 +197,23 @@ the default workspace.
 | `list_workspaces()` | List the repos this server can target (name, path, configured, client_count). |
 | `add_workspace(name, path, scaffold?)` | Register a repo in the central registry; usable immediately (no reconnect). |
 | `doctor()` | Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth); read-only. Run it before spawning. |
-| `list_clients` | List configured clients (name, backend, model, permission). |
-| `run_agent(client, goal, task_id?)` | Run a task on a client's backend in an isolated worktree; returns the run record. |
-| `run_many(jobs, max_concurrency?)` | Run several `{client, goal}` jobs in parallel, each in its own worktree; returns all records. |
-| `spawn(client, goal, task_id?)` | Start a run in the background; returns its RUNNING record at once - poll `get_run`/`status`. |
+| `list_clients` | List configured clients (name, backend, model, permission) plus `driver_context`. |
+| `list_models` | List the optional `models:` catalog (`id`, `backends`, `cost`, `quota_type`, `notes`) plus `driver_context`. |
+| `run_agent(client?, goal, task_id?, context_files?, base_branch?, model?, backend?, duration?)` | Run a task on a client's backend in an isolated worktree; returns the run record. Omit `client` for an ad-hoc spawn by `backend` (+ optional `model`). `duration` is a preset name or positive seconds. `base_branch` bases the worktree on a branch other than HEAD (e.g. after `commit_run`). |
+| `run_many(jobs, max_concurrency?)` | Run several `{client, goal, task_id?, context_files?}` jobs in parallel, each in its own worktree; returns all records. |
+| `spawn(client?, goal, task_id?, context_files?, base_branch?, model?, backend?, duration?)` | Start a run in the background; returns its RUNNING record at once - poll `get_run`/`status`. Same ad-hoc/`model`/`duration`/`base_branch` rules as `run_agent`. |
 | `cancel_run(run_id)` | Stop a running agent (process-group `SIGTERM`); returns the updated record. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
-| `get_run(run_id)` | Fetch one run record (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`). |
+| `get_run(run_id)` | Fetch one run record (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
 | `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). Review before integrating. |
 | `commit_run(run_id, message?)` | Freeze a finished run's work onto its own branch (your branch untouched) so a dependent run can `spawn` with `base_branch` = that branch. Outcome ∈ `committed`/`clean`/`blocked`/`error`. |
 | `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
-| `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. |
-| `status()` | List all runs with status + cost. |
+| `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. Scope-mode cleans also reap orphaned worktree dirs (`orphans_removed`). Returns `{removed, orphans_removed, skipped, errors, dry_run}`. |
+| `status()` | List all runs with status + cost (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
 | `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger). The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd` (advisory only - caps never block a run). |
 | `get_run_log(run_id)` | The full raw stdout/stderr persisted for a run (under `<base>/logs/<run_id>.log`), or `null` when no log was written. The 16KB-truncated `text` on the run record is the agent's *final message*; the log preserves the *whole* stream so a driver can inspect what the agent actually did (esp. on a failure). |
-| `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. |
+| `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. Returns `{workflows, errors, workspace}` — malformed recipe files land in `errors` (filename → message). |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
 
 ## Use it as a CLI
@@ -202,6 +221,9 @@ the default workspace.
 ```bash
 marshal doctor             # preflight: check the setup is ready to run agents
 marshal backends           # list backends and availability
+marshal models             # list the optional `models:` catalog from fleet.config.yaml
+marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
+marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once
 marshal status             # list fleet runs
 marshal logs <run_id>      # print the persisted stdout/stderr for one run (full, not truncated)
 marshal clean              # tear down finished runs' worktrees + branches (--scope/--dry-run/--older-than)
@@ -212,6 +234,10 @@ marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.y
 marshal workspace remove <name>      # drop a workspace from the registry
 marshal mcp                # run the MCP server over stdio
 ```
+
+`usage`, `status`, `logs`, and `models` accept `--repo` (default: `$MARSHAL_REPO` or cwd) to target a
+repo without the MCP workspace registry. `run`/`spawn` accept `--repo`, `--config`, `--client` (or
+ad-hoc `--backend` + `--model`), and `--duration` (preset or seconds).
 
 ### `marshal usage`
 
@@ -250,10 +276,8 @@ swallowed in `Fleet._execute` so a run is never broken by the logger, and any ex
 log storage has no file (the CLI returns non-zero and the MCP tool returns `log=null` in that
 case).
 
-The CLI is **inspection-only** (doctor/backends/status/usage/logs/workflows) plus `mcp`. You *run*
-agents by driving the MCP tools from your driver (see above), not from the CLI. `marshal doctor`
-also reports a backend's plan tier where the CLI exposes it (e.g. a `plan:cursor` line with the
-subscription tier + current model).
+`marshal doctor` also reports a backend's plan tier where the CLI exposes it (e.g. a `plan:cursor`
+line with the subscription tier + current model). For every config key see [`config.md`](config.md).
 
 ## Use it as a library
 
@@ -363,7 +387,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. |
 | Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. |
 | Codex | yes | best-effort | `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
-| Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan`/`auto-accept` for read-only/safe-edit. |
+| Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; safe-edit maps to `--yolo` (headless auto-accept blocks writes). |
 | Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
 

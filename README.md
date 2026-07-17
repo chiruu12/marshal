@@ -16,10 +16,8 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (20 tools):
-  `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `list_models`, `run_agent`,
-  `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `commit_run`,
-  `integrate`, `clean`, `status`, `usage`, `list_workflows`, `run_workflow`. One server can
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (see
+  [`docs/mcp-tools.md`](docs/mcp-tools.md) for the full reference). One server can
   target several repos at once - every tool takes an
   optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
   add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
@@ -29,7 +27,7 @@ It plugs into your driver two ways:
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 19-tool MCP server work end to
+> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and MCP server work end to
 > end: parallel fan-out (`run_many`), non-blocking `spawn` + `cancel_run`, merge-back (`collect_run` +
 > `integrate`), **declarative YAML workflows**, **multi-workspace** (one server, many repos), and a
 > **measured savings benchmark** (`benchmark`/`report`). OpenCode, Cursor, Claude Code, and Command
@@ -184,6 +182,8 @@ top of it. See `docs/chauffeur-future.md`.
 
 - [`SETUP.md`](SETUP.md) - clone-to-first-run setup (prerequisites, install, auth, verify, wire in).
 - [`docs/usage.md`](docs/usage.md) - configure a fleet and drive it via MCP, CLI, or library.
+- [`docs/config.md`](docs/config.md) - every `fleet.config.yaml` key and `MARSHAL_*` env var.
+- [`docs/mcp-tools.md`](docs/mcp-tools.md) - MCP tool reference (parameters and return shapes).
 - [`docs/model-playbook.md`](docs/model-playbook.md) - which model/client to route a task to, by
   task weight (heavy/standard/light), with a copy-paste tiered fleet and cost-honesty notes.
 - [`docs/status.md`](docs/status.md) - what's built, the backend verification matrix, and the roadmap.

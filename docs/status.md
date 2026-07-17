@@ -24,7 +24,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |
 | `service.py` | Testable core the MCP/CLI call into (single-repo) | done |
 | `cli.py` | `marshal doctor/backends/usage/status/workflows/workspace/clean/mcp` | done |
-| `mcp_server.py` | 19-tool MCP surface over stdio (list_workspaces/add_workspace/doctor/run/run_many/spawn/cancel/benchmark/report/collect/commit_run/integrate/clean/workflows/…); each takes an optional `workspace` | done |
+| `mcp_server.py` | MCP surface over stdio ([`docs/mcp-tools.md`](mcp-tools.md)); each action/query tool takes an optional `workspace` | done |
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files. CI
 enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) + macOS (py3.12).
@@ -37,7 +37,7 @@ enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) +
 | Cursor | yes | verified | verified | n/a by design (Admin API only) |
 | Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost `admin-api`/estimated/unavailable) |
-| Command Code | yes | plan mode | verified (auto-accept) | none (hosted account → `unavailable`)*** |
+| Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
 | Antigravity | yes | verified (reply) | verified** | none |
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
@@ -106,7 +106,8 @@ native cost flows to the ledger.
 worktree in agy's `trustedWorkspaces` before launch, so headless edits land in the worktree instead
 of the scratch dir (live-verified 2026-06-27). This closes the prior known limitation.
 **Command Code backend** (`backends/command_code.py`) - `command-code -p` (a hosted coding agent on
-its own account) with `plan` for read-only and `auto-accept` for safe-edit; `doctor` surfaces its
+its own account) with `plan` for read-only and `--yolo` for safe-edit (headless `auto-accept`
+blocks writes); `doctor` surfaces its
 provider + default model. `-p` prints plain text with no token/cost accounting, so usage is
 `unavailable` (a hosted account's spend lives in its own dashboard, never a fabricated $0).
 Live-verified headless (model `zai-org/GLM-5.2`).

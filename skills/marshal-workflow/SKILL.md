@@ -29,7 +29,8 @@ runs in `next_actions` for you to review and merge yourself. `succeeded` is not 
 decision stays human.
 
 ## 1. Discover & validate
-- `list_workflows` (MCP) returns each recipe's name, inputs, and phases.
+- `list_workflows` (MCP) returns `{workflows, errors, workspace}` — each recipe's name, inputs,
+  and phases; malformed files land in `errors`.
 - `marshal workflows` (CLI) lists them **and validates** each against your `fleet.config.yaml` -
   unknown client names, missing inputs, and unresolvable phases fail here, before any agent spawns.
 
