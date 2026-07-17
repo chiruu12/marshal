@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -575,8 +576,161 @@ def test_registry_hot_reloads_new_workspace(tmp_path: Path) -> None:
 
     register_workspace("beta", repo_b, file_path=reg_file)  # add to the file the registry watches
     assert "beta" in reg.names()  # hot-reloaded without reconnecting
-    assert reg.get("default") is default_svc  # the existing cached service is untouched
+    # Identity is preserved while the config file is unchanged (absent before and after here).
+    assert reg.get("default") is default_svc
     assert Path(reg.get("beta").repo_root).resolve() == repo_b.resolve()
+
+
+def _config_aware_builder() -> Callable[[WorkspaceDef], MarshalService]:
+    """A hermetic stand-in for build_service_for: reads the workspace's config file live but
+    injects the fake echo backend so no real agent CLI is ever probed."""
+    from marshal_engine.config import load_config
+
+    def build(wdef: WorkspaceDef) -> MarshalService:
+        cfg = load_config(wdef.config_path) if wdef.config_path.exists() else FleetConfig()
+        return MarshalService(
+            wdef.path, cfg, backends={"echo": _Echo()}, config_path=wdef.config_path
+        )
+
+    return build
+
+
+_ECHO_CLIENT_YAML = "clients:\n  worker:\n    backend: echo\n"
+
+
+def test_registry_rebuilds_when_config_appears(tmp_path: Path) -> None:
+    """The field bug: add_workspace before fleet.config.yaml exists must not freeze the client
+    list at zero - the config appearing on disk is picked up on the next call, no reconnect."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wdef = WorkspaceDef("default", repo.resolve(), repo / "fleet.config.yaml")
+    reg = WorkspaceRegistry([wdef], builder=_config_aware_builder())
+    assert reg.get().list_clients().clients == []  # registered before any config exists
+
+    (repo / "fleet.config.yaml").write_text(_ECHO_CLIENT_YAML)
+    assert [c.name for c in reg.get().list_clients().clients] == ["worker"]
+
+
+def test_registry_rebuilds_on_config_edit_and_delete(tmp_path: Path) -> None:
+    import os as _os
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    cfg = repo / "fleet.config.yaml"
+    cfg.write_text(_ECHO_CLIENT_YAML)
+    wdef = WorkspaceDef("default", repo.resolve(), cfg)
+    reg = WorkspaceRegistry([wdef], builder=_config_aware_builder())
+    first = reg.get()
+    assert [c.name for c in first.list_clients().clients] == ["worker"]
+
+    cfg.write_text("clients:\n  worker:\n    backend: echo\n  second:\n    backend: echo\n")
+    _os.utime(cfg, ns=(1, 1))  # force a distinct mtime_ns on coarse-timestamp filesystems
+    second = reg.get()
+    assert second is not first
+    assert {c.name for c in second.list_clients().clients} == {"worker", "second"}
+
+    cfg.unlink()
+    assert reg.get().list_clients().clients == []  # deleted config degrades to zero clients
+
+
+def test_registry_unchanged_config_builds_once(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "fleet.config.yaml").write_text(_ECHO_CLIENT_YAML)
+    wdef = WorkspaceDef("default", repo.resolve(), repo / "fleet.config.yaml")
+    builds = 0
+    inner = _config_aware_builder()
+
+    def counting(d: WorkspaceDef) -> MarshalService:
+        nonlocal builds
+        builds += 1
+        return inner(d)
+
+    reg = WorkspaceRegistry([wdef], builder=counting)
+    services = {id(reg.get()) for _ in range(5)}
+    assert len(services) == 1
+    assert builds == 1
+
+
+def test_registry_add_evicts_cached_service(tmp_path: Path) -> None:
+    repo_a, repo_b = tmp_path / "a", tmp_path / "b"
+    for r in (repo_a, repo_b):
+        r.mkdir()
+        _init_repo(r)
+    reg_file = tmp_path / "workspaces.yaml"
+    env = {"MARSHAL_REPO": str(repo_a), "MARSHAL_WORKSPACES_FILE": str(reg_file)}
+    reg = WorkspaceRegistry.from_env(env)
+    reg.add("beta", repo_b)
+    first = reg.get("beta")
+    reg.add("beta", repo_b)  # re-registering must be picked up, not served from the stale cache
+    assert reg.get("beta") is not first
+
+
+def test_registry_rebuild_failure_keeps_retrying(tmp_path: Path) -> None:
+    """A malformed config raises loudly on get() (same as the single-repo path) but never
+    poisons the cache: fixing the file heals the workspace on the next call."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    cfg = repo / "fleet.config.yaml"
+    cfg.write_text(_ECHO_CLIENT_YAML)
+    wdef = WorkspaceDef("default", repo.resolve(), cfg)
+    inner = _config_aware_builder()
+
+    def strict(d: WorkspaceDef) -> MarshalService:
+        return inner(d)
+
+    reg = WorkspaceRegistry([wdef], builder=strict)
+    first = reg.get()
+
+    from marshal_engine.config import ConfigError
+
+    cfg.write_text("clients:\n  worker: {}\n")  # malformed: a client needs a backend
+    with pytest.raises(ConfigError, match="missing required 'backend'"):
+        reg.get()
+    cfg.write_text(_ECHO_CLIENT_YAML + "  second:\n    backend: echo\n")
+    healed = reg.get()
+    assert healed is not first
+    assert {c.name for c in healed.list_clients().clients} == {"worker", "second"}
+
+
+def test_registry_rebuild_preserves_inflight_run(tmp_path: Path) -> None:
+    """Replacing a workspace's service must not lose a background spawn: the old Fleet finishes
+    on its own thread and the terminal record is visible through the NEW service (shared ledger)."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    cfg = repo / "fleet.config.yaml"
+    cfg.write_text("clients:\n  worker:\n    backend: slow\n")
+    wdef = WorkspaceDef("default", repo.resolve(), cfg)
+
+    def build(d: WorkspaceDef) -> MarshalService:
+        from marshal_engine.config import load_config
+
+        return MarshalService(
+            d.path, load_config(d.config_path), backends={"slow": _Slow()}, config_path=d.config_path
+        )
+
+    reg = WorkspaceRegistry([wdef], builder=build)
+    old = reg.get()
+    rec = old.spawn("worker", "go")
+    cfg.write_text("clients:\n  worker:\n    backend: slow\n  extra:\n    backend: slow\n")
+    import os as _os
+
+    _os.utime(cfg, ns=(1, 1))
+    new = reg.get()
+    assert new is not old
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        got = new.get_run(rec.run_id)
+        if got is not None and got.status not in ("queued", "running"):
+            break
+        time.sleep(0.05)
+    got = new.get_run(rec.run_id)
+    assert got is not None and got.status == "succeeded"
 
 
 def test_mcp_add_workspace_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -600,6 +754,26 @@ def test_mcp_add_workspace_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     asyncio.run(app.call_tool("add_workspace", {"name": "beta", "path": str(repo_b)}))
     assert "beta" in reg.names()  # registered + hot-reloaded into the live registry
     assert read_workspaces_file(reg_file)[0].get("beta") == str(repo_b.resolve())
+
+
+def test_mcp_list_clients_reflects_config_edit(tmp_path: Path) -> None:
+    """The end-to-end shape of the field bug: list_clients over MCP must see a config that was
+    added after the workspace was registered, without reconnecting the server."""
+    pytest.importorskip("mcp")
+    from marshal_engine.mcp_server import build_app
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wdef = WorkspaceDef("default", repo.resolve(), repo / "fleet.config.yaml")
+    reg = WorkspaceRegistry([wdef], builder=_config_aware_builder())
+    app = build_app(reg)
+
+    out = _call(app, "list_clients")
+    assert out["clients"] == []
+    (repo / "fleet.config.yaml").write_text(_ECHO_CLIENT_YAML)
+    out = _call(app, "list_clients")
+    assert [c["name"] for c in out["clients"]] == ["worker"]
 
 
 def test_cli_workspace_add_and_list(

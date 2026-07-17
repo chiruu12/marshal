@@ -16,9 +16,11 @@ Workspaces are declared in three layers (merged; first declaration of a name/pat
 Each workspace loads its OWN ``<repo>/fleet.config.yaml`` (clients travel with the repo) and keeps
 its OWN isolated ``.marshal`` worktrees + ledger. ``MARSHAL_CONFIG`` is scoped to "default" only.
 A ``from_env`` registry hot-reloads the file: a workspace ADDED to it (by hand, ``marshal workspace
-add``, or the ``add_workspace`` MCP tool) shows up without reconnecting the server - existing cached
-services are untouched. Changing or removing an existing workspace still needs a reconnect. The
-process-wide concurrency cap is fixed at startup. Logging is STDERR-only (stdout is JSON-RPC).
+add``, or the ``add_workspace`` MCP tool) shows up without reconnecting the server. Each workspace's
+``fleet.config.yaml`` is watched by on-disk signature (mtime+size): editing, adding, or deleting it
+rebuilds that workspace's service on next use, so its client list never goes stale. Renaming or
+removing a workspace entry still needs a reconnect. The process-wide concurrency cap is fixed at
+startup. Logging is STDERR-only (stdout is JSON-RPC).
 """
 
 from __future__ import annotations
@@ -338,13 +340,28 @@ def build_service_for(
     return MarshalService(wdef.path, config, config_path=wdef.config_path, run_gate=run_gate)
 
 
+# A config file's identity on disk: (st_mtime_ns, st_size), or None when absent. mtime_ns alone
+# can collide on coarse-timestamp filesystems; size catches a same-instant rewrite.
+_ConfigSig = tuple[int, int] | None
+
+
+def _config_signature(path: Path) -> _ConfigSig:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 class WorkspaceRegistry:
     """Lazily builds + caches one MarshalService per workspace; resolves run_ids to their owner.
 
     Build is memoized only on SUCCESS (a transient failure never poisons a workspace) behind a
-    per-workspace lock. When constructed with a ``resolver`` (the ``from_env`` path), it hot-reloads:
-    each operation re-resolves the declarations and ADDS any new workspaces, leaving cached services
-    untouched - so a freshly registered repo is usable without reconnecting the server.
+    per-workspace lock, and keyed to the config file's on-disk signature: when a workspace's
+    ``fleet.config.yaml`` appears, changes, or disappears, the next ``get()`` rebuilds its service
+    so the client list never goes stale. When constructed with a ``resolver`` (the ``from_env``
+    path), it also hot-reloads the declarations file, ADDING any new workspaces - so a freshly
+    registered repo is usable without reconnecting the server.
     """
 
     def __init__(
@@ -364,7 +381,12 @@ class WorkspaceRegistry:
             self._defs.setdefault(d.name, d)
         self._run_gate = run_gate
         self._builder = builder or (lambda d: build_service_for(d, run_gate=run_gate))
-        self._cache: dict[str, MarshalService] = dict(prebuilt or {})
+        # Stamp prebuilt entries with the signature of the SAME path get() compares against (the
+        # def's config_path), so an unchanged config always yields a cache hit.
+        self._cache: dict[str, tuple[MarshalService, _ConfigSig]] = {}
+        for n, svc in (prebuilt or {}).items():
+            known = self._defs.get(n)
+            self._cache[n] = (svc, _config_signature(known.config_path) if known else None)
         self._locks: dict[str, threading.Lock] = {name: threading.Lock() for name in self._defs}
         self._resolver = resolver
         # The env this registry resolves against, so `add()` writes the SAME file the resolver reads.
@@ -421,20 +443,31 @@ class WorkspaceRegistry:
         return list(self._defs)
 
     def get(self, name: str | None = None) -> MarshalService:
-        """Return the workspace's service, building (and caching) it on first touch."""
+        """Return the workspace's service, building it on first touch and REBUILDING it when the
+        workspace's ``fleet.config.yaml`` has appeared, changed, or vanished since the cached build.
+        """
         self._refresh()
         wsname = name or DEFAULT_WORKSPACE
         wdef = self._defs.get(wsname)
         if wdef is None:
             raise ValueError(f"unknown workspace {wsname!r}; known: {', '.join(self.names())}")
-        svc = self._cache.get(wsname)
-        if svc is not None:
-            return svc
-        with self._locks[wsname]:
-            svc = self._cache.get(wsname)
-            if svc is None:
-                svc = self._builder(wdef)  # may raise; failures are NOT cached (retryable)
-                self._cache[wsname] = svc
+        cached = self._cache.get(wsname)
+        if cached is not None and cached[1] == _config_signature(wdef.config_path):
+            return cached[0]
+        with self._locks.setdefault(wsname, threading.Lock()):
+            # Read the signature BEFORE building: if the file changes mid-build, the stored (stale)
+            # signature mismatches on the next get() and triggers another rebuild - the safe
+            # direction. A build failure propagates and leaves any previous entry in place (its
+            # signature still mismatches, so every later get() retries): a transient parse error
+            # never takes down a previously working workspace. The evicted service is NOT shut
+            # down - in-flight background spawns hold their own Fleet reference and write terminal
+            # state to the shared on-disk ledger, so nothing is lost by dropping ours.
+            sig = _config_signature(wdef.config_path)
+            cached = self._cache.get(wsname)
+            if cached is not None and cached[1] == sig:
+                return cached[0]
+            svc = self._builder(wdef)  # may raise; failures are NOT cached (retryable)
+            self._cache[wsname] = (svc, sig)
             return svc
 
     def add(self, name: str, path: Path | str) -> WorkspaceDef:
@@ -442,6 +475,10 @@ class WorkspaceRegistry:
         refresh so it is immediately resolvable. Writes against the registry's own env."""
         wdef = register_workspace(name, path, environ=self._environ)
         self._refresh()
+        # Evict any cached service for this name so re-registering is always picked up (the path
+        # may have changed, and add_workspace scaffolds a config right after this call).
+        with self._locks.setdefault(name, threading.Lock()):
+            self._cache.pop(name, None)
         return wdef
 
     def _runs_dir(self, wdef: WorkspaceDef) -> Path:
