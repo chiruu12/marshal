@@ -419,6 +419,16 @@ class Fleet:
             timeout_s=timeout_s,
             usage_api=usage_api,
         )
+        return self.run_request(req, ts=ts, cleanup=cleanup)
+
+    def run_request(
+        self,
+        req: RunRequest,
+        *,
+        ts: str | None = None,
+        cleanup: bool = False,
+    ) -> RunRecord:
+        """Run one RunRequest synchronously: worktree -> backend -> usage -> persist. Blocks until done."""
         run_id, wt, started = self._start(req, ts)
         return self._execute(req, run_id, wt, started, cleanup=cleanup)
 
@@ -440,10 +450,6 @@ class Fleet:
             )
             raise
         return run_id
-
-    def spawn_many(self, requests: list[RunRequest], *, ts: str | None = None) -> list[str]:
-        """Spawn several runs in the background; return their run_ids in order."""
-        return [self.spawn(req, ts=ts) for req in requests]
 
     def shutdown(self, *, wait: bool = True) -> None:
         """Shut the background spawn pool (drains in-flight runs). A no-op if none were spawned."""
@@ -469,6 +475,14 @@ class Fleet:
         self._check_budget(req)
         if req.backend_name not in self.backends:
             raise ValueError(f"no such backend: {req.backend_name!r}")
+        backend = self.backends[req.backend_name]
+        modes = backend.capabilities.permission_modes
+        if modes and req.permission not in modes:
+            supported = ", ".join(sorted(m.value for m in modes))
+            raise ValueError(
+                f"backend {req.backend_name!r} does not support permission "
+                f"{req.permission.value!r} (supported: {supported})"
+            )
         started = ts or _now()
         # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
         # dir, or the state record. task_id stays the grouping key on RunRecord.
@@ -692,16 +706,9 @@ class Fleet:
         return [r for r in results if r is not None]
 
     def _run_request(self, req: RunRequest) -> RunRecord:
-        """run() one request, capturing any failure as a FAILED record so a batch survives it."""
+        """run_request one request, capturing any failure as a FAILED record so a batch survives it."""
         try:
-            return self.run(
-                req.backend_name,
-                req.task,
-                permission=req.permission,
-                model=req.model,
-                client=req.client,
-                timeout_s=req.timeout_s,
-            )
+            return self.run_request(req)
         except Exception as exc:  # noqa: BLE001 - one job's failure must not abort the batch
             return RunRecord(
                 run_id=f"{req.task.id}.{req.backend_name}",

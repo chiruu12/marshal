@@ -215,6 +215,33 @@ class _NativeZero(CodingAgentBackend):
         )
 
 
+class _LimitedPerms(CodingAgentBackend):
+    """Declares safe-edit + yolo only - used to prove permission preflight before worktree create."""
+
+    name = "limited"
+    binary = "python"
+    capabilities = Capabilities(
+        permission_modes=frozenset({PermissionMode.SAFE_EDIT, PermissionMode.YOLO}),
+    )
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "open('out.txt','w').write('hi')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        if mode not in self.capabilities.permission_modes:
+            raise ValueError(f"limited: unsupported permission mode {mode!r}")
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            exit_code=exit_code,
+        )
+
+
 class _Exploder(CodingAgentBackend):
     """parse_output raises (propagates out of base.run) - the run loop must terminal-stamp it."""
 
@@ -687,6 +714,45 @@ def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:
     rec = fleet.run("tok", TaskSpec(id="p2", goal="x"))
     assert rec.cost_usd == 0.0
     assert rec.source == "unavailable"   # unpriced -> cost unknown, never shown as a real $0
+
+
+def test_run_many_preserves_usage_api(repo: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def resolver(**kw: object) -> ExternalCost:
+        seen.update(kw)
+        return ExternalCost(0.42, UsageSource.ADMIN_API, 1_000_000, 0, 1)
+
+    fleet = Fleet(
+        repo, {"tok": _Tokened()}, prices=PriceTable({}), cost_resolvers={"eastrouter": resolver}
+    )
+    req = RunRequest(
+        backend_name="tok",
+        task=TaskSpec(id="rm1", goal="x"),
+        model="z-ai/glm-5.1",
+        usage_api="eastrouter",
+    )
+    records = fleet.run_many([req])
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.source == "admin-api"
+    assert rec.cost_usd == 0.42
+    assert seen["input_tokens"] == 1_000_000
+    assert seen["model"] == "z-ai/glm-5.1"
+
+
+def test_unsupported_permission_raises_before_worktree_create(repo: Path) -> None:
+    from unittest.mock import MagicMock
+
+    fleet = Fleet(repo, {"limited": _LimitedPerms()})
+    create = MagicMock(side_effect=fleet.worktrees.create)
+    fleet.worktrees.create = create  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="does not support permission"):
+        fleet.run("limited", TaskSpec(id="p1", goal="x"), permission=PermissionMode.READ_ONLY)
+
+    create.assert_not_called()
+    assert fleet.state.list() == []
 
 
 def test_usage_api_overrides_cost_with_admin_api(repo: Path) -> None:
