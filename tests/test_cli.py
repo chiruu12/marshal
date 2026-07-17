@@ -193,7 +193,7 @@ def test_doctor_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     ret = cli.main(["doctor", "--json", "--repo", str(tmp_path), "--config", str(tmp_path / "none.yaml")])
     assert ret in (0, 1)  # exit code tracks hard failures; structure is what we assert here
     data = json.loads(capsys.readouterr()[0])
-    assert set(data) == {"checks", "fails", "warns"}
+    assert set(data) == {"checks", "fails", "warns", "ok"}
     assert isinstance(data["checks"], list) and data["checks"]
     for c in data["checks"]:
         assert set(c.keys()) == {"name", "status", "detail", "fix"}

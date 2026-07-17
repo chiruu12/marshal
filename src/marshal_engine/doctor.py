@@ -20,8 +20,9 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .config import ConfigError, FleetConfig, load_config, resolve_secret
@@ -44,19 +45,25 @@ BACKEND_HINTS: dict[str, str] = {
 MIN_PYTHON = (3, 11)
 
 
-@dataclass
-class Check:
-    """One preflight result. ``fix`` is shown only when ``status`` is not ``ok``.
-
-    Deliberately a dataclass, not a Pydantic model: it's a trivial CLI-only display struct,
-    constructed positionally a dozen times below, and never serialized or returned over MCP - so a
-    model would add keyword-arg verbosity with zero validation/serialization benefit.
-    """
+class Check(BaseModel):
+    """One preflight result. ``fix`` is shown only when ``status`` is not ``ok``."""
 
     name: str
     status: str
     detail: str
     fix: str = ""
+
+    def __init__(self, name: str, status: str, detail: str, fix: str = "", /) -> None:
+        super().__init__(name=name, status=status, detail=detail, fix=fix)
+
+
+class DoctorReport(BaseModel):
+    """Preflight verdict: per-check results plus a roll-up. ``ok`` is true when nothing failed."""
+
+    checks: list[Check]
+    fails: int
+    warns: int
+    ok: bool
 
 
 def _first_line(text: str) -> str:
@@ -224,3 +231,9 @@ def summarize(checks: list[Check]) -> tuple[int, int]:
     fails = sum(1 for c in checks if c.status == FAIL)
     warns = sum(1 for c in checks if c.status == WARN)
     return fails, warns
+
+
+def doctor_report(checks: list[Check]) -> DoctorReport:
+    """Build the unified doctor payload consumed by the CLI and MCP surfaces."""
+    fails, warns = summarize(checks)
+    return DoctorReport(checks=checks, fails=fails, warns=warns, ok=fails == 0)

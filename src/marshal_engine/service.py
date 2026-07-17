@@ -26,7 +26,7 @@ from .config import (
     resolve_duration,
     resolve_model,
 )
-from .doctor import run_checks, summarize
+from .doctor import DoctorReport, doctor_report, run_checks
 from .env import merge_user_path
 from .fleet import (
     BenchmarkResult,
@@ -88,24 +88,6 @@ class ModelList(BaseModel):
 
     models: list[ModelSpec]
     driver_context: str | None = None
-
-
-class DoctorCheck(BaseModel):
-    """One preflight result, serialized for the driver (the doctor `Check` over the MCP surface)."""
-
-    name: str
-    status: str          # ok | warn | fail
-    detail: str
-    fix: str = ""
-
-
-class DoctorReport(BaseModel):
-    """Preflight verdict: per-check results plus a roll-up. `ok` is true when nothing failed."""
-
-    checks: list[DoctorCheck]
-    fails: int
-    warns: int
-    ok: bool
 
 
 class MarshalService:
@@ -506,16 +488,7 @@ class MarshalService:
         """
         with self._adhoc_lock:
             probed = dict(self.fleet.backends)
-        checks = run_checks(self.repo_root, self.config_path, backends=probed)
-        fails, warns = summarize(checks)
-        return DoctorReport(
-            checks=[
-                DoctorCheck(name=c.name, status=c.status, detail=c.detail, fix=c.fix) for c in checks
-            ],
-            fails=fails,
-            warns=warns,
-            ok=fails == 0,
-        )
+        return doctor_report(run_checks(self.repo_root, self.config_path, backends=probed))
 
     def status(self) -> list[RunRecord]:
         return self.fleet.state.list()

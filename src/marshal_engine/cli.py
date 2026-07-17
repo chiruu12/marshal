@@ -12,7 +12,7 @@ from typing import Any, Sequence
 
 from . import __version__
 from .config import BudgetSpec, ConfigError, DURATION_PRESETS, FleetConfig, load_config
-from .doctor import FAIL, OK, WARN, run_checks, summarize
+from .doctor import FAIL, OK, WARN, doctor_report, run_checks
 from .env import merge_user_path
 from .fleet import BudgetStatus, Fleet, compute_budget_status
 from .logs import RunLogStore
@@ -406,24 +406,16 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 def _cmd_doctor(args: argparse.Namespace) -> int:
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
-    checks = run_checks(repo, cfg_path)
-    fails, warns = summarize(checks)
+    report = doctor_report(run_checks(repo, cfg_path))
     if args.json:
-        payload = {
-            "checks": [
-                {"name": c.name, "status": c.status, "detail": c.detail, "fix": c.fix} for c in checks
-            ],
-            "fails": fails,
-            "warns": warns,
-        }
-        print(json.dumps(payload, indent=2))
-        return 1 if fails else 0
-    for c in checks:
+        print(json.dumps(report.model_dump(mode="json"), indent=2))
+        return 1 if report.fails else 0
+    for c in report.checks:
         print(f"{_GLYPH[c.status]} {c.name}: {c.detail}")
         if c.fix and c.status != OK:
             print(f"    fix: {c.fix}")
-    print(f"\n{fails} issue(s), {warns} warning(s)")
-    return 1 if fails else 0
+    print(f"\n{report.fails} issue(s), {report.warns} warning(s)")
+    return 1 if report.fails else 0
 
 
 def _build_cli_service(args: argparse.Namespace) -> MarshalService:
@@ -441,17 +433,39 @@ def _build_cli_service(args: argparse.Namespace) -> MarshalService:
     )
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
-    """Run a task synchronously on a configured client (or ad-hoc by bare backend + model)."""
+def _add_run_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--client", default=None, help="name of a configured client (from list_clients)")
+    parser.add_argument("--backend", default=None, help="ad-hoc backend name (e.g. 'opencode', 'claude-code'); ignored when --client is also set")
+    parser.add_argument("--model", default=None, help="model to pass (overrides the client's resolved model)")
+    parser.add_argument(
+        "--duration", default=None,
+        help=f"per-spawn timeout override: a preset ({','.join(DURATION_PRESETS)}) or positive seconds",
+    )
+    parser.add_argument("--goal", required=True, help="natural-language task for the agent")
+    parser.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
+    parser.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    parser.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    parser.add_argument("--json", action="store_true", help="output JSON")
+
+
+def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
+    """Shared body for `run` (blocking) and `spawn` (background)."""
     try:
         svc = _build_cli_service(args)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    run_kwargs = {
+        "task_id": args.task_id,
+        "model": args.model,
+        "backend": args.backend,
+        "duration": args.duration,
+    }
     try:
-        rec = svc.run_agent(
-            args.client, args.goal, task_id=args.task_id,
-            model=args.model, backend=args.backend, duration=args.duration,
+        rec = (
+            svc.spawn(args.client, args.goal, **run_kwargs)
+            if spawn
+            else svc.run_agent(args.client, args.goal, **run_kwargs)
         )
     except (ValueError, ConfigError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -459,30 +473,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(rec.model_dump(mode="json"), indent=2))
         return 0
-    print(f"{rec.run_id}  {rec.backend}/{rec.model or '-'}  {rec.status}")
+    line = f"{rec.run_id}  {rec.backend}/{rec.model or '-'}  {rec.status}"
+    if spawn:
+        line += "  (poll: marshal status)"
+    print(line)
     return 0
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Run a task synchronously on a configured client (or ad-hoc by bare backend + model)."""
+    return _cmd_run_like(args, spawn=False)
 
 
 def _cmd_spawn(args: argparse.Namespace) -> int:
     """Start a run in the background; returns its RUNNING record at once."""
-    try:
-        svc = _build_cli_service(args)
-    except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    try:
-        rec = svc.spawn(
-            args.client, args.goal, task_id=args.task_id,
-            model=args.model, backend=args.backend, duration=args.duration,
-        )
-    except (ValueError, ConfigError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    if args.json:
-        print(json.dumps(rec.model_dump(mode="json"), indent=2))
-        return 0
-    print(f"{rec.run_id}  {rec.backend}/{rec.model or '-'}  {rec.status}  (poll: marshal status)")
-    return 0
+    return _cmd_run_like(args, spawn=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -543,31 +548,9 @@ def main(argv: list[str] | None = None) -> int:
     pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     pw.add_argument("--json", action="store_true", help="output JSON")
     prun = sub.add_parser("run", help="run a task on a configured client (or ad-hoc by backend+model)")
-    prun.add_argument("--client", default=None, help="name of a configured client (from list_clients)")
-    prun.add_argument("--backend", default=None, help="ad-hoc backend name (e.g. 'opencode', 'claude-code'); ignored when --client is also set")
-    prun.add_argument("--model", default=None, help="model to pass (overrides the client's resolved model)")
-    prun.add_argument(
-        "--duration", default=None,
-        help=f"per-spawn timeout override: a preset ({','.join(DURATION_PRESETS)}) or positive seconds",
-    )
-    prun.add_argument("--goal", required=True, help="natural-language task for the agent")
-    prun.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
-    prun.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
-    prun.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
-    prun.add_argument("--json", action="store_true", help="output JSON")
+    _add_run_args(prun)
     pspwn = sub.add_parser("spawn", help="start a task in the background and return its RUNNING record at once")
-    pspwn.add_argument("--client", default=None, help="name of a configured client (from list_clients)")
-    pspwn.add_argument("--backend", default=None, help="ad-hoc backend name (e.g. 'opencode', 'claude-code'); ignored when --client is also set")
-    pspwn.add_argument("--model", default=None, help="model to pass (overrides the client's resolved model)")
-    pspwn.add_argument(
-        "--duration", default=None,
-        help=f"per-spawn timeout override: a preset ({','.join(DURATION_PRESETS)}) or positive seconds",
-    )
-    pspwn.add_argument("--goal", required=True, help="natural-language task for the agent")
-    pspwn.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
-    pspwn.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
-    pspwn.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
-    pspwn.add_argument("--json", action="store_true", help="output JSON")
+    _add_run_args(pspwn)
     pws = sub.add_parser("workspace", help="manage the workspace registry (~/.marshal/workspaces.yaml)")
     wsub = pws.add_subparsers(dest="ws_cmd")
     wadd = wsub.add_parser("add", help="register a repo as a workspace (path defaults to cwd)")

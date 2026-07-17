@@ -137,6 +137,38 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """Stamp a result with the workspace it came from, so the driver can route follow-ups."""
         return {**payload, "workspace": workspace}
 
+    def dump_result(result: Any) -> dict[str, Any]:
+        if isinstance(result, BaseModel):
+            return result.model_dump(mode="json")
+        assert isinstance(result, dict)
+        return result
+
+    async def ws_call(
+        workspace: str | None,
+        fn: Callable[..., _T],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Resolve a workspace service, offload ``fn(svc, *args, **kwargs)``, tag the JSON payload."""
+        svc = await offload(registry.get, workspace)
+        ws = workspace or DEFAULT_WORKSPACE
+        result = await offload(fn, svc, *args, **kwargs)
+        return tag(dump_result(result), ws)
+
+    async def run_call(
+        run_id: str,
+        workspace: str | None,
+        fn: Callable[..., _T],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Resolve a run's owning workspace, offload ``fn(svc, *args, **kwargs)``, tag the payload."""
+        name, svc = await offload(registry.require_run, run_id, workspace)
+        result = await offload(fn, svc, *args, **kwargs)
+        return tag(dump_result(result), name)
+
     @app.tool()
     async def list_workspaces() -> list[dict[str, Any]]:
         """List the repos this server can target: name, path, config_path, configured, client_count,
@@ -173,8 +205,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """List configured backend clients (name, backend, model, permission) plus the fleet's
         driver-facing context, for the chosen workspace. Returns {clients, driver_context, workspace}."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.list_clients)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.list_clients())
 
     @app.tool()
     async def list_models(
@@ -183,8 +214,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """List the optional `models:` catalog (id, backends, cost, quota_type, notes) plus the
         fleet's driver-facing context, for the chosen workspace. Pure data - does NOT influence
         routing (clients still own backend+model). Returns {models, driver_context, workspace}."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.list_models)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.list_models())
 
     @app.tool()
     async def doctor(
@@ -193,8 +223,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """Preflight the SELECTED workspace: toolchain, repo, config, and each configured backend's
         CLI availability + auth. Read-only - run it before spawning to catch a missing/unauthenticated
         backend up front. Returns per-check results + a fails/warns roll-up + the workspace."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.doctor)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.doctor())
 
     @app.tool()
     async def run_agent(
@@ -216,13 +245,13 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         pass `backend` (+ optional `model`) with no `client`. `duration` overrides the resolved
         timeout (a preset name or positive seconds). `base_branch` bases the worktree on a branch
         other than HEAD (e.g. a prior run's branch after commit_run)."""
-        svc = await offload(registry.get, workspace)
-        rec = await offload(
-            svc.run_agent, client, goal, task_id=task_id, context_files=context_files,
-            base_branch=base_branch,
-            model=model, backend=backend, duration=duration,
+        return await ws_call(
+            workspace,
+            lambda svc: svc.run_agent(
+                client, goal, task_id=task_id, context_files=context_files,
+                base_branch=base_branch, model=model, backend=backend, duration=duration,
+            ),
         )
-        return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def run_many(
@@ -255,13 +284,13 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         Poll get_run/status, and cancel_run to stop it. `model`/`backend`/`duration`/`base_branch`
         follow the same rules as run_agent (override the client's model, ad-hoc spawn by bare backend,
         per-spawn timeout override, or chain off a prior run's branch)."""
-        svc = await offload(registry.get, workspace)
-        rec = await offload(
-            svc.spawn, client, goal, task_id=task_id, context_files=context_files,
-            base_branch=base_branch,
-            model=model, backend=backend, duration=duration,
+        return await ws_call(
+            workspace,
+            lambda svc: svc.spawn(
+                client, goal, task_id=task_id, context_files=context_files,
+                base_branch=base_branch, model=model, backend=backend, duration=duration,
+            ),
         )
-        return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def benchmark(
@@ -273,11 +302,10 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Run one goal through several clients (routing strategies) in one workspace and compare
         cost/latency/outcome."""
-        svc = await offload(registry.get, workspace)
-        result = await offload(
-            svc.benchmark, goal, clients, task_id=task_id, max_concurrency=max_concurrency
+        return await ws_call(
+            workspace,
+            lambda svc: svc.benchmark(goal, clients, task_id=task_id, max_concurrency=max_concurrency),
         )
-        return tag(result.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def report(
@@ -286,8 +314,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Derive the strategy comparison for a past benchmark task_id from the workspace's ledger
         (read-only). task_ids are per-workspace, so pass the workspace the benchmark ran in."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.report, task_id)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.report(task_id))
 
     @app.tool()
     async def get_run(
@@ -333,8 +360,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
         """Collect a run's diff and changed files (read-only; nothing is merged)."""
-        name, svc = await offload(registry.require_run, run_id, workspace)
-        return tag((await offload(svc.collect_run, run_id)).model_dump(mode="json"), name)
+        return await run_call(run_id, workspace, lambda svc: svc.collect_run(run_id))
 
     @app.tool()
     async def commit_run(
@@ -350,8 +376,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         merges into your branch. To chain, use the returned `branch`/`commit` regardless of status.
         Status is one of: committed | clean (no new commit needed - tree already clean, NOT "branch
         empty") | blocked (run still running) | error (a git op needs a human, see message)."""
-        name, svc = await offload(registry.require_run, run_id, workspace)
-        return tag((await offload(svc.commit_run, run_id, message=message)).model_dump(mode="json"), name)
+        return await run_call(
+            run_id, workspace, lambda svc: svc.commit_run(run_id, message=message),
+        )
 
     @app.tool()
     async def cancel_run(
@@ -359,8 +386,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
         """Cancel a running run by id (process-group SIGTERM); returns the updated run record."""
-        name, svc = await offload(registry.require_run, run_id, workspace)
-        return tag((await offload(svc.cancel_run, run_id)).model_dump(mode="json"), name)
+        return await run_call(run_id, workspace, lambda svc: svc.cancel_run(run_id))
 
     @app.tool()
     async def integrate(
@@ -374,8 +400,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         that the code is correct. Integrate one run at a time. Outcome status is one of: merged |
         conflict (aborted, repo left clean) | blocked (target dirty/detached, or the run is still
         running - fix and retry) | empty (nothing to integrate) | error (a git op needs a human)."""
-        name, svc = await offload(registry.require_run, run_id, workspace)
-        return tag((await offload(svc.integrate, run_id, cleanup=cleanup)).model_dump(mode="json"), name)
+        return await run_call(
+            run_id, workspace, lambda svc: svc.integrate(run_id, cleanup=cleanup),
+        )
 
     @app.tool()
     async def clean(
@@ -395,11 +422,12 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         record is missing/unreadable (they are invisible to ledger-driven cleanup and would leak
         forever). Returns {removed, orphans_removed, skipped, errors, dry_run}. Use dry_run first
         to preview."""
-        svc = await offload(registry.get, workspace)
-        result = await offload(
-            svc.clean, scope=scope, run_ids=run_ids, older_than_hours=older_than_hours, dry_run=dry_run
+        return await ws_call(
+            workspace,
+            lambda svc: svc.clean(
+                scope=scope, run_ids=run_ids, older_than_hours=older_than_hours, dry_run=dry_run,
+            ),
         )
-        return tag(result.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def list_workflows(
@@ -435,8 +463,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Run a workflow recipe by name in `workspace`'s repo. Integration is gated off by default -
         the result's `next_actions` lists the runs to review and integrate. Validates before any spawn."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.run_workflow, name, inputs)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.run_workflow(name, inputs))
 
     @app.tool()
     async def status(
