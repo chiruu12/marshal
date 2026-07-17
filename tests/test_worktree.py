@@ -115,6 +115,79 @@ def test_setup_missing_binary_raises(repo: Path) -> None:
     assert not (m.base_dir / "setup_nobin").exists()  # torn down
 
 
+# --- verify: the post-run gate (never raises, never tears down) ----------------------------
+
+
+def test_verify_runs_in_worktree_and_passes(repo: Path) -> None:
+    m = WorktreeManager(
+        repo, verify_cmd=[sys.executable, "-c", "open('gate-ran', 'w').write('ok'); print('gate ok')"]
+    )
+    wt = m.create("verify_ok")
+    ok, output = m.verify(wt)
+    assert ok is True
+    assert (wt.path / "gate-ran").exists()  # ran with cwd = the worktree
+    assert "gate ok" in output
+
+
+def test_verify_is_noop_without_cmd(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("verify_unset")
+    assert m.verify(wt) == (True, "")
+
+
+def test_verify_failure_keeps_worktree(repo: Path) -> None:
+    # Unlike setup, a failed verify NEVER tears down - the diff must stay reviewable.
+    m = WorktreeManager(
+        repo, verify_cmd=[sys.executable, "-c", "import sys; print('broke the build'); sys.exit(3)"]
+    )
+    wt = m.create("verify_fail")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "verify exited 3" in output
+    assert "broke the build" in output
+    assert wt.path.exists()  # kept for review
+
+
+def test_verify_missing_binary_reports_not_raises(repo: Path) -> None:
+    m = WorktreeManager(repo, verify_cmd=["marshal-no-such-binary-xyz123"])
+    wt = m.create("verify_nobin")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "could not run" in output
+    assert wt.path.exists()
+
+
+def test_verify_timeout_reports_not_raises(repo: Path) -> None:
+    m = WorktreeManager(
+        repo,
+        verify_cmd=[sys.executable, "-c", "import time; time.sleep(30)"],
+        setup_timeout_s=1,  # verify reuses the setup timeout knob
+    )
+    wt = m.create("verify_slow")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "timed out after 1s" in output
+    assert wt.path.exists()
+
+
+def test_verify_output_keeps_the_tail(repo: Path) -> None:
+    # Failures print last: a long run's output is truncated from the front, keeping the summary.
+    m = WorktreeManager(
+        repo,
+        verify_cmd=[
+            sys.executable,
+            "-c",
+            "import sys; print('x' * 6000); print('TAIL-MARKER'); sys.exit(1)",
+        ],
+    )
+    wt = m.create("verify_long")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "TAIL-MARKER" in output
+    assert len(output) < 4200  # capped (plus the small exit-code prefix)
+    assert "..." in output  # truncation is visible
+
+
 def test_changed_files_detects_edits_and_additions(repo: Path) -> None:
     m = WorktreeManager(repo)
     wt = m.create("task2")

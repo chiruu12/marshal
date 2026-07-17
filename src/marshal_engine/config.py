@@ -145,6 +145,12 @@ class FleetConfig(BaseModel):
     # Optional command run once in each fresh worktree before the agent starts (e.g. to provision a
     # venv). None = no setup step. Repo-wide, not per-client - it sets up the checkout, not a run.
     worktree_setup: list[str] | None = None
+    # Optional gate command run in the worktree AFTER a run that would otherwise be `succeeded`
+    # and changed files (e.g. the repo's full test suite; text-only replies are never gated). A
+    # non-zero exit marks the run `verify_failed` instead - the worktree is kept for review.
+    # None = trust the agent's own outcome, exactly as before. Repo-wide like worktree_setup;
+    # same string-or-argv YAML shape.
+    verify: list[str] | None = None
     # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
     # connection error). 0 disables retries. Genuine task failures and timeouts are never retried.
     retries: int = 2
@@ -197,6 +203,7 @@ def load_config(path: Path | str) -> FleetConfig:
         clients=clients,
         context=context,
         worktree_setup=_parse_setup(raw.get("worktree_setup")),
+        verify=_parse_setup(raw.get("verify"), field="verify"),
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
         budgets=_parse_budgets(raw.get("budgets")),
@@ -301,12 +308,13 @@ def _parse_budgets(value: Any) -> list[BudgetSpec]:
     return out
 
 
-def _parse_setup(value: Any) -> list[str] | None:
-    """Normalize the optional post-create worktree command to an argv list (or None).
+def _parse_setup(value: Any, field: str = "worktree_setup") -> list[str] | None:
+    """Normalize an optional worktree command (``worktree_setup`` / ``verify``) to argv (or None).
 
-    Accepts a shell-ish string (``uv sync --extra dev``) or an explicit argv list. The command runs
-    once in each fresh worktree before the agent starts - with the driver's VIRTUAL_ENV scrubbed so
-    it targets the worktree, not the driver. An empty/blank value is treated as "no setup".
+    Accepts a shell-ish string (``uv sync --extra dev``) or an explicit argv list. Both commands
+    run in a worktree with the driver's VIRTUAL_ENV scrubbed so they target the worktree, not the
+    driver - setup before the agent starts, verify after it would succeed. An empty/blank value is
+    treated as "none".
     """
     if value is None:
         return None
@@ -315,9 +323,7 @@ def _parse_setup(value: Any) -> list[str] | None:
     elif isinstance(value, list):
         argv = [str(x) for x in value]
     else:
-        raise ConfigError(
-            f"worktree_setup must be a string or list, got {type(value).__name__}"
-        )
+        raise ConfigError(f"{field} must be a string or list, got {type(value).__name__}")
     return argv or None
 
 

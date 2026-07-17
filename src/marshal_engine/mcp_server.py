@@ -293,7 +293,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """Get a run record by id, located across all workspaces (or via the `workspace` hint).
 
         status is one of: succeeded | empty (ran clean but produced no work - do NOT integrate) |
-        failed | timed_out | cancelled. Only `succeeded` runs are integration candidates."""
+        failed | timed_out | cancelled | verify_failed (produced work but the workspace's `verify:`
+        gate rejected it - review the diff and `verify_output` before deciding). Only `succeeded`
+        runs are integration candidates."""
         resolved = await offload(registry.resolve_run, run_id, workspace)
         if resolved is None:
             return None
@@ -373,7 +375,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
     @app.tool()
     async def clean(
-        scope: Annotated[Literal["merged", "finished", "all"], Field(description="'merged' (integrated only, safest) | 'finished' (default: merged + failed/timed_out/cancelled/empty; keeps un-integrated succeeded work) | 'all' (every terminal run; DESTRUCTIVE - also drops un-reviewed succeeded runs' branches).")] = "finished",
+        scope: Annotated[Literal["merged", "finished", "all"], Field(description="'merged' (integrated only, safest) | 'finished' (default: merged + failed/timed_out/cancelled/empty/verify_failed; keeps un-integrated succeeded work - review verify_failed diffs before cleaning) | 'all' (every terminal run; DESTRUCTIVE - also drops un-reviewed succeeded runs' branches).")] = "finished",
         run_ids: Annotated[list[str] | None, Field(description="Clean exactly these run ids instead of by scope (a running run is refused; older_than_hours is ignored).")] = None,
         older_than_hours: Annotated[float | None, Field(description="Only clean runs that ended at least this many hours ago (ignored when run_ids is given).")] = None,
         dry_run: Annotated[bool, Field(description="Report what would be removed without touching anything.")] = False,
@@ -423,9 +425,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     async def status(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE + " Omit to list ALL workspaces.")] = None,
     ) -> list[dict[str, Any]]:
-        """List fleet runs with status and cost (status ∈ succeeded/empty/failed/timed_out/cancelled).
-        Omit `workspace` to aggregate across every workspace (each run tagged with its workspace);
-        pass one to scope to it."""
+        """List fleet runs with status and cost (status ∈ succeeded/empty/failed/timed_out/
+        cancelled/verify_failed). Omit `workspace` to aggregate across every workspace (each run
+        tagged with its workspace); pass one to scope to it."""
         return [
             tag(rec.model_dump(mode="json"), ws)
             for ws, rec in await offload(registry.ledger_runs, workspace)

@@ -79,7 +79,10 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
 ## 3. Monitor
 - `status()` lists every run with status + cost; `get_run(run_id)` fetches one.
 - A run ends in `succeeded`, `empty` (ran clean but produced no work - do not integrate it),
-  `failed`, `timed_out`, or `cancelled`. Only `succeeded` runs are integration candidates.
+  `failed`, `timed_out`, `cancelled`, or `verify_failed` (the work exists but the workspace's
+  `verify:` gate rejected it - collect the diff and read the record's `verify_output` before
+  deciding; not an integration candidate as-is). Only `succeeded` runs are integration candidates,
+  and when the workspace configures a `verify:` command, `succeeded` also means that gate passed.
 
 ## 4. Collect - review before you trust
 - `collect_run(run_id)` returns the run's **diff + changed files**, read-only. Read it. You are the
@@ -107,8 +110,9 @@ A long session leaves a worktree + branch per run. When you're done, `clean(scop
 them down in one call (the usage ledger and run-state history are kept; only the disk-heavy worktrees
 and branches go). It **never** touches a running run. Scopes:
 - `merged` - only runs you already integrated. Safest.
-- `finished` (default) - merged runs plus failed/timed_out/cancelled/empty ones; **protects
-  un-integrated `succeeded` runs** (a candidate you might still want to review).
+- `finished` (default) - merged runs plus failed/timed_out/cancelled/empty/verify_failed ones;
+  **protects un-integrated `succeeded` runs** (a candidate you might still want to review). A
+  `verify_failed` run's worktree holds reviewable work - collect/review it before cleaning.
 - `all` - every finished run, including un-integrated succeeded work.
 
 Run `clean(dry_run=true)` first to see what would go, or `clean(run_ids=[…])` to tear down specific

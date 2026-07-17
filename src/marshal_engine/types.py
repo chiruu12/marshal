@@ -35,6 +35,10 @@ class RunStatus(str, Enum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
+    # The agent finished and produced work, but the workspace's `verify:` command rejected it.
+    # Distinct from FAILED so a driver can tell "the run broke" from "reviewable work exists but
+    # the repo's gate said no" - the worktree is kept for review either way.
+    VERIFY_FAILED = "verify_failed"
 
 
 class UsageSource(str, Enum):

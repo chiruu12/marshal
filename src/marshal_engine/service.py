@@ -151,6 +151,7 @@ class MarshalService:
             backends,
             base_dir=base_dir,
             worktree_setup=config.worktree_setup,
+            verify=config.verify,
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
             budgets=config.budgets,

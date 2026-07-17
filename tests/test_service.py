@@ -172,6 +172,22 @@ def _svc(repo: Path) -> MarshalService:
     return MarshalService(repo, cfg, backends={"echo": _Echo()})
 
 
+def test_config_verify_reaches_fleet_and_gates_runs(repo: Path) -> None:
+    import sys as _sys
+
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT)},
+        verify=[_sys.executable, "-c", "import sys; print('gate says no'); sys.exit(1)"],
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    assert svc.fleet.worktrees.verify_cmd == cfg.verify  # config -> Fleet -> WorktreeManager
+    rec = svc.run_agent("worker", "do something", task_id="tv")
+    # _Echo replies with text but changes no files: succeeded, and the gate is SKIPPED - a
+    # text-only reply cannot have broken the repo, so no test run is burned on it.
+    assert rec.status == "succeeded"
+    assert rec.verify_passed is None
+
+
 def test_list_clients(repo: Path) -> None:
     svc = _svc(repo)
     result = svc.list_clients()

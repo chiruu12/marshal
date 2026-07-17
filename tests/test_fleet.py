@@ -360,6 +360,66 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
     assert s.by_backend["writer"].runs == 1
 
 
+# --- the verify gate: succeeded means the workspace's gate passed too -------------------------
+
+
+def test_verify_pass_keeps_succeeded(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "print('gate ok')"])
+    rec = fleet.run("writer", TaskSpec(id="v1", goal="x"))
+    assert rec.status == "succeeded"
+    assert rec.verify_passed is True
+    assert "gate ok" in rec.verify_output
+
+
+def test_verify_fail_marks_verify_failed_and_keeps_worktree(repo: Path) -> None:
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        verify=[sys.executable, "-c", "import sys; print('regression here'); sys.exit(2)"],
+    )
+    rec = fleet.run("writer", TaskSpec(id="v2", goal="x"))
+    assert rec.status == "verify_failed"
+    assert rec.verify_passed is False
+    assert "regression here" in rec.verify_output
+    assert Path(rec.worktree or "").exists()  # the diff survives for review
+    assert (Path(rec.worktree or "") / "out.txt").exists()
+    # the usage event records the authoritative outcome (spend happened; run did not succeed)
+    events = fleet.usage.events()
+    assert [e.status for e in events if e.run_id == rec.run_id] == ["verify_failed"]
+
+
+def test_verify_skipped_for_empty_run(repo: Path) -> None:
+    # An EMPTY run never reaches the gate: nothing to verify, no wasted gate command.
+    fleet = Fleet(
+        repo, {"noop": _NoOp()}, verify=[sys.executable, "-c", "import sys; sys.exit(1)"]
+    )
+    rec = fleet.run("noop", TaskSpec(id="v3", goal="x"))
+    assert rec.status == "empty"
+    assert rec.verify_passed is None
+    assert rec.verify_output == ""
+
+
+def test_verify_timeout_marks_verify_failed(repo: Path) -> None:
+    fleet = Fleet(
+        repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "import time; time.sleep(30)"]
+    )
+    fleet.worktrees.setup_timeout_s = 1  # verify reuses the setup timeout knob
+    rec = fleet.run("writer", TaskSpec(id="v4", goal="x"))
+    assert rec.status == "verify_failed"
+    assert "timed out" in rec.verify_output
+
+
+def test_clean_finished_reclaims_verify_failed(repo: Path) -> None:
+    fleet = Fleet(
+        repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "import sys; sys.exit(1)"]
+    )
+    rec = fleet.run("writer", TaskSpec(id="v5", goal="x"))
+    assert rec.status == "verify_failed"
+    result = fleet.clean()  # scope="finished" - a post-review action
+    assert rec.run_id in result.removed
+    assert not Path(rec.worktree or "").exists()
+
+
 def test_fleet_unknown_backend(repo: Path) -> None:
     fleet = Fleet(repo, {})
     with pytest.raises(ValueError):

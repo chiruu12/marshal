@@ -19,6 +19,14 @@ defaults:
 # the driver's VIRTUAL_ENV so the command targets the worktree. A non-zero exit fails the run early.
 # worktree_setup: uv sync --extra dev --extra mcp
 
+# Optional: a gate command run in the worktree AFTER a run that would otherwise be `succeeded`
+# and actually changed files (e.g. the repo's full test suite - agents love passing their own
+# narrower subset; text-only replies are never gated). A non-zero exit marks the run
+# `verify_failed` instead of `succeeded`; the worktree and diff are KEPT for review, and the
+# command's output tail lands on the run record (`verify_output`). Same string-or-argv shape and
+# env hygiene as worktree_setup. Omit to trust the agent's own outcome.
+# verify: uv run pytest -q
+
 # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
 # connection error) - with exponential backoff. Defaults to 2; set 0 to disable. Genuine task
 # failures and timeouts are never retried.

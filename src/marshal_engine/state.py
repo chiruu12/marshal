@@ -26,7 +26,7 @@ class RunRecord(BaseModel):
     run_id: str
     task_id: str
     backend: str
-    status: str = "queued"  # queued|running|succeeded|failed|timed_out|cancelled
+    status: str = "queued"  # queued|running|succeeded|empty|failed|timed_out|cancelled|verify_failed
     client: str | None = None
     model: str | None = None
     worktree: str | None = None
@@ -44,6 +44,10 @@ class RunRecord(BaseModel):
     commit: str | None = None  # branch tip after commit_run froze the work (for chaining/integrate)
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
     attempts: int = 1  # how many times the backend was run (>1 means a transient failure was retried)
+    # Outcome of the workspace's optional `verify:` gate. None = no gate ran (unconfigured, run
+    # not would-be-succeeded, or no file changes to gate); False pairs with status `verify_failed`.
+    verify_passed: bool | None = None
+    verify_output: str = ""  # tail-truncated verify command output (failures print last)
 
 
 class FleetState:

@@ -21,6 +21,11 @@ class WorktreeError(RuntimeError):
     """A git worktree operation failed."""
 
 
+# Cap on the verify-command output kept on a run record (chars, from the END - failures print
+# last). The full stdout/stderr of the agent itself is persisted separately by the run-log store.
+_VERIFY_OUTPUT_CAP = 4000
+
+
 class Worktree(BaseModel):
     task_id: str
     path: Path
@@ -47,6 +52,7 @@ class WorktreeManager:
         git_timeout_s: int = 120,
         setup_cmd: list[str] | None = None,
         setup_timeout_s: int = 600,
+        verify_cmd: list[str] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.base_dir = (
@@ -58,6 +64,9 @@ class WorktreeManager:
         # venv). None = skip. See _run_setup for why a failure tears the worktree down and raises.
         self.setup_cmd = setup_cmd
         self.setup_timeout_s = setup_timeout_s
+        # Optional gate command run in the worktree after a run that would otherwise succeed (e.g.
+        # the repo's full test suite). None = skip. See verify() - a failure never tears down.
+        self.verify_cmd = verify_cmd
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         # These git calls run on the driver's checkout (commit/merge/status), so they get the same
@@ -134,6 +143,38 @@ class WorktreeManager:
             raise WorktreeError(
                 f"worktree setup {self.setup_cmd!r} failed for {wt.task_id!r}: {reason}"
             )
+
+    def verify(self, wt: Worktree) -> tuple[bool, str]:
+        """Run the configured ``verify_cmd`` in the worktree; ``(ok, tail-truncated output)``.
+
+        The post-run counterpart of ``setup()``: same headless guards (VIRTUAL_ENV scrubbed, stdin
+        closed, hard timeout - reusing ``setup_timeout_s``), but it NEVER raises and NEVER tears
+        the worktree down - a failed gate still holds reviewable work, and the diff must survive
+        for the driver to inspect. ``(True, "")`` when no command is configured.
+        """
+        if not self.verify_cmd:
+            return True, ""
+        try:
+            proc = subprocess.run(
+                self.verify_cmd,
+                cwd=str(wt.path),
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=child_env(),
+                timeout=self.setup_timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"verify timed out after {self.setup_timeout_s}s"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"verify could not run {self.verify_cmd[0]!r}: {exc}"
+        output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        # Failures print last: keep the TAIL, where test runners put the summary.
+        if len(output) > _VERIFY_OUTPUT_CAP:
+            output = "..." + output[-_VERIFY_OUTPUT_CAP:]
+        if proc.returncode == 0:
+            return True, output
+        return False, f"verify exited {proc.returncode}\n{output}".strip()
 
     def changed_files(self, wt: Worktree) -> list[str]:
         """Paths changed inside the worktree (uncommitted).

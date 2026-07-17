@@ -233,6 +233,14 @@ install and tests stale code. A fresh worktree has no `.venv` (it's gitignored),
 top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) provisions one right
 after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
 
+**Verify gate.** The optional top-level `verify` command (e.g. `uv run pytest -q`) is
+`worktree_setup`'s post-run counterpart: it runs in the worktree after a run that would otherwise
+be `succeeded` *and changed files* (agents love passing their own narrower test subset while
+breaking the repo gate). A non-zero exit/timeout demotes the run to `verify_failed` - the worktree
+and diff are KEPT for review (unlike a setup failure, verify never tears down), and the command's
+output tail lands on the run record (`verify_passed` / `verify_output`). Runs with no gate
+configured, no file changes, or a non-success outcome are untouched (`verify_passed=None`).
+
 **Graceful backend skip.** `MarshalService.__init__` probes each configured backend's CLI at
 startup; a client whose backend is unavailable is **skipped** (stderr warning, recorded on
 `skipped_clients`) rather than failing a run mid-flight. The **full** backend set still goes to the

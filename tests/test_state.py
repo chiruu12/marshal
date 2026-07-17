@@ -45,6 +45,21 @@ def test_persists_across_instances(tmp_path: Path) -> None:
     assert reopened is not None and reopened.backend == "cursor"
 
 
+def test_verify_fields_round_trip_and_default(tmp_path: Path) -> None:
+    d = tmp_path / "runs"
+    st = FleetState(d)
+    st.add(RunRecord(run_id="r1", task_id="t1", backend="cursor"))
+    got = st.get("r1")
+    assert got is not None and got.verify_passed is None and got.verify_output == ""  # old ledgers load
+
+    st.update("r1", status="verify_failed", verify_passed=False, verify_output="verify exited 1")
+    reopened = FleetState(d).get("r1")
+    assert reopened is not None
+    assert reopened.status == "verify_failed"
+    assert reopened.verify_passed is False
+    assert reopened.verify_output == "verify exited 1"
+
+
 def test_concurrent_adds_do_not_lose_records(tmp_path: Path) -> None:
     # The whole point of per-run files: N runs writing at once never clobber each other (the old
     # single-file read-modify-write would lose records here).

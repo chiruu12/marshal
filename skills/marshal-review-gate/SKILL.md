@@ -12,8 +12,10 @@ description: >
 # Gating a merge behind reviewer consensus
 
 You already have a worker run that **succeeded** and a diff you could merge. `succeeded` means the
-process exited cleanly, not that the code is correct - so before a high-stakes integrate you gate it
-behind several **biased, independent** reviewers and a fixed rule, instead of one judgment call. The
+process exited cleanly (plus the workspace's config-level `verify:` gate, if one is set - that
+mechanical gate runs before this review gate ever sees the run), not that the code is correct - so
+before a high-stakes integrate you gate it behind several **biased, independent** reviewers and a
+fixed rule, instead of one judgment call. The
 loop is **collect → review (in isolation) → decide by truth table → fix or integrate.**
 
 This is not "run the same review prompt three times and average." It is biased, independent,

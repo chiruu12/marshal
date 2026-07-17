@@ -119,6 +119,33 @@ def test_worktree_setup_wrong_type_raises(tmp_path: Path) -> None:
         load_config(p)
 
 
+def test_verify_string_is_split(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("verify: uv run pytest -q\n" + _YAML)
+    assert load_config(p).verify == ["uv", "run", "pytest", "-q"]
+
+
+def test_verify_list_passes_through(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("verify:\n  - make\n  - check\n" + _YAML)
+    assert load_config(p).verify == ["make", "check"]
+
+
+def test_verify_absent_or_blank_is_none(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)
+    assert load_config(p).verify is None  # absent -> no gate, exactly the old behavior
+    p.write_text('verify: "   "\n' + _YAML)
+    assert load_config(p).verify is None
+
+
+def test_verify_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("verify: 42\n" + _YAML)
+    with pytest.raises(ConfigError, match="verify"):
+        load_config(p)
+
+
 def test_retries_defaults_to_two(tmp_path: Path) -> None:
     p = tmp_path / "fleet.config.yaml"
     p.write_text(_YAML)

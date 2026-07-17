@@ -46,12 +46,15 @@ def _still_running(rec: RunRecord) -> bool:
 
 
 #: Terminal, non-success run statuses that `clean` reclaims by default (no un-landed work worth keeping).
+#: VERIFY_FAILED is included deliberately: its worktree survives the run itself for review, but a
+#: driver-invoked clean of finished runs is a post-review action - review before cleaning.
 _CLEANABLE_NONSUCCESS = frozenset(
     {
         RunStatus.FAILED.value,
         RunStatus.TIMED_OUT.value,
         RunStatus.CANCELLED.value,
         RunStatus.EMPTY.value,
+        RunStatus.VERIFY_FAILED.value,
     }
 )
 
@@ -327,6 +330,7 @@ class Fleet:
         base_dir: Path | str | None = None,
         worktree_base: Path | str | None = None,
         worktree_setup: list[str] | None = None,
+        verify: list[str] | None = None,
         retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
@@ -344,7 +348,10 @@ class Fleet:
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
         self.worktrees = WorktreeManager(
-            self.repo_root, worktree_base or base / "worktrees", setup_cmd=worktree_setup
+            self.repo_root,
+            worktree_base or base / "worktrees",
+            setup_cmd=worktree_setup,
+            verify_cmd=verify,
         )
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")
@@ -557,6 +564,20 @@ class Fleet:
             self._price_usage(usage, req.model)      # normalize cost + source (estimate/unavailable)
             self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
+            # The workspace's optional verify gate: only a would-be-SUCCEEDED run that actually
+            # CHANGED FILES is gated (the EMPTY downgrade already happened above; a text-only
+            # reply can't have broken the repo, so don't burn a full test run on an unchanged
+            # tree). A failed gate demotes to VERIFY_FAILED; the worktree is kept for review.
+            verify_passed: bool | None = None
+            verify_output = ""
+            if (
+                status is RunStatus.SUCCEEDED
+                and self.worktrees.verify_cmd
+                and self._worktree_has_changes(wt)
+            ):
+                verify_passed, verify_output = self.worktrees.verify(wt)
+                if not verify_passed:
+                    status = RunStatus.VERIFY_FAILED
             event = UsageEvent.from_result(
                 result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
                 client=req.client, model=req.model,
@@ -580,6 +601,8 @@ class Fleet:
                 ended_at=_now(),
                 error=result.error,
                 attempts=attempts,
+                verify_passed=verify_passed,
+                verify_output=verify_output,
             )
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
@@ -741,6 +764,16 @@ class Fleet:
         if ext is not None:
             usage.cost_usd = ext.cost_usd
             usage.source = ext.source
+
+    def _worktree_has_changes(self, wt: Worktree) -> bool:
+        """Whether the worktree holds uncommitted changes - the verify gate's trigger.
+
+        Can't tell (a git failure) counts as changed: a wasted gate run beats a missed regression.
+        """
+        try:
+            return bool(self.worktrees.changed_files(wt))
+        except WorktreeError:
+            return True
 
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
         """A clean exit that produced no work (no text, no file changes) is EMPTY, not success."""
