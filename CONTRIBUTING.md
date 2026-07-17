@@ -131,6 +131,16 @@ hooks.
 Run the gate, then open a PR describing what the new backend supports and its verification state
 (see `docs/status.md` for the honesty conventions of the verification matrix).
 
+## Releasing
+
+Cut a release by pushing a `v*` tag (e.g. `v0.1.0`) to `main`. The
+[Release workflow](.github/workflows/release.yml) runs the full gate (pytest with 90% coverage,
+ruff, mypy), builds an sdist and wheel with `uv build`, and publishes them to a GitHub Release with
+auto-generated notes. You can also trigger the workflow manually and supply an existing tag. Bump the
+`version` fields in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to match the
+tag when you cut a release. Marshal is pre-1.0 — minor versions may include breaking changes until
+1.0.
+
 ## Reporting security issues
 
 Do **not** open a public issue for vulnerabilities. See [`SECURITY.md`](SECURITY.md).

@@ -60,6 +60,19 @@ retries: 2
 #     quota_type: metered
 #     notes: placeholder
 
+# Optional advisory $ budgets - checked at run start but NEVER block a run. Scope to a backend, a
+# client, or the whole fleet (omit both backend and client). window is session | week | month.
+# Subscription / unknown-cost backends report $0, so a budget on them never triggers.
+# budgets:
+#   - client: planner
+#     window: week
+#     limit_usd: 25.0
+#   - backend: claude-code
+#     window: month
+#     limit_usd: 100.0
+#   - window: session
+#     limit_usd: 10.0
+
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
   # fireworks-ai/* model is rejected at load so you never burn Fireworks credits.
@@ -88,3 +101,11 @@ clients:
     model: claude-sonnet-4-6
     permission: safe-edit
     secret_ref: env:ANTHROPIC_API_KEY   # optional preflight check; see header
+
+  # Optional per-client usage API - fetch REAL post-run cost from a provider admin API instead of
+  # the local price table. Unset = estimated or unavailable. See docs/config.md.
+  # metered:
+  #   backend: opencode
+  #   model: opencode-go/glm-5.2
+  #   permission: safe-edit
+  #   usage_api: eastrouter
