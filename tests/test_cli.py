@@ -58,6 +58,36 @@ def test_usage_human_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert "runs=0" in out
 
 
+def test_usage_defaults_resolve_against_repo_not_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Usage data lives under the repo's .marshal/usage, but the CLI is invoked from a subdirectory.
+    # Without --repo (or MARSHAL_REPO), cwd-relative defaults would miss the ledger.
+    from datetime import datetime, timezone
+
+    from marshal_engine.layout import usage_dir
+    from marshal_engine.usage import UsageEvent
+
+    repo = tmp_path / "repo"
+    subdir = repo / "src" / "pkg"
+    subdir.mkdir(parents=True)
+    u = usage_dir(repo)
+    u.mkdir(parents=True)
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="opencode", cost_usd=0.42, status="succeeded", source="native",
+        ).model_dump_json() + "\n"
+    )
+    monkeypatch.chdir(subdir)
+    monkeypatch.delenv("MARSHAL_REPO", raising=False)
+    ret = cli.main(["usage", "--json", "--repo", str(repo)])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["totals"]["runs"] == 1
+    assert abs(data["totals"]["cost_usd"] - 0.42) < 1e-9
+
+
 def test_usage_json_includes_breakdowns_and_window(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # Backward-compat: the four pinned keys (totals/by_backend/by_client/by_model) stay. The new
     # by_backend_model + window metadata is additive (the original test_usage_json only checked

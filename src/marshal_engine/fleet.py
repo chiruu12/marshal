@@ -26,6 +26,7 @@ from .backends.base import CodingAgentBackend
 from .config import BudgetSpec
 from .eastrouter import CostResolver, default_cost_resolvers
 from .env import merge_user_path
+from .layout import marshal_dir
 from .logs import RunLogStore
 from .pricing import PriceTable, PricingError
 from .retry import RetryPolicy, is_transient_failure
@@ -349,7 +350,7 @@ class Fleet:
         # so the duplicate call is a no-op. MARSHAL_NO_PATH_FIX=1 still opts out.
         merge_user_path()
         self.repo_root = Path(repo_root)
-        base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
+        base = Path(base_dir) if base_dir is not None else marshal_dir(self.repo_root)
         self.worktrees = WorktreeManager(
             self.repo_root,
             worktree_base or base / "worktrees",

@@ -39,6 +39,7 @@ from typing import Any, Literal
 import yaml
 
 from .config import ConfigError, FleetConfig, load_config, validate
+from .layout import runs_dir
 from .scaffold import detect_project_markers, scaffold_fleet_config
 from .service import MarshalService
 from .state import FleetState, RunRecord
@@ -496,12 +497,7 @@ class WorkspaceRegistry:
         return wdef
 
     def _runs_dir(self, wdef: WorkspaceDef) -> Path:
-        # The service-free scan assumes the standard ledger layout (<repo>/.marshal/runs) - the one
-        # every MCP entry point produces (build_service_for never overrides Fleet's base_dir). A
-        # library caller wrapping a service built with a custom base_dir would break this scan; the
-        # MCP server never does, so the registry sources the path here rather than from a service it
-        # may not have built yet (the cold-scan path has no service).
-        return wdef.path / ".marshal" / "runs"
+        return runs_dir(wdef.path)
 
     def owner_of(self, run_id: str, hint: str | None = None) -> str | None:
         """The workspace that owns ``run_id``, or None. Cheap path stat; never builds a service.

@@ -15,6 +15,7 @@ from .config import BudgetSpec, ConfigError, DURATION_PRESETS, FleetConfig, load
 from .doctor import FAIL, OK, WARN, doctor_report, run_checks
 from .env import merge_user_path
 from .fleet import BudgetStatus, Fleet, compute_budget_status
+from .layout import logs_dir, marshal_dir, runs_dir, usage_dir
 from .logs import RunLogStore
 from .registry import backend_names, default_backends
 from .service import MarshalService
@@ -31,6 +32,10 @@ from .workspaces import (
     remove_workspace,
     workspaces_file_path,
 )
+
+
+def _resolve_repo(args: argparse.Namespace) -> Path:
+    return Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
 
 
 def _cmd_backends(args: argparse.Namespace) -> int:
@@ -166,7 +171,9 @@ def _print_bucket_table(title: str, buckets: dict[str, Bucket]) -> None:
 
 def _cmd_usage(args: argparse.Namespace) -> int:
     since = _usage_window_since(args.window)
-    tracker = UsageTracker(args.dir)
+    repo = _resolve_repo(args)
+    usage_path = Path(args.dir) if args.dir is not None else usage_dir(repo)
+    tracker = UsageTracker(usage_path)
     s = tracker.summary(since=since)
     # Optional: load the fleet config to surface any advisory `budgets:` alongside the ledger.
     # Absent / unreadable / empty -> `[]` (the "no behavior change" contract for users who don't opt in).
@@ -257,12 +264,14 @@ def _usage_window_since(window: str) -> datetime | None:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    runs = FleetState(args.state).list()
+    repo = _resolve_repo(args)
+    state_dir = Path(args.state) if args.state is not None else runs_dir(repo)
+    runs = FleetState(state_dir).list()
     if args.json:
         print(json.dumps([r.model_dump(mode="json") for r in runs], indent=2))
         return 0
     if not runs:
-        print(f"no runs recorded under {Path(args.state).resolve()}")
+        print(f"no runs recorded under {state_dir.resolve()}")
         return 0
     for r in runs:
         print(f"{r.run_id:24} {r.backend:12} {r.status:10} ${r.cost_usd:.4f}  {r.worktree or ''}")
@@ -271,13 +280,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_logs(args: argparse.Namespace) -> int:
     """Print the persisted stdout/stderr for one run. Non-zero when no log exists for the id."""
+    repo = _resolve_repo(args)
+    log_dir = Path(args.dir) if args.dir is not None else logs_dir(repo)
     try:
-        text = RunLogStore(args.dir).read(args.run_id)
+        text = RunLogStore(log_dir).read(args.run_id)
     except ValueError as exc:  # unsafe run_id (path separators) - fail clean, not a traceback
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if text is None:
-        print(f"no log for run {args.run_id!r} under {Path(args.dir).resolve()}", file=sys.stderr)
+        print(f"no log for run {args.run_id!r} under {log_dir.resolve()}", file=sys.stderr)
         return 1
     sys.stdout.write(text)
     if not text.endswith("\n"):
@@ -375,9 +386,9 @@ _GLYPH = {OK: "✓", WARN: "⚠", FAIL: "✗"}
 
 def _cmd_clean(args: argparse.Namespace) -> int:
     """Tear down finished runs' worktrees + branches (the usage ledger is never touched)."""
-    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    repo = _resolve_repo(args)
     # clean needs no backends - a bare Fleet just reuses its state + worktree managers.
-    fleet = Fleet(repo, {}, base_dir=repo / ".marshal")
+    fleet = Fleet(repo, {}, base_dir=marshal_dir(repo))
     result = fleet.clean(
         scope=args.scope,
         run_ids=args.run_ids or None,
@@ -508,7 +519,8 @@ def main(argv: list[str] | None = None) -> int:
     pm.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     pm.add_argument("--json", action="store_true", help="output JSON")
     pu = sub.add_parser("usage", help="show usage summary")
-    pu.add_argument("--dir", default=".marshal/usage")
+    pu.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pu.add_argument("--dir", default=None, help="usage ledger directory (default: <repo>/.marshal/usage)")
     pu.add_argument(
         "--window",
         default="all",
@@ -521,11 +533,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     pu.add_argument("--json", action="store_true", help="output JSON")
     ps = sub.add_parser("status", help="list fleet runs")
-    ps.add_argument("--state", default=".marshal/runs", help="per-run state directory")
+    ps.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    ps.add_argument("--state", default=None, help="per-run state directory (default: <repo>/.marshal/runs)")
     ps.add_argument("--json", action="store_true", help="output JSON")
     pl = sub.add_parser("logs", help="print the persisted stdout/stderr for one run")
     pl.add_argument("run_id", help="the run id to fetch the log for")
-    pl.add_argument("--dir", default=".marshal/logs", help="per-run logs directory")
+    pl.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pl.add_argument("--dir", default=None, help="per-run logs directory (default: <repo>/.marshal/logs)")
     pc = sub.add_parser("clean", help="tear down finished runs' worktrees + branches")
     pc.add_argument("run_ids", nargs="*", help="specific run ids to clean (default: by --scope)")
     pc.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")

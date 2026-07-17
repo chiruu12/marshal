@@ -15,6 +15,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .env import child_env
+from .layout import worktrees_dir
 
 
 class WorktreeError(RuntimeError):
@@ -55,9 +56,7 @@ class WorktreeManager:
         verify_cmd: list[str] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
-        self.base_dir = (
-            Path(base_dir) if base_dir is not None else self.repo_root / ".marshal" / "worktrees"
-        )
+        self.base_dir = Path(base_dir) if base_dir is not None else worktrees_dir(self.repo_root)
         self.branch_prefix = branch_prefix
         self.git_timeout_s = git_timeout_s
         # Optional command run in each fresh worktree right after `git worktree add` (e.g. provision a
