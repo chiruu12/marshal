@@ -563,6 +563,73 @@ def test_scaffold_fleet_config(tmp_path: Path) -> None:
     assert load_config(repo / "fleet.config.yaml").clients == {}  # a loadable zero-client stub
 
 
+def test_detect_project_markers_root_wins(tmp_path: Path) -> None:
+    from marshal_engine.workspaces import detect_project_markers
+
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "sdk").mkdir()
+    (tmp_path / "sdk" / "package.json").write_text("{}")
+    assert detect_project_markers(tmp_path) == [("pyproject.toml", "")]  # nested is not scanned
+
+
+def test_detect_project_markers_nested_depth_1_and_2(tmp_path: Path) -> None:
+    from marshal_engine.workspaces import detect_project_markers
+
+    (tmp_path / "sdk").mkdir()
+    (tmp_path / "sdk" / "pyproject.toml").write_text("[project]\n")
+    assert detect_project_markers(tmp_path) == [("pyproject.toml", "sdk")]
+
+    deep = tmp_path / "deep"
+    (deep / "packages" / "core").mkdir(parents=True)
+    (deep / "packages" / "core" / "go.mod").write_text("module x\n")
+    assert detect_project_markers(deep) == [("go.mod", "packages/core")]
+
+
+def test_detect_project_markers_skips_vendored_and_dot_dirs(tmp_path: Path) -> None:
+    from marshal_engine.workspaces import detect_project_markers
+
+    for skip in (".venv", "node_modules", ".git", ".hidden"):
+        (tmp_path / skip).mkdir()
+        (tmp_path / skip / "pyproject.toml").write_text("[project]\n")
+    assert detect_project_markers(tmp_path) == []
+
+
+def test_detect_project_markers_caps_results(tmp_path: Path) -> None:
+    from marshal_engine.workspaces import detect_project_markers
+
+    for name in ("a", "b", "c", "d", "e"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "pyproject.toml").write_text("[project]\n")
+    assert len(detect_project_markers(tmp_path)) == 3  # a short stub, even in a monorepo
+
+
+def test_scaffold_templates_nested_project_hint(tmp_path: Path) -> None:
+    from marshal_engine.config import load_config
+
+    repo = tmp_path / "r"
+    (repo / "sdk").mkdir(parents=True)
+    (repo / "sdk" / "pyproject.toml").write_text("[project]\n")
+    assert scaffold_fleet_config(repo) is True
+    body = (repo / "fleet.config.yaml").read_text()
+    # nested projects need the shell form: worktree_setup executes as argv, no shell, at the root
+    assert '# worktree_setup: sh -c "cd sdk && uv sync"' in body
+    assert "sdk/" in body  # the worker-context hint names the package dir
+    assert load_config(repo / "fleet.config.yaml").clients == {}  # still a valid zero-client stub
+
+
+def test_scaffold_templates_root_project_hint(tmp_path: Path) -> None:
+    from marshal_engine.config import load_config
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    (repo / "package.json").write_text("{}")
+    assert scaffold_fleet_config(repo) is True
+    body = (repo / "fleet.config.yaml").read_text()
+    assert "# worktree_setup: npm install" in body
+    assert "sh -c" not in body  # root projects need no cd
+    assert load_config(repo / "fleet.config.yaml").clients == {}
+
+
 def test_registry_hot_reloads_new_workspace(tmp_path: Path) -> None:
     repo_a, repo_b = tmp_path / "a", tmp_path / "b"
     for r in (repo_a, repo_b):
