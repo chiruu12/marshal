@@ -137,6 +137,101 @@ def test_duration_param_is_wired_into_spawn_schema(
     assert "duration" in tools["run_agent"].inputSchema["properties"]
 
 
+def test_base_branch_param_is_wired_into_spawn_and_run_agent_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    assert "base_branch" in tools["spawn"].inputSchema["properties"]
+    assert "base_branch" in tools["run_agent"].inputSchema["properties"]
+
+
+def test_spawn_base_branch_reaches_task_spec_via_mcp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+    import subprocess
+    import sys
+    import time
+
+    from marshal_engine.backends.base import CodingAgentBackend
+    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
+    from marshal_engine.mcp_server import build_app
+    from marshal_engine.service import MarshalService
+    from marshal_engine.types import AgentResult, Capabilities, RunOpts, RunStatus, TaskSpec
+
+    class _Capture(CodingAgentBackend):
+        name = "capture"
+        binary = "python"
+        capabilities = Capabilities()
+
+        def __init__(self) -> None:
+            self.tasks: list[TaskSpec] = []
+
+        def check_available(self) -> bool:
+            return True
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            self.tasks.append(task)
+            return [sys.executable, "-c", "print('ok')"]
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-b", "main", cwd=repo)
+    git("config", "user.email", "t@t", cwd=repo)
+    git("config", "user.name", "t", cwd=repo)
+    (repo / "README.md").write_text("hi")
+    git("add", "-A", cwd=repo)
+    git("commit", "-q", "-m", "init", cwd=repo)
+    git("branch", "marshal/prior", cwd=repo)
+    (repo / "fleet.config.yaml").write_text(
+        "clients:\n  worker:\n    backend: capture\n    permission: safe-edit\n"
+    )
+
+    backend = _Capture()
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="capture", permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"capture": backend})
+    app = build_app(svc)
+    try:
+        asyncio.run(
+            app.call_tool(
+                "spawn",
+                {
+                    "client": "worker",
+                    "goal": "do x",
+                    "task_id": "mcp1",
+                    "base_branch": "marshal/prior",
+                },
+            )
+        )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not backend.tasks:
+            time.sleep(0.05)
+        assert backend.tasks[-1].base_branch == "marshal/prior"
+    finally:
+        svc.shutdown()
+
+
 def test_tool_params_carry_schema_descriptions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

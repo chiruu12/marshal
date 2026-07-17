@@ -207,9 +207,9 @@ class MarshalService:
         client_name: str | None,
         goal: str,
         task_id: str | None = None,
-        files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
         *,
+        base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
@@ -232,7 +232,7 @@ class MarshalService:
             id=task_id or uuid.uuid4().hex[:8],
             goal=self._compose_goal(goal),
             context_files=context_files or [],
-            files_touched=files_touched or [],
+            base_branch=base_branch,
         )
         timeout_override = resolve_duration(duration) if duration is not None else None
         if client_name:
@@ -342,14 +342,15 @@ class MarshalService:
         goal: str = "",
         *,
         task_id: str | None = None,
-        files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
+        base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
     ) -> RunRecord:
         req = self._request_for(
-            client_name, goal, task_id, files_touched, context_files,
+            client_name, goal, task_id, context_files,
+            base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )
         return self.fleet.run(
@@ -364,7 +365,7 @@ class MarshalService:
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
         """Run several clients in parallel. Each job is
-        {client, goal, task_id?, files_touched?, context_files?, model?, backend?, duration?}.
+        {client, goal, task_id?, context_files?, model?, backend?, duration?}.
 
         Client names are validated up front, so a typo fails fast before any run starts. A job may
         also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's
@@ -372,8 +373,7 @@ class MarshalService:
         """
         requests = [
             self._request_for(
-                j.get("client"), j["goal"], j.get("task_id"), j.get("files_touched"),
-                j.get("context_files"),
+                j.get("client"), j["goal"], j.get("task_id"), j.get("context_files"),
                 model=j.get("model"), backend=j.get("backend"),
                 duration=j.get("duration"),
             )
@@ -387,15 +387,16 @@ class MarshalService:
         goal: str = "",
         *,
         task_id: str | None = None,
-        files_touched: list[str] | None = None,
         context_files: list[str] | None = None,
+        base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
     ) -> RunRecord:
         """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
         req = self._request_for(
-            client_name, goal, task_id, files_touched, context_files,
+            client_name, goal, task_id, context_files,
+            base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )
         run_id = self.fleet.spawn(req)

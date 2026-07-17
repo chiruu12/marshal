@@ -280,6 +280,34 @@ def test_run_agent_threads_context_files_to_the_task(repo: Path) -> None:
     assert backend.tasks[-1].context_files == ["a.py", "b.py"]
 
 
+def test_run_agent_threads_base_branch_to_the_task(repo: Path) -> None:
+    subprocess.run(["git", "branch", "marshal/chainA"], cwd=repo, check=True, capture_output=True)
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_agent("worker", "do x", task_id="t1", base_branch="marshal/chainA")
+    assert backend.tasks[-1].base_branch == "marshal/chainA"
+
+
+def test_spawn_threads_base_branch_to_the_task(repo: Path) -> None:
+    subprocess.run(["git", "branch", "marshal/prior"], cwd=repo, check=True, capture_output=True)
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    try:
+        svc.spawn("worker", "do x", task_id="sp1", base_branch="marshal/prior")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not backend.tasks:
+            time.sleep(0.05)
+        assert backend.tasks[-1].base_branch == "marshal/prior"
+    finally:
+        svc.shutdown()
+
+
+def test_request_for_threads_base_branch(repo: Path) -> None:
+    svc = _svc(repo)
+    req = svc._request_for("worker", "x", base_branch="feature/base")
+    assert req.task.base_branch == "feature/base"
+
+
 def test_goal_is_prefixed_with_worker_preamble(repo: Path) -> None:
     # The worker preamble is injected into every goal, and the user's original goal survives.
     backend = _Capture()

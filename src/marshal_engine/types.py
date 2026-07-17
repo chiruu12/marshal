@@ -72,7 +72,6 @@ class TaskSpec(BaseModel):
     role: str | None = None                # routing role (planner/coder/writer/reviewer/...);
                                            # policy maps role -> backend. Engine stays mechanism.
     context_files: list[str] = []          # minimal files the worker should see
-    files_touched: list[str] = []          # declared scope -> conflict analysis
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
 
 

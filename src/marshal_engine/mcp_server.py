@@ -54,6 +54,10 @@ _DESC_DURATION = (
 _DESC_GOAL = "Natural-language task for the worker agent."
 _DESC_TASK_ID = "Optional grouping id; runs sharing a task_id can be compared head-to-head by report()."
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt)."
+_DESC_BASE_BRANCH = (
+    "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
+    "chain dependent work off a prior run's branch."
+)
 _DESC_RUN_ID = "A run id returned by run_agent / spawn / run_many."
 _DESC_WORKSPACE = "Target workspace name (from list_workspaces); defaults to the primary workspace."
 _DESC_WS_HINT = (
@@ -203,6 +207,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
         duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
@@ -214,10 +219,12 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         Blocks until the run finishes; for long work prefer spawn (returns at once + cancellable).
         `model` overrides the client's resolved model when `client` is set; for an ad-hoc spawn,
         pass `backend` (+ optional `model`) with no `client`. `duration` overrides the resolved
-        timeout (a preset name or positive seconds)."""
+        timeout (a preset name or positive seconds). `base_branch` bases the worktree on a branch
+        other than HEAD (e.g. a prior run's branch after commit_run)."""
         svc = await offload(registry.get, workspace)
         rec = await offload(
             svc.run_agent, client, goal, task_id=task_id, context_files=context_files,
+            base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )
         return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
@@ -243,18 +250,20 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
         duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Start a run in the background in `workspace`'s repo; returns its RUNNING record immediately.
-        Poll get_run/status, and cancel_run to stop it. `model`/`backend`/`duration` follow the
-        same rules as run_agent (override the client's model, ad-hoc spawn by bare backend, or
-        per-spawn timeout override)."""
+        Poll get_run/status, and cancel_run to stop it. `model`/`backend`/`duration`/`base_branch`
+        follow the same rules as run_agent (override the client's model, ad-hoc spawn by bare backend,
+        per-spawn timeout override, or chain off a prior run's branch)."""
         svc = await offload(registry.get, workspace)
         rec = await offload(
             svc.spawn, client, goal, task_id=task_id, context_files=context_files,
+            base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )
         return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
