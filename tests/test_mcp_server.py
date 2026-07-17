@@ -48,6 +48,28 @@ def test_build_service_without_config_starts_with_zero_clients(
     assert "no fleet config" in capsys.readouterr().err
 
 
+def test_list_workflows_surfaces_malformed_recipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    wdir = repo / "workflows"
+    wdir.mkdir()
+    (wdir / "broken.yaml").write_text("name: broken\nphases: not-a-list\n")
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    _content, structured = asyncio.run(app.call_tool("list_workflows", {}))
+    payload = structured.get("result", structured) if isinstance(structured, dict) else structured
+    assert payload["workflows"] == []
+    assert "broken.yaml" in payload["errors"]
+    assert "invalid" in payload["errors"]["broken.yaml"].lower()
+
+
 def test_run_workflow_missing_yaml_path_is_clear_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
-from .config import BudgetSpec, ConfigError, DURATION_PRESETS, FleetConfig, load_config, validate
+from .config import BudgetSpec, ConfigError, DURATION_PRESETS, FleetConfig, load_config
 from .doctor import FAIL, OK, WARN, run_checks, summarize
 from .env import merge_user_path
 from .fleet import BudgetStatus, Fleet, compute_budget_status
@@ -21,11 +21,14 @@ from .service import MarshalService
 from .state import FleetState
 from .usage import Bucket, UsageTracker
 from .workflow import load_workflow, validate_workflow, workflow_paths
+from .scaffold import scaffold_fleet_config
 from .workspaces import (
+    DEFAULT_WORKSPACE,
+    WorkspaceDef,
     WorkspaceRegistry,
+    build_service_for,
     register_workspace,
     remove_workspace,
-    scaffold_fleet_config,
     workspaces_file_path,
 )
 
@@ -431,12 +434,11 @@ def _build_cli_service(args: argparse.Namespace) -> MarshalService:
     """
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
-    if not cfg_path.exists():
-        return MarshalService(repo, FleetConfig(), config_path=cfg_path)
-    config = load_config(cfg_path)
-    for warning in validate(config):
-        print(f"[marshal] config warning: {warning}", file=sys.stderr)
-    return MarshalService(repo, config, config_path=cfg_path)
+    return build_service_for(
+        WorkspaceDef(name=DEFAULT_WORKSPACE, path=repo, config_path=cfg_path),
+        missing_config="silent",
+        config_warnings="plain",
+    )
 
 
 def _cmd_run(args: argparse.Namespace) -> int:

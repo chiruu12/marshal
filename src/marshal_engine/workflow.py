@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import string
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -232,15 +233,29 @@ def workflow_paths(directory: Path | str) -> list[Path]:
     return sorted([*d.glob("*.yaml"), *d.glob("*.yml")], key=lambda p: p.name)
 
 
-def list_workflows(directory: Path | str) -> list[WorkflowSpec]:
-    """All parseable workflows in a directory (malformed files are skipped, not raised)."""
+@dataclass(frozen=True)
+class WorkflowListing:
+    """Parseable workflow specs plus per-file errors for recipes that failed validation."""
+
+    workflows: list[WorkflowSpec]
+    errors: dict[str, str]
+
+
+def discover_workflows(directory: Path | str) -> WorkflowListing:
+    """All workflows in a directory; malformed files are collected in ``errors`` (not raised)."""
     specs: list[WorkflowSpec] = []
+    errors: dict[str, str] = {}
     for p in workflow_paths(directory):
         try:
             specs.append(load_workflow(p))
-        except ConfigError:
-            continue
-    return specs
+        except ConfigError as exc:
+            errors[p.name] = str(exc)
+    return WorkflowListing(workflows=specs, errors=errors)
+
+
+def list_workflows(directory: Path | str) -> list[WorkflowSpec]:
+    """All parseable workflows in a directory (malformed files are skipped, not raised)."""
+    return discover_workflows(directory).workflows
 
 
 # --- runner -------------------------------------------------------------------------------

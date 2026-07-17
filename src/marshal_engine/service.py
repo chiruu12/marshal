@@ -45,13 +45,13 @@ from .registry import make_backend
 from .types import RunStatus, TaskSpec, UsageSource
 from .usage import UsageSummary
 from .workflow import (
+    WorkflowListing,
     WorkflowResult,
     WorkflowRunner,
-    WorkflowSpec,
+    discover_workflows,
     find_workflow,
     load_workflow,
 )
-from .workflow import list_workflows as _discover_workflows
 
 
 _WORKER_PREAMBLE = (
@@ -557,9 +557,9 @@ class MarshalService:
     def workflows_dir(self) -> Path:
         return self.repo_root / "workflows"
 
-    def list_workflows(self) -> list[WorkflowSpec]:
-        """Discover the well-formed workflow recipes under ``<repo>/workflows/``."""
-        return _discover_workflows(self.workflows_dir)
+    def list_workflows(self) -> WorkflowListing:
+        """Discover workflow recipes under ``<repo>/workflows/`` (well-formed and broken)."""
+        return discover_workflows(self.workflows_dir)
 
     def run_workflow(
         self, name: str, inputs: dict[str, Any] | None = None, *, max_concurrency: int = 4

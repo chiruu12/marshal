@@ -27,7 +27,6 @@ blocking `run` never freezes the event loop: the driver can still poll `status`/
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,10 +34,15 @@ from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
-from .config import FleetConfig, load_config, validate
 from .env import merge_user_path
+from .scaffold import scaffold_fleet_config
 from .service import MarshalService
-from .workspaces import DEFAULT_WORKSPACE, WorkspaceRegistry, scaffold_fleet_config
+from .workspaces import (
+    DEFAULT_WORKSPACE,
+    WorkspaceDef,
+    WorkspaceRegistry,
+    build_service_for,
+)
 
 _T = TypeVar("_T")
 
@@ -92,20 +96,11 @@ def build_service() -> MarshalService:
     """
     repo = Path(os.environ.get("MARSHAL_REPO", "."))
     cfg_path = Path(os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
-    if not cfg_path.exists():
-        # Start anyway, with zero clients, so the server (e.g. a freshly installed plugin) never
-        # crashes on connect. list_clients() returns [] and the driver is told to configure a fleet.
-        print(
-            f"[marshal] no fleet config at {cfg_path}; starting with zero clients. "
-            "Copy fleet.config.example.yaml to fleet.config.yaml (or set MARSHAL_CONFIG), then "
-            "reconnect. See SETUP.md.",
-            file=sys.stderr,
-        )
-        return MarshalService(repo, FleetConfig(), config_path=cfg_path)
-    config = load_config(cfg_path)
-    for warning in validate(config):
-        print(f"[marshal] config warning: {warning}", file=sys.stderr)
-    return MarshalService(repo, config, config_path=cfg_path)
+    return build_service_for(
+        WorkspaceDef(name=DEFAULT_WORKSPACE, path=repo, config_path=cfg_path),
+        missing_config="legacy",
+        config_warnings="plain",
+    )
 
 
 def _window_since(session_start: datetime, now: datetime, window: str) -> datetime | None:
@@ -409,18 +404,28 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     @app.tool()
     async def list_workflows(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
-    ) -> list[dict[str, Any]]:
-        """List declared workflow recipes (name, description, inputs, phase summary) for a workspace."""
+    ) -> dict[str, Any]:
+        """List declared workflow recipes (name, description, inputs, phase summary) for a workspace.
+
+        Malformed recipe files are returned in ``errors`` (filename -> message) so a driver can tell
+        a broken recipe from a missing one."""
         svc = await offload(registry.get, workspace)
-        return [
+        listing = await offload(svc.list_workflows)
+        return tag(
             {
-                "name": w.name,
-                "description": w.description,
-                "inputs": w.inputs,
-                "phases": [{"name": p.name, "run": p.run} for p in w.phases],
-            }
-            for w in await offload(svc.list_workflows)
-        ]
+                "workflows": [
+                    {
+                        "name": w.name,
+                        "description": w.description,
+                        "inputs": w.inputs,
+                        "phases": [{"name": p.name, "run": p.run} for p in w.phases],
+                    }
+                    for w in listing.workflows
+                ],
+                "errors": listing.errors,
+            },
+            workspace or DEFAULT_WORKSPACE,
+        )
 
     @app.tool()
     async def run_workflow(

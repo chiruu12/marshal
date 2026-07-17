@@ -945,7 +945,8 @@ def test_mcp_round_trip_many_benchmark_integrate(tmp_path: Path) -> None:
     # _Echo writes no files, so this run is "empty"; the point is the tool routes + tags correctly.
     assert integ["workspace"] == "beta" and integ["status"] in {"merged", "empty", "conflict", "blocked", "error"}
 
-    assert _call(app, "list_workflows", {"workspace": "beta"}) == []
+    lw = _call(app, "list_workflows", {"workspace": "beta"})
+    assert lw == {"workflows": [], "errors": {}, "workspace": "beta"}
 
 
 def test_cli_workspace_add_bad_path_errors_cleanly(
