@@ -188,7 +188,8 @@ def validate_workflow(spec: WorkflowSpec, config: FleetConfig) -> None:
             if unknown:
                 listed = ", ".join(sorted(known)) or "(none configured)"
                 raise ConfigError(
-                    f"phase {idx} ({phase.run}): unknown client(s) {unknown}; configured: {listed}"
+                    f"phase {idx} ({phase.run}): unknown client(s) {unknown}; configured: {listed}; "
+                    "hint: client names come from fleet.config.yaml - run doctor to see which are available"
                 )
         else:  # collect | integrate - must resolve a source phase (raises if it can't)
             resolve_source(spec, idx)

@@ -263,7 +263,7 @@ def test_get_unknown_workspace_lists_known(tmp_path: Path) -> None:
     reg = WorkspaceRegistry(
         [WorkspaceDef("default", tmp_path, tmp_path / "x")], prebuilt={"default": object()}  # type: ignore[dict-item]
     )
-    with pytest.raises(ValueError, match="unknown workspace"):
+    with pytest.raises(ValueError, match="unknown workspace.*hint: register it"):
         reg.get("nope")
 
 

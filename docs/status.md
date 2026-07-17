@@ -122,5 +122,20 @@ backend set still reaches the Fleet, so `doctor` still reports a missing backend
 backend CLI is unavailable (runs with whatever fleet is present; raises only if all are unavailable)
 and surfaces non-succeeded runs as phase notes + `next_actions`. The `WorkflowService` Protocol gained
 a read-only `client_available()` probe.
+**Field-review fixes** (from a real 3-agent fleet session, 2026-07-17) - the state/config sync gaps:
+(1) workspace **config hot-reload** - the registry rebuilds a workspace's service when its
+`fleet.config.yaml` appears/changes/vanishes (mtime+size signature), so `list_clients`/`spawn` never
+serve a stale client list while `doctor` reads live; (2) **PATH fallback + self-healing clients** -
+`user_path()` falls back to well-known user bin dirs (`~/.local/bin`, Homebrew, …) when the
+login-shell probe fails, `doctor` probes freshly constructed backends when its snapshot lacks one,
+and clients skipped at startup re-probe (and heal) on resolution/`list_clients`; (3) the
+**`verify:` gate** - an optional per-workspace command (e.g. the repo's full test suite) that runs
+after a would-be-succeeded run with file changes; failure lands as **`verify_failed`** with the
+output tail on the record, worktree kept for review; (4) **repo-shape-aware scaffold** - a new
+workspace's starter config carries commented `worktree_setup` suggestions detected from the repo
+layout (root vs nested `pyproject.toml`/`package.json`/`go.mod`/`Cargo.toml`); (5) **orphan
+reaping** - scope-mode `clean` reconciles `.marshal/worktrees` against the ledger and reaps dirs
+with no (readable) run record (`orphans_removed`); (6) resolution errors carry actionable hints
+(ad-hoc `backend=` escape hatch, `doctor`, `add_workspace`).
 Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

@@ -142,7 +142,7 @@ def test_validate_unknown_client_rejected() -> None:
     spec = WorkflowSpec(
         name="w", phases=[PhaseSpec(run="fan_out", clients=["ghost"], goal="g")]
     )
-    with pytest.raises(ConfigError, match="unknown client"):
+    with pytest.raises(ConfigError, match="unknown client.*hint: client names come from"):
         validate_workflow(spec, _config("real"))
 
 

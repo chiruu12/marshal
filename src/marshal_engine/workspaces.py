@@ -537,7 +537,10 @@ class WorkspaceRegistry:
         wsname = name or DEFAULT_WORKSPACE
         wdef = self._defs.get(wsname)
         if wdef is None:
-            raise ValueError(f"unknown workspace {wsname!r}; known: {', '.join(self.names())}")
+            raise ValueError(
+                f"unknown workspace {wsname!r}; known: {', '.join(self.names())}; "
+                "hint: register it with add_workspace (MCP) or 'marshal workspace add <name> <path>'"
+            )
         cached = self._cache.get(wsname)
         if cached is not None and cached[1] == _config_signature(wdef.config_path):
             return cached[0]

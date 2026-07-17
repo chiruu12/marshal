@@ -245,7 +245,11 @@ class MarshalService:
                 client = self._clients.get(client_name)
             if client is None:
                 known = ", ".join(self._clients) or "(none configured)"
-                raise ValueError(f"no such client: {client_name!r}; known: {known}")
+                raise ValueError(
+                    f"no such client: {client_name!r}; known: {known}; "
+                    "hint: pass backend=<name> (with optional model=) for an ad-hoc run, or "
+                    "check fleet.config.yaml and run doctor"
+                )
             resolved_model = model if model is not None else resolve_model(client)
             if model is not None:
                 # A model override bypasses load_config's guard, so re-check it here (same rule):
@@ -279,7 +283,10 @@ class MarshalService:
                 timeout_s=timeout_override if timeout_override is not None else ephemeral.timeout_s,
                 usage_api=ephemeral.usage_api,
             )
-        raise ValueError("must provide either a configured 'client' or a bare 'backend' (with optional 'model')")
+        raise ValueError(
+            "must provide either a configured 'client' or a bare 'backend' (with optional 'model'); "
+            "hint: list_clients shows configured clients, 'marshal backends' lists backend names"
+        )
 
     def _ensure_backend(self, name: str) -> CodingAgentBackend:
         """Lazily add a backend to the Fleet for ad-hoc (backend, model) spawns.

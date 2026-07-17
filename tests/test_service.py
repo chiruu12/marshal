@@ -220,7 +220,7 @@ def test_run_agent_records(repo: Path) -> None:
 
 def test_run_agent_unknown_client(repo: Path) -> None:
     svc = _svc(repo)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="hint: pass backend="):  # points at the ad-hoc escape hatch
         svc.run_agent("nope", "x")
 
 
@@ -612,7 +612,7 @@ def test_request_for_both_client_and_backend_prefers_client(repo: Path) -> None:
 
 def test_request_for_neither_client_nor_backend_raises(repo: Path) -> None:
     svc = _svc(repo)
-    with pytest.raises(ValueError, match="client.*backend|backend.*client"):
+    with pytest.raises(ValueError, match="hint: list_clients"):
         svc._request_for(None, "x")
 
 
