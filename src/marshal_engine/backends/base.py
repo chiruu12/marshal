@@ -15,15 +15,36 @@ Design rules (see docs/design.md):
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
+from typing import Any
 
 from ..env import child_env
 from ..types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord
+
+_VERSION_PROBE_TIMEOUT_S = 15.0
+
+
+def parse_jsonl(raw: str) -> list[dict[str, Any]]:
+    """Parse newline-delimited JSON objects from a backend's stdout stream."""
+    events: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            events.append(obj)
+    return events
 
 
 class CodingAgentBackend(ABC):
@@ -35,34 +56,72 @@ class CodingAgentBackend(ABC):
     binary: str
     #: feature flags; subclasses set this so the orchestrator can degrade gracefully
     capabilities: Capabilities
+    #: normalized permission tier -> native argv flags; subclasses populate this table
+    _PERMISSION: dict[PermissionMode, list[str]] = {}
 
     # --- hooks subclasses must implement -------------------------------------------------
 
-    @abstractmethod
     def check_available(self) -> bool:
-        """Return True if the binary is installed, authenticated, and a supported version.
+        """Return True if ``binary`` is on PATH and responds to ``--version``.
 
-        Implementations should probe `binary --version` (and pin/assert a minimum where
-        hangs/bugs are version-gated) plus verify credentials are present.
+        This is a presence probe only - it does not verify authentication or pin a minimum
+        version. Backends with a cheap authenticated probe override ``account_info()`` and
+        set ``verifies_auth()`` so ``marshal doctor`` can distinguish "installed" from
+        "logged in".
         """
+        if shutil.which(self.binary) is None:
+            return False
+        try:
+            proc = subprocess.run(
+                [self.binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=_VERSION_PROBE_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return proc.returncode == 0
 
     @abstractmethod
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         """Pure function: (task, opts) -> argv. No side effects, no process spawning."""
 
-    @abstractmethod
     def map_permission(self, mode: PermissionMode) -> list[str]:
         """Pure function: a normalized permission tier -> this backend's native flags."""
+        try:
+            return list(self._PERMISSION[mode])
+        except KeyError:
+            raise ValueError(self._unsupported_permission_error(mode)) from None
+
+    def _unsupported_permission_error(self, mode: PermissionMode) -> str:
+        return f"{self.name}: unsupported permission mode {mode!r}"
 
     @abstractmethod
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         """Normalize this backend's raw output into an AgentResult.
 
         Must treat a non-zero exit (or unparseable output) as failure, and populate
-        usage/session_id/files_changed where the backend exposes them.
+        usage/session_id where the backend exposes them. Must be pure - no subprocesses.
         """
 
-    # --- optional hook -------------------------------------------------------------------
+    # --- optional hooks ------------------------------------------------------------------
+
+    def _compose_prompt(self, task: TaskSpec) -> str:
+        """Build the agent prompt from the task goal and optional context files."""
+        prompt = task.goal
+        if task.context_files:
+            files = "\n".join(f"- {f}" for f in task.context_files)
+            prompt = f"{prompt}\n\nRelevant files:\n{files}"
+        return prompt
+
+    def finalize(self, result: AgentResult) -> AgentResult:
+        """Post-success hook called by ``run()`` after ``parse_output`` on genuine completion.
+
+        Default is identity. Backends that need a follow-up subprocess (e.g. OpenCode's
+        ``opencode export`` reconciliation) override this so ``parse_output`` stays pure
+        and the timeout-recovery path never triggers hidden work.
+        """
+        return result
 
     def extract_usage(self, result: AgentResult) -> UsageRecord | None:
         """Return the usage record for a run. Default: whatever parse_output captured.
@@ -180,6 +239,7 @@ class CodingAgentBackend(ABC):
             )
 
         result = self.parse_output(out, err, proc.returncode)
+        result = self.finalize(result)
         result.duration_ms = _elapsed_ms()
         if result.status is RunStatus.FAILED and not result.error:
             # parse_output found no reason (e.g. the backend errored on stderr, not in its JSON

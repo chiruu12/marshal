@@ -66,17 +66,6 @@ class CursorBackend(CodingAgentBackend):
 
     # --- hooks ---------------------------------------------------------------------------
 
-    def check_available(self) -> bool:
-        if shutil.which(self.binary) is None:
-            return False
-        try:
-            proc = subprocess.run(
-                [self.binary, "--version"], capture_output=True, text=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
-
     def account_info(self) -> dict[str, str] | None:
         """Plan tier + default model from `cursor-agent about`. Cursor exposes no quota/usage API
         for an individual account, but it does report the subscription tier and current model -
@@ -102,12 +91,6 @@ class CursorBackend(CodingAgentBackend):
         # flag a logged-out CLI instead of green-lighting it on a passing `--version`.
         return True
 
-    def map_permission(self, mode: PermissionMode) -> list[str]:
-        try:
-            return list(self._PERMISSION[mode])
-        except KeyError:
-            raise ValueError(f"cursor: unsupported permission mode {mode!r}") from None
-
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "json", "--trust"]
         argv += self.map_permission(opts.permission)
@@ -119,8 +102,7 @@ class CursorBackend(CodingAgentBackend):
         argv.append(self._compose_prompt(task))
         return argv
 
-    @staticmethod
-    def _compose_prompt(task: TaskSpec) -> str:
+    def _compose_prompt(self, task: TaskSpec) -> str:
         prompt = task.goal
         if task.context_files:
             mentions = " ".join(f"@{f}" for f in task.context_files)

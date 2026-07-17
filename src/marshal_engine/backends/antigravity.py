@@ -33,8 +33,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import threading
 from pathlib import Path
@@ -82,25 +80,11 @@ class AntigravityBackend(CodingAgentBackend):
 
     # --- hooks ---------------------------------------------------------------------------
 
-    def check_available(self) -> bool:
-        if shutil.which(self.binary) is None:
-            return False
-        try:
-            proc = subprocess.run(
-                [self.binary, "--version"], capture_output=True, text=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
-
-    def map_permission(self, mode: PermissionMode) -> list[str]:
-        try:
-            return list(self._PERMISSION[mode])
-        except KeyError:
-            raise ValueError(
-                f"antigravity: permission mode {mode!r} is not supported headless "
-                "(only safe-edit and yolo)"
-            ) from None
+    def _unsupported_permission_error(self, mode: PermissionMode) -> str:
+        return (
+            f"antigravity: permission mode {mode!r} is not supported headless "
+            "(only safe-edit and yolo)"
+        )
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary]
@@ -124,14 +108,6 @@ class AntigravityBackend(CodingAgentBackend):
         worktree paths are pruned so the list stays bounded. Serialized for parallel runs.
         """
         _trust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
-
-    @staticmethod
-    def _compose_prompt(task: TaskSpec) -> str:
-        prompt = task.goal
-        if task.context_files:
-            files = "\n".join(f"- {f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant files:\n{files}"
-        return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         if exit_code != 0:

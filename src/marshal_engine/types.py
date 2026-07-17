@@ -108,7 +108,6 @@ class AgentResult(BaseModel):
     text: str = ""                         # final assistant message
     session_id: str | None = None
     usage: UsageRecord | None = None
-    files_changed: list[str] = []
     exit_code: int | None = None
     duration_ms: int = 0                    # wall-clock around the run, stamped by base.run()
     error: str | None = None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -23,6 +24,13 @@ def backend() -> OpenCodeBackend:
 def _opts(**kw: object) -> RunOpts:
     kw.setdefault("cwd", Path("/tmp/wt"))
     return RunOpts(**kw)  # type: ignore[arg-type]
+
+
+def _finalize(
+    backend: OpenCodeBackend, out: str, err: str = "", exit_code: int = 0
+) -> object:
+    """Exercise parse_output (pure) then finalize (export reconciliation hook)."""
+    return backend.finalize(backend.parse_output(out, err, exit_code))
 
 
 def test_map_permission(backend: OpenCodeBackend) -> None:
@@ -95,7 +103,7 @@ def test_parse_output_nonzero_exit(backend: OpenCodeBackend) -> None:
     assert res.exit_code == 1
 
 
-# --- export-reconciliation step (the "Phase 2" the module docstring promised) -------------
+# --- export-reconciliation step (finalize hook; parse_output stays pure) ------------------
 
 
 def _stub_export(payload: dict[str, Any], returncode: int = 0) -> MagicMock:
@@ -140,7 +148,7 @@ def test_reconcile_recovers_dropped_text(
         ],
     }
     _patch_export(monkeypatch, proc=_stub_export(export))
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.status is RunStatus.SUCCEEDED
     assert res.text == "full report restored."  # export overrode the live stream's "partial "
 
@@ -161,7 +169,7 @@ def test_reconcile_uses_authoritative_tokens(
         "messages": [{"info": {}, "parts": [{"type": "text", "text": "done"}]}],
     }
     _patch_export(monkeypatch, proc=_stub_export(export))
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.usage is not None
     assert res.usage.input_tokens == 250
     assert res.usage.output_tokens == 80
@@ -186,7 +194,7 @@ def test_reconcile_zero_cost_keeps_unavailable(
         "messages": [{"info": {}, "parts": [{"type": "text", "text": "ok"}]}],
     }
     _patch_export(monkeypatch, proc=_stub_export(export))
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.usage is not None
     assert res.usage.input_tokens == 100
     assert res.usage.source is UsageSource.UNAVAILABLE  # $0 cost -> still unknown, not "free"
@@ -199,7 +207,7 @@ def test_reconcile_missing_binary_is_noop(
     # stream's result stands.
     out = '{"sessionID":"ses_x","part":{"type":"text","text":"from-stream"}}'
     _patch_export(monkeypatch, binary_path=None)  # shutil.which("opencode") -> None
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.text == "from-stream"  # live stream result preserved
 
 
@@ -208,7 +216,7 @@ def test_reconcile_nonzero_exit_is_noop(
 ) -> None:
     out = '{"sessionID":"ses_x","part":{"type":"text","text":"from-stream"}}'
     _patch_export(monkeypatch, proc=_stub_export({}, returncode=1))
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.text == "from-stream"  # failed export -> live stream stands
 
 
@@ -221,7 +229,7 @@ def test_reconcile_unparseable_json_is_noop(
     proc.stdout = "this is not json"
     proc.stderr = ""
     _patch_export(monkeypatch, proc=proc)
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.text == "from-stream"
 
 
@@ -230,7 +238,7 @@ def test_reconcile_subprocess_exception_is_noop(
 ) -> None:
     out = '{"sessionID":"ses_x","part":{"type":"text","text":"from-stream"}}'
     _patch_export(monkeypatch, side_effect=subprocess.SubprocessError("boom"))
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.text == "from-stream"
 
 
@@ -245,7 +253,7 @@ def test_reconcile_no_text_in_export_keeps_stream_text(
         "messages": [{"info": {}, "parts": [{"type": "step-finish"}]}],  # no text parts
     }
     _patch_export(monkeypatch, proc=_stub_export(export))
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.text == "stream-kept"
     assert res.usage is not None  # tokens still applied
 
@@ -265,7 +273,7 @@ def test_reconcile_no_tokens_in_export_keeps_stream_usage(
         "messages": [{"info": {}, "parts": [{"type": "text", "text": "hello"}]}],
     }
     _patch_export(monkeypatch, proc=_stub_export(export))
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.text == "hello"
     assert res.usage is not None
     assert res.usage.input_tokens == 3
@@ -273,7 +281,7 @@ def test_reconcile_no_tokens_in_export_keeps_stream_usage(
     assert abs(res.usage.cost_usd - 0.001) < 1e-9
 
 
-def test_reconcile_skipped_on_failed_run(
+def test_finalize_skipped_on_failed_run(
     backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A FAILED run must NOT trigger the export call - the live event stream's error is the
@@ -287,12 +295,12 @@ def test_reconcile_skipped_on_failed_run(
 
     monkeypatch.setattr("marshal_engine.backends.opencode.subprocess.run", must_not_run)
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.status is RunStatus.FAILED
     assert called == []
 
 
-def test_reconcile_skipped_without_session_id(
+def test_finalize_skipped_without_session_id(
     backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A live stream that never emitted a sessionID (rare; some configurations) can't be
@@ -304,26 +312,51 @@ def test_reconcile_skipped_without_session_id(
 
     monkeypatch.setattr("marshal_engine.backends.opencode.subprocess.run", must_not_run)
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
-    res = backend.parse_output(out, "", 0)
+    res = _finalize(backend, out)
     assert res.text == "alone"
     assert res.session_id is None
 
 
-def test_reconcile_disabled_by_attribute(
+def test_parse_output_does_not_invoke_export(
     backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The `reconcile_from_export = False` opt-out must skip the export entirely (hermetic
-    # tests, or power users who want the raw live-stream result).
-    backend.reconcile_from_export = False
+    # parse_output is pure - export reconciliation lives in finalize() only.
     out = '{"part":{"type":"text","text":"only-stream"}}'
 
     def must_not_run(*a, **kw):  # noqa: ANN001, ARG001
-        raise AssertionError("export called despite reconcile_from_export=False")
+        raise AssertionError("export must not be called from parse_output")
 
     monkeypatch.setattr("marshal_engine.backends.opencode.subprocess.run", must_not_run)
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     res = backend.parse_output(out, "", 0)
     assert res.text == "only-stream"
+
+
+def test_timeout_never_invokes_opencode_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A timed-out run must not spend +15s in a hidden `opencode export` subprocess.
+    export_called: list[list[str]] = []
+
+    def track_subprocess_run(argv: list[str], **kw: object) -> MagicMock:  # noqa: ARG001
+        if len(argv) > 1 and argv[1] == "export":
+            export_called.append(argv)
+            raise AssertionError("export must not be called on timeout")
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = "0.0.0"
+        proc.stderr = ""
+        return proc
+
+    monkeypatch.setattr("marshal_engine.backends.opencode.subprocess.run", track_subprocess_run)
+
+    class _SlowOpenCode(OpenCodeBackend):
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    res = _SlowOpenCode().run(TaskSpec(id="t", goal="g"), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert res.status is RunStatus.TIMED_OUT
+    assert export_called == []
 
 
 def test_parse_export_payload_handles_leading_non_json(

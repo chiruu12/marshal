@@ -27,8 +27,6 @@ The pure hooks (`build_invocation`/`map_permission`/`parse_output`) are contract
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 from typing import Any
 
 from ..types import (
@@ -68,23 +66,6 @@ class ClaudeCodeBackend(CodingAgentBackend):
 
     # --- hooks ---------------------------------------------------------------------------
 
-    def check_available(self) -> bool:
-        if shutil.which(self.binary) is None:
-            return False
-        try:
-            proc = subprocess.run(
-                [self.binary, "--version"], capture_output=True, text=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
-
-    def map_permission(self, mode: PermissionMode) -> list[str]:
-        try:
-            return list(self._PERMISSION[mode])
-        except KeyError:
-            raise ValueError(f"claude-code: unsupported permission mode {mode!r}") from None
-
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "json"]
         argv += self.map_permission(opts.permission)
@@ -94,14 +75,6 @@ class ClaudeCodeBackend(CodingAgentBackend):
             argv += ["--resume", opts.session_id]
         argv.append(self._compose_prompt(task))
         return argv
-
-    @staticmethod
-    def _compose_prompt(task: TaskSpec) -> str:
-        prompt = task.goal
-        if task.context_files:
-            files = "\n".join(f"- {f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant files:\n{files}"
-        return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         obj = _parse_result(raw_stdout)

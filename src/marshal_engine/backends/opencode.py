@@ -50,7 +50,7 @@ from ..types import (
     UsageRecord,
     UsageSource,
 )
-from .base import CodingAgentBackend
+from .base import CodingAgentBackend, parse_jsonl
 
 
 #: How long to wait for `opencode export` to return the authoritative session JSON. The export
@@ -80,28 +80,7 @@ class OpenCodeBackend(CodingAgentBackend):
         PermissionMode.YOLO: ["--dangerously-skip-permissions"],
     }
 
-    #: Set to False to skip the `opencode export` reconciliation step (tests, hermetic CI,
-    #: or callers who want the raw live-event-stream result with no extra subprocess).
-    reconcile_from_export: bool = True
-
     # --- hooks ---------------------------------------------------------------------------
-
-    def check_available(self) -> bool:
-        if shutil.which(self.binary) is None:
-            return False
-        try:
-            proc = subprocess.run(
-                [self.binary, "--version"], capture_output=True, text=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
-
-    def map_permission(self, mode: PermissionMode) -> list[str]:
-        try:
-            return list(self._PERMISSION[mode])
-        except KeyError:
-            raise ValueError(f"opencode: unsupported permission mode {mode!r}") from None
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "run", "--format", "json"]
@@ -114,25 +93,11 @@ class OpenCodeBackend(CodingAgentBackend):
         argv.append(self._compose_prompt(task))
         return argv
 
-    @staticmethod
-    def _compose_prompt(task: TaskSpec) -> str:
-        prompt = task.goal
-        if task.context_files:
-            files = "\n".join(f"- {f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant files:\n{files}"
-        return prompt
-
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        # Step 1: live event stream. Fast, no extra subprocess, gives us the session_id we
-        # need for the reconciliation step. Best-effort on a SUCCEEDED exit.
-        result = self._parse_event_stream(raw_stdout, raw_stderr, exit_code)
-        # Step 2: reconcile from `opencode export <session_id>`. The export is opencode's own
-        # authoritative ledger for the session (sqlite-backed in newer versions; the json
-        # dump in older ones). It restores any text part or step-finish the live stream dropped,
-        # which happens often enough on long replies that a driver can't rely on the live
-        # result alone. Skipped on FAILED (live stream is the final answer) and when no
-        # session_id was captured (no export possible).
-        if self.reconcile_from_export and result.session_id and result.status is RunStatus.SUCCEEDED:
+        return self._parse_event_stream(raw_stdout, raw_stderr, exit_code)
+
+    def finalize(self, result: AgentResult) -> AgentResult:
+        if result.session_id and result.status is RunStatus.SUCCEEDED:
             reconciled = self._reconcile_from_export(result.session_id)
             if reconciled is not None:
                 if reconciled.get("text") is not None:
@@ -144,7 +109,7 @@ class OpenCodeBackend(CodingAgentBackend):
     def _parse_event_stream(
         self, raw_stdout: str, raw_stderr: str, exit_code: int
     ) -> AgentResult:
-        events = _parse_jsonl(raw_stdout)
+        events = parse_jsonl(raw_stdout)
 
         text_parts: list[str] = []
         session_id: str | None = None
@@ -309,21 +274,3 @@ class OpenCodeBackend(CodingAgentBackend):
         if final_text is None and usage is None:
             return None
         return {"text": final_text, "usage": usage}
-
-
-# --- module helpers ----------------------------------------------------------------------
-
-
-def _parse_jsonl(raw: str) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            events.append(obj)
-    return events

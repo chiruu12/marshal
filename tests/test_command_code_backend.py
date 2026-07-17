@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
-from marshal_engine.backends import command_code as cc
+from marshal_engine.backends import base as backend_base
 from marshal_engine.backends.command_code import CommandCodeBackend
 
 
@@ -102,31 +102,31 @@ def test_parse_output_cap_hit_is_failure(backend: CommandCodeBackend) -> None:
 def test_check_available_false_when_binary_missing(
     backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cc.shutil, "which", lambda _b: None)
+    monkeypatch.setattr(backend_base.shutil, "which", lambda _b: None)
     assert backend.check_available() is False
 
 
 def test_check_available_false_on_subprocess_error(
     backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cc.shutil, "which", lambda _b: "/usr/bin/command-code")
+    monkeypatch.setattr(backend_base.shutil, "which", lambda _b: "/usr/bin/command-code")
 
     def _boom(*_a: object, **_k: object) -> object:
         raise OSError("cannot exec")
 
-    monkeypatch.setattr(cc.subprocess, "run", _boom)
+    monkeypatch.setattr(backend_base.subprocess, "run", _boom)
     assert backend.check_available() is False
 
 
 def test_check_available_true_when_version_succeeds(
     backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cc.shutil, "which", lambda _b: "/usr/bin/command-code")
+    monkeypatch.setattr(backend_base.shutil, "which", lambda _b: "/usr/bin/command-code")
 
     class _Proc:
         returncode = 0
 
-    monkeypatch.setattr(cc.subprocess, "run", lambda *_a, **_k: _Proc())
+    monkeypatch.setattr(backend_base.subprocess, "run", lambda *_a, **_k: _Proc())
     assert backend.check_available() is True
 
 
