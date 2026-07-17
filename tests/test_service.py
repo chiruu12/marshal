@@ -487,6 +487,57 @@ def test_all_available_skipped_is_empty(repo: Path) -> None:
     assert {c.name for c in svc.list_clients().clients} == {"worker"}
 
 
+class _Toggle(_Echo):
+    """An echo backend whose availability can be flipped mid-test (CLI installed mid-session)."""
+
+    name = "toggle"
+
+    def __init__(self) -> None:
+        self.available = False
+
+    def check_available(self) -> bool:
+        return self.available
+
+
+def _toggle_svc(repo: Path) -> tuple[MarshalService, _Toggle]:
+    be = _Toggle()
+    cfg = FleetConfig(
+        clients={"late": ClientConfig(name="late", backend="toggle", permission=PermissionMode.SAFE_EDIT)}
+    )
+    return MarshalService(repo, cfg, backends={"toggle": be}), be
+
+
+def test_skipped_client_heals_when_backend_appears(repo: Path) -> None:
+    # Availability is snapshotted at construction; a backend CLI that shows up mid-session
+    # (installed, or a healed PATH) must promote its clients instead of erroring forever.
+    svc, be = _toggle_svc(repo)
+    assert svc.skipped_clients == ["late"]
+    with pytest.raises(ValueError, match="no such client"):
+        svc.run_agent("late", "go", task_id="t1")
+
+    be.available = True
+    rec = svc.run_agent("late", "go", task_id="t2")  # heals on resolution, then runs
+    assert rec.status == "succeeded"
+    assert svc.skipped_clients == []
+
+
+def test_list_clients_reprobes_skipped(repo: Path) -> None:
+    svc, be = _toggle_svc(repo)
+    assert svc.list_clients().clients == []
+    be.available = True
+    assert {c.name for c in svc.list_clients().clients} == {"late"}
+    assert svc.skipped_clients == []
+
+
+def test_still_unavailable_client_keeps_raising(repo: Path) -> None:
+    svc, _be = _toggle_svc(repo)
+    with pytest.raises(ValueError, match="no such client"):
+        svc.run_agent("late", "go", task_id="t1")
+    with pytest.raises(ValueError, match="no such client"):
+        svc.run_agent("late", "go", task_id="t2")  # reprobe found nothing; still skipped
+    assert svc.skipped_clients == ["late"]
+
+
 # --- harness-first model selection: model override + ad-hoc (backend, model) spawn ------------
 
 

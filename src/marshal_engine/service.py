@@ -160,6 +160,7 @@ class MarshalService:
         self._adhoc_lock = threading.Lock()
 
     def list_clients(self) -> ClientList:
+        self._reprobe_skipped()
         return ClientList(
             clients=[
                 ClientInfo(
@@ -236,6 +237,12 @@ class MarshalService:
         if client_name:
             client = self._clients.get(client_name)
             if client is None:
+                # The name may belong to a client skipped at construction because its backend CLI
+                # was unavailable then (e.g. a stripped PATH since healed, or the CLI installed
+                # mid-session). Re-probe before failing so a healed backend self-heals its clients.
+                self._reprobe_skipped()
+                client = self._clients.get(client_name)
+            if client is None:
                 known = ", ".join(self._clients) or "(none configured)"
                 raise ValueError(f"no such client: {client_name!r}; known: {known}")
             resolved_model = model if model is not None else resolve_model(client)
@@ -281,12 +288,45 @@ class MarshalService:
         `_adhoc_lock` so concurrent MCP tool threads don't race the mutation or a doctor() read.
         """
         with self._adhoc_lock:
-            existing = self.fleet.backends.get(name)
-            if existing is not None:
-                return existing
-            be = make_backend(name)  # raises ValueError("unknown backend ...; known: ...")
-            self.fleet.backends[name] = be
-            return be
+            return self._ensure_backend_locked(name)
+
+    def _ensure_backend_locked(self, name: str) -> CodingAgentBackend:
+        # The unlocked body, split out so _reprobe_skipped (which already holds _adhoc_lock,
+        # a non-reentrant threading.Lock) can call it without deadlocking.
+        existing = self.fleet.backends.get(name)
+        if existing is not None:
+            return existing
+        be = make_backend(name)  # raises ValueError("unknown backend ...; known: ...")
+        self.fleet.backends[name] = be
+        return be
+
+    def _reprobe_skipped(self) -> None:
+        """Promote clients whose backend CLI has become available since construction.
+
+        Availability is snapshotted once in __init__; a CLI installed (or a PATH healed)
+        mid-session would otherwise leave its clients skipped forever while doctor - which probes
+        live - reports everything fine. No-op for healthy fleets; otherwise bounded at one
+        check_available() per still-skipped client.
+        """
+        if not self.skipped_clients:
+            return
+        with self._adhoc_lock:
+            healed: list[str] = []
+            for n in self.skipped_clients:
+                client = self.config.clients.get(n)
+                if client is None:
+                    continue
+                try:
+                    be = self._ensure_backend_locked(client.backend)
+                except ValueError:
+                    continue
+                if be.check_available():
+                    self._clients[n] = client
+                    healed.append(n)
+            if healed:
+                self.skipped_clients = [n for n in self.skipped_clients if n not in healed]
+                for n in healed:
+                    print(f"marshal: client {n!r} is now available (backend CLI found)", file=sys.stderr)
 
     def run_agent(
         self,

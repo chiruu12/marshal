@@ -105,6 +105,34 @@ def test_missing_backend_cli_fails(tmp_path: Path) -> None:
     assert fails >= 1
 
 
+def test_probe_missing_from_snapshot_constructs_fresh_backend(tmp_path: Path, monkeypatch) -> None:
+    # A service built before this backend was configured hands doctor a snapshot without it.
+    # Doctor must probe a freshly constructed backend (the same path a spawn takes), not FAIL on
+    # the stale snapshot.
+    import marshal_engine.doctor as doctor_mod
+
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    monkeypatch.setattr(
+        doctor_mod, "make_backend", lambda name: _FakeBackend(name, available=True)
+    )
+    checks = run_checks(repo, cfg, backends={})  # empty snapshot: the config's backend is absent
+
+    assert _by_name(checks, "backend:opencode").status == OK
+
+
+def test_unknown_backend_name_fails_distinctly(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(
+        tmp_path / "fleet.config.yaml", "clients:\n  x:\n    backend: no-such-backend\n"
+    )
+    checks = run_checks(repo, cfg, backends={})
+
+    backend = _by_name(checks, "backend:no-such-backend")
+    assert backend.status == FAIL
+    assert backend.detail == "unknown backend name"  # not the misleading "CLI not on PATH"
+
+
 def test_set_secret_is_ok(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCODE_API_KEY", "sk-test")
     repo = _git_repo(tmp_path / "repo")

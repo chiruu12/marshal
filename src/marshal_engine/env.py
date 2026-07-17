@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 # Vars that pin a child to the driver's Python install; cleared so the worktree's own environment
 # (its `.venv`) wins. PATH is intentionally NOT touched by child_env - uv/git/the backend CLIs
@@ -42,9 +43,25 @@ _SHELL_CANDIDATES: tuple[str, ...] = (
 )
 
 # Bound the shell call so a misbehaving rcfile (compinit, slow prompt init, network mounts in
-# PROMPT_COMMAND, etc.) cannot hang the engine. 2s is generous for a healthy shell, fatal for one
-# that's stuck - the merge is a recovery path, not a critical-path dependency.
-_USER_PATH_TIMEOUT_S = 2.0
+# PROMPT_COMMAND, etc.) cannot hang the engine. A cold zsh with compinit routinely needs >2s, and
+# the cost is paid once per process (cached) - so 3s buys real hits without risking a hang; a shell
+# that's still silent after that falls through to the static fallback dirs below.
+_USER_PATH_TIMEOUT_S = 3.0
+
+# Where user-installed CLIs live when the login-shell probe can't tell us (shell missing, timed
+# out, or rcfile broken). Only the dirs that exist on this machine are used. This turns a silent
+# permanent PATH miss - which made doctor call a working ~/.local/bin/cursor-agent "not on PATH" -
+# into a useful default.
+_FALLBACK_USER_DIRS: tuple[str, ...] = (
+    "~/.local/bin",
+    "~/.cargo/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "~/bin",
+    "~/.bun/bin",
+    "~/.deno/bin",
+    "~/.npm-global/bin",
+)
 
 # Module-level cache for user_path(): None = not tried, "" = tried and got nothing,
 # any other str = the result. The answer cannot change within a single process (the shell would
@@ -63,20 +80,31 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _existing_fallback_path(dirs: tuple[str, ...]) -> str:
+    """Join the given dirs (``~`` expanded) that exist on this machine into a PATH string."""
+    existing = [str(p) for d in dirs if (p := Path(d).expanduser()).is_dir()]
+    return os.pathsep.join(existing)
+
+
 def user_path(
     *,
     shells: tuple[str, ...] | None = None,
     timeout: float = _USER_PATH_TIMEOUT_S,
+    fallback_dirs: tuple[str, ...] | None = None,
 ) -> str | None:
     """Best-effort: derive the user's interactive-shell PATH.
 
-    Returns the PATH string a fresh terminal would show, or None on any failure. Used to recover
-    backend-CLI visibility when Marshal is launched in a context that didn't source the user's rc
-    files (an MCP host, a launchd job, a non-interactive SSH session). Result is cached at module
-    level: the first successful call wins, and a miss (no shell available) is remembered so we
-    don't keep retrying. ``shells`` and ``timeout`` are injectable for tests; ``shells`` defaults to
-    ``_SHELL_CANDIDATES`` (resolved at call time so a monkeypatched module attribute takes effect
-    - a default-arg binding would freeze the value at import time and silently ignore the patch).
+    Returns the PATH string a fresh terminal would show. When every shell probe fails (no shell,
+    timeout, broken rcfile), falls back to the well-known user bin dirs that exist on disk
+    (``_FALLBACK_USER_DIRS``) rather than remembering a bare miss - a silent permanent miss is how
+    doctor came to call working user-installed CLIs "not on PATH". Returns None only when the
+    fallback is empty too. Used to recover backend-CLI visibility when Marshal is launched in a
+    context that didn't source the user's rc files (an MCP host, a launchd job, a non-interactive
+    SSH session). The result - probe hit, fallback, or genuine miss - is cached at module level:
+    the answer cannot change within a process. ``shells``/``timeout``/``fallback_dirs`` are
+    injectable for tests; the tuple params default to their module constants (resolved at call time
+    so a monkeypatched module attribute takes effect - a default-arg binding would freeze the value
+    at import time and silently ignore the patch).
     """
     global _USER_PATH_CACHE
     if _USER_PATH_CACHE is not None:
@@ -100,10 +128,11 @@ def user_path(
         if path:
             _USER_PATH_CACHE = path
             return path
-    # Remember the miss so subsequent calls don't re-spawn shells; clear via the module-level
-    # _USER_PATH_CACHE in tests if they need to force a re-probe.
-    _USER_PATH_CACHE = ""
-    return None
+    dirs = fallback_dirs if fallback_dirs is not None else _FALLBACK_USER_DIRS
+    # Cache whatever the fallback yields ("" = genuine miss) so subsequent calls don't re-spawn
+    # shells; clear the module-level _USER_PATH_CACHE in tests to force a re-probe.
+    _USER_PATH_CACHE = _existing_fallback_path(dirs)
+    return _USER_PATH_CACHE or None
 
 
 def merge_user_path() -> bool:

@@ -119,7 +119,7 @@ def test_user_path_returns_none_when_all_shells_fail(
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
 
-    assert user_path() is None
+    assert user_path(fallback_dirs=()) is None  # no fallback dirs -> a genuine miss
 
 
 def test_user_path_returns_none_on_subprocess_exception(
@@ -133,7 +133,7 @@ def test_user_path_returns_none_on_subprocess_exception(
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
 
-    assert user_path() is None
+    assert user_path(fallback_dirs=()) is None
 
 
 def test_user_path_skips_unavailable_shells(
@@ -199,9 +199,65 @@ def test_user_path_caches_miss(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
 
-    assert user_path() is None
-    assert user_path() is None
+    assert user_path(fallback_dirs=()) is None
+    assert user_path(fallback_dirs=()) is None
     assert call_count == 1
+
+
+def test_user_path_falls_back_to_known_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Every shell probe fails, but the fallback dirs that exist on disk are still returned (and
+    # cached) - a stripped-PATH launch must not become a silent permanent miss.
+    from unittest.mock import MagicMock
+
+    call_count = 0
+
+    def fake_run(argv, *args, **kwargs):  # noqa: ANN001, ARG001
+        nonlocal call_count
+        call_count += 1
+        m = MagicMock()
+        m.returncode = 1
+        m.stdout = ""
+        m.stderr = "nope"
+        return m
+
+    monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    real = tmp_path / "bin"
+    real.mkdir()
+    missing = tmp_path / "does-not-exist"
+
+    path = user_path(fallback_dirs=(str(real), str(missing)))
+    assert path == str(real)  # only the dir that exists; the missing one is excluded
+    assert user_path(fallback_dirs=(str(real), str(missing))) == str(real)  # cached
+    assert call_count == 1
+
+
+def test_merge_user_path_appends_fallback_when_shells_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # End-to-end through the real user_path(): shells all fail, the module-level fallback dirs
+    # (monkeypatched to a tmp dir) land on os.environ['PATH'].
+    from unittest.mock import MagicMock
+
+    def fake_run(argv, *args, **kwargs):  # noqa: ANN001, ARG001
+        m = MagicMock()
+        m.returncode = 1
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    userbin = tmp_path / "userbin"
+    userbin.mkdir()
+    monkeypatch.setattr(env_mod, "_FALLBACK_USER_DIRS", (str(userbin),))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.delenv("MARSHAL_NO_PATH_FIX", raising=False)
+
+    assert merge_user_path() is True
+    assert os.environ["PATH"] == f"/usr/bin:{userbin}"
 
 
 # --- merge_user_path: union into os.environ['PATH'] --------------------------------------

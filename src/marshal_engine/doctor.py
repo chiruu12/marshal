@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .backends.base import CodingAgentBackend
 from .config import ConfigError, FleetConfig, load_config, resolve_secret
-from .registry import default_backends
+from .registry import default_backends, make_backend
 
 OK = "ok"
 WARN = "warn"
@@ -169,7 +169,17 @@ def run_checks(
     for name in sorted({c.backend for c in config.clients.values()}):
         backend = probes.get(name)
         hint = BACKEND_HINTS.get(name, f"install the {name} CLI")
-        if backend is None or not backend.check_available():
+        if backend is None:
+            # The caller's snapshot (e.g. a service built before this backend was configured)
+            # doesn't know the name. Probe a freshly constructed backend - the same construction
+            # path a spawn's _ensure_backend uses - so doctor's verdict matches what a run would
+            # actually do instead of failing on a stale snapshot.
+            try:
+                backend = make_backend(name)
+            except ValueError:
+                checks.append(Check(f"backend:{name}", FAIL, "unknown backend name", hint))
+                continue
+        if not backend.check_available():
             checks.append(Check(f"backend:{name}", FAIL, "CLI not on PATH / not runnable", hint))
             continue
         # The CLI is present. If the backend exposes an authenticated-only probe (account_info),
