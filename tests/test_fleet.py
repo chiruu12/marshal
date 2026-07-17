@@ -971,6 +971,77 @@ def test_clean_unknown_scope_raises(repo: Path) -> None:
         fleet.clean(scope="bogus")
 
 
+# --- the orphan sweep: worktrees the ledger no longer knows about ----------------------------
+
+
+def _branches(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/*"], capture_output=True, text=True
+    ).stdout
+
+
+def test_clean_reaps_orphaned_worktree(repo: Path) -> None:
+    # The field bug: a run record pruned from the ledger left its worktree + branch on disk
+    # forever, invisible to the ledger-driven clean.
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or1", goal="x"))
+    (repo / ".marshal" / "runs" / f"{rec.run_id}.json").unlink()
+    result = fleet.clean()
+    assert result.orphans_removed == [rec.run_id]
+    assert not Path(rec.worktree or "").exists()
+    assert f"marshal/{rec.run_id}" not in _branches(repo)  # the branch went too
+
+
+def test_clean_reaps_worktree_with_corrupt_record(repo: Path) -> None:
+    # A torn/corrupt record is silently skipped by state.list(), so the run is unreachable via
+    # get_run/cancel - its worktree is garbage and the sweep must reclaim it.
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or2", goal="x"))
+    (repo / ".marshal" / "runs" / f"{rec.run_id}.json").write_text("{not json", encoding="utf-8")
+    result = fleet.clean()
+    assert result.orphans_removed == [rec.run_id]
+    assert not Path(rec.worktree or "").exists()
+
+
+def test_clean_sweep_protects_ledger_owned_running_run(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or3", goal="x"))
+    fleet.state.update(rec.run_id, status="running")  # valid record -> ledger-owned, never swept
+    result = fleet.clean()
+    assert result.orphans_removed == []
+    assert Path(rec.worktree or "").exists()
+
+
+def test_clean_dry_run_lists_orphans_without_removing(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or4", goal="x"))
+    (repo / ".marshal" / "runs" / f"{rec.run_id}.json").unlink()
+    result = fleet.clean(dry_run=True)
+    assert result.orphans_removed == [rec.run_id]
+    assert Path(rec.worktree or "").exists()  # nothing actually removed
+
+
+def test_clean_explicit_run_ids_does_not_sweep(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    keep = fleet.run("writer", TaskSpec(id="or5", goal="x"))
+    orphan = fleet.run("writer", TaskSpec(id="or6", goal="x"))
+    (repo / ".marshal" / "runs" / f"{orphan.run_id}.json").unlink()
+    result = fleet.clean(run_ids=[keep.run_id])  # an explicit clean targets exactly those runs
+    assert result.orphans_removed == []
+    assert Path(orphan.worktree or "").exists()
+
+
+def test_clean_reaps_plain_dir_under_base(repo: Path) -> None:
+    # A corrupt "worktree" that git no longer recognizes is still reclaimed (rmtree fallback).
+    fleet = Fleet(repo, {"writer": _Writer()})
+    junk = fleet.worktrees.base_dir / "not-a-worktree"
+    junk.mkdir(parents=True)
+    (junk / "leftover.txt").write_text("x")
+    result = fleet.clean()
+    assert result.orphans_removed == ["not-a-worktree"]
+    assert not junk.exists()
+
+
 # --- _executor: lazy-init + double-checked locking is safe under contention ------------------
 
 

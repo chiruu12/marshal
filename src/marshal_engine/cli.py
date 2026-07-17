@@ -385,9 +385,14 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         print(json.dumps(result.model_dump(mode="json"), indent=2))
         return 1 if result.errors else 0
     verb = "would remove" if result.dry_run else "removed"
-    print(f"{verb} {len(result.removed)} run(s); skipped {len(result.skipped)}; errors {len(result.errors)}")
+    print(
+        f"{verb} {len(result.removed)} run(s); orphans {len(result.orphans_removed)}; "
+        f"skipped {len(result.skipped)}; errors {len(result.errors)}"
+    )
     for rid in result.removed:
         print(f"  {verb}: {rid}")
+    for rid in result.orphans_removed:
+        print(f"  {verb} orphan: {rid} (worktree with no run record)")
     for s in result.skipped:
         print(f"  skipped: {s['run_id']} ({s['reason']})")
     for e in result.errors:

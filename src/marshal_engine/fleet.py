@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .backends.base import CodingAgentBackend
 from .config import BudgetSpec
@@ -276,6 +276,9 @@ class CleanResult(BaseModel):
     removed: list[str] = []
     skipped: list[dict[str, str]] = []  # {run_id, reason}
     errors: list[dict[str, str]] = []   # {run_id, error}
+    # Worktree dirs under the manager's base_dir with NO (readable) run record - leaked by a
+    # hand-pruned or torn ledger file. Reaped by scope-mode cleans (see Fleet.clean).
+    orphans_removed: list[str] = []
     dry_run: bool = False
 
 
@@ -858,6 +861,11 @@ class Fleet:
         ``older_than_hours`` is ignored in this mode). ``older_than_hours`` (scope mode only) keeps
         only runs that ended at least that long ago. ``dry_run`` reports what would be removed
         without touching anything.
+
+        Scope-mode cleans also reconcile the worktree base dir against the ledger and reap
+        ORPHANS - dirs whose run record is missing or unreadable (hand-pruned, or torn; a live run
+        always has a readable record, so it is never touched). Reported under ``orphans_removed``;
+        ``older_than_hours`` does not apply (an orphan has no trustworthy end timestamp).
         """
         result = CleanResult(dry_run=dry_run)
         if run_ids is not None:
@@ -889,6 +897,32 @@ class Fleet:
                 result.removed.append(rec.run_id)
             except WorktreeError as exc:
                 result.errors.append({"run_id": rec.run_id, "error": str(exc)})
+        if run_ids is None and self.worktrees.base_dir.exists():
+            # Reconcile the worktree dir against the ledger: a dir whose run record is gone
+            # (hand-pruned) or unreadable (torn/corrupt - state.list() silently skips those) is
+            # invisible to every ledger-driven pass above and would leak forever. Scoped strictly
+            # to Marshal's own base_dir, so foreign worktrees are never touched. A genuinely
+            # running run always has a readable record (writes are atomic temp+replace) and is
+            # skipped here; an explicit run_ids clean targets exactly those runs, so no sweep.
+            for child in sorted(self.worktrees.base_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                rid = child.name  # the dir name IS the run_id (_start passes it as the task_id)
+                try:
+                    known = self.state.get(rid) is not None
+                except (ValidationError, OSError, ValueError):
+                    known = False  # unreadable record: unreachable via get_run/cancel - garbage
+                if known:
+                    continue  # ledger-owned; the scope pass above already decided its fate
+                if dry_run:
+                    result.orphans_removed.append(rid)
+                    continue
+                try:
+                    self.worktrees.discard(child, f"{self.worktrees.branch_prefix}/{rid}")
+                    self.logs.remove(rid)
+                    result.orphans_removed.append(rid)
+                except WorktreeError as exc:
+                    result.errors.append({"run_id": rid, "error": str(exc)})
         return result
 
     def cancel_run(self, run_id: str) -> RunRecord:

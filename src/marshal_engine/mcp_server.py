@@ -387,7 +387,10 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         are kept, so status/cost history stays queryable (a cleaned run's worktree just no longer
         exists). `scope="all"` is destructive - it deletes the branch of every terminal run,
         including un-integrated `succeeded` work (commits survive only in git's reflog until gc).
-        Returns {removed, skipped, errors, dry_run}. Use dry_run first to preview."""
+        Scope-mode cleans also reap ORPHANS: worktree dirs under Marshal's own base dir whose run
+        record is missing/unreadable (they are invisible to ledger-driven cleanup and would leak
+        forever). Returns {removed, orphans_removed, skipped, errors, dry_run}. Use dry_run first
+        to preview."""
         svc = await offload(registry.get, workspace)
         result = await offload(
             svc.clean, scope=scope, run_ids=run_ids, older_than_hours=older_than_hours, dry_run=dry_run

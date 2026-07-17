@@ -205,6 +205,7 @@ def test_clean_no_runs_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert ret == 0
     data = json.loads(capsys.readouterr()[0])
     assert data["removed"] == [] and data["skipped"] == [] and data["errors"] == []
+    assert data["orphans_removed"] == []  # the sweep result is part of the JSON shape
 
 
 def test_clean_human_no_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

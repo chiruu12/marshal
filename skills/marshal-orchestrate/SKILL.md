@@ -115,6 +115,10 @@ and branches go). It **never** touches a running run. Scopes:
   `verify_failed` run's worktree holds reviewable work - collect/review it before cleaning.
 - `all` - every finished run, including un-integrated succeeded work.
 
+Scope-mode cleans also reap **orphans** automatically - worktree dirs whose run record was pruned or
+corrupted (they are invisible to ledger-driven cleanup and would otherwise leak on disk forever);
+they show up under `orphans_removed`.
+
 Run `clean(dry_run=true)` first to see what would go, or `clean(run_ids=[…])` to tear down specific
 runs. Don't clean a run whose work you haven't collected/integrated unless you're sure you're done
 with it.

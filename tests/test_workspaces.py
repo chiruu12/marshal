@@ -923,6 +923,10 @@ def test_mcp_round_trip_run_query_cancel(tmp_path: Path) -> None:
     cancelled = _call(app, "cancel_run", {"run_id": rid})  # no-op on a finished run
     assert cancelled["workspace"] == "beta" and cancelled["run_id"] == rid
 
+    cleaned = _call(app, "clean", {"workspace": "beta", "dry_run": True})
+    assert cleaned["workspace"] == "beta"
+    assert cleaned["orphans_removed"] == []  # the sweep result is part of the MCP shape
+
 
 def test_mcp_round_trip_many_benchmark_integrate(tmp_path: Path) -> None:
     pytest.importorskip("mcp")
