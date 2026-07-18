@@ -9,6 +9,8 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Docs-sync invariant test** (`tests/test_docs_sync.py`) — MCP tools, CLI subcommands, and
+  `fleet.config.example.yaml` must stay aligned with the code surface.
 - **Ad-hoc backend spawn and per-run `model` override** on `run_agent`/`spawn`/`marshal run`/`marshal
   spawn` — pass `backend` (+ optional `model`) with no `client`, or override a configured client's
   model for one call.
