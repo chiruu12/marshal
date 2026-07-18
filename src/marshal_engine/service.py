@@ -28,6 +28,8 @@ from .config import (
 )
 from .doctor import DoctorReport, doctor_report, run_checks
 from .env import merge_user_path
+from .memory import CogneeMemory
+from .memory.store import _resolve_data_dir, _run_async
 from .fleet import (
     BenchmarkResult,
     BudgetStatus,
@@ -110,6 +112,8 @@ class MarshalService:
         merge_user_path()
         self.config = config
         self.repo_root = Path(repo_root)
+        self._repo_key = self.repo_root.name
+        self._memory = CogneeMemory(self.config.memory)
         # Where the config was loaded from - the preflight re-checks this file parses on disk.
         self.config_path = Path(config_path) if config_path else self.repo_root / "fleet.config.yaml"
         if backends is None:
@@ -137,6 +141,7 @@ class MarshalService:
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
             budgets=config.budgets,
+            on_run_complete=self._on_run_complete_hook,
         )
         # Serializes lazy ad-hoc backend registration (_ensure_backend) so concurrent MCP tool
         # threads don't race the fleet.backends mutation or a doctor() snapshot of it.
@@ -173,6 +178,9 @@ class MarshalService:
         backend = self.fleet.backends.get(client.backend)
         return backend.check_available() if backend is not None else False
 
+    def _on_run_complete_hook(self, record: RunRecord, diff: str | None) -> None:
+        self._memory.remember_sync(record, diff, repo=self._repo_key)
+
     def _compose_goal(self, goal: str) -> str:
         # Layered context: the worker preamble + the fleet's `worker` context prefix the user's
         # goal. Everything (run_agent/run_many/spawn/benchmark/workflows) funnels through
@@ -181,6 +189,9 @@ class MarshalService:
         worker_ctx = self.config.context.worker
         if worker_ctx:
             parts.append(worker_ctx.strip())
+        recalled = self._memory.recall_sync(goal, self._repo_key)
+        if recalled:
+            parts.append(f"## Memory from past runs\n\n{recalled}")
         parts.append(goal)
         return "\n\n".join(parts)
 
@@ -523,6 +534,51 @@ class MarshalService:
         have I spent since you woke up?" without restating the timestamp.
         """
         return self.fleet.session_start
+
+    # --- memory: Marshal Recall surface for CLI/MCP ----------------------------------------
+
+    def memory_query(self, text: str) -> str:
+        """Recall a memory snippet for ``text`` in this repo's dataset."""
+        return self._memory.recall_sync(text, self._repo_key)
+
+    def memory_remember(self, text: str, tags: list[str] | None = None) -> str:
+        """Store a freeform note in this repo's memory dataset."""
+        cfg = self.config.memory
+        if not cfg.enabled or not cfg.remember_enabled:
+            return "memory is disabled; set memory.enabled (and remember_enabled) in fleet.config.yaml"
+        self._memory.remember_note_sync(text, repo=self._repo_key, tags=tags)
+        return f"stored note in memory for {self._repo_key}"
+
+    def memory_stats(self) -> dict[str, Any]:
+        """Config-level memory stats for this workspace (best-effort; no Cognee required)."""
+        cfg = self.config.memory
+        stats: dict[str, Any] = {
+            "enabled": cfg.enabled,
+            "recall_enabled": cfg.recall_enabled,
+            "remember_enabled": cfg.remember_enabled,
+            "data_dir": str(_resolve_data_dir(cfg)),
+            "repo_key": self._repo_key,
+            "recall_top_k": cfg.recall_top_k,
+            "recall_max_chars": cfg.recall_max_chars,
+        }
+        try:
+            import importlib.util
+
+            stats["cognee_installed"] = importlib.util.find_spec("cognee") is not None
+        except Exception:
+            stats["cognee_installed"] = False
+        return stats
+
+    def memory_improve(self) -> None:
+        """Run memify on this repo's memory dataset."""
+        _run_async(self._memory.improve(self._repo_key))
+
+    def memory_forget(self, *, all: bool = False) -> None:
+        """Forget this repo's dataset, or wipe all memory when ``all`` is true."""
+        if all:
+            _run_async(self._memory.forget(everything=True))
+        else:
+            _run_async(self._memory.forget(self._repo_key))
 
     # --- workflows: run a declared recipe by sequencing the primitives above -----------------
 

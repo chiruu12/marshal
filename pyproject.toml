@@ -27,10 +27,13 @@ dependencies = [
 # A top-level package literally named `marshal` would shadow the stdlib builtin and fail to import.
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.28.1"]
+# Local fastembed embeddings (no cloud API key): pip install 'marshal[memory,fastembed]'
+memory = ["cognee>=1.0"]
+fastembed = ["cognee[fastembed]>=1.0"]
 dev = [
     "pytest>=8",
-    "ruff>=0.6",
+    "ruff>=0.15.20",
     "mypy>=1.11",
     "types-PyYAML>=6",
     "pytest-cov>=5",
@@ -63,6 +66,10 @@ files = ["src"]
 
 [[tool.mypy.overrides]]
 module = "mcp.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "cognee.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

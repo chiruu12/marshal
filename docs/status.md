@@ -23,7 +23,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
 | `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |
 | `service.py` | Testable core the MCP/CLI call into (single-repo) | done |
-| `cli.py` | `marshal doctor/backends/usage/status/workflows/workspace/clean/mcp` | done |
+| `cli.py` | `marshal doctor/backends/models/run/spawn/usage/status/logs/workflows/workspace/memory/clean/mcp` | done |
 | `mcp_server.py` | MCP surface over stdio ([`docs/mcp-tools.md`](mcp-tools.md)); each action/query tool takes an optional `workspace` | done |
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files. CI

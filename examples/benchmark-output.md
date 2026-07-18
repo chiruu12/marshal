@@ -2,7 +2,7 @@
 
 A real `benchmark` + `report` comparison: one goal run through several strategies (configured
 clients), each in its own isolated git worktree, with a source-honest cost/latency table. It doubles
-as a demo of Marshal's cost honesty — a client whose cost is unknown is reported as `unavailable`,
+as a demo of Marshal's cost honesty - a client whose cost is unknown is reported as `unavailable`,
 not `$0`, and `cheapest` ranks **only** clients with a known cost.
 
 **Goal:** implement a `TokenBucket` rate limiter (stdlib-only, with injectable-clock pytest tests),
@@ -20,9 +20,9 @@ cheapest: deepseek (opencode)  $0.0029   [cmdcode, codex-glm not ranked: cost un
 fastest:  deepseek (opencode)  81.8 s
 ```
 
-**Verified outcome (a separate step — `report` gives the table above):** we ran each produced
+**Verified outcome (a separate step - `report` gives the table above):** we ran each produced
 solution's tests. `deepseek`, `claude`, and `cmdcode` passed 6/6; `codex-glm`'s test file failed to
-import (collection error). So the cheapest, fastest client was also a correct one — for ~1/115th of
+import (collection error). So the cheapest, fastest client was also a correct one - for ~1/115th of
 `claude`'s cost.
 
 What this demonstrates:
@@ -30,7 +30,7 @@ What this demonstrates:
 - **Measured, not guessed.** Cost, latency, and token counts come from each run's recorded facts.
 - **Honest sourcing.** `cmdcode` (a hosted account that reports no tokens/cost) and `codex-glm` (whose
   long EastRouter run fell past a single `/v1/usage` page in this early run) both show `unavailable`
-  and are excluded from `cheapest` — never a misleading `$0`. `codex-glm`'s real charge (~$0.16,
+  and are excluded from `cheapest` - never a misleading `$0`. `codex-glm`'s real charge (~$0.16,
   recoverable from the provider's usage API) motivated the `/v1/usage` **pagination** the cost reader
   now does to recover a long run's real `admin-api` cost.
 - **More reasoning ≠ better.** `codex-glm` spent **231K input tokens** over-exploring a one-class

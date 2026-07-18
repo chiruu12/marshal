@@ -102,7 +102,7 @@ Add a **version probe** in `check_available` + **contract tests per backend** (t
 | Working dir | **no `--cwd`**; `--workspace <path>`; `-w/--worktree [name]`, `--worktree-base` | `--dir <path>` (config walks up to git root) | - | none (uses the process `cwd` the runner sets; `-t` trusts the project) | `--add-dir <path>` + `trustedWorkspaces` entry written by `prepare()` | - |
 | Server mode | no | **`opencode serve`** (OpenAPI on 127.0.0.1:4096) + `opencode acp` | no | no | no | no |
 
-> **File changes, every backend:** Marshal derives file changes the same way regardless of CLI —
+> **File changes, every backend:** Marshal derives file changes the same way regardless of CLI -
 > after the run it diffs the worktree via git (`collect_run`). None of the CLIs emits a structured
 > file list, so the per-backend "File changes" cells name only an optional in-stream signal (when one
 > exists); the authoritative diff is always the worktree.
@@ -128,7 +128,7 @@ approvals, ever** - "sub-agents have no stdin, so any approval prompt deadlocks 
 
 | Tier | Cursor | OpenCode | Codex | Command Code | Antigravity | Claude Code | Gemini |
 |---|---|---|---|---|---|---|---|
-| **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | — (unsupported headless) | `--permission-mode plan` | `--approval-mode plan` |
+| **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | - (unsupported headless) | `--permission-mode plan` | `--approval-mode plan` |
 | **safe-edit** (default) | `--force` (worktree is the boundary) | `--dangerously-skip-permissions` | `-s workspace-write` | `--yolo` | `--dangerously-skip-permissions` (+ `trustedWorkspaces` via `prepare`) | `--permission-mode acceptEdits` | `--approval-mode auto_edit` |
 | **yolo** (opt-in) | `--force`/`--yolo` (no deny) | `--dangerously-skip-permissions` | workspace-write, no approval | `--yolo` | `--dangerously-skip-permissions` | bypass | bypass |
 

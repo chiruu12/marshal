@@ -1,6 +1,6 @@
 # MCP tool reference
 
-The Marshal MCP server (`marshal mcp`) exposes **21 tools** (counted from `@app.tool` in
+The Marshal MCP server (`marshal mcp`) exposes **24 tools** (counted from `@app.tool` in
 `mcp_server.py`). Every action/query tool accepts an optional `workspace` parameter (defaults to
 `"default"`). Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
 owning workspace by scanning each repo's ledger, with an optional `workspace` hint to skip the scan.
@@ -331,6 +331,47 @@ Per-provider usage summary for one workspace.
 | `workspace` | string | |
 
 Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost_estimated, input_tokens, output_tokens, cache_read_tokens, cost_per_run, cost_per_succeeded }`.
+
+## Memory (Marshal Recall)
+
+Cognee-backed cross-run memory, off by default — enable via the `memory:` block in
+`fleet.config.yaml` (see [`marshal-recall.md`](marshal-recall.md)). Remember/recall around runs is
+automatic once enabled; these tools are the driver's direct handles.
+
+### `memory_query`
+
+Recall a memory snippet from the workspace's past fleet runs for a query.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | *(required)* | Natural-language query to recall from memory. |
+| `workspace` | string \| null | `null` | Target workspace. |
+
+**Returns:** the recalled snippet as a string; a disabled notice when memory is off; `(no relevant
+memory)` when nothing matches.
+
+### `memory_add`
+
+Store a freeform note into the workspace's shared memory graph, recallable via `memory_query`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `text` | string | *(required)* | Note text to remember. |
+| `tags` | list of strings \| null | `null` | Optional tags to attach to the note. |
+| `workspace` | string \| null | `null` | Target workspace. |
+
+**Returns:** a short confirmation string, or a disabled message when memory is off.
+
+### `memory_stats`
+
+Memory configuration and data paths for a workspace (config-level; works without Cognee installed).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `workspace` | string \| null | `null` | Target workspace. |
+
+**Returns:** `{ enabled, recall_enabled, remember_enabled, data_dir, repo_key, recall_top_k,
+recall_max_chars, cognee_installed, workspace }`.
 
 ---
 

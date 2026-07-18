@@ -20,7 +20,7 @@ collect → integrate.**
 One Marshal server can be wired to several repos at once. Call `list_workspaces` first to see them
 (name, path, `configured`, `client_count`). **Every action tool takes an optional `workspace`** -
 pass a name to target that repo; omit it to use the default (primary) workspace. Workspaces are
-fully isolated: each has its own clients (`list_clients(workspace=…)`), its own worktrees, its own
+fully isolated: each has its own clients (`list_clients(workspace=...)`), its own worktrees, its own
 run ledger.
 - Each run record you get back carries a `workspace` field. When you later `collect_run`,
   `integrate`, or `cancel_run`, pass that same `workspace` so the call routes to the right repo (it

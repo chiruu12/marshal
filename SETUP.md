@@ -113,7 +113,7 @@ Marshal exposes its tools over an MCP server (`marshal mcp`, stdio). It reads th
 | `MARSHAL_REPO` | `.` | the repo agents work in (the **default** workspace) |
 | `MARSHAL_CONFIG` | `<repo>/fleet.config.yaml` | the default workspace's fleet config |
 | `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | the central registry of extra repos (recommended) |
-| `MARSHAL_WORKSPACES` | – | extra repos inline (`name=/abs/path`, comma/newline) |
+| `MARSHAL_WORKSPACES` | - | extra repos inline (`name=/abs/path`, comma/newline) |
 | `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | cap on concurrent agent runs across all workspaces |
 
 **Multiple repos from one server.** Marshal can target several repos at once, each fully isolated
@@ -209,7 +209,7 @@ until you `integrate`. State and usage live under `.marshal/`.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `marshal: command not found` | console script not on PATH after `uv sync` | use `uv run marshal …`, or `uv tool install .` |
+| `marshal: command not found` | console script not on PATH after `uv sync` | use `uv run marshal ...`, or `uv tool install .` |
 | `doctor` says a backend's CLI is not available | the CLI isn't installed or isn't authenticated | install + log into that CLI (Prerequisites table) |
 | `doctor` says a backend's CLI is missing but it works in your terminal | Marshal was launched with a stripped PATH (MCP host, launchd, non-interactive SSH) | Marshal unions well-known user bin dirs (`~/.local/bin`, Homebrew, …) via `user_path()`; ensure the CLI is on your login-shell PATH, or set `MARSHAL_NO_PATH_FIX=1` only in hermetic CI |
 | a run ends `verify_failed` | the workspace's `verify:` gate rejected work that otherwise looked succeeded | read `verify_output` on the run record, `collect_run` the diff, fix or re-run; the worktree is kept for review |

@@ -21,3 +21,19 @@ Run it from the repo root:
 ```bash
 uv run python examples/library_quickstart.py
 ```
+
+- [`marshal_recall_demo.py`](marshal_recall_demo.py) - narrated Marshal Recall demo: seed three prior
+  fleet runs, enrich the memory graph, recall learnings for a new login-related task, and show how
+  the snippet is injected into the next worker goal. Requires `marshal[memory,fastembed]` and
+  `LLM_API_KEY` (see the module docstring).
+
+```bash
+export LLM_API_KEY=...
+uv run python examples/marshal_recall_demo.py
+```
+
+- [`benchmark-output.md`](benchmark-output.md) - a captured `benchmark` + `report` run: one goal
+  across four clients with a source-honest cost/latency table, and the reasoning behind Marshal's
+  cost-honesty rules.
+- [`workflows/`](workflows/) - declarative workflow templates (`review.yaml`, `compare.yaml`) you can
+  validate with `marshal workflows` and run via `run_workflow`.

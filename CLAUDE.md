@@ -47,14 +47,15 @@ marshal/
 │   ├── budgets.py           # advisory budget caps (soft-warn only)
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
 │   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
+│   ├── memory/              # Marshal Recall: Cognee-backed cross-run memory (optional [memory] extra); config + store
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
 │   ├── mcp_server.py        # MCP server (FastMCP) - see docs/mcp-tools.md for the tool reference
-│   └── cli.py               # `marshal` CLI (doctor/backends/models/run/spawn/usage/status/logs/workflows/workspace/clean/mcp)
+│   └── cli.py               # `marshal` CLI (doctor/backends/models/run/spawn/usage/status/logs/workflows/workspace/memory/clean/mcp)
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
 ├── examples/                # runnable library_quickstart.py + a benchmark-output sample
 ├── SETUP.md                 # clone-to-first-run setup guide
-├── docs/                    # design · status · usage · config · mcp-tools · chauffeur-future · sources (docs/internal/ is local-only, gitignored)
+├── docs/                    # design · status · usage · config · mcp-tools · marshal-recall · model-playbook · chauffeur-future · sources (docs/internal/ is local-only, gitignored)
 └── tests/                   # contract tests per backend + engine/service/mcp tests
 # .claude/ is local tooling (gitignored); the public copies of the Marshal Skills live in skills/.
 ```

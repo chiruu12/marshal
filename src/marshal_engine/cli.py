@@ -414,6 +414,61 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     return 1 if result.errors else 0
 
 
+def _cmd_memory(args: argparse.Namespace) -> int:
+    svc = _build_cli_service(args)
+    cfg = svc.config.memory
+
+    if args.mem_cmd == "query":
+        if not cfg.enabled or not cfg.recall_enabled:
+            print("memory is disabled; set memory.enabled (and recall_enabled) in fleet.config.yaml")
+            return 0
+        result = svc.memory_query(args.text)
+        print(result if result else "(no relevant memory)")
+        return 0
+
+    if args.mem_cmd == "add":
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+        print(svc.memory_remember(args.text, tags))
+        return 0
+
+    if args.mem_cmd == "stats":
+        stats = svc.memory_stats()
+        if args.json:
+            print(json.dumps(stats, indent=2))
+            return 0
+        print(f"enabled={stats['enabled']}")
+        print(f"recall_enabled={stats['recall_enabled']}")
+        print(f"remember_enabled={stats['remember_enabled']}")
+        print(f"data_dir={stats['data_dir']}")
+        print(f"repo_key={stats['repo_key']}")
+        print(f"recall_top_k={stats['recall_top_k']}")
+        print(f"recall_max_chars={stats['recall_max_chars']}")
+        print(f"cognee_installed={stats['cognee_installed']}")
+        return 0
+
+    if args.mem_cmd == "improve":
+        if not cfg.enabled:
+            print("memory is disabled; set memory.enabled in fleet.config.yaml")
+            return 0
+        svc.memory_improve()
+        print(f"improved memory dataset {svc._repo_key!r}")
+        return 0
+
+    if args.mem_cmd == "forget":
+        if not cfg.enabled:
+            print("memory is disabled; set memory.enabled in fleet.config.yaml")
+            return 0
+        if args.all:
+            svc.memory_forget(all=True)
+            print("forgot all memory datasets")
+        else:
+            svc.memory_forget()
+            print(f"forgot memory dataset {svc._repo_key!r}")
+        return 0
+
+    return 1
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
@@ -576,6 +631,21 @@ def main(argv: list[str] | None = None) -> int:
     wls.add_argument("--json", action="store_true", help="output JSON")
     wrm = wsub.add_parser("remove", help="remove a workspace from the registry")
     wrm.add_argument("name", help="workspace name to remove")
+    pm = sub.add_parser("memory", help="Marshal Recall memory layer")
+    mem_common = argparse.ArgumentParser(add_help=False)
+    mem_common.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    mem_common.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    msub = pm.add_subparsers(dest="mem_cmd", required=True)
+    pmq = msub.add_parser("query", parents=[mem_common], help="recall memory for a query")
+    pmq.add_argument("text", help="natural-language query")
+    pma = msub.add_parser("add", parents=[mem_common], help="store a freeform note in memory")
+    pma.add_argument("text", help="note text to remember")
+    pma.add_argument("--tags", default=None, help="comma-separated tags to attach to the note")
+    msub.add_parser("improve", parents=[mem_common], help="run memify on this repo's memory dataset")
+    pmf = msub.add_parser("forget", parents=[mem_common], help="forget memory for this repo (or --all)")
+    pmf.add_argument("--all", action="store_true", help="wipe all memory datasets")
+    pms = msub.add_parser("stats", parents=[mem_common], help="show memory configuration and data paths")
+    pms.add_argument("--json", action="store_true", help="output JSON")
     sub.add_parser("mcp", help="run the MCP server over stdio")
     args = p.parse_args(argv)
 
@@ -604,6 +674,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_spawn(args)
     if args.cmd == "workspace":
         return _cmd_workspace(args)
+    if args.cmd == "memory":
+        return _cmd_memory(args)
     if args.cmd == "mcp":
         try:
             from .mcp_server import main as serve
