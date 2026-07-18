@@ -75,6 +75,8 @@ def test_user_path_uses_first_responding_shell(
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh", "/bin/bash"))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
 
     path = user_path()
     assert path == "/from/zsh/bin:/from/zsh/sbin"
@@ -100,6 +102,8 @@ def test_user_path_falls_back_to_next_shell_on_nonzero(
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh", "/bin/bash"))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
 
     assert user_path() == "/from/bash/bin"
 
@@ -118,6 +122,8 @@ def test_user_path_returns_none_when_all_shells_fail(
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
 
     assert user_path(fallback_dirs=()) is None  # no fallback dirs -> a genuine miss
 
@@ -132,6 +138,8 @@ def test_user_path_returns_none_on_subprocess_exception(
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
 
     assert user_path(fallback_dirs=()) is None
 
@@ -173,6 +181,8 @@ def test_user_path_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
 
     assert user_path() == "/cached"
     assert user_path() == "/cached"   # second call must hit the cache
@@ -198,6 +208,8 @@ def test_user_path_caches_miss(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
 
     assert user_path(fallback_dirs=()) is None
     assert user_path(fallback_dirs=()) is None
@@ -224,6 +236,8 @@ def test_user_path_falls_back_to_known_dirs(
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
     real = tmp_path / "bin"
     real.mkdir()
     missing = tmp_path / "does-not-exist"
@@ -250,6 +264,8 @@ def test_merge_user_path_appends_fallback_when_shells_fail(
 
     monkeypatch.setattr(env_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(env_mod, "_SHELL_CANDIDATES", ("/bin/zsh",))
+    # Pin which() so the fake candidates "exist" on any OS (Linux CI has no /bin/zsh).
+    monkeypatch.setattr(env_mod.shutil, "which", lambda cmd: cmd)
     userbin = tmp_path / "userbin"
     userbin.mkdir()
     monkeypatch.setattr(env_mod, "_FALLBACK_USER_DIRS", (str(userbin),))
