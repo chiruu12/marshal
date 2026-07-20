@@ -9,6 +9,10 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Setup/verify allowlist + opt-in (#21 / H1).** `worktree_setup` / `verify` refuse non-allowlisted
+  binary basenames unless `allow_unsafe_commands: true` (shells always need the opt-in). Allowlisted
+  tools (`uv`, `npm`, `pnpm`, …) still run as your user — not a sandbox. Doctor messaging,
+  `docs/config.md`, and `SECURITY.md` updated.
 - **Goose doctor auth/configure probe (#24).** `GooseBackend.account_info()` runs
   `goose info -v --check` and `verifies_auth()` is true, so `marshal doctor` fails closed when the
   Goose CLI is on PATH but provider auth/configure is missing (including Cursor-backed
@@ -26,8 +30,9 @@ versions may include breaking API changes until 1.0.
   headless runs (CLI ≥ 1.43).
 - **Optional hard budget caps** — `budgets[].enforce: true` refuses matching spawns when windowed
   spend already meets the cap (`BudgetExceeded`); default remains soft-warn.
-- **Doctor hygiene advisories** — warns on `worktree_setup`/`verify` (config-driven subprocesses),
-  inline `memory.llm_api_key`, advisory-only budgets, and `git --no-verify` on integrate/commit.
+- **Doctor hygiene advisories** — warns on `worktree_setup`/`verify` (config-driven subprocesses;
+  allowlist / `allow_unsafe_commands` gate), inline `memory.llm_api_key`, advisory-only budgets, and
+  `git --no-verify` on integrate/commit.
 - **Docs-sync invariant test** (`tests/test_docs_sync.py`) — MCP tools, CLI subcommands, and
   `fleet.config.example.yaml` must stay aligned with the code surface.
 - **Ad-hoc backend spawn and per-run `model` override** on `run_agent`/`spawn`/`marshal run`/`marshal

@@ -138,6 +138,7 @@ class MarshalService:
             base_dir=base_dir,
             worktree_setup=config.worktree_setup,
             verify=config.verify,
+            allow_unsafe_commands=config.allow_unsafe_commands,
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
             budgets=config.budgets,

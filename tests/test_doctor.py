@@ -113,13 +113,50 @@ budgets:
 """
     cfg = _write_config(tmp_path / "fleet.config.yaml", body)
     checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
-    assert _by_name(checks, "unsafe-commands").status == WARN
-    assert "worktree_setup" in _by_name(checks, "unsafe-commands").detail
+    unsafe = _by_name(checks, "unsafe-commands")
+    assert unsafe.status == WARN
+    assert "worktree_setup" in unsafe.detail
+    assert "allowlisted" in unsafe.detail
     assert _by_name(checks, "memory-inline-key").status == WARN
     assert _by_name(checks, "budgets").status == WARN
     assert "advisory" in _by_name(checks, "budgets").detail
     fails, _ = summarize(checks)
     assert fails == 0
+
+
+def test_doctor_warns_when_setup_needs_opt_in(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+worktree_setup: sh -c "uv sync"
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    unsafe = _by_name(checks, "unsafe-commands")
+    assert unsafe.status == WARN
+    assert "non-allowlisted" in unsafe.detail
+    assert "allow_unsafe_commands" in unsafe.detail
+
+
+def test_doctor_warns_when_allow_unsafe_opted_in(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+worktree_setup: sh -c "uv sync"
+allow_unsafe_commands: true
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    unsafe = _by_name(checks, "unsafe-commands")
+    assert unsafe.status == WARN
+    assert "allow_unsafe_commands: true" in unsafe.detail
+    assert "arbitrary argv" in unsafe.detail
 
 
 def test_missing_backend_cli_fails(tmp_path: Path) -> None:

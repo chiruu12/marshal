@@ -67,8 +67,11 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   distinct safe-edit scoping beyond `trustedWorkspaces`). Worktree isolation remains the hard
   boundary for those adapters and for everything the curated denies do not cover.
 - **`worktree_setup` / `verify` are config-driven subprocesses** when configured. They run
-  arbitrary argv from `fleet.config.yaml` in each worktree as your user. Treat that file like
-  executable code; only use trusted configs.
+  argv from `fleet.config.yaml` in each worktree as your user. By default only an allowlisted
+  binary basename may run (`uv`, `npm`, `pnpm`, `make`, `cargo`, `go`, `pytest`, `python`, …);
+  shells (`sh`/`bash`) and anything else require `allow_unsafe_commands: true`. The allowlist
+  is **not** a sandbox (allowlisted tools can still execute arbitrary scripts/code). Treat the
+  config like executable code; only use trusted configs. See `docs/config.md`.
 - **`commit_run` / `integrate` use `git --no-verify`.** Hooks are skipped so a prompting
   pre-commit cannot deadlock a headless merge. Gate with `verify:`, review diffs, and CI.
 - **Memory secrets:** prefer `export LLM_API_KEY=...`. When both env and inline

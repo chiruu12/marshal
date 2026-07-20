@@ -139,6 +139,39 @@ def test_verify_absent_or_blank_is_none(tmp_path: Path) -> None:
     assert load_config(p).verify is None
 
 
+def test_allow_unsafe_commands_defaults_false(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)
+    assert load_config(p).allow_unsafe_commands is False
+
+
+def test_allow_unsafe_commands_true(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("allow_unsafe_commands: true\n" + _YAML)
+    assert load_config(p).allow_unsafe_commands is True
+
+
+def test_allow_unsafe_commands_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("allow_unsafe_commands: 1\n" + _YAML)
+    with pytest.raises(ConfigError, match="allow_unsafe_commands"):
+        load_config(p)
+
+
+def test_setup_command_refusal_allowlist_and_opt_in() -> None:
+    from marshal_engine.config import is_safe_setup_binary, setup_command_refusal
+
+    assert is_safe_setup_binary("uv")
+    assert is_safe_setup_binary("/usr/local/bin/npm")
+    assert is_safe_setup_binary("python3.12")
+    assert not is_safe_setup_binary("sh")
+    assert not is_safe_setup_binary("curl")
+    assert setup_command_refusal(["uv", "sync"], allow_unsafe=False) is None
+    assert setup_command_refusal(["sh", "-c", "x"], allow_unsafe=False) is not None
+    assert setup_command_refusal(["sh", "-c", "x"], allow_unsafe=True) is None
+    assert setup_command_refusal(["curl", "x"], allow_unsafe=True) is None
+
+
 def test_verify_wrong_type_raises(tmp_path: Path) -> None:
     p = tmp_path / "fleet.config.yaml"
     p.write_text("verify: 42\n" + _YAML)

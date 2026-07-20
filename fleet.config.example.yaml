@@ -17,15 +17,22 @@ defaults:
 # venv so the agent's `uv run pytest`/`ruff`/`mypy` target the worktree (not the driver's venv).
 # Accepts a string or an argv list; omit it entirely for repos that need no setup. Marshal scrubs
 # the driver's VIRTUAL_ENV so the command targets the worktree. A non-zero exit fails the run early.
+# Allowlisted basenames (uv, npm, pnpm, make, cargo, go, pytest, python, …) run without opt-in;
+# shells (sh/bash) and anything else need `allow_unsafe_commands: true`. See docs/config.md.
 # worktree_setup: uv sync --extra dev --extra mcp
 
 # Optional: a gate command run in the worktree AFTER a run that would otherwise be `succeeded`
 # and actually changed files (e.g. the repo's full test suite - agents love passing their own
 # narrower subset; text-only replies are never gated). A non-zero exit marks the run
 # `verify_failed` instead of `succeeded`; the worktree and diff are KEPT for review, and the
-# command's output tail lands on the run record (`verify_output`). Same string-or-argv shape and
-# env hygiene as worktree_setup. Omit to trust the agent's own outcome.
+# command's output tail lands on the run record (`verify_output`). Same string-or-argv shape,
+# env hygiene, and allowlist rules as worktree_setup. Omit to trust the agent's own outcome.
 # verify: uv run pytest -q
+
+# Required for non-allowlisted setup/verify binaries (including any `sh -c …` form). Default
+# false — Marshal refuses those commands at run time until you opt in. Allowlisted tools still
+# execute as your user; this is not a sandbox (see SECURITY.md).
+# allow_unsafe_commands: true
 
 # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
 # connection error) - with exponential backoff. Defaults to 2; set 0 to disable. Genuine task

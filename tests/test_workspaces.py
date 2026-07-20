@@ -613,6 +613,7 @@ def test_scaffold_templates_nested_project_hint(tmp_path: Path) -> None:
     body = (repo / "fleet.config.yaml").read_text()
     # nested projects need the shell form: worktree_setup executes as argv, no shell, at the root
     assert '# worktree_setup: sh -c "cd sdk && uv sync"' in body
+    assert "# allow_unsafe_commands: true" in body
     assert "sdk/" in body  # the worker-context hint names the package dir
     assert load_config(repo / "fleet.config.yaml").clients == {}  # still a valid zero-client stub
 

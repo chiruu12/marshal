@@ -230,6 +230,7 @@ class Fleet:
         worktree_base: Path | str | None = None,
         worktree_setup: list[str] | None = None,
         verify: list[str] | None = None,
+        allow_unsafe_commands: bool = False,
         retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
@@ -252,6 +253,7 @@ class Fleet:
             worktree_base or base / "worktrees",
             setup_cmd=worktree_setup,
             verify_cmd=verify,
+            allow_unsafe_commands=allow_unsafe_commands,
         )
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")

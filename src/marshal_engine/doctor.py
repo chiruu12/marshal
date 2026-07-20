@@ -25,7 +25,13 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
-from .config import ConfigError, FleetConfig, load_config, resolve_secret
+from .config import (
+    ConfigError,
+    FleetConfig,
+    load_config,
+    resolve_secret,
+    setup_command_refusal,
+)
 from .registry import default_backends, make_backend
 
 OK = "ok"
@@ -230,19 +236,37 @@ def run_checks(
 
     # --- trust-boundary / hygiene advisories (config present; never FAIL these) --------------
     if config.worktree_setup or config.verify:
-        fields = []
+        fields: list[str] = []
         if config.worktree_setup:
             fields.append("worktree_setup")
         if config.verify:
             fields.append("verify")
-        checks.append(
-            Check(
-                "unsafe-commands",
-                WARN,
-                f"{' + '.join(fields)} run arbitrary argv in each worktree as your user",
-                "treat fleet.config.yaml like code you execute; only point it at trusted repos",
+        joined = " + ".join(fields)
+        cmds = [c for c in (config.worktree_setup, config.verify) if c]
+        blocked = [
+            setup_command_refusal(cmd, allow_unsafe=False)
+            for cmd in cmds
+            if setup_command_refusal(cmd, allow_unsafe=False)
+        ]
+        if config.allow_unsafe_commands:
+            detail = f"{joined} run as your user (allow_unsafe_commands: true — arbitrary argv)"
+            hint = "treat fleet.config.yaml like code you execute; only point it at trusted repos"
+        elif blocked:
+            detail = (
+                f"{joined} use non-allowlisted binary; runs refuse until "
+                "allow_unsafe_commands: true (or switch to an allowlisted basename)"
             )
-        )
+            hint = (
+                "allowlist includes uv/npm/pnpm/make/cargo/go/pytest/python/…; "
+                "shells (sh/bash) always need the opt-in — see docs/config.md"
+            )
+        else:
+            detail = (
+                f"{joined} run allowlisted binaries as your user "
+                "(allowlist is not a sandbox — review still)"
+            )
+            hint = "treat fleet.config.yaml like code you execute; only point it at trusted repos"
+        checks.append(Check("unsafe-commands", WARN, detail, hint))
     if config.memory.llm_api_key:
         checks.append(
             Check(

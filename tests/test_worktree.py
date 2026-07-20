@@ -108,11 +108,47 @@ def test_setup_failure_tears_down_and_raises(repo: Path) -> None:
 
 
 def test_setup_missing_binary_raises(repo: Path) -> None:
-    m = WorktreeManager(repo, setup_cmd=["marshal-no-such-binary-xyz123"])
+    m = WorktreeManager(
+        repo,
+        setup_cmd=["marshal-no-such-binary-xyz123"],
+        allow_unsafe_commands=True,
+    )
     wt = m.create("setup_nobin")
     with pytest.raises(WorktreeError, match="not found"):
         m.setup(wt)
     assert not (m.base_dir / "setup_nobin").exists()  # torn down
+
+
+def test_setup_refuses_non_allowlisted_without_opt_in(repo: Path) -> None:
+    m = WorktreeManager(repo, setup_cmd=["curl", "https://example.invalid"])
+    wt = m.create("refuse_setup")
+    with pytest.raises(WorktreeError, match="allowlist|allow_unsafe_commands"):
+        m.setup(wt)
+    assert not (m.base_dir / "refuse_setup").exists()
+
+
+def test_setup_allows_shell_with_opt_in(repo: Path) -> None:
+    m = WorktreeManager(
+        repo,
+        setup_cmd=["sh", "-c", "echo ok > marker"],
+        allow_unsafe_commands=True,
+    )
+    wt = m.create("shell_ok")
+    m.setup(wt)
+    assert (wt.path / "marker").read_text() == "ok\n"
+    m.remove(wt)
+
+
+def test_setup_allowlisted_basename_runs_without_opt_in(repo: Path) -> None:
+    # python/python3 (and versioned python3.N via sys.executable) are allowlisted.
+    m = WorktreeManager(
+        repo, setup_cmd=[sys.executable, "-c", "open('marker', 'w').write('ok')"]
+    )
+    assert m.allow_unsafe_commands is False
+    wt = m.create("allow_py")
+    m.setup(wt)
+    assert (wt.path / "marker").read_text() == "ok"
+    m.remove(wt)
 
 
 # --- verify: the post-run gate (never raises, never tears down) ----------------------------
@@ -149,12 +185,40 @@ def test_verify_failure_keeps_worktree(repo: Path) -> None:
 
 
 def test_verify_missing_binary_reports_not_raises(repo: Path) -> None:
-    m = WorktreeManager(repo, verify_cmd=["marshal-no-such-binary-xyz123"])
+    m = WorktreeManager(
+        repo,
+        verify_cmd=["marshal-no-such-binary-xyz123"],
+        allow_unsafe_commands=True,
+    )
     wt = m.create("verify_nobin")
     ok, output = m.verify(wt)
     assert ok is False
     assert "could not run" in output
     assert wt.path.exists()
+
+
+def test_verify_refuses_non_allowlisted_without_opt_in(repo: Path) -> None:
+    m = WorktreeManager(repo, verify_cmd=["sh", "-c", "exit 0"])
+    wt = m.create("verify_refuse")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "refused" in output
+    assert "allow_unsafe_commands" in output
+    assert wt.path.exists()
+    m.remove(wt)
+
+
+def test_verify_allows_shell_with_opt_in(repo: Path) -> None:
+    m = WorktreeManager(
+        repo,
+        verify_cmd=["sh", "-c", "echo gate; exit 0"],
+        allow_unsafe_commands=True,
+    )
+    wt = m.create("verify_shell")
+    ok, output = m.verify(wt)
+    assert ok is True
+    assert "gate" in output
+    m.remove(wt)
 
 
 def test_verify_timeout_reports_not_raises(repo: Path) -> None:

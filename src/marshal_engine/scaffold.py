@@ -92,12 +92,15 @@ def _render_fleet_stub(hints: list[tuple[str, str]]) -> str:
         if rel:
             lines.append(f"# {label} project at {rel}/ ({marker}):")
             lines.append(f'# worktree_setup: sh -c "cd {rel} && {cmd}"')
+            lines.append("# allow_unsafe_commands: true  # required for sh -c forms")
         else:
             lines.append(f"# {label} project at the repo root ({marker}):")
             lines.append(f"# worktree_setup: {cmd}")
     first_nested = next((rel for _m, rel in hints if rel), "")
     if first_nested:
         lines += [
+            "# Nested worktree_setup uses sh -c and needs allow_unsafe_commands: true",
+            "# (see docs/config.md).",
             "# context:",
             f"#   worker: The project lives under {first_nested}/; run its tooling from that directory.",
         ]
