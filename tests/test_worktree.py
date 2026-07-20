@@ -432,6 +432,76 @@ def test_commit_all_skips_pre_commit_hook(repo: Path) -> None:
     assert m.commit_all(wt, "commit despite failing hook")  # --no-verify bypassed it -> a sha
 
 
+def test_commit_all_runs_pre_commit_hook_when_opted_in(repo: Path) -> None:
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    m = WorktreeManager(repo, integrate_run_hooks=True)
+    wt = m.create("hooked-run")
+    (wt.path / "f.txt").write_text("x")
+    with pytest.raises(WorktreeError, match="commit failed"):
+        m.commit_all(wt, "should fail when hook runs")
+
+
+def test_merge_skips_commit_msg_hook_by_default(repo: Path) -> None:
+    # Fast-forward merges skip commit-msg; diverge main so a merge commit would run the hook.
+    hook = repo / ".git" / "hooks" / "commit-msg"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    m = WorktreeManager(repo)
+    wt = m.create("merge-hook-skip")
+    (wt.path / "g.txt").write_text("y")
+    m.commit_all(wt, "feature")
+    (repo / "README.md").write_text("main moved\n")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--no-verify", "-m", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert m.merge(wt.branch).ok  # --no-verify bypassed the failing commit-msg hook
+
+
+def test_merge_runs_commit_msg_hook_when_opted_in(repo: Path) -> None:
+    # Fast-forward merges skip commit-msg; diverge main so merge creates a commit.
+    hook = repo / ".git" / "hooks" / "commit-msg"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    m = WorktreeManager(repo, integrate_run_hooks=True)
+    wt = m.create("merge-hook-run")
+    (wt.path / "g.txt").write_text("y")
+    # commit_all also runs hooks when opted in; commit with --no-verify via a skip manager.
+    m_skip = WorktreeManager(repo)
+    m_skip.commit_all(wt, "feature")
+    (repo / "README.md").write_text("main moved\n")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--no-verify", "-m", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = m.merge(wt.branch)
+    # A failing commit-msg leaves the merge unfinished; WorktreeManager aborts and reports blocked.
+    assert not result.ok
+    assert result.blocked
+    assert "Not committing merge" in (result.message or "") or result.message
+
+
 def test_merge_conflict_aborts_and_reports(repo: Path) -> None:
     m = WorktreeManager(repo)
     wt_a = m.create("a")

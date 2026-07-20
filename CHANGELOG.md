@@ -9,6 +9,10 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Optional integrate hooks (#25 / H2).** `integrate_run_hooks: true` omits `git --no-verify` on
+  `commit_run` / `integrate` so non-interactive pre-commit/pre-merge hooks run. Default remains
+  `--no-verify` for headless reliability; doctor and `SECURITY.md` document the deadlock risk of
+  prompting hooks.
 - **Setup/verify allowlist + opt-in (#21 / H1).** `worktree_setup` / `verify` refuse non-allowlisted
   binary basenames unless `allow_unsafe_commands: true` (shells always need the opt-in). Allowlisted
   tools (`uv`, `npm`, `pnpm`, …) still run as your user — not a sandbox. Doctor messaging,

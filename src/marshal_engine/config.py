@@ -188,6 +188,10 @@ class FleetConfig(BaseModel):
     # basename (see ``SAFE_SETUP_VERIFY_BINARIES``). Shells and anything else need
     # ``allow_unsafe_commands: true``. Not a sandbox — see SECURITY.md.
     allow_unsafe_commands: bool = False
+    # When false (default), ``commit_run`` / ``integrate`` pass ``git --no-verify`` so prompting
+    # pre-commit/pre-merge hooks cannot deadlock a headless driver. Set true only when hooks are
+    # known non-interactive; see SECURITY.md.
+    integrate_run_hooks: bool = False
     # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
     # connection error). 0 disables retries. Genuine task failures and timeouts are never retried.
     retries: int = 2
@@ -246,6 +250,7 @@ def load_config(path: Path | str) -> FleetConfig:
         worktree_setup=_parse_setup(raw.get("worktree_setup")),
         verify=_parse_setup(raw.get("verify"), field="verify"),
         allow_unsafe_commands=_parse_allow_unsafe_commands(raw.get("allow_unsafe_commands")),
+        integrate_run_hooks=_parse_integrate_run_hooks(raw.get("integrate_run_hooks")),
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
         budgets=_parse_budgets(raw.get("budgets")),
@@ -295,6 +300,16 @@ def _parse_allow_unsafe_commands(value: Any) -> bool:
         return value
     raise ConfigError(
         f"allow_unsafe_commands must be a boolean, got {type(value).__name__}"
+    )
+
+
+def _parse_integrate_run_hooks(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(
+        f"integrate_run_hooks must be a boolean, got {type(value).__name__}"
     )
 
 

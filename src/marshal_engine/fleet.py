@@ -231,6 +231,7 @@ class Fleet:
         worktree_setup: list[str] | None = None,
         verify: list[str] | None = None,
         allow_unsafe_commands: bool = False,
+        integrate_run_hooks: bool = False,
         retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
@@ -254,6 +255,7 @@ class Fleet:
             setup_cmd=worktree_setup,
             verify_cmd=verify,
             allow_unsafe_commands=allow_unsafe_commands,
+            integrate_run_hooks=integrate_run_hooks,
         )
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")

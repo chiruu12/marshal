@@ -72,8 +72,10 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   shells (`sh`/`bash`) and anything else require `allow_unsafe_commands: true`. The allowlist
   is **not** a sandbox (allowlisted tools can still execute arbitrary scripts/code). Treat the
   config like executable code; only use trusted configs. See `docs/config.md`.
-- **`commit_run` / `integrate` use `git --no-verify`.** Hooks are skipped so a prompting
-  pre-commit cannot deadlock a headless merge. Gate with `verify:`, review diffs, and CI.
+- **`commit_run` / `integrate` default to `git --no-verify`.** Hooks are skipped so a prompting
+  pre-commit cannot deadlock a headless merge. Set `integrate_run_hooks: true` only when hooks are
+  known non-interactive; prompting hooks can still hang until the git timeout. Gate with
+  `verify:`, review diffs, and CI regardless.
 - **Memory secrets:** prefer `export LLM_API_KEY=...`. When both env and inline
   `memory.llm_api_key` are set, **env wins**. Inline YAML is deprecated; doctor warns when it is
   present.

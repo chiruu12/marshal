@@ -91,8 +91,26 @@ def test_happy_path_has_no_failures(tmp_path: Path, monkeypatch) -> None:
     assert _by_name(checks, "secret:impl").status == WARN
     # Hygiene advisories are warnings, never failures.
     assert _by_name(checks, "integrate-hooks").status == WARN
+    assert "integrate_run_hooks" in (_by_name(checks, "integrate-hooks").fix or "")
     fails, _ = summarize(checks)
     assert fails == 0
+
+
+def test_doctor_warns_when_integrate_run_hooks_opted_in(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+integrate_run_hooks: true
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    hooks = _by_name(checks, "integrate-hooks")
+    assert hooks.status == WARN
+    assert "integrate_run_hooks: true" in hooks.detail
+    assert "non-interactive" in (hooks.fix or "")
 
 
 def test_doctor_warns_on_unsafe_commands_and_inline_memory_key(tmp_path: Path) -> None:
