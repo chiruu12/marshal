@@ -114,6 +114,13 @@ clients:
     permission: safe-edit
     secret_ref: env:ANTHROPIC_API_KEY   # optional preflight check; see header
 
+  # Goose via Cursor Agent CLI as the model provider. Auth: `cursor-agent login` (Goose shells
+  # out to cursor-agent). Model form is `provider/model` → goose `--provider` + `--model`.
+  goose-cursor:
+    backend: goose
+    model: cursor-agent/auto
+    permission: safe-edit
+
   # Optional per-client usage API - fetch REAL post-run cost from a provider admin API instead of
   # the local price table. Unset = estimated or unavailable. See docs/config.md.
   # metered:

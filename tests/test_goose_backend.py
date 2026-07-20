@@ -66,6 +66,16 @@ def test_build_invocation_with_model(backend: GooseBackend) -> None:
     )
     assert "--model" in argv
     assert "gpt-4" in argv
+    assert "--provider" not in argv
+
+
+def test_build_invocation_with_provider_model(backend: GooseBackend) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="code"),
+        _opts(permission=PermissionMode.SAFE_EDIT, model="cursor-agent/auto"),
+    )
+    assert argv[argv.index("--provider") + 1] == "cursor-agent"
+    assert argv[argv.index("--model") + 1] == "auto"
 
 
 def test_compose_prompt_with_context(backend: GooseBackend) -> None:

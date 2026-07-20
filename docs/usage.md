@@ -399,6 +399,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; safe-edit maps to `--yolo` (headless auto-accept blocks writes). |
 | Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
+| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login`). Stream-json tokens when the provider reports them. |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.

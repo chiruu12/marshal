@@ -49,7 +49,8 @@ versions may include breaking API changes until 1.0.
 - **Goose adapter updated for CLI ≥ 1.43** — `--output-format stream-json`, `-t` prompt,
   `--no-session`; headless permission via `GOOSE_MODE` (`auto` / `chat`) instead of removed
   `--yes` / `--plan` / `--json`. Parser accepts stream-json and bulk json; auth errors embedded
-  in assistant text are treated as FAILED.
+  in assistant text are treated as FAILED. Model `provider/model` (e.g. `cursor-agent/auto`)
+  maps to Goose `--provider` + `--model` for Cursor Agent–backed runs.
 - **`docs/status.md` module table** refreshed (budgets, layout, logs, scaffold, retry, env, doctor,
   goose, memory).
 - **`run_many` preserves client `usage_api`** and runs permission preflight before worktree creation.

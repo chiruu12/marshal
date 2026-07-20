@@ -3,7 +3,7 @@
 Invocation reference (goose ≥ 1.43 ``goose run``):
 
     GOOSE_MODE=auto|chat goose run --output-format stream-json --no-session \\
-        [--model MODEL] -t "<PROMPT>"
+        [--provider PROVIDER] [--model MODEL] -t "<PROMPT>"
 
 Goose is a headless CLI with structured output and mode-based permissions:
   * ``--output-format stream-json`` emits NDJSON events (``message`` / ``complete`` / …)
@@ -12,11 +12,13 @@ Goose is a headless CLI with structured output and mode-based permissions:
   * Headless auto-approve is ``GOOSE_MODE=auto`` (there is no ``--yes`` flag anymore)
   * Read-only / no-tools is ``GOOSE_MODE=chat``
   * ``--no-session`` keeps automated runs from writing session DB noise
+  * Model field ``provider/model`` (e.g. ``cursor-agent/auto``) maps to ``--provider`` + ``--model``
   * Exits non-zero on hard failure; auth/provider errors may still exit 0 with an error message
     in the assistant text — ``parse_output`` treats those as FAILED when obvious
 
 Notes:
   * Permission tiers map to ``GOOSE_MODE`` via ``prepare()`` (env), not argv flags.
+  * For Cursor-backed Goose, authenticate with ``cursor-agent login`` (Goose shells out to it).
   * Token/cost fields are often null depending on provider; usage is native when present.
 """
 
@@ -95,8 +97,11 @@ class GooseBackend(CodingAgentBackend):
             "--no-session",
         ]
         argv += self.map_permission(opts.permission)
-        if opts.model:
-            argv += ["--model", opts.model]
+        provider, model = _split_provider_model(opts.model)
+        if provider:
+            argv += ["--provider", provider]
+        if model:
+            argv += ["--model", model]
         argv += ["-t", self._compose_prompt(task)]
         return argv
 
@@ -177,6 +182,25 @@ class GooseBackend(CodingAgentBackend):
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _split_provider_model(raw: str | None) -> tuple[str | None, str | None]:
+    """Map Marshal ``model`` to Goose ``--provider`` / ``--model``.
+
+    ``cursor-agent/auto`` -> (``cursor-agent``, ``auto``). A bare model with no slash is
+    ``--model`` only (Goose's configured ``active_provider`` applies). Empty -> neither.
+    """
+    if not raw:
+        return None, None
+    text = raw.strip()
+    if not text:
+        return None, None
+    if "/" not in text:
+        return None, text
+    provider_part, _, model_part = text.partition("/")
+    provider = provider_part.strip() or None
+    model = model_part.strip() or None
+    return provider, model
 
 
 def _try_load_json_object(raw: str) -> dict[str, Any] | None:
