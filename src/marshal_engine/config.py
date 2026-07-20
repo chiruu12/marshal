@@ -13,6 +13,7 @@ NOT change routing (clients still own backend+model).
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,33 @@ from marshal_engine.memory import MemoryConfig
 from .types import PermissionMode
 
 DEFAULT_OPENCODE_MODEL = "opencode-go/glm-5.2"
+
+# Basenames allowed for ``worktree_setup`` / ``verify`` without ``allow_unsafe_commands: true``.
+# Not a sandbox: allowlisted tools can still run arbitrary scripts/code (e.g. ``python -c``,
+# ``make`` recipes). Shells (``sh``/``bash``/…) are intentionally excluded — they need the opt-in.
+SAFE_SETUP_VERIFY_BINARIES: frozenset[str] = frozenset(
+    {
+        "uv",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "make",
+        "cargo",
+        "go",
+        "pytest",
+        "python",
+        "python3",
+        "poetry",
+        "pip",
+        "pip3",
+        "ruff",
+        "mypy",
+        "tox",
+        "nox",
+    }
+)
+_PYTHON_VERSIONED = re.compile(r"^python\d+(\.\d+)?$")
 
 # Per-spawn timeout presets (seconds). The driver can pass a preset name to `run_agent`/`spawn`/
 # `run_many`/`marshal run` to override the client's configured `timeout_s` for that one run.
@@ -156,6 +184,10 @@ class FleetConfig(BaseModel):
     # None = trust the agent's own outcome, exactly as before. Repo-wide like worktree_setup;
     # same string-or-argv YAML shape.
     verify: list[str] | None = None
+    # When false (default), ``worktree_setup`` / ``verify`` may only use an allowlisted binary
+    # basename (see ``SAFE_SETUP_VERIFY_BINARIES``). Shells and anything else need
+    # ``allow_unsafe_commands: true``. Not a sandbox — see SECURITY.md.
+    allow_unsafe_commands: bool = False
     # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
     # connection error). 0 disables retries. Genuine task failures and timeouts are never retried.
     retries: int = 2
@@ -213,10 +245,56 @@ def load_config(path: Path | str) -> FleetConfig:
         context=context,
         worktree_setup=_parse_setup(raw.get("worktree_setup")),
         verify=_parse_setup(raw.get("verify"), field="verify"),
+        allow_unsafe_commands=_parse_allow_unsafe_commands(raw.get("allow_unsafe_commands")),
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
         budgets=_parse_budgets(raw.get("budgets")),
         memory=memory,
+    )
+
+
+def setup_command_basename(argv0: str) -> str:
+    """Basename of argv[0] for allowlist checks (strips a Windows ``.exe`` suffix)."""
+    name = Path(argv0).name
+    if name.lower().endswith(".exe"):
+        name = name[:-4]
+    return name
+
+
+def is_safe_setup_binary(argv0: str) -> bool:
+    """True when ``argv0``'s basename is on the setup/verify allowlist (incl. ``python3.N``)."""
+    lower = setup_command_basename(argv0).lower()
+    return lower in SAFE_SETUP_VERIFY_BINARIES or bool(_PYTHON_VERSIONED.fullmatch(lower))
+
+
+def setup_command_refusal(argv: list[str], *, allow_unsafe: bool) -> str | None:
+    """Return a refusal reason if ``argv`` must not run, else ``None``.
+
+    Allowlisted basenames pass without opt-in. Anything else (including ``sh``/``bash``) requires
+    ``allow_unsafe=True``. Empty argv is treated as unset by callers; this helper assumes a
+    non-empty command.
+    """
+    if allow_unsafe:
+        return None
+    binary = argv[0] if argv else ""
+    if not binary:
+        return "empty command"
+    if is_safe_setup_binary(binary):
+        return None
+    name = setup_command_basename(binary)
+    return (
+        f"binary {name!r} is not on the worktree_setup/verify allowlist; "
+        "set allow_unsafe_commands: true to run it (shells and arbitrary argv always need this)"
+    )
+
+
+def _parse_allow_unsafe_commands(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(
+        f"allow_unsafe_commands must be a boolean, got {type(value).__name__}"
     )
 
 

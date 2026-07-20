@@ -76,7 +76,9 @@ clients:
   own venv. Accepts a string or an argv list; omit it for repos that need no setup. Marshal scrubs
   the driver's `VIRTUAL_ENV`/`PYTHONHOME` for the command (and for agent runs), so the worktree's
   own environment wins - without it, an agent's `uv run pytest` would resolve the driver's venv and
-  test stale code. A non-zero exit tears the worktree down and fails the run early.
+  test stale code. A non-zero exit tears the worktree down and fails the run early. By default
+  argv[0] must be an allowlisted basename; shells / other binaries need `allow_unsafe_commands`
+  (see `docs/config.md`).
 - **`retries`** (optional, top-level, default `2`): how many times to re-run a run that failed for a
   **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
   exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
@@ -85,7 +87,10 @@ clients:
   otherwise be `succeeded` and actually changed files (e.g. the repo's full test suite). Text-only
   replies are never gated. A non-zero exit marks the run `verify_failed` instead of `succeeded`; the
   worktree and diff are kept for review, and the command's output tail lands on the run record
-  (`verify_output`). Same string-or-argv shape and env hygiene as `worktree_setup`.
+  (`verify_output`). Same string-or-argv shape, env hygiene, and allowlist rules as `worktree_setup`.
+- **`allow_unsafe_commands`** (optional, top-level, default `false`): opt-in so `worktree_setup` /
+  `verify` may use a non-allowlisted binary (including `sh -c …`). Without it, those commands are
+  refused at run time. Not a sandbox for allowlisted tools either — see `SECURITY.md`.
 - **`context`** (optional, top-level): fleet-wide layered context strings.
   - `worker` — prepended to every worker agent's goal (shared operating assumptions).
   - `driver` — surfaced back to the driver via `list_clients` / `list_models` as `driver_context`.

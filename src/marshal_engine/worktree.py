@@ -14,6 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .config import setup_command_refusal
 from .env import child_env
 from .layout import worktrees_dir
 
@@ -54,6 +55,7 @@ class WorktreeManager:
         setup_cmd: list[str] | None = None,
         setup_timeout_s: int = 600,
         verify_cmd: list[str] | None = None,
+        allow_unsafe_commands: bool = False,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.base_dir = Path(base_dir) if base_dir is not None else worktrees_dir(self.repo_root)
@@ -66,6 +68,8 @@ class WorktreeManager:
         # Optional gate command run in the worktree after a run that would otherwise succeed (e.g.
         # the repo's full test suite). None = skip. See verify() - a failure never tears down.
         self.verify_cmd = verify_cmd
+        # When false, setup/verify refuse non-allowlisted basenames (see config.setup_command_refusal).
+        self.allow_unsafe_commands = allow_unsafe_commands
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         # These git calls run on the driver's checkout (commit/merge/status), so they get the same
@@ -117,21 +121,29 @@ class WorktreeManager:
         """
         if not self.setup_cmd:
             return
-        try:
-            proc = subprocess.run(
-                self.setup_cmd,
-                cwd=str(wt.path),
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                env=child_env(),
-                timeout=self.setup_timeout_s,
-            )
-            reason = "" if proc.returncode == 0 else _setup_reason(proc.returncode, proc.stderr, proc.stdout)
-        except subprocess.TimeoutExpired:
-            reason = f"timed out after {self.setup_timeout_s}s"
-        except FileNotFoundError:
-            reason = f"command not found: {self.setup_cmd[0]!r}"
+        refused = setup_command_refusal(self.setup_cmd, allow_unsafe=self.allow_unsafe_commands)
+        if refused:
+            reason = refused
+        else:
+            try:
+                proc = subprocess.run(
+                    self.setup_cmd,
+                    cwd=str(wt.path),
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    env=child_env(),
+                    timeout=self.setup_timeout_s,
+                )
+                reason = (
+                    ""
+                    if proc.returncode == 0
+                    else _setup_reason(proc.returncode, proc.stderr, proc.stdout)
+                )
+            except subprocess.TimeoutExpired:
+                reason = f"timed out after {self.setup_timeout_s}s"
+            except FileNotFoundError:
+                reason = f"command not found: {self.setup_cmd[0]!r}"
         if reason:
             # Best-effort teardown so a failed setup doesn't strand an orphan worktree (and a retry
             # can reuse the task_id); never let teardown mask the original setup failure.
@@ -153,6 +165,9 @@ class WorktreeManager:
         """
         if not self.verify_cmd:
             return True, ""
+        refused = setup_command_refusal(self.verify_cmd, allow_unsafe=self.allow_unsafe_commands)
+        if refused:
+            return False, f"verify refused: {refused}"
         try:
             proc = subprocess.run(
                 self.verify_cmd,

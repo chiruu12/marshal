@@ -44,13 +44,19 @@ Fleet-wide layered context strings.
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| string or argv list \| omitted | `null` | Command run once in each fresh worktree **before** the agent starts (e.g. `uv sync`). Accepts a shell string or YAML list. Marshal scrubs the driver's `VIRTUAL_ENV`. Non-zero exit fails the run early. **Security:** this is arbitrary argv as your user — `marshal doctor` warns when set. | `worktree_setup: uv sync --extra dev` |
+| string or argv list \| omitted | `null` | Command run once in each fresh worktree **before** the agent starts (e.g. `uv sync`). Accepts a shell string or YAML list. Marshal scrubs the driver's `VIRTUAL_ENV`. Non-zero exit fails the run early. **Security:** argv[0]'s basename must be on the allowlist (`uv`, `npm`, `pnpm`, `yarn`, `bun`, `make`, `cargo`, `go`, `pytest`, `python`/`python3`, `poetry`, `pip`/`pip3`, `ruff`, `mypy`, `tox`, `nox`) unless `allow_unsafe_commands: true`. Shells (`sh`/`bash`/…) always need the opt-in. Allowlist is **not** a sandbox — `marshal doctor` still warns. | `worktree_setup: uv sync --extra dev` |
 
 ### `verify`
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `succeeded` and changed files. Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. Same trust model as `worktree_setup`. | `verify: uv run pytest -q` |
+| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `succeeded` and changed files. Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. Same trust model and allowlist rules as `worktree_setup`. | `verify: uv run pytest -q` |
+
+### `allow_unsafe_commands`
+
+| Type | Default | What it does | Example |
+|------|---------|--------------|---------|
+| bool \| omitted | `false` | Opt-in to run `worktree_setup` / `verify` when argv[0] is **not** on the allowlist (including any `sh -c …` form). When false, non-allowlisted commands are refused at run time (setup fails the run; verify → `verify_failed`). Does not sandbox allowlisted tools. | `allow_unsafe_commands: true` |
 
 ### `retries`
 
