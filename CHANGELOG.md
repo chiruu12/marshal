@@ -47,6 +47,10 @@ versions may include breaking API changes until 1.0.
 - **Reference docs** — `docs/config.md` (every config key) and `docs/mcp-tools.md` (MCP tool census).
 
 ### Changed
+- **CLI `run`/`spawn` preflight git-ness** before the missing-config advisory (#19). A non-git
+  `--repo` / `MARSHAL_REPO` fails immediately with doctor-aligned wording (`not a git work tree`)
+  instead of leading with “copy fleet.config.example.yaml”. Valid git repos without
+  `fleet.config.yaml` still get the missing-config warning.
 - **Client-resolution errors name the config path** — missing `fleet.config.yaml` (wrong
   `--repo`/cwd), empty clients, and skipped backends no longer collapse into a bare
   `known: (none configured)`. CLI `run`/`spawn` warn on stderr when the config file is absent

@@ -250,7 +250,9 @@ ad-hoc `--backend` + `--model`), and `--duration` (preset or seconds).
 
 **Config path matters.** `run`/`spawn` resolve clients from `<repo>/fleet.config.yaml` (or
 `$MARSHAL_CONFIG` / `--config`). Default `--repo` is cwd — running outside the project root with no
-`--repo`/`MARSHAL_REPO` loads zero clients and warns on stderr. Prefer:
+`--repo`/`MARSHAL_REPO` loads zero clients and warns on stderr. A path that is not a git work tree
+fails immediately (doctor-aligned: `not a git work tree`) and does **not** lead with the
+missing-config copy hint. Prefer:
 
 ```bash
 marshal run --repo /path/to/project --client goose-cursor --goal "…"
