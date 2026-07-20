@@ -101,15 +101,14 @@ class CodingAgentBackend(ABC):
         whole process *group* is killed (`start_new_session` + `os.killpg`), so agent grandchildren
         (subagents, MCP servers, tool shells) are not orphaned.
         """
-        argv = self.build_invocation(task, opts)
-        # Scrub the driver's VIRTUAL_ENV/PYTHONHOME so the agent's tooling (uv/python) resolves the
-        # worktree's own environment, not the driver's - otherwise `uv run pytest` tests stale code.
-        env = child_env(opts.extra_env)
         start = time.monotonic()
 
         def _elapsed_ms() -> int:
             return int((time.monotonic() - start) * 1000)
 
+        # prepare() may stamp opts.extra_env (OpenCode OPENCODE_CONFIG_CONTENT, Goose GOOSE_MODE)
+        # or write worktree config (Cursor deny list, Antigravity trust). It must run before we
+        # snapshot argv/env for the child, or those mutations are silently dropped.
         try:
             self.prepare(opts)
         except Exception as exc:  # noqa: BLE001 - a prepare failure is a run failure, not a crash
@@ -118,6 +117,11 @@ class CodingAgentBackend(ABC):
                 error=f"{self.name}: prepare failed: {exc}",
                 duration_ms=_elapsed_ms(),
             )
+
+        argv = self.build_invocation(task, opts)
+        # Scrub the driver's VIRTUAL_ENV/PYTHONHOME so the agent's tooling (uv/python) resolves the
+        # worktree's own environment, not the driver's - otherwise `uv run pytest` tests stale code.
+        env = child_env(opts.extra_env)
 
         try:
             proc = subprocess.Popen(

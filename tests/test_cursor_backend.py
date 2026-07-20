@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
-from marshal_engine.backends.cursor import CursorBackend, _parse_about
+from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend, _parse_about
 
 
 @pytest.fixture
@@ -24,6 +25,61 @@ def test_map_permission(backend: CursorBackend) -> None:
     assert backend.map_permission(PermissionMode.READ_ONLY) == ["--mode", "plan"]
     assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--force"]
     assert backend.map_permission(PermissionMode.YOLO) == ["--yolo"]
+
+
+def test_prepare_safe_edit_writes_deny_list(backend: CursorBackend, tmp_path: Path) -> None:
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    cli = wt / ".cursor" / "cli.json"
+    data = json.loads(cli.read_text(encoding="utf-8"))
+    deny = data["permissions"]["deny"]
+    for rule in SAFE_EDIT_DENY:
+        assert rule in deny
+    # curated minimum from design.md / issue #17
+    assert "Shell(rm)" in deny
+    assert "Write(**/.env)" in deny
+    assert "Write(**/.git/**)" in deny
+
+
+def test_prepare_safe_edit_merges_existing_cli_json(
+    backend: CursorBackend, tmp_path: Path
+) -> None:
+    wt = tmp_path / "wt"
+    cursor_dir = wt / ".cursor"
+    cursor_dir.mkdir(parents=True)
+    (cursor_dir / "cli.json").write_text(
+        json.dumps(
+            {
+                "permissions": {
+                    "allow": ["Shell(git)"],
+                    "deny": ["Shell(rm)", "WebFetch(evil.example)"],
+                },
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))  # idempotent
+    data = json.loads((cursor_dir / "cli.json").read_text(encoding="utf-8"))
+    assert data["version"] == 1
+    assert data["permissions"]["allow"] == ["Shell(git)"]
+    deny = data["permissions"]["deny"]
+    assert deny.count("Shell(rm)") == 1
+    assert "WebFetch(evil.example)" in deny
+    for rule in SAFE_EDIT_DENY:
+        assert rule in deny
+
+
+def test_prepare_yolo_and_readonly_skip_cli_json(
+    backend: CursorBackend, tmp_path: Path
+) -> None:
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.YOLO))
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.READ_ONLY))
+    assert not (wt / ".cursor" / "cli.json").exists()
 
 
 def test_build_invocation_basic(backend: CursorBackend) -> None:

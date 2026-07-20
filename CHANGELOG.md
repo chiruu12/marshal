@@ -8,7 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **Permission config layer (v0, C1/H4 / #17).** Cursor `safe-edit` `prepare()` merges a curated
+  deny list into the worktree's `.cursor/cli.json` (`Shell(rm)`, `.env` read/write, `.git`
+  writes) alongside `--force`. OpenCode `prepare()` stamps `OPENCODE_CONFIG_CONTENT` with
+  `question: deny` plus curated bash/edit/read/`external_directory` denies for `safe-edit`
+  (`yolo` still gets `question: deny` only so headless cannot deadlock). Contract tests cover
+  config emission. Command Code / Antigravity PTY remain deferred (documented in `SECURITY.md`
+  and `docs/design.md` §5).
+
 ### Fixed
+- **`prepare()` now runs before argv/env snapshot in `CodingAgentBackend.run()`.** Env stamps from
+  `prepare()` (e.g. OpenCode `OPENCODE_CONFIG_CONTENT`) were previously built into `child_env`
+  *before* `prepare()` ran, so the managed permission config never reached the child process.
 - **EastRouter cost reader now paginates `/v1/usage`.** A single page (`?limit=1000`) could miss a
   long run's records when the account was busy (a 283s run + a concurrent benchmark pushed them past
   page 1), so its **real** `admin-api` cost silently fell back to `unavailable`. The reader now walks

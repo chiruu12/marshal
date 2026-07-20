@@ -90,6 +90,25 @@ def test_run_calls_prepare_before_spawn(tmp_path: Path) -> None:
     assert calls == [tmp_path]  # prepare ran, with the run's cwd
 
 
+def test_run_prepare_extra_env_reaches_child(tmp_path: Path) -> None:
+    # prepare() often stamps permission/config into opts.extra_env (OpenCode CONFIG_CONTENT,
+    # Goose GOOSE_MODE). Building child_env before prepare would drop those mutations.
+    class _StampEnv(_Dummy):
+        def prepare(self, opts: RunOpts) -> None:
+            opts.extra_env = {**opts.extra_env, "MARSHAL_PREPARE_STAMP": "from-prepare"}
+
+    b = _StampEnv(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ.get('MARSHAL_PREPARE_STAMP', 'MISSING'))",
+        ]
+    )
+    res = b.run(_task(), RunOpts(cwd=tmp_path, extra_env={"KEEP": "1"}))
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.text == "from-prepare"
+
+
 def test_run_prepare_failure_is_a_failed_result(tmp_path: Path) -> None:
     class _BadPrep(_Dummy):
         def prepare(self, opts: RunOpts) -> None:
