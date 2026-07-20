@@ -40,7 +40,7 @@ BACKEND_HINTS: dict[str, str] = {
     "command-code": "npm i -g command-code, then `command-code login`",
     "antigravity": "install the Antigravity CLI (agy), then complete its OAuth login",
     "claude-code": "install Claude Code (claude), then authenticate via its login or set ANTHROPIC_API_KEY",
-    "goose": "install Goose CLI (cargo install goose or brew install block/formula/goose), then set GOOSE_API_KEY or authenticate",
+    "goose": "install Goose CLI (https://block.github.io/goose), then `goose configure` / set GOOSE_PROVIDER+GOOSE_MODEL (and auth). Headless needs GOOSE_MODE=auto (Marshal sets this).",
 }
 
 MIN_PYTHON = (3, 11)

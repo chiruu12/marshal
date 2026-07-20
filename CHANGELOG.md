@@ -10,7 +10,8 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 - **Goose backend** (`backends/goose.py`) + `marshal workflow run` CLI — merged from local main
-  (`44c48eb`); contract tests included. Goose `safe-edit`/`yolo` map to `--yes` for headless runs.
+  (`44c48eb`); contract tests included. Goose `safe-edit`/`yolo` map to `GOOSE_MODE=auto` for
+  headless runs (CLI ≥ 1.43).
 - **Optional hard budget caps** — `budgets[].enforce: true` refuses matching spawns when windowed
   spend already meets the cap (`BudgetExceeded`); default remains soft-warn.
 - **Doctor hygiene advisories** — warns on `worktree_setup`/`verify` (config-driven subprocesses),
@@ -45,6 +46,10 @@ versions may include breaking API changes until 1.0.
   budget) so `run_many` / parallel `spawn` cannot TOCTOU past the ledger snapshot.
 - **CLI `run`/`spawn` catch `BudgetExceeded`** with a clean stderr message and exit code 1
   (all backends / ad-hoc providers).
+- **Goose adapter updated for CLI ≥ 1.43** — `--output-format stream-json`, `-t` prompt,
+  `--no-session`; headless permission via `GOOSE_MODE` (`auto` / `chat`) instead of removed
+  `--yes` / `--plan` / `--json`. Parser accepts stream-json and bulk json; auth errors embedded
+  in assistant text are treated as FAILED.
 - **`docs/status.md` module table** refreshed (budgets, layout, logs, scaffold, retry, env, doctor,
   goose, memory).
 - **`run_many` preserves client `usage_api`** and runs permission preflight before worktree creation.

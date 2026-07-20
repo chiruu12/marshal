@@ -1,26 +1,31 @@
 """Goose backend (block/goose - Rust-based headless agent).
 
-Invocation reference (goose run):
+Invocation reference (goose ≥ 1.43 ``goose run``):
 
-    goose run [--json] [--yes] [--model MODEL] -- "<PROMPT>"
+    GOOSE_MODE=auto|chat goose run --output-format stream-json --no-session \\
+        [--model MODEL] -t "<PROMPT>"
 
-Goose is a pure headless CLI with explicit permission gates and structured output:
-  * `--json` outputs newline-delimited JSON events with type, text, tokens, cost
-  * `--yes` enables auto-approval of actions (headless mode; no prompts)
-  * Exits non-zero on failure
-  * Output includes token counts and cost (native usage tracking available)
+Goose is a headless CLI with structured output and mode-based permissions:
+  * ``--output-format stream-json`` emits NDJSON events (``message`` / ``complete`` / …)
+  * ``--output-format json`` emits one final JSON object (also accepted by ``parse_output``)
+  * Prompt via ``-t`` / ``--text`` (not a bare ``--`` positional)
+  * Headless auto-approve is ``GOOSE_MODE=auto`` (there is no ``--yes`` flag anymore)
+  * Read-only / no-tools is ``GOOSE_MODE=chat``
+  * ``--no-session`` keeps automated runs from writing session DB noise
+  * Exits non-zero on hard failure; auth/provider errors may still exit 0 with an error message
+    in the assistant text — ``parse_output`` treats those as FAILED when obvious
 
 Notes:
-  * Goose is Rust-based and offers strong permission semantics (unlike some competitors)
-  * Each event is a JSON object on its own line (NDJSON format)
-  * Cost/tokens available in final event; can be streamed as-you-go or at end
-  * ~50k GitHub stars, AAIF-backed, production-grade
+  * Permission tiers map to ``GOOSE_MODE`` via ``prepare()`` (env), not argv flags.
+  * Token/cost fields are often null depending on provider; usage is native when present.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+from typing import Any
 
 from ..types import (
     AgentResult,
@@ -34,6 +39,13 @@ from ..types import (
 )
 from .base import CodingAgentBackend, parse_jsonl
 
+# Goose modes (env GOOSE_MODE). approve/smart_approve hang or fail closed without a TTY.
+_GOOSE_MODE: dict[PermissionMode, str] = {
+    PermissionMode.READ_ONLY: "chat",
+    PermissionMode.SAFE_EDIT: "auto",
+    PermissionMode.YOLO: "auto",
+}
+
 
 class GooseBackend(CodingAgentBackend):
     name = "goose"
@@ -41,21 +53,19 @@ class GooseBackend(CodingAgentBackend):
     capabilities = Capabilities(
         json_output=True,
         stream_json=True,
-        sessions=False,  # Goose doesn't expose session resumption yet
-        server_mode=False,  # No warm-server mode documented
-        native_usage=True,  # Reports tokens + cost in JSON output
+        sessions=False,  # Marshal runs are one-shot with --no-session
+        server_mode=False,
+        native_usage=True,  # when the provider reports tokens/cost in stream/json output
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
     )
 
-    # Headless runs close stdin, so interactive approve-per-tool would deadlock. safe-edit and
-    # yolo both use `--yes`; the git worktree is the enforced boundary (same stance as
-    # command-code / cursor / opencode).
+    # Permission is env-driven (GOOSE_MODE); argv stays flag-free for these tiers.
     _PERMISSION: dict[PermissionMode, list[str]] = {
-        PermissionMode.READ_ONLY: ["--plan"],
-        PermissionMode.SAFE_EDIT: ["--yes"],
-        PermissionMode.YOLO: ["--yes"],
+        PermissionMode.READ_ONLY: [],
+        PermissionMode.SAFE_EDIT: [],
+        PermissionMode.YOLO: [],
     }
 
     # --- hooks ---------------------------------------------------------------------------
@@ -71,14 +81,23 @@ class GooseBackend(CodingAgentBackend):
             return False
         return proc.returncode == 0
 
+    def prepare(self, opts: RunOpts) -> None:
+        """Stamp GOOSE_MODE for headless permission semantics (argv has no --yes/--plan)."""
+        mode = _GOOSE_MODE.get(opts.permission, "auto")
+        opts.extra_env = {**opts.extra_env, "GOOSE_MODE": mode}
+
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
-        argv = [self.binary, "run", "--json"]
+        argv = [
+            self.binary,
+            "run",
+            "--output-format",
+            "stream-json",
+            "--no-session",
+        ]
         argv += self.map_permission(opts.permission)
         if opts.model:
             argv += ["--model", opts.model]
-        # Goose uses `--` to separate flags from the prompt
-        argv.append("--")
-        argv.append(self._compose_prompt(task))
+        argv += ["-t", self._compose_prompt(task)]
         return argv
 
     @staticmethod
@@ -91,6 +110,10 @@ class GooseBackend(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         events = parse_jsonl(raw_stdout)
+        if not events:
+            bulk = _try_load_json_object(raw_stdout)
+            if bulk is not None:
+                events = [bulk]
 
         text_parts: list[str] = []
         usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
@@ -98,41 +121,130 @@ class GooseBackend(CodingAgentBackend):
         found_usage = False
 
         for ev in events:
-            # Error event
-            if ev.get("type") == "error":
+            # Bulk ``--output-format json`` document
+            if "messages" in ev and isinstance(ev.get("messages"), list):
+                for msg in ev["messages"]:
+                    if not isinstance(msg, dict):
+                        continue
+                    if msg.get("role") == "assistant":
+                        text_parts.extend(_content_texts(msg.get("content")))
+                meta_raw = ev.get("metadata")
+                meta: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+                found_usage = _apply_token_fields(usage, meta) or found_usage
+                status = meta.get("status")
+                if isinstance(status, str) and status.lower() in {"failed", "error"}:
+                    error_msg = error_msg or f"goose status={status}"
+                continue
+
+            ev_type = ev.get("type")
+
+            if ev_type == "error":
                 error_msg = ev.get("message") or str(ev)
+                continue
 
-            # Text output event
-            if ev.get("type") in ("text", "output"):
-                txt = ev.get("text") or ev.get("output")
-                if isinstance(txt, str):
-                    text_parts.append(txt)
+            if ev_type == "message":
+                message_raw = ev.get("message")
+                message: dict[str, Any] = message_raw if isinstance(message_raw, dict) else {}
+                if message.get("role") == "assistant":
+                    text_parts.extend(_content_texts(message.get("content")))
+                continue
 
-            # Completion event with tokens/cost
-            if ev.get("type") in ("completion", "done", "finish"):
-                # Extract usage info if present
-                tokens = ev.get("tokens", {})
+            if ev_type in ("complete", "completion", "done", "finish"):
+                found_usage = _apply_token_fields(usage, ev) or found_usage
+                tokens = ev.get("tokens")
                 if isinstance(tokens, dict):
                     usage.input_tokens += int(tokens.get("input", 0) or 0)
                     usage.output_tokens += int(tokens.get("output", 0) or 0)
-                    found_usage = True
+                    if usage.input_tokens or usage.output_tokens:
+                        found_usage = True
+                # cost / total_tokens already handled by _apply_token_fields when present on ev
+                continue
 
-                cost = ev.get("cost")
-                if cost is not None and isinstance(cost, (int, float)):
-                    usage.cost_usd += float(cost)
-                    found_usage = True
+        text = "".join(text_parts).strip()
+        if error_msg is None:
+            error_msg = _auth_or_fatal_error_from_text(text)
 
-        # Set usage source based on what was reported
         if found_usage:
             usage.source = UsageSource.NATIVE
 
         ok = exit_code == 0 and error_msg is None
         return AgentResult(
             status=RunStatus.SUCCEEDED if ok else RunStatus.FAILED,
-            text="".join(text_parts).strip(),
+            text=text,
             usage=usage if found_usage else None,
             error=error_msg if not ok else None,
             exit_code=exit_code,
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _try_load_json_object(raw: str) -> dict[str, Any] | None:
+    blob = raw.strip()
+    if not blob.startswith("{"):
+        return None
+    try:
+        obj = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _content_texts(content: object) -> list[str]:
+    out: list[str] = []
+    if isinstance(content, str):
+        out.append(content)
+        return out
+    if not isinstance(content, list):
+        return out
+    for part in content:
+        if isinstance(part, str):
+            out.append(part)
+        elif isinstance(part, dict) and part.get("type") == "text":
+            txt = part.get("text")
+            if isinstance(txt, str):
+                out.append(txt)
+    return out
+
+
+def _apply_token_fields(usage: UsageRecord, payload: dict[str, Any]) -> bool:
+    """Pull token/cost fields from a complete event or metadata blob. Returns True if any set."""
+    found = False
+    inp = payload.get("input_tokens")
+    out = payload.get("output_tokens")
+    if isinstance(inp, int) and inp > 0:
+        usage.input_tokens += inp
+        found = True
+    if isinstance(out, int) and out > 0:
+        usage.output_tokens += out
+        found = True
+    # Some providers only report a single total; attribute to output so the ledger is non-zero.
+    if not found:
+        total = payload.get("total_tokens")
+        if isinstance(total, int) and total > 0:
+            usage.output_tokens += total
+            found = True
+    cost = payload.get("cost")
+    if isinstance(cost, (int, float)):
+        usage.cost_usd += float(cost)
+        found = True
+    return found
+
+
+def _auth_or_fatal_error_from_text(text: str) -> str | None:
+    """Goose sometimes exits 0 while embedding auth failures in the assistant message."""
+    lower = text.lower()
+    needles = (
+        "authentication error",
+        "not logged in",
+        "please run 'cursor-agent login'",
+        "please run \"cursor-agent login\"",
+        "invalid api key",
+        "unauthorized",
+    )
+    for needle in needles:
+        if needle in lower:
+            # Prefer a short first line when the model wrapped the error.
+            first = text.strip().splitlines()[0].strip() if text.strip() else text
+            return first[:500] or text[:500]
+    return None

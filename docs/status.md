@@ -47,7 +47,7 @@ enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) +
 | Codex | yes | - | verified* | tokens only (cost `admin-api`/estimated/unavailable) |
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
 | Antigravity | yes | verified (reply) | verified** | none |
-| Goose | contract tests | contract (`--plan`) | contract (`--yes`; worktree boundary) | contract (NDJSON tokens + cost) |
+| Goose | contract + CLI probe | contract (`GOOSE_MODE=chat`) | contract (`GOOSE_MODE=auto`; worktree boundary) | contract (stream-json tokens/cost when provider reports them) |
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
 writes land and the JSONL parser extracts text + tokens correctly. A Codex client routed through

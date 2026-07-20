@@ -32,7 +32,7 @@ marshal/
 │   │   ├── antigravity.py   # Google Antigravity (agy)
 │   │   ├── command_code.py  # Command Code CLI - safe-edit maps to --yolo (headless auto-accept blocks writes)
 │   │   ├── claude_code.py   # Claude Code (claude -p) - native cost
-│   │   └── goose.py         # Goose (goose run) - safe-edit/yolo map to --yes (worktree boundary)
+│   │   └── goose.py         # Goose (goose run) - safe-edit/yolo → GOOSE_MODE=auto (worktree boundary)
 │   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
 │   ├── usage.py             # per-provider usage: events.jsonl + summary.json
 │   ├── pricing.py           # token → cost price table (the ESTIMATED path)
