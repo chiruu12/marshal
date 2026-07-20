@@ -44,6 +44,8 @@ versions may include breaking API changes until 1.0.
   `--repo`/cwd), empty clients, and skipped backends no longer collapse into a bare
   `known: (none configured)`. CLI `run`/`spawn` warn on stderr when the config file is absent
   (same posture as MCP), while ad-hoc `--backend` still works with zero clients.
+- **CLI `run`/`spawn` catch `WorktreeError`** (wrong `--repo` / non-git path on ad-hoc
+  `--backend`) with a clean stderr message and exit code 1 instead of a traceback.
 - **Memory prefers `LLM_API_KEY` env** over deprecated inline `memory.llm_api_key` in YAML (env
   wins when both are set).
 - **`enforce: true` budgets serialize matching in-flight spawns** (one concurrent holder per
@@ -54,9 +56,10 @@ versions may include breaking API changes until 1.0.
   `--no-session`; headless permission via `GOOSE_MODE` (`auto` / `chat`) instead of removed
   `--yes` / `--plan` / `--json`. Parser accepts stream-json and bulk json; auth errors embedded
   in assistant text are treated as FAILED. Model `provider/model` (e.g. `cursor-agent/auto`)
-  maps to Goose `--provider` + `--model` for Cursor Agent–backed runs.
+  maps to Goose `--provider` + `--model` for Cursor Agent–backed runs. Live-verified
+  `goose-cursor` / ad-hoc `cursor-agent/auto` (2026-07-20).
 - **`docs/status.md` module table** refreshed (budgets, layout, logs, scaffold, retry, env, doctor,
-  goose, memory).
+  goose, memory); Goose row marked live-verified.
 - **`run_many` preserves client `usage_api`** and runs permission preflight before worktree creation.
 - **Backend adapter boilerplate consolidated** into the base class; OpenCode export reconciliation
   moved to a post-success finalize hook.

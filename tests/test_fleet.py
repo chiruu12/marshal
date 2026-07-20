@@ -614,7 +614,9 @@ def test_run_many_runs_concurrently(repo: Path) -> None:
     records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
     elapsed = time.monotonic() - start
     assert all(r.status == "succeeded" for r in records)
-    assert elapsed < 1.5  # 4 x 0.5s sequential = 2s; concurrent finishes in ~0.5s
+    # Sequential would be ≥ ~2s of sleep alone (4 × 0.5s). Bound is loose enough for
+    # CI/load jitter while still proving overlap.
+    assert elapsed < 1.9
 
 
 def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> None:

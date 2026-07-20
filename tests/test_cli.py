@@ -10,6 +10,7 @@ import pytest
 
 from marshal_engine import cli
 from marshal_engine.budgets import BudgetExceeded
+from marshal_engine.worktree import WorktreeError
 
 
 def test_backends_json(capsys: pytest.CaptureFixture[str]) -> None:
@@ -527,3 +528,33 @@ def test_run_and_spawn_catch_budget_exceeded(
     assert "enforce=true" in capsys.readouterr().err
     assert cli._cmd_run_like(args, spawn=True) == 1
     assert "enforce=true" in capsys.readouterr().err
+
+
+def test_run_and_spawn_catch_worktree_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-git --repo (ad-hoc --backend) must exit 1 with stderr, not a traceback."""
+
+    class _FakeSvc:
+        def run_agent(self, *_a: object, **_k: object) -> object:
+            raise WorktreeError("worktree add failed: fatal: not a git repository")
+
+        def spawn(self, *_a: object, **_k: object) -> object:
+            raise WorktreeError("worktree add failed: fatal: not a git repository")
+
+    monkeypatch.setattr(cli, "_build_cli_service", lambda _args: _FakeSvc())
+    args = argparse.Namespace(
+        client=None,
+        goal="x",
+        task_id=None,
+        model=None,
+        backend="goose",
+        duration=None,
+        repo=None,
+        config=None,
+        json=False,
+    )
+    assert cli._cmd_run_like(args, spawn=False) == 1
+    assert "not a git repository" in capsys.readouterr().err
+    assert cli._cmd_run_like(args, spawn=True) == 1
+    assert "not a git repository" in capsys.readouterr().err

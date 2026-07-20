@@ -24,6 +24,7 @@ from .state import FleetState
 from .scaffold import scaffold_fleet_config
 from .usage import Bucket, UsageTracker
 from .workflow import WorkflowRunner, load_workflow, validate_workflow, workflow_paths
+from .worktree import WorktreeError
 from .workspaces import (
     DEFAULT_WORKSPACE,
     WorkspaceDef,
@@ -592,7 +593,9 @@ def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
             if spawn
             else svc.run_agent(args.client, args.goal, **run_kwargs)
         )
-    except (ValueError, ConfigError, BudgetExceeded) as exc:
+    except (ValueError, ConfigError, BudgetExceeded, WorktreeError) as exc:
+        # WorktreeError: wrong --repo / non-git path (ad-hoc --backend reaches worktree create
+        # before any client-resolution error). Prefer a one-line stderr over a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.json:

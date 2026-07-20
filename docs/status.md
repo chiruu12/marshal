@@ -35,7 +35,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `mcp_server.py` | MCP surface over stdio ([`docs/mcp-tools.md`](mcp-tools.md)); each action/query tool takes an optional `workspace` | done |
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files. CI
-enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) + macOS (py3.12).
+enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) + macOS (py3.12).
 
 ## Backend verification matrix
 
@@ -47,7 +47,7 @@ enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) +
 | Codex | yes | - | verified* | tokens only (cost `admin-api`/estimated/unavailable) |
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
 | Antigravity | yes | verified (reply) | verified** | none |
-| Goose | contract + CLI probe | contract (`GOOSE_MODE=chat`) | contract (`GOOSE_MODE=auto`; worktree boundary) | contract (stream-json tokens/cost when provider reports them) |
+| Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
 writes land and the JSONL parser extracts text + tokens correctly. A Codex client routed through
@@ -61,6 +61,9 @@ own dashboard, never a fabricated $0); `doctor` surfaces its provider + default 
 adapter's `prepare()` pre-registers the run's worktree in `~/.gemini/antigravity-cli/settings.json`
 `trustedWorkspaces` and passes `--add-dir <cwd>`; without the trust entry, agy diverts edits to its
 scratch dir (`--add-dir` alone was insufficient). Still no native usage (text-only output).
+Goose live-verified headless (2026-07-20) via `goose-cursor` / `cursor-agent/auto` (CLI 1.43,
+`GOOSE_MODE=auto`); reply-only smoke succeeded. Usage remains best-effort (provider-dependent
+stream-json tokens/cost).
 
 ## Roadmap
 
