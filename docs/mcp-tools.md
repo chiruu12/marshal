@@ -104,15 +104,23 @@ Same parameters as `run_agent`. Returns immediately with a `RUNNING` record; pol
 
 ### `run_many`
 
-Run several jobs in parallel, each in its own worktree.
+Run several jobs in parallel, each in its own worktree. Jobs may target **different registered
+workspaces** via an optional per-job `workspace`; the call-level `workspace` is the default for jobs
+that omit it. Mixed batches share one `max_concurrency` cap (and the process-wide `run_gate` when
+multi-repo is active). Each workspace keeps its own config, worktrees, and usage ledger — there is
+no cross-workspace ledger merge.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, context_files?, model?, backend?, duration? }`. Omit `client` and set `backend` for ad-hoc spawns. |
-| `max_concurrency` | int | `4` | Max jobs running at once. |
-| `workspace` | string \| null | `null` | Target workspace (all jobs run in one workspace). |
+| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, context_files?, model?, backend?, duration?, workspace? }`. Omit `client` and set `backend` for ad-hoc spawns. Per-job `workspace` overrides the call-level default. |
+| `max_concurrency` | int | `4` | Max jobs running at once across the whole batch (all workspaces). |
+| `workspace` | string \| null | `null` | Default workspace for jobs that omit per-job `workspace`. |
 
-**Returns:** `list[RunRecord + workspace]`.
+**Returns:** `list[RunRecord + workspace]` — each record tagged with the workspace it actually ran in.
+
+**Errors:** unknown per-job / call-level workspace names fail fast before any agent starts (same as
+other workspace-scoped tools). Invalid job specs (unknown client, bad `duration`, …) likewise fail
+fast before the batch begins.
 
 ### `benchmark`
 

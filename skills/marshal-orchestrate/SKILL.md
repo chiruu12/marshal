@@ -27,7 +27,9 @@ run ledger.
   still resolves correctly if you omit it - the id is looked up across workspaces).
 - `status()` with no `workspace` lists runs across **all** workspaces (each tagged); pass a name to
   scope to one.
-- Don't mix repos in a single `run_many` - issue one `run_many` per workspace.
+- `run_many` accepts optional per-job `workspace` — one call can fan out across registered repos
+  under a shared `max_concurrency`. Call-level `workspace` is the default for jobs that omit it.
+  Ledgers stay per-workspace (no merged usage across repos).
 - Need a repo that isn't registered yet? `add_workspace(name, path, scaffold?)` registers it in the
   central `~/.marshal/workspaces.yaml` and it's usable immediately (no reconnect). Pass
   `scaffold=true` to drop a starter `fleet.config.yaml` if the repo has none; then check
@@ -73,9 +75,11 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
 ## 2. Spawn
 - One task: `run_agent(client, goal, task_id?)`.
 - Several independent tasks: `run_many(jobs, max_concurrency?)`, where `jobs` is a list of
-  `{client, goal, task_id?}`. They run in parallel, each in its own worktree, capped at
-  `max_concurrency` (default 4 - each agent CLI is heavy; do not uncap a large fan-out).
-- Every run returns a record with a unique `run_id`, its `worktree`, `status`, and `cost_usd`.
+  `{client, goal, task_id?, workspace?}`. They run in parallel, each in its own worktree, capped at
+  `max_concurrency` (default 4 - each agent CLI is heavy; do not uncap a large fan-out). Per-job
+  `workspace` fans out across registered repos in one call; omit it to use the call-level default.
+- Every run returns a record with a unique `run_id`, its `worktree`, `status`, `cost_usd`, and
+  `workspace`.
 
 ## 3. Monitor
 - `status()` lists every run with status + cost; `get_run(run_id)` fetches one.

@@ -950,6 +950,117 @@ def test_mcp_round_trip_many_benchmark_integrate(tmp_path: Path) -> None:
     assert lw == {"workflows": [], "errors": {}, "workspace": "beta"}
 
 
+def test_registry_run_many_mixed_workspaces(tmp_path: Path) -> None:
+    """One registry.run_many call fans out to ≥2 workspaces; ledgers stay isolated."""
+    repo_a = tmp_path / "a"
+    repo_b = tmp_path / "b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    _init_repo(repo_a)
+    _init_repo(repo_b)
+    reg = WorkspaceRegistry(
+        [
+            WorkspaceDef("default", repo_a.resolve(), repo_a / "fleet.config.yaml"),
+            WorkspaceDef("beta", repo_b.resolve(), repo_b / "fleet.config.yaml"),
+        ],
+        prebuilt={"default": _echo_service(repo_a), "beta": _echo_service(repo_b)},
+    )
+    paired = reg.run_many(
+        [
+            {"client": "worker", "goal": "in-a", "task_id": "ja", "workspace": "default"},
+            {"client": "worker", "goal": "in-b", "task_id": "jb", "workspace": "beta"},
+        ],
+        max_concurrency=2,
+        stagger_s=0,
+    )
+    assert len(paired) == 2
+    assert paired[0][0] == "default" and paired[0][1].status == "succeeded"
+    assert paired[1][0] == "beta" and paired[1][1].status == "succeeded"
+    assert Path(paired[0][1].worktree).resolve().is_relative_to(repo_a.resolve())
+    assert Path(paired[1][1].worktree).resolve().is_relative_to(repo_b.resolve())
+    # Ledgers stay per-workspace (no shared run state).
+    assert {r.run_id for r in FleetState(repo_a / ".marshal" / "runs").list()} == {paired[0][1].run_id}
+    assert {r.run_id for r in FleetState(repo_b / ".marshal" / "runs").list()} == {paired[1][1].run_id}
+
+
+def test_registry_run_many_unknown_workspace_fails_fast(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    reg = WorkspaceRegistry(
+        [WorkspaceDef("default", repo.resolve(), repo / "fleet.config.yaml")],
+        prebuilt={"default": _echo_service(repo)},
+    )
+    with pytest.raises(ValueError, match="unknown workspace"):
+        reg.run_many(
+            [
+                {"client": "worker", "goal": "ok", "task_id": "j1"},
+                {"client": "worker", "goal": "bad", "task_id": "j2", "workspace": "nope"},
+            ],
+            stagger_s=0,
+        )
+    assert FleetState(repo / ".marshal" / "runs").list() == []  # nothing started
+
+
+def test_registry_run_many_call_level_default(tmp_path: Path) -> None:
+    """Jobs without per-job workspace use default_workspace; per-job overrides it."""
+    repo_a = tmp_path / "a"
+    repo_b = tmp_path / "b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    _init_repo(repo_a)
+    _init_repo(repo_b)
+    reg = WorkspaceRegistry(
+        [
+            WorkspaceDef("default", repo_a.resolve(), repo_a / "fleet.config.yaml"),
+            WorkspaceDef("beta", repo_b.resolve(), repo_b / "fleet.config.yaml"),
+        ],
+        prebuilt={"default": _echo_service(repo_a), "beta": _echo_service(repo_b)},
+    )
+    paired = reg.run_many(
+        [
+            {"client": "worker", "goal": "uses-default", "task_id": "j1"},
+            {"client": "worker", "goal": "overrides", "task_id": "j2", "workspace": "default"},
+        ],
+        default_workspace="beta",
+        stagger_s=0,
+    )
+    assert paired[0][0] == "beta"
+    assert paired[1][0] == "default"
+
+
+def test_mcp_run_many_mixed_workspaces(tmp_path: Path) -> None:
+    pytest.importorskip("mcp")
+    app, _reg, repo_a, repo_b = _two_ws_app(tmp_path)
+    rm = _call(
+        app,
+        "run_many",
+        {
+            "jobs": [
+                {"client": "worker", "goal": "a", "task_id": "ja", "workspace": "default"},
+                {"client": "worker", "goal": "b", "task_id": "jb", "workspace": "beta"},
+            ],
+            "max_concurrency": 2,
+        },
+    )
+    assert len(rm) == 2
+    assert rm[0]["workspace"] == "default" and rm[0]["status"] == "succeeded"
+    assert rm[1]["workspace"] == "beta" and rm[1]["status"] == "succeeded"
+    assert Path(rm[0]["worktree"]).resolve().is_relative_to(repo_a.resolve())
+    assert Path(rm[1]["worktree"]).resolve().is_relative_to(repo_b.resolve())
+
+
+def test_mcp_run_many_unknown_workspace_errors(tmp_path: Path) -> None:
+    pytest.importorskip("mcp")
+    app, _reg, _a, _b = _two_ws_app(tmp_path)
+    with pytest.raises(Exception, match="unknown workspace"):
+        _call(
+            app,
+            "run_many",
+            {"jobs": [{"client": "worker", "goal": "x", "task_id": "j", "workspace": "missing"}]},
+        )
+
+
 def test_cli_workspace_add_bad_path_errors_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -209,7 +209,7 @@ the default workspace.
 | `list_clients` | List configured clients (name, backend, model, permission) plus `driver_context`. |
 | `list_models` | List the optional `models:` catalog (`id`, `backends`, `cost`, `quota_type`, `notes`) plus `driver_context`. |
 | `run_agent(client?, goal, task_id?, context_files?, base_branch?, model?, backend?, duration?)` | Run a task on a client's backend in an isolated worktree; returns the run record. Omit `client` for an ad-hoc spawn by `backend` (+ optional `model`). `duration` is a preset name or positive seconds. `base_branch` bases the worktree on a branch other than HEAD (e.g. after `commit_run`). |
-| `run_many(jobs, max_concurrency?)` | Run several `{client, goal, task_id?, context_files?}` jobs in parallel, each in its own worktree; returns all records. |
+| `run_many(jobs, max_concurrency?)` | Run several `{client?, goal, task_id?, context_files?, workspace?, …}` jobs in parallel, each in its own worktree; per-job `workspace` allows mixed-repo batches under one concurrency cap. Returns all records (each tagged). |
 | `spawn(client?, goal, task_id?, context_files?, base_branch?, model?, backend?, duration?)` | Start a run in the background; returns its RUNNING record at once - poll `get_run`/`status`. Same ad-hoc/`model`/`duration`/`base_branch` rules as `run_agent`. |
 | `cancel_run(run_id)` | Stop a running agent (process-group `SIGTERM`); returns the updated record. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |

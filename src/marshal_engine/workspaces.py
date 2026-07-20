@@ -31,7 +31,9 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -41,6 +43,7 @@ import yaml
 from .config import ConfigError, FleetConfig, load_config, validate
 from .layout import runs_dir
 from .scaffold import detect_project_markers, scaffold_fleet_config
+from .fleet import RunRequest
 from .service import MarshalService
 from .state import FleetState, RunRecord
 
@@ -535,6 +538,44 @@ class WorkspaceRegistry:
                 f"no run {run_id!r} in any registered workspace: {', '.join(self.names())}"
             )
         return resolved
+
+    def run_many(
+        self,
+        jobs: list[dict[str, Any]],
+        *,
+        max_concurrency: int = 4,
+        default_workspace: str | None = None,
+        stagger_s: float = 0.1,
+    ) -> list[tuple[str, RunRecord]]:
+        """Fan out run_many jobs across workspaces under one concurrency cap.
+
+        Each job may carry an optional ``workspace`` key; omitted jobs use ``default_workspace``
+        (or ``default``). Unknown workspaces and invalid job specs fail fast before any agent
+        starts. Each workspace keeps its own config, worktrees, and ledger — only the thread pool
+        (and the process-wide ``run_gate``, when set) is shared. Returns ``(workspace, record)``
+        pairs in the same order as ``jobs``.
+        """
+        prepared: list[tuple[str, MarshalService, RunRequest]] = []
+        for job in jobs:
+            raw_ws = job.get("workspace")
+            ws = raw_ws if isinstance(raw_ws, str) and raw_ws else (default_workspace or DEFAULT_WORKSPACE)
+            svc = self.get(ws)  # ValueError on unknown workspace
+            body = {k: v for k, v in job.items() if k != "workspace"}
+            prepared.append((ws, svc, svc.job_request(body)))
+
+        if not prepared:
+            return []
+
+        results: list[tuple[str, RunRecord] | None] = [None] * len(prepared)
+        with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
+            futures: dict[Any, tuple[int, str]] = {}
+            for i, (ws, svc, req) in enumerate(prepared):
+                if stagger_s and i:
+                    time.sleep(stagger_s)
+                futures[pool.submit(svc.run_request_captured, req)] = (i, ws)
+            for fut, (i, ws) in futures.items():
+                results[i] = (ws, fut.result())  # run_request_captured never raises
+        return [r for r in results if r is not None]
 
     def ledger_runs(self, name: str | None = None) -> list[tuple[str, RunRecord]]:
         """Every recorded run tagged with its workspace, read straight from the ledgers (no build).
