@@ -1,8 +1,9 @@
-"""Advisory budget tracking: warn on cap exceedance, never block runs.
+"""Budget tracking: soft-warn by default; optional hard refuse when ``enforce: true``.
 
 Budgets are scoped by client, backend, or globally, over session/week/month windows.
-Spend is read from the usage ledger; lookup failures degrade silently so a budget
-never breaks a run or the usage display.
+Spend is read from the usage ledger; lookup failures degrade silently for advisory
+budgets so a soft-warn never breaks a run or the usage display. Enforced budgets raise
+``BudgetExceeded`` instead of spawning when the cap is already met.
 """
 
 from __future__ import annotations
@@ -15,6 +16,10 @@ from pydantic import BaseModel
 
 from .config import BudgetSpec
 from .usage import UsageSummary, UsageTracker
+
+
+class BudgetExceeded(RuntimeError):
+    """Raised when an ``enforce: true`` budget's windowed spend already meets its cap."""
 
 
 class BudgetRunScope(Protocol):
@@ -85,12 +90,11 @@ def _budget_scope_label(budget: BudgetSpec) -> str:
 
 
 def _budget_matches(budget: BudgetSpec, req: BudgetRunScope) -> bool:
-    """A budget applies to a run when its scope matches the run's client/backend (or it's global)."""
     if budget.client is not None:
-        return budget.client == req.client
+        return req.client == budget.client
     if budget.backend is not None:
-        return budget.backend == req.backend_name
-    return True  # global - both backend and client unset
+        return req.backend_name == budget.backend
+    return True
 
 
 def compute_budget_status(
@@ -101,27 +105,24 @@ def compute_budget_status(
 ) -> list[BudgetStatus]:
     """Build a `BudgetStatus` per configured budget from the ledger at `now`.
 
-    `session_start` is the Fleet's wake instant (the long-lived MCP server); a CLI pass can use
-    `now` for both, which collapses a `session` window to $0 (honest - a one-shot CLI has no prior
-    spend in the same process). Advisory like the rest of budgets: a bad/unreadable budget is
-    skipped rather than failing the whole usage view. One ledger scan per DISTINCT window.
+    Lookup failures for an individual budget degrade to spent=0 (same honesty as a scope with
+    no events) so the display never crashes the usage surface.
     """
-    if not budgets:
-        return []
     cache: dict[str, UsageSummary] = {}
     out: list[BudgetStatus] = []
     for b in budgets:
         try:
             spent = _budget_spend_cached(cache, tracker, session_start, b, now)
-        except Exception:  # noqa: BLE001 - advisory display: skip a bad/unreadable budget
-            continue
+        except Exception:  # noqa: BLE001 - display never fails a usage query
+            spent = 0.0
         out.append(
             BudgetStatus(
                 scope=_budget_scope_label(b),
                 window=b.window,
-                spent_usd=round(spent, 6),
+                spent_usd=spent,
                 limit_usd=b.limit_usd,
-                remaining_usd=round(max(0.0, b.limit_usd - spent), 6),
+                remaining_usd=max(0.0, b.limit_usd - spent),
+                enforce=b.enforce,
             )
         )
     return out
@@ -135,6 +136,7 @@ class BudgetStatus(BaseModel):
     spent_usd: float     # windowed cost under this scope (0.0 for a scope with no spend)
     limit_usd: float
     remaining_usd: float # max(0, limit - spent) - the same floor a $0 spend gives a $0 remaining
+    enforce: bool = False
 
 
 def check_budget(
@@ -143,34 +145,44 @@ def check_budget(
     budgets: list[BudgetSpec],
     req: BudgetRunScope,
 ) -> None:
-    """Advisory: warn (NEVER raise) for each configured budget that matches this run.
+    """Warn (advisory) or raise ``BudgetExceeded`` (enforce) for matching over-cap budgets.
 
     For every budget whose scope matches `req` (client match, backend match, or global), the
-    windowed spend is recomputed from the usage ledger; if it meets or exceeds the cap, a
-    soft warning is printed to stderr. The check is wrapped in a defensive try/except so a
-    budget-lookup failure (corrupt ledger, IO error, ...) silently degrades to "no warning"
-    - a budget is never allowed to break a run.
+    windowed spend is recomputed from the usage ledger; if it meets or exceeds the cap:
+
+    * ``enforce=false`` (default): soft-warn on stderr; never raise from this path's own
+      lookup failures (a soft budget never breaks a run).
+    * ``enforce=true``: raise ``BudgetExceeded`` so the spawn is refused before a worktree is
+      created. Lookup failures for an enforced budget also raise (fail closed).
 
     A subscription / unknown-cost backend reports $0, so a $ budget on it never triggers (and
     shows $0 spent); we don't fabricate a percentage or "remaining" from that.
     """
     if not budgets:
         return
-    try:
-        now = datetime.now(timezone.utc)
-        cache: dict[str, UsageSummary] = {}
-        for b in budgets:
-            if not _budget_matches(b, req):
-                continue
-            try:
-                spent = _budget_spend_cached(cache, tracker, session_start, b, now)
-            except Exception:  # noqa: BLE001 - one bad budget never blocks the run
-                continue
-            if spent >= b.limit_usd:
-                print(
-                    f"[marshal] budget: {_budget_scope_label(b)} spent "
-                    f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window})",
-                    file=sys.stderr,
-                )
-    except Exception:  # noqa: BLE001 - the whole check is advisory; failures degrade silently
-        return
+    now = datetime.now(timezone.utc)
+    cache: dict[str, UsageSummary] = {}
+    for b in budgets:
+        if not _budget_matches(b, req):
+            continue
+        try:
+            spent = _budget_spend_cached(cache, tracker, session_start, b, now)
+        except Exception as exc:  # noqa: BLE001
+            if b.enforce:
+                raise BudgetExceeded(
+                    f"budget {_budget_scope_label(b)} ({b.window}): spend lookup failed; "
+                    f"refusing spawn because enforce=true ({exc})"
+                ) from exc
+            continue
+        if spent < b.limit_usd:
+            continue
+        msg = (
+            f"[marshal] budget: {_budget_scope_label(b)} spent "
+            f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window})"
+        )
+        if b.enforce:
+            raise BudgetExceeded(
+                f"{msg}; refusing new spawn (enforce=true). "
+                "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
+            )
+        print(msg, file=sys.stderr)

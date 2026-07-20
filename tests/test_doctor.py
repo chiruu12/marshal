@@ -89,6 +89,35 @@ def test_happy_path_has_no_failures(tmp_path: Path, monkeypatch) -> None:
     assert _by_name(checks, "backend:opencode").status == OK
     # secret_ref is never injected, so an unset env var is a warning, not a failure.
     assert _by_name(checks, "secret:impl").status == WARN
+    # Hygiene advisories are warnings, never failures.
+    assert _by_name(checks, "integrate-hooks").status == WARN
+    fails, _ = summarize(checks)
+    assert fails == 0
+
+
+def test_doctor_warns_on_unsafe_commands_and_inline_memory_key(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+worktree_setup: uv sync
+verify: uv run pytest -q
+memory:
+  enabled: false
+  llm_api_key: sk-inline-test
+budgets:
+  - window: week
+    limit_usd: 5.0
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    assert _by_name(checks, "unsafe-commands").status == WARN
+    assert "worktree_setup" in _by_name(checks, "unsafe-commands").detail
+    assert _by_name(checks, "memory-inline-key").status == WARN
+    assert _by_name(checks, "budgets").status == WARN
+    assert "advisory" in _by_name(checks, "budgets").detail
     fails, _ = summarize(checks)
     assert fails == 0
 

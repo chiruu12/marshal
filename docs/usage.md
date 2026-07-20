@@ -211,7 +211,7 @@ the default workspace.
 | `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
 | `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. Scope-mode cleans also reap orphaned worktree dirs (`orphans_removed`). Returns `{removed, orphans_removed, skipped, errors, dry_run}`. |
 | `status()` | List all runs with status + cost (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
-| `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger). The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd` (advisory only - caps never block a run). |
+| `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger). The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd / enforce` (soft-warn by default; `enforce: true` refuses over-cap spawns). |
 | `get_run_log(run_id)` | The full raw stdout/stderr persisted for a run (under `<base>/logs/<run_id>.log`), or `null` when no log was written. The 16KB-truncated `text` on the run record is the agent's *final message*; the log preserves the *whole* stream so a driver can inspect what the agent actually did (esp. on a failure). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. Returns `{workflows, errors, workspace}` — malformed recipe files land in `errors` (filename → message). |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
@@ -232,6 +232,7 @@ marshal logs <run_id>      # print the persisted stdout/stderr for one run (full
 marshal clean              # tear down finished runs' worktrees + branches (--scope/--dry-run/--older-than)
 marshal usage              # per-provider usage summary (--window day|week|month|all, --json)
 marshal workflows          # list + validate workflow recipes against the config
+marshal workflow run NAME  # execute a workflow recipe (--input key=value, --max-concurrency)
 marshal workspace list     # show the workspace registry
 marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.yaml; path defaults to cwd)
 marshal workspace remove <name>      # drop a workspace from the registry

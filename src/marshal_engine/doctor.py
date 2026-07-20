@@ -224,6 +224,48 @@ def run_checks(
             )
         )
 
+    # --- trust-boundary / hygiene advisories (config present; never FAIL these) --------------
+    if config.worktree_setup or config.verify:
+        fields = []
+        if config.worktree_setup:
+            fields.append("worktree_setup")
+        if config.verify:
+            fields.append("verify")
+        checks.append(
+            Check(
+                "unsafe-commands",
+                WARN,
+                f"{' + '.join(fields)} run arbitrary argv in each worktree as your user",
+                "treat fleet.config.yaml like code you execute; only point it at trusted repos",
+            )
+        )
+    if config.memory.llm_api_key:
+        checks.append(
+            Check(
+                "memory-inline-key",
+                WARN,
+                "memory.llm_api_key is set inline in fleet.config.yaml (deprecated)",
+                "export LLM_API_KEY instead and remove llm_api_key from YAML",
+            )
+        )
+    if config.budgets:
+        enforced = sum(1 for b in config.budgets if b.enforce)
+        advisory = len(config.budgets) - enforced
+        detail = (
+            f"{enforced} enforced, {advisory} advisory (soft-warn only)"
+            if enforced
+            else f"{advisory} advisory (soft-warn only; set enforce: true to refuse over-cap spawns)"
+        )
+        checks.append(Check("budgets", OK if enforced == len(config.budgets) else WARN, detail, ""))
+    checks.append(
+        Check(
+            "integrate-hooks",
+            WARN,
+            "commit_run / integrate use git --no-verify (hooks skipped for headless reliability)",
+            "review diffs before integrate; rely on verify: / CI for gatekeeping",
+        )
+    )
+
     return checks
 
 

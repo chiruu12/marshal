@@ -1312,8 +1312,7 @@ def test_check_budget_no_budgets_is_a_noop(
 def test_check_budget_runs_before_worktree(repo: Path) -> None:
     # The check is the FIRST statement of _start: it runs BEFORE the worktree is created, so a
     # loud warning doesn't cost a worktree provision. Pin the order by spying on worktree.create
-    # and verifying it was NOT called when the check raises (we can't easily raise, so we verify
-    # the call order on a normal warning path instead).
+    # on a normal advisory (soft-warn) path.
     from unittest.mock import MagicMock
 
     fleet = Fleet(
@@ -1329,6 +1328,48 @@ def test_check_budget_runs_before_worktree(repo: Path) -> None:
         permission=PermissionMode.SAFE_EDIT, ts="2026-06-19T00:00:00Z",
     )
     assert create.call_count == 1  # the worktree was created (budget is advisory, not blocking)
+
+
+def test_check_budget_enforce_raises_and_skips_worktree(repo: Path) -> None:
+    from unittest.mock import MagicMock
+
+    from marshal_engine.budgets import BudgetExceeded
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=0.10, enforce=True)],
+    )
+    _seed_run_event(fleet, backend="metered", cost=1.0)
+    create = MagicMock(side_effect=fleet.worktrees.create)
+    fleet.worktrees.create = create  # type: ignore[method-assign]
+    with pytest.raises(BudgetExceeded, match="enforce=true"):
+        fleet.run(
+            "metered",
+            TaskSpec(id="ord", goal="x"),
+            permission=PermissionMode.SAFE_EDIT,
+            ts="2026-06-19T00:00:00Z",
+        )
+    assert create.call_count == 0
+
+
+def test_check_budget_enforce_raises_on_ledger_failure(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from marshal_engine.budgets import BudgetExceeded
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=1.0, enforce=True)],
+    )
+
+    def boom(**_kw: object) -> object:
+        raise RuntimeError("ledger corrupt")
+
+    monkeypatch.setattr(fleet.usage, "summary", boom)  # type: ignore[method-assign]
+    with pytest.raises(BudgetExceeded, match="spend lookup failed"):
+        fleet._check_budget(
+            RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+        )
 
 
 def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> None:

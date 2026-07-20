@@ -233,7 +233,7 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
     if not rows:
         return
     print("\nbudgets")
-    header = ("scope", "window", "spent", "limit", "remaining")
+    header = ("scope", "window", "spent", "limit", "remaining", "mode")
     table_rows = [
         (
             r.scope,
@@ -241,6 +241,7 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
             f"${r.spent_usd:.4f}",
             f"${r.limit_usd:.4f}",
             f"${r.remaining_usd:.4f}",
+            "enforce" if r.enforce else "soft-warn",
         )
         for r in rows
     ]
@@ -377,12 +378,15 @@ def _cmd_workflow_run(args: argparse.Namespace) -> int:
             return 0
 
         # Human-readable output
-        print(f"workflow {spec.name!r} completed")
+        print(f"workflow {spec.name!r}: {result.status}")
         print(f"  phases: {len(result.phases)}")
         for i, phase in enumerate(result.phases):
-            print(f"    {i+1}. {phase.name or f'phase-{i}'}: {phase.status}")
+            label = phase.name or f"phase-{i}"
+            print(f"    {i+1}. {label}: {phase.run} ({len(phase.run_ids)} run(s))")
+            for note in phase.notes:
+                print(f"       note: {note}")
         if result.next_actions:
-            print(f"  next actions:")
+            print("  next actions:")
             for action in result.next_actions:
                 print(f"    - {action}")
         return 0 if result.status == "completed" else 1

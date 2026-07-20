@@ -380,6 +380,7 @@ def test_budgets_block_parses_each_scope(tmp_path: Path) -> None:
         "  - client: implementer\n"
         "    window: week\n"
         "    limit_usd: 5.00\n"
+        "    enforce: true\n"
         "  - backend: cursor\n"
         "    window: session\n"
         "    limit_usd: 1.00\n"
@@ -388,10 +389,20 @@ def test_budgets_block_parses_each_scope(tmp_path: Path) -> None:
     )
     cfg = load_config(p)
     assert cfg.budgets == [
-        BudgetSpec(client="implementer", window="week", limit_usd=5.00),
+        BudgetSpec(client="implementer", window="week", limit_usd=5.00, enforce=True),
         BudgetSpec(backend="cursor", window="session", limit_usd=1.00),
         BudgetSpec(window="month", limit_usd=25.00),  # backend + client both None
     ]
+
+
+def test_budgets_block_enforce_non_bool_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    # Quoted so YAML keeps a string (bare `yes` becomes bool True).
+    p.write_text(
+        _YAML + '\nbudgets:\n  - window: week\n    limit_usd: 1\n    enforce: "yes"\n'
+    )
+    with pytest.raises(ConfigError, match="enforce must be a boolean"):
+        load_config(p)
 
 
 def test_budgets_block_wrong_type_raises(tmp_path: Path) -> None:

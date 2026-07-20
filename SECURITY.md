@@ -52,3 +52,22 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
 - **Keep your backend CLIs and their credentials secure.** Marshal inherits whatever access the
   logged-in CLI has.
 - **Review what `integrate` will merge.** Always `collect_run` and inspect the diff first.
+
+## Known trust-boundary gaps (honest inventory)
+
+These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces several as warnings.
+
+- **`safe-edit` ≈ unrestricted edit/shell inside the worktree for several backends.** Cursor,
+  OpenCode, Command Code, and Goose need a non-prompting mode for headless runs (closed stdin).
+  For those adapters, `safe-edit` maps to the backend's auto-approve / skip-permissions flag;
+  **worktree isolation is the hard boundary**, not a per-tool deny list. A full per-backend
+  permission config layer (OpenCode `question: deny`, Cursor force+deny lists) is still TODO.
+- **`worktree_setup` / `verify` are config-driven subprocesses.** They run arbitrary argv from
+  `fleet.config.yaml` in each worktree as your user. Treat that file like executable code; only
+  use trusted configs.
+- **`commit_run` / `integrate` use `git --no-verify`.** Hooks are skipped so a prompting
+  pre-commit cannot deadlock a headless merge. Gate with `verify:`, review diffs, and CI.
+- **Memory secrets:** prefer `export LLM_API_KEY=...`. Inline `memory.llm_api_key` in YAML still
+  works but is deprecated; doctor warns when it is present.
+- **Budgets default to soft-warn.** Caps never block spawns unless you set `enforce: true` on a
+  budget entry.

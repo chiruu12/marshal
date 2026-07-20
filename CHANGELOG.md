@@ -9,6 +9,12 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Goose backend** (`backends/goose.py`) + `marshal workflow run` CLI — merged from local main
+  (`44c48eb`); contract tests included. Goose `safe-edit`/`yolo` map to `--yes` for headless runs.
+- **Optional hard budget caps** — `budgets[].enforce: true` refuses matching spawns when windowed
+  spend already meets the cap (`BudgetExceeded`); default remains soft-warn.
+- **Doctor hygiene advisories** — warns on `worktree_setup`/`verify` (config-driven subprocesses),
+  inline `memory.llm_api_key`, advisory-only budgets, and `git --no-verify` on integrate/commit.
 - **Docs-sync invariant test** (`tests/test_docs_sync.py`) — MCP tools, CLI subcommands, and
   `fleet.config.example.yaml` must stay aligned with the code surface.
 - **Ad-hoc backend spawn and per-run `model` override** on `run_agent`/`spawn`/`marshal run`/`marshal
@@ -33,6 +39,9 @@ versions may include breaking API changes until 1.0.
 - **Reference docs** — `docs/config.md` (every config key) and `docs/mcp-tools.md` (MCP tool census).
 
 ### Changed
+- **Memory prefers `LLM_API_KEY` env** over deprecated inline `memory.llm_api_key` in YAML.
+- **`docs/status.md` module table** refreshed (budgets, layout, logs, scaffold, retry, env, doctor,
+  goose, memory).
 - **`run_many` preserves client `usage_api`** and runs permission preflight before worktree creation.
 - **Backend adapter boilerplate consolidated** into the base class; OpenCode export reconciliation
   moved to a post-success finalize hook.

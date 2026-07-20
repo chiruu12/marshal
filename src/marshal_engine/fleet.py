@@ -24,6 +24,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from .backends.base import CodingAgentBackend
+from .budgets import BudgetExceeded as BudgetExceeded
 from .budgets import BudgetStatus as BudgetStatus
 from .budgets import check_budget as check_budget
 from .budgets import compute_budget_status as compute_budget_status
@@ -364,10 +365,9 @@ class Fleet:
 
     def _start(self, req: RunRequest, ts: str | None) -> tuple[str, Worktree, str]:
         """Synchronous prefix: validate, create the worktree, record RUNNING -> (run_id, wt, ts)."""
-        # Advisory budget check FIRST - BEFORE the worktree is created. A cap never blocks a run,
-        # but a "you just hit the cap" warning is more useful printed before the worktree cost is
-        # spent than after. _check_budget guards itself defensively, so any lookup failure here
-        # silently degrades to "no warning" rather than breaking the run.
+        # Budget check FIRST - BEFORE the worktree is created. Advisory budgets soft-warn;
+        # enforce=true budgets raise BudgetExceeded and refuse the spawn. Advisory lookup
+        # failures degrade silently; enforced lookup failures fail closed.
         self._check_budget(req)
         if req.backend_name not in self.backends:
             raise ValueError(f"no such backend: {req.backend_name!r}")

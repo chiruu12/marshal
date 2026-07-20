@@ -123,20 +123,22 @@ BUDGET_WINDOWS: frozenset[str] = frozenset({"session", "week", "month"})
 
 
 class BudgetSpec(BaseModel):
-    """An advisory $ cap for a scope (a backend, a client, or the fleet as a whole).
+    """A $ cap for a scope (a backend, a client, or the fleet as a whole).
 
-    Budgets are **advisory only** - `Fleet._start` checks them, but a run is never blocked by a
-    cap. The check reads the usage ledger's `cost_usd`, which is real for meterable backends
-    (source native / admin-api / estimated); subscription / unknown-cost backends report $0, so
-    a $ budget on them simply never triggers (and shows $0 spent - we do NOT fabricate a fake
-    percentage or "remaining"). Exactly one of `backend` / `client` may be set; neither = a
-    global cap.
+    By default budgets are **advisory** (`enforce=false`): `Fleet._start` soft-warns on stderr
+    when the windowed spend meets the cap, but never blocks the run. Set ``enforce: true`` to
+    refuse new matching spawns instead. The check reads the usage ledger's `cost_usd`, which is
+    real for meterable backends (source native / admin-api / estimated); subscription /
+    unknown-cost backends report $0, so a $ budget on them simply never triggers (and shows $0
+    spent - we do NOT fabricate a fake percentage or "remaining"). Exactly one of `backend` /
+    `client` may be set; neither = a global cap.
     """
 
     backend: str | None = None
     client: str | None = None
     window: str  # one of BUDGET_WINDOWS - validated by the parser, not pydantic (gives a clean error)
     limit_usd: float
+    enforce: bool = False
 
 
 class FleetConfig(BaseModel):
@@ -304,12 +306,18 @@ def _parse_budgets(value: Any) -> list[BudgetSpec]:
             )
         if limit_raw <= 0:
             raise ConfigError(f"budgets[{i}].limit_usd must be > 0, got {limit_raw}")
+        enforce_raw = entry.get("enforce", False)
+        if not isinstance(enforce_raw, bool):
+            raise ConfigError(
+                f"budgets[{i}].enforce must be a boolean, got {type(enforce_raw).__name__}"
+            )
         out.append(
             BudgetSpec(
                 backend=backend,
                 client=client,
                 window=window_raw,
                 limit_usd=float(limit_raw),
+                enforce=enforce_raw,
             )
         )
     return out

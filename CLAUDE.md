@@ -1,9 +1,10 @@
 # Marshal
 
 Orchestration engine for driving a **fleet of headless coding agents** (Cursor CLI, OpenCode,
-Codex, Google Antigravity, Claude Code now; Gemini later) from one "driver" agent (e.g. Claude Code). The driver
-plans; Marshal spawns and manages the fleet in isolated git worktrees, in parallel, and reports
-back - exposed as an **MCP server + Skills**, with **per-provider usage tracking**.
+Codex, Google Antigravity, Claude Code, Command Code, Goose; Gemini later) from one "driver"
+agent (e.g. Claude Code). The driver plans; Marshal spawns and manages the fleet in isolated git
+worktrees, in parallel, and reports back - exposed as an **MCP server + Skills**, with
+**per-provider usage tracking**.
 
 Marshal is the **infrastructure layer**. A future, separate product (**Chauffeur**) - an end-user
 autonomous coding system - will be built on top of Marshal. See `docs/chauffeur-future.md`. Keep
@@ -30,7 +31,8 @@ marshal/
 │   │   ├── codex.py         # OpenAI Codex (codex exec)
 │   │   ├── antigravity.py   # Google Antigravity (agy)
 │   │   ├── command_code.py  # Command Code CLI - safe-edit maps to --yolo (headless auto-accept blocks writes)
-│   │   └── claude_code.py   # Claude Code (claude -p) - native cost
+│   │   ├── claude_code.py   # Claude Code (claude -p) - native cost
+│   │   └── goose.py         # Goose (goose run) - safe-edit/yolo map to --yes (worktree boundary)
 │   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
 │   ├── usage.py             # per-provider usage: events.jsonl + summary.json
 │   ├── pricing.py           # token → cost price table (the ESTIMATED path)
@@ -44,7 +46,7 @@ marshal/
 │   ├── logs.py              # durable per-run stdout/stderr persistence
 │   ├── layout.py            # centralized .marshal directory layout helpers
 │   ├── scaffold.py          # repo-shape-aware fleet.config.yaml scaffold
-│   ├── budgets.py           # advisory budget caps (soft-warn only)
+│   ├── budgets.py           # budget caps (soft-warn default; optional enforce: true)
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
 │   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
 │   ├── memory/              # Marshal Recall: Cognee-backed cross-run memory (optional [memory] extra); config + store
@@ -71,7 +73,7 @@ strict models there would reject on an unexpected upstream field. MCP server via
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` · `logs` · `workflows` · `workspace` · `clean` · `mcp`)
+- Run CLI: `uv run marshal` (`doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` · `logs` · `workflows` · `workflow` · `workspace` · `memory` · `clean` · `mcp`)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)

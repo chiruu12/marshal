@@ -860,8 +860,20 @@ def test_service_budget_status_passes_config_through_to_fleet(repo: Path) -> Non
     )
     svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
     assert [b.model_dump() for b in svc.fleet.budgets] == [
-        {"backend": "echo", "client": None, "window": "week", "limit_usd": 1.0},
-        {"backend": None, "client": None, "window": "month", "limit_usd": 5.0},
+        {
+            "backend": "echo",
+            "client": None,
+            "window": "week",
+            "limit_usd": 1.0,
+            "enforce": False,
+        },
+        {
+            "backend": None,
+            "client": None,
+            "window": "month",
+            "limit_usd": 5.0,
+            "enforce": False,
+        },
     ]
     rows = svc.budget_status()
     assert [r.scope for r in rows] == ["backend:echo", "global"]

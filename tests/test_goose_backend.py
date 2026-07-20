@@ -22,7 +22,7 @@ def _opts(**kw: object) -> RunOpts:
 
 def test_map_permission(backend: GooseBackend) -> None:
     assert backend.map_permission(PermissionMode.READ_ONLY) == ["--plan"]
-    assert backend.map_permission(PermissionMode.SAFE_EDIT) == []
+    assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--yes"]
     assert backend.map_permission(PermissionMode.YOLO) == ["--yes"]
 
 

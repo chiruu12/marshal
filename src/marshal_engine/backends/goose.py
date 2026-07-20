@@ -19,10 +19,8 @@ Notes:
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
-from typing import Any
 
 from ..types import (
     AgentResult,
@@ -34,7 +32,7 @@ from ..types import (
     UsageRecord,
     UsageSource,
 )
-from .base import CodingAgentBackend
+from .base import CodingAgentBackend, parse_jsonl
 
 
 class GooseBackend(CodingAgentBackend):
@@ -51,10 +49,13 @@ class GooseBackend(CodingAgentBackend):
         ),
     )
 
+    # Headless runs close stdin, so interactive approve-per-tool would deadlock. safe-edit and
+    # yolo both use `--yes`; the git worktree is the enforced boundary (same stance as
+    # command-code / cursor / opencode).
     _PERMISSION: dict[PermissionMode, list[str]] = {
-        PermissionMode.READ_ONLY: ["--plan"],  # Read-only / planning mode
-        PermissionMode.SAFE_EDIT: [],  # Default interactive (user can approve individually)
-        PermissionMode.YOLO: ["--yes"],  # Auto-approve all actions
+        PermissionMode.READ_ONLY: ["--plan"],
+        PermissionMode.SAFE_EDIT: ["--yes"],
+        PermissionMode.YOLO: ["--yes"],
     }
 
     # --- hooks ---------------------------------------------------------------------------
@@ -69,12 +70,6 @@ class GooseBackend(CodingAgentBackend):
         except (OSError, subprocess.SubprocessError):
             return False
         return proc.returncode == 0
-
-    def map_permission(self, mode: PermissionMode) -> list[str]:
-        try:
-            return list(self._PERMISSION[mode])
-        except KeyError:
-            raise ValueError(f"goose: unsupported permission mode {mode!r}") from None
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "run", "--json"]
@@ -95,7 +90,7 @@ class GooseBackend(CodingAgentBackend):
         return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        events = _parse_ndjson(raw_stdout)
+        events = parse_jsonl(raw_stdout)
 
         text_parts: list[str] = []
         usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
@@ -141,21 +136,3 @@ class GooseBackend(CodingAgentBackend):
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
-
-
-def _parse_ndjson(raw: str) -> list[dict[str, Any]]:
-    """Parse newline-delimited JSON from Goose output."""
-    events: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            events.append(obj)
-    return events

@@ -60,13 +60,15 @@ retries: 2
 #     quota_type: metered
 #     notes: placeholder
 
-# Optional advisory $ budgets - checked at run start but NEVER block a run. Scope to a backend, a
-# client, or the whole fleet (omit both backend and client). window is session | week | month.
+# Optional $ budgets - checked at run start before worktree creation. Default is soft-warn only;
+# set enforce: true to refuse matching spawns when spend already meets the cap. Scope to a backend,
+# a client, or the whole fleet (omit both backend and client). window is session | week | month.
 # Subscription / unknown-cost backends report $0, so a budget on them never triggers.
 # budgets:
 #   - client: planner
 #     window: week
 #     limit_usd: 25.0
+#     enforce: true
 #   - backend: claude-code
 #     window: month
 #     limit_usd: 100.0
@@ -75,7 +77,8 @@ retries: 2
 
 # Optional Marshal Recall memory layer (Cognee-backed, off by default). When enabled, Marshal
 # remembers each run's outcome and recalls relevant learnings into the next worker's goal.
-# Needs the [memory] extra + Cognee env (LLM_API_KEY); see docs/marshal-recall.md.
+# Needs the [memory] extra + Cognee env (export LLM_API_KEY — do not inline llm_api_key in YAML);
+# see docs/marshal-recall.md.
 # memory:
 #   enabled: true
 #   recall_top_k: 5

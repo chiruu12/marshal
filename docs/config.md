@@ -44,13 +44,13 @@ Fleet-wide layered context strings.
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| string or argv list \| omitted | `null` | Command run once in each fresh worktree **before** the agent starts (e.g. `uv sync`). Accepts a shell string or YAML list. Marshal scrubs the driver's `VIRTUAL_ENV`. Non-zero exit fails the run early. | `worktree_setup: uv sync --extra dev` |
+| string or argv list \| omitted | `null` | Command run once in each fresh worktree **before** the agent starts (e.g. `uv sync`). Accepts a shell string or YAML list. Marshal scrubs the driver's `VIRTUAL_ENV`. Non-zero exit fails the run early. **Security:** this is arbitrary argv as your user — `marshal doctor` warns when set. | `worktree_setup: uv sync --extra dev` |
 
 ### `verify`
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `succeeded` and changed files. Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. | `verify: uv run pytest -q` |
+| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `succeeded` and changed files. Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. Same trust model as `worktree_setup`. | `verify: uv run pytest -q` |
 
 ### `retries`
 
@@ -72,7 +72,10 @@ Optional catalog the driver reads via `list_models` / `marshal models`. Pure met
 
 ### `budgets[]`
 
-Optional advisory dollar caps. Checked at run start; **never blocks** a run. Subscription / unknown-cost backends report `$0`, so a budget on them never triggers.
+Optional dollar caps. Checked at run start **before** worktree creation. Default is **soft-warn**
+(stderr only). Set `enforce: true` to refuse matching spawns when the windowed spend already meets
+the cap (`BudgetExceeded`). Subscription / unknown-cost backends report `$0`, so a budget on them
+never triggers.
 
 | Key | Type | Default | What it does | Example |
 |-----|------|---------|--------------|---------|
@@ -80,6 +83,7 @@ Optional advisory dollar caps. Checked at run start; **never blocks** a run. Sub
 | `client` | string \| omitted | `null` | Scope the cap to one configured client name. | `client: planner` |
 | `window` | `session` \| `week` \| `month` | *(required)* | Time window for spend aggregation. | `window: week` |
 | `limit_usd` | float (> 0) | *(required)* | Dollar cap for the scope and window. | `limit_usd: 25.0` |
+| `enforce` | bool | `false` | When `true`, refuse new matching spawns once spend ≥ cap. When `false`, print a soft warning only. | `enforce: true` |
 
 ## `~/.marshal/workspaces.yaml`
 
@@ -106,6 +110,7 @@ hot-reloaded for **additions** without reconnecting.
 | `MARSHAL_WORKSPACES_FILE` | path | `~/.marshal/workspaces.yaml` | Path to the central workspace registry file. | `MARSHAL_WORKSPACES_FILE=/cfg/workspaces.yaml` |
 | `MARSHAL_MAX_CONCURRENT` | int (> 0) | unset | Process-wide concurrent-run cap. Takes precedence over the registry file's `max_concurrent`. When multi-repo is active and neither is set, defaults to `8`. A lone default workspace with no registry file stays uncapped. | `MARSHAL_MAX_CONCURRENT=4` |
 | `MARSHAL_NO_PATH_FIX` | any (truthy) | unset | When set, skip merging the user's login-shell `PATH` at engine entry. Use in hermetic CI or when PATH is already correct. | `MARSHAL_NO_PATH_FIX=1` |
+| `LLM_API_KEY` | string | unset | Preferred secret for Marshal Recall (Cognee). Prefer this over deprecated inline `memory.llm_api_key` in YAML. | `export LLM_API_KEY=...` |
 
 ## Per-spawn duration presets (MCP / CLI)
 
