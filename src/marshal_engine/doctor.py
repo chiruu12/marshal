@@ -40,6 +40,7 @@ BACKEND_HINTS: dict[str, str] = {
     "command-code": "npm i -g command-code, then `command-code login`",
     "antigravity": "install the Antigravity CLI (agy), then complete its OAuth login",
     "claude-code": "install Claude Code (claude), then authenticate via its login or set ANTHROPIC_API_KEY",
+    "goose": "install Goose CLI (cargo install goose or brew install block/formula/goose), then set GOOSE_API_KEY or authenticate",
 }
 
 MIN_PYTHON = (3, 11)

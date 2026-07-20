@@ -20,9 +20,9 @@ from .logs import RunLogStore
 from .registry import backend_names, default_backends
 from .service import MarshalService
 from .state import FleetState
-from .usage import Bucket, UsageTracker
-from .workflow import load_workflow, validate_workflow, workflow_paths
 from .scaffold import scaffold_fleet_config
+from .usage import Bucket, UsageTracker
+from .workflow import WorkflowRunner, load_workflow, validate_workflow, workflow_paths
 from .workspaces import (
     DEFAULT_WORKSPACE,
     WorkspaceDef,
@@ -339,6 +339,58 @@ def _cmd_workflows(args: argparse.Namespace) -> int:
     return 1 if any(r["error"] for r in rows) else 0
 
 
+def _cmd_workflow_run(args: argparse.Namespace) -> int:
+    """Run a workflow recipe from examples/workflows/ or custom workflows."""
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    config = load_config(cfg_path) if cfg_path.exists() else FleetConfig()
+
+    # Find the workflow file by name (search examples/workflows/ and workflows/)
+    wdir = repo / "workflows"
+    spec = None
+    for p in workflow_paths(wdir):
+        if p.stem == args.name:
+            spec = load_workflow(p)
+            break
+    if spec is None:
+        print(f"error: workflow {args.name!r} not found in {wdir}", file=sys.stderr)
+        return 1
+
+    # Parse inputs from --input key=value flags
+    inputs: dict[str, str] = {}
+    if args.input:
+        for item in args.input:
+            if "=" not in item:
+                print(f"error: input must be in format key=value, got {item!r}", file=sys.stderr)
+                return 1
+            k, v = item.split("=", 1)
+            inputs[k] = v
+
+    # Run the workflow
+    try:
+        svc = MarshalService(repo, config, config_path=cfg_path)
+        runner = WorkflowRunner(svc)
+        result = runner.run(spec, inputs, max_concurrency=args.max_concurrency)
+
+        if args.json:
+            print(json.dumps(result.model_dump(mode="json"), indent=2))
+            return 0
+
+        # Human-readable output
+        print(f"workflow {spec.name!r} completed")
+        print(f"  phases: {len(result.phases)}")
+        for i, phase in enumerate(result.phases):
+            print(f"    {i+1}. {phase.name or f'phase-{i}'}: {phase.status}")
+        if result.next_actions:
+            print(f"  next actions:")
+            for action in result.next_actions:
+                print(f"    - {action}")
+        return 0 if result.status == "completed" else 1
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def _cmd_workspace(args: argparse.Namespace) -> int:
     """Manage the central workspace registry (~/.marshal/workspaces.yaml)."""
     as_json = getattr(args, "json", False)
@@ -616,6 +668,15 @@ def main(argv: list[str] | None = None) -> int:
     pw.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     pw.add_argument("--json", action="store_true", help="output JSON")
+    pwr = sub.add_parser("workflow", help="run a workflow recipe")
+    wrub = pwr.add_subparsers(dest="wf_cmd", required=True)
+    wrun = wrub.add_parser("run", help="execute a workflow by name")
+    wrun.add_argument("name", help="workflow name (stem of .yaml file)")
+    wrun.add_argument("--input", action="append", default=None, help="workflow input: key=value (repeatable)")
+    wrun.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    wrun.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    wrun.add_argument("--max-concurrency", type=int, default=4, help="max concurrent agents (default: 4)")
+    wrun.add_argument("--json", action="store_true", help="output JSON")
     prun = sub.add_parser("run", help="run a task on a configured client (or ad-hoc by backend+model)")
     _add_run_args(prun)
     pspwn = sub.add_parser("spawn", help="start a task in the background and return its RUNNING record at once")
@@ -668,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(args)
     if args.cmd == "workflows":
         return _cmd_workflows(args)
+    if args.cmd == "workflow" and args.wf_cmd == "run":
+        return _cmd_workflow_run(args)
     if args.cmd == "run":
         return _cmd_run(args)
     if args.cmd == "spawn":
