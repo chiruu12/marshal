@@ -132,8 +132,8 @@ clients:
 | Tier | Meaning |
 |------|---------|
 | `read-only` | Plan/inspect only - no edits. |
-| `safe-edit` | Edit and run **inside the worktree**, no prompts. The default. |
-| `yolo` | Fully unrestricted. Opt-in only. |
+| `safe-edit` | Edit and run **inside the worktree**, no prompts. The default. Cursor and OpenCode also get an engine-managed deny / `question: deny` config layer (see `docs/design.md` §5). |
+| `yolo` | Fully unrestricted (OpenCode still denies `question` so headless cannot deadlock). Opt-in only. |
 
 Headless agents have no stdin, so Marshal never uses a prompting mode (it would deadlock).
 
@@ -409,11 +409,11 @@ driver's playbook for authoring and running them; starter templates live in `exa
 
 | Backend | Edits | Usage in output | Notes |
 |---------|-------|-----------------|-------|
-| OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. |
-| Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. |
+| OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies). |
+| Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. `safe-edit` merges an engine-managed deny list into `.cursor/cli.json` alongside `--force`. |
 | Codex | yes | best-effort | `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
-| Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; safe-edit maps to `--yolo` (headless auto-accept blocks writes). |
-| Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). |
+| Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
+| Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). PTY wrapper still TODO. |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
 | Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
 

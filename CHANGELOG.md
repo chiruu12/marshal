@@ -9,6 +9,13 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Permission config layer (v0, C1/H4 / #17).** Cursor `safe-edit` `prepare()` merges a curated
+  deny list into the worktree's `.cursor/cli.json` (`Shell(rm)`, `.env` read/write, `.git`
+  writes) alongside `--force`. OpenCode `prepare()` stamps `OPENCODE_CONFIG_CONTENT` with
+  `question: deny` plus curated bash/edit/read/`external_directory` denies for `safe-edit`
+  (`yolo` still gets `question: deny` only so headless cannot deadlock). Contract tests cover
+  config emission. Command Code / Goose / Antigravity PTY remain deferred (documented in
+  `SECURITY.md` and `docs/design.md` §5).
 - **Goose backend** (`backends/goose.py`) + `marshal workflow run` CLI — merged from local main
   (`44c48eb`); contract tests included. Goose `safe-edit`/`yolo` map to `GOOSE_MODE=auto` for
   headless runs (CLI ≥ 1.43).
@@ -108,6 +115,9 @@ versions may include breaking API changes until 1.0.
   a cheap authed probe are unchanged (CLI presence reported; auth not claimed).
 
 ### Fixed
+- **`prepare()` now runs before argv/env snapshot in `CodingAgentBackend.run()`.** Env stamps from
+  `prepare()` (e.g. OpenCode `OPENCODE_CONFIG_CONTENT`, Goose `GOOSE_MODE`) were previously built
+  into `child_env` *before* `prepare()` ran, so managed permission config never reached the child.
 - **MCP server + CLI + `MarshalService` + `Fleet` now recover the user's PATH before spawning
   backends.** An MCP host (Claude Code, Cursor, etc.) typically spawns Marshal with a stripped
   PATH that lacks the user's zshrc-managed directories (Homebrew, `~/.local/bin`, npm-global), so
