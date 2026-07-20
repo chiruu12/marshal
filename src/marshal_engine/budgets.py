@@ -4,11 +4,17 @@ Budgets are scoped by client, backend, or globally, over session/week/month wind
 Spend is read from the usage ledger; lookup failures degrade silently for advisory
 budgets so a soft-warn never breaks a run or the usage display. Enforced budgets raise
 ``BudgetExceeded`` instead of spawning when the cap is already met.
+
+``enforce: true`` also serializes matching in-flight spawns (see ``EnforceBudgetGate``):
+without a per-run cost reservation, parallel admits against the same ledger snapshot can
+overshoot the cap by up to concurrency × per-run cost. The gate admits at most one
+in-flight matching spawn per enforce budget until that run finishes and records spend.
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
@@ -19,7 +25,8 @@ from .usage import UsageSummary, UsageTracker
 
 
 class BudgetExceeded(RuntimeError):
-    """Raised when an ``enforce: true`` budget's windowed spend already meets its cap."""
+    """Raised when an ``enforce: true`` budget's windowed spend already meets its cap,
+    or when another in-flight run already holds that enforce budget (concurrency guard)."""
 
 
 class BudgetRunScope(Protocol):
@@ -186,3 +193,74 @@ def check_budget(
                 "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
             )
         print(msg, file=sys.stderr)
+
+
+def _enforce_budget_key(budget: BudgetSpec) -> str:
+    """Stable key for an enforce-budget concurrency slot (scope + window + limit)."""
+    return f"{_budget_scope_label(budget)}|{budget.window}|{budget.limit_usd}"
+
+
+class EnforceBudgetGate:
+    """Admit at most one in-flight spawn per matching ``enforce: true`` budget.
+
+    Ledger checks alone are TOCTOU under ``run_many`` / concurrent ``spawn``: every thread can
+    read the same pre-run spend and pass before any usage is recorded. Holding a per-budget
+    slot until the run finishes closes that race without inventing a per-run cost estimate.
+    Advisory budgets are unaffected.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # key -> run_id once bound; empty string while reserved between begin() and bind()
+        self._held: dict[str, str] = {}
+
+    def begin(
+        self,
+        tracker: UsageTracker,
+        session_start: datetime,
+        budgets: list[BudgetSpec],
+        req: BudgetRunScope,
+    ) -> list[str]:
+        """Check ledger caps, then reserve concurrency slots for matching enforce budgets."""
+        with self._lock:
+            check_budget(tracker, session_start, budgets, req)
+            keys: list[str] = []
+            for b in budgets:
+                if not b.enforce or not _budget_matches(b, req):
+                    continue
+                key = _enforce_budget_key(b)
+                holder = self._held.get(key)
+                if holder is not None:
+                    held_by = holder or "starting"
+                    raise BudgetExceeded(
+                        f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
+                        f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
+                        "prevent overshoot. Wait for it to finish, or set enforce: false."
+                    )
+                self._held[key] = ""
+                keys.append(key)
+            return keys
+
+    def bind(self, keys: list[str], run_id: str) -> None:
+        """Attach reserved slots to the concrete run_id after worktree creation."""
+        if not keys:
+            return
+        with self._lock:
+            for key in keys:
+                if key in self._held:
+                    self._held[key] = run_id
+
+    def release(self, keys: list[str]) -> None:
+        """Drop slots reserved by ``begin`` when ``_start`` fails before bind."""
+        if not keys:
+            return
+        with self._lock:
+            for key in keys:
+                self._held.pop(key, None)
+
+    def release_run(self, run_id: str) -> None:
+        """Release every slot held by ``run_id`` (terminal path / spawn submit failure)."""
+        with self._lock:
+            for key, held in list(self._held.items()):
+                if held == run_id:
+                    del self._held[key]

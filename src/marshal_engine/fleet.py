@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from .backends.base import CodingAgentBackend
 from .budgets import BudgetExceeded as BudgetExceeded
 from .budgets import BudgetStatus as BudgetStatus
+from .budgets import EnforceBudgetGate as EnforceBudgetGate
 from .budgets import check_budget as check_budget
 from .budgets import compute_budget_status as compute_budget_status
 from .config import BudgetSpec
@@ -270,11 +271,11 @@ class Fleet:
         # MCP layer shares ONE semaphore across all of them to bound total agent processes (each
         # CLI is 150-400 MB). None = uncapped here (a single-repo Fleet keeps its prior behavior).
         self._run_gate = run_gate
-        # Advisory $ budgets per scope (backend / client / global) and time window
-        # (session / week / month). None / [] = no budgets, no behavior change at all. The
-        # check is advisory only: it prints a soft stderr warning when a scope's windowed spend
-        # meets/exceeds its cap, but NEVER raises - a cap cannot block a run.
+        # $ budgets per scope (backend / client / global) and time window (session / week / month).
+        # None / [] = no budgets. Default is soft-warn; enforce=true raises BudgetExceeded and
+        # serializes matching in-flight spawns via EnforceBudgetGate (see budgets.py).
         self.budgets: list[BudgetSpec] = list(budgets) if budgets else []
+        self._budget_gate = EnforceBudgetGate()
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
@@ -340,7 +341,9 @@ class Fleet:
         try:
             self._executor().submit(self._execute_bg, request, run_id, wt, started)
         except RuntimeError as exc:
-            # The pool was shut down between _start and submit; don't strand a RUNNING record.
+            # The pool was shut down between _start and submit; don't strand a RUNNING record
+            # or an enforce-budget concurrency slot.
+            self._budget_gate.release_run(run_id)
             self.state.update(
                 run_id, status=RunStatus.FAILED.value, ended_at=_now(),
                 error=f"spawn: executor unavailable: {exc}",
@@ -365,47 +368,55 @@ class Fleet:
 
     def _start(self, req: RunRequest, ts: str | None) -> tuple[str, Worktree, str]:
         """Synchronous prefix: validate, create the worktree, record RUNNING -> (run_id, wt, ts)."""
-        # Budget check FIRST - BEFORE the worktree is created. Advisory budgets soft-warn;
-        # enforce=true budgets raise BudgetExceeded and refuse the spawn. Advisory lookup
-        # failures degrade silently; enforced lookup failures fail closed.
-        self._check_budget(req)
-        if req.backend_name not in self.backends:
-            raise ValueError(f"no such backend: {req.backend_name!r}")
-        backend = self.backends[req.backend_name]
-        modes = backend.capabilities.permission_modes
-        if modes and req.permission not in modes:
-            supported = ", ".join(sorted(m.value for m in modes))
-            raise ValueError(
-                f"backend {req.backend_name!r} does not support permission "
-                f"{req.permission.value!r} (supported: {supported})"
-            )
-        started = ts or _now()
-        # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
-        # dir, or the state record. task_id stays the grouping key on RunRecord.
-        run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
-        # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
-        # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
-        # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
-        # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
-        with self._create_lock:
-            wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
-        self.worktrees.setup(wt)
-        self.state.add(
-            RunRecord(
-                run_id=run_id,
-                task_id=req.task.id,
-                backend=req.backend_name,
-                client=req.client,
-                model=req.model,
-                status=RunStatus.RUNNING.value,
-                worktree=str(wt.path),
-                branch=wt.branch,
-                started_at=started,
-            )
+        # Budget gate FIRST - BEFORE the worktree is created. Advisory budgets soft-warn;
+        # enforce=true budgets raise BudgetExceeded (ledger cap and/or concurrent in-flight slot).
+        # Advisory lookup failures degrade silently; enforced lookup failures fail closed.
+        budget_keys = self._budget_gate.begin(
+            self.usage, self.session_start, self.budgets, req
         )
-        return run_id, wt, started
+        try:
+            if req.backend_name not in self.backends:
+                raise ValueError(f"no such backend: {req.backend_name!r}")
+            backend = self.backends[req.backend_name]
+            modes = backend.capabilities.permission_modes
+            if modes and req.permission not in modes:
+                supported = ", ".join(sorted(m.value for m in modes))
+                raise ValueError(
+                    f"backend {req.backend_name!r} does not support permission "
+                    f"{req.permission.value!r} (supported: {supported})"
+                )
+            started = ts or _now()
+            # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
+            # dir, or the state record. task_id stays the grouping key on RunRecord.
+            run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
+            # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
+            # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
+            # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
+            # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
+            with self._create_lock:
+                wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+            self.worktrees.setup(wt)
+            self.state.add(
+                RunRecord(
+                    run_id=run_id,
+                    task_id=req.task.id,
+                    backend=req.backend_name,
+                    client=req.client,
+                    model=req.model,
+                    status=RunStatus.RUNNING.value,
+                    worktree=str(wt.path),
+                    branch=wt.branch,
+                    started_at=started,
+                )
+            )
+            self._budget_gate.bind(budget_keys, run_id)
+            return run_id, wt, started
+        except Exception:
+            self._budget_gate.release(budget_keys)
+            raise
 
     def _check_budget(self, req: RunRequest) -> None:
+        """Ledger-only budget check (tests / diagnostics). Spawn path uses ``_budget_gate.begin``."""
         check_budget(self.usage, self.session_start, self.budgets, req)
 
     def budget_status(self, now: datetime | None = None) -> list[BudgetStatus]:
@@ -500,6 +511,9 @@ class Fleet:
             )
             raise
         finally:
+            # Release enforce-budget concurrency slots once spend is (or would have been) recorded
+            # so the next matching spawn can re-check the ledger.
+            self._budget_gate.release_run(run_id)
             # Persist the FULL raw stdout/stderr for every terminal run (success OR failure) so a
             # driver can inspect what the agent actually did after the fact. Best-effort: a logging
             # failure (disk full, permission, ...) must never break a finished run; stderr the cause

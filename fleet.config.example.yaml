@@ -61,9 +61,11 @@ retries: 2
 #     notes: placeholder
 
 # Optional $ budgets - checked at run start before worktree creation. Default is soft-warn only;
-# set enforce: true to refuse matching spawns when spend already meets the cap. Scope to a backend,
-# a client, or the whole fleet (omit both backend and client). window is session | week | month.
-# Subscription / unknown-cost backends report $0, so a budget on them never triggers.
+# set enforce: true to refuse matching spawns when spend already meets the cap, and to serialize
+# matching in-flight spawns (one at a time) so parallel fan-out cannot overshoot before spend is
+# recorded. Scope to a backend, a client, or the whole fleet (omit both backend and client).
+# window is session | week | month. Subscription / unknown-cost backends report $0, so a budget
+# on them never triggers.
 # budgets:
 #   - client: planner
 #     window: week

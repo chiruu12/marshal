@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
+from .budgets import BudgetExceeded
 from .config import BudgetSpec, ConfigError, DURATION_PRESETS, FleetConfig, load_config
 from .doctor import FAIL, OK, WARN, doctor_report, run_checks
 from .env import merge_user_path
@@ -589,7 +590,7 @@ def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
             if spawn
             else svc.run_agent(args.client, args.goal, **run_kwargs)
         )
-    except (ValueError, ConfigError) as exc:
+    except (ValueError, ConfigError, BudgetExceeded) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.json:

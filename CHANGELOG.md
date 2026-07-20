@@ -39,7 +39,12 @@ versions may include breaking API changes until 1.0.
 - **Reference docs** — `docs/config.md` (every config key) and `docs/mcp-tools.md` (MCP tool census).
 
 ### Changed
-- **Memory prefers `LLM_API_KEY` env** over deprecated inline `memory.llm_api_key` in YAML.
+- **Memory prefers `LLM_API_KEY` env** over deprecated inline `memory.llm_api_key` in YAML (env
+  wins when both are set).
+- **`enforce: true` budgets serialize matching in-flight spawns** (one concurrent holder per
+  budget) so `run_many` / parallel `spawn` cannot TOCTOU past the ledger snapshot.
+- **CLI `run`/`spawn` catch `BudgetExceeded`** with a clean stderr message and exit code 1
+  (all backends / ad-hoc providers).
 - **`docs/status.md` module table** refreshed (budgets, layout, logs, scaffold, retry, env, doctor,
   goose, memory).
 - **`run_many` preserves client `usage_api`** and runs permission preflight before worktree creation.

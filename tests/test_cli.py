@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import pytest
 
 from marshal_engine import cli
+from marshal_engine.budgets import BudgetExceeded
 
 
 def test_backends_json(capsys: pytest.CaptureFixture[str]) -> None:
@@ -472,3 +474,33 @@ def test_models_malformed_config_returns_error(
     assert ret == 1
     err = capsys.readouterr()[1]
     assert "models must be a list" in err
+
+
+def test_run_and_spawn_catch_budget_exceeded(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """enforce refusals must exit 1 with stderr for every CLI run/spawn path (all backends)."""
+
+    class _FakeSvc:
+        def run_agent(self, *_a: object, **_k: object) -> object:
+            raise BudgetExceeded("refusing new spawn (enforce=true)")
+
+        def spawn(self, *_a: object, **_k: object) -> object:
+            raise BudgetExceeded("refusing new spawn (enforce=true)")
+
+    monkeypatch.setattr(cli, "_build_cli_service", lambda _args: _FakeSvc())
+    args = argparse.Namespace(
+        client=None,
+        goal="x",
+        task_id=None,
+        model=None,
+        backend="goose",
+        duration=None,
+        repo=None,
+        config=None,
+        json=False,
+    )
+    assert cli._cmd_run_like(args, spawn=False) == 1
+    assert "enforce=true" in capsys.readouterr().err
+    assert cli._cmd_run_like(args, spawn=True) == 1
+    assert "enforce=true" in capsys.readouterr().err

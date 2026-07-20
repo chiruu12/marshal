@@ -20,7 +20,7 @@ class MemoryConfig(BaseModel):
     llm_model: str | None = None
     llm_endpoint: str | None = None
     # Deprecated: prefer exporting LLM_API_KEY. Inline keys land in YAML backups more easily;
-    # the store still honors this field, then falls back to the env var.
+    # when both are set, the env var wins; doctor warns when this field is present.
     llm_api_key: str | None = None
     embedding_provider: str | None = "fastembed"
     embedding_model: str | None = None

@@ -67,7 +67,9 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   use trusted configs.
 - **`commit_run` / `integrate` use `git --no-verify`.** Hooks are skipped so a prompting
   pre-commit cannot deadlock a headless merge. Gate with `verify:`, review diffs, and CI.
-- **Memory secrets:** prefer `export LLM_API_KEY=...`. Inline `memory.llm_api_key` in YAML still
-  works but is deprecated; doctor warns when it is present.
+- **Memory secrets:** prefer `export LLM_API_KEY=...`. When both env and inline
+  `memory.llm_api_key` are set, **env wins**. Inline YAML is deprecated; doctor warns when it is
+  present.
 - **Budgets default to soft-warn.** Caps never block spawns unless you set `enforce: true` on a
-  budget entry.
+  budget entry. Enforced budgets also serialize matching in-flight spawns (one at a time per
+  budget) so concurrent fan-out cannot TOCTOU past the ledger snapshot before spend is recorded.

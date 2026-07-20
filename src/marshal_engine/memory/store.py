@@ -184,7 +184,7 @@ class CogneeMemory:
             llm["llm_endpoint"] = self._config.llm_endpoint
         # Prefer env (LLM_API_KEY) over inline YAML. Inline memory.llm_api_key is deprecated —
         # doctor warns when it is set in fleet.config.yaml.
-        api_key = self._config.llm_api_key or os.environ.get("LLM_API_KEY")
+        api_key = os.environ.get("LLM_API_KEY") or self._config.llm_api_key
         if api_key:
             llm["llm_api_key"] = api_key
         # OpenAI-compatible LLM endpoints (e.g. EastRouter) need llm_model prefixed

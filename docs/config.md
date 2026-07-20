@@ -77,13 +77,18 @@ Optional dollar caps. Checked at run start **before** worktree creation. Default
 the cap (`BudgetExceeded`). Subscription / unknown-cost backends report `$0`, so a budget on them
 never triggers.
 
+`enforce: true` also admits **at most one in-flight matching spawn** per budget (scope + window +
+limit). Parallel `run_many` / concurrent `spawn` would otherwise all pass the same pre-run ledger
+snapshot and overshoot the cap before any usage is recorded. The next matching spawn is refused
+until the holder finishes (and records spend). Advisory budgets do not take a concurrency slot.
+
 | Key | Type | Default | What it does | Example |
 |-----|------|---------|--------------|---------|
 | `backend` | string \| omitted | `null` | Scope the cap to one backend. Set **at most one** of `backend` or `client`; omit both for a fleet-wide cap. | `backend: claude-code` |
 | `client` | string \| omitted | `null` | Scope the cap to one configured client name. | `client: planner` |
 | `window` | `session` \| `week` \| `month` | *(required)* | Time window for spend aggregation. | `window: week` |
 | `limit_usd` | float (> 0) | *(required)* | Dollar cap for the scope and window. | `limit_usd: 25.0` |
-| `enforce` | bool | `false` | When `true`, refuse new matching spawns once spend ≥ cap. When `false`, print a soft warning only. | `enforce: true` |
+| `enforce` | bool | `false` | When `true`, refuse new matching spawns once spend ≥ cap, and serialize matching in-flight spawns. When `false`, print a soft warning only. | `enforce: true` |
 
 ## `~/.marshal/workspaces.yaml`
 
@@ -110,7 +115,7 @@ hot-reloaded for **additions** without reconnecting.
 | `MARSHAL_WORKSPACES_FILE` | path | `~/.marshal/workspaces.yaml` | Path to the central workspace registry file. | `MARSHAL_WORKSPACES_FILE=/cfg/workspaces.yaml` |
 | `MARSHAL_MAX_CONCURRENT` | int (> 0) | unset | Process-wide concurrent-run cap. Takes precedence over the registry file's `max_concurrent`. When multi-repo is active and neither is set, defaults to `8`. A lone default workspace with no registry file stays uncapped. | `MARSHAL_MAX_CONCURRENT=4` |
 | `MARSHAL_NO_PATH_FIX` | any (truthy) | unset | When set, skip merging the user's login-shell `PATH` at engine entry. Use in hermetic CI or when PATH is already correct. | `MARSHAL_NO_PATH_FIX=1` |
-| `LLM_API_KEY` | string | unset | Preferred secret for Marshal Recall (Cognee). Prefer this over deprecated inline `memory.llm_api_key` in YAML. | `export LLM_API_KEY=...` |
+| `LLM_API_KEY` | string | unset | Preferred secret for Marshal Recall (Cognee). Wins over deprecated inline `memory.llm_api_key` when both are set. | `export LLM_API_KEY=...` |
 
 ## Per-spawn duration presets (MCP / CLI)
 

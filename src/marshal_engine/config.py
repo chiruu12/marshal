@@ -127,11 +127,12 @@ class BudgetSpec(BaseModel):
 
     By default budgets are **advisory** (`enforce=false`): `Fleet._start` soft-warns on stderr
     when the windowed spend meets the cap, but never blocks the run. Set ``enforce: true`` to
-    refuse new matching spawns instead. The check reads the usage ledger's `cost_usd`, which is
-    real for meterable backends (source native / admin-api / estimated); subscription /
-    unknown-cost backends report $0, so a $ budget on them simply never triggers (and shows $0
-    spent - we do NOT fabricate a fake percentage or "remaining"). Exactly one of `backend` /
-    `client` may be set; neither = a global cap.
+    refuse new matching spawns once spend meets the cap, and to admit at most one in-flight
+    matching spawn at a time (concurrency guard against ledger TOCTOU). The check reads the usage
+    ledger's `cost_usd`, which is real for meterable backends (source native / admin-api /
+    estimated); subscription / unknown-cost backends report $0, so a $ budget on them simply
+    never triggers (and shows $0 spent - we do NOT fabricate a fake percentage or "remaining").
+    Exactly one of `backend` / `client` may be set; neither = a global cap.
     """
 
     backend: str | None = None

@@ -1372,6 +1372,54 @@ def test_check_budget_enforce_raises_on_ledger_failure(repo: Path, monkeypatch: 
         )
 
 
+def test_enforce_budget_blocks_concurrent_matching_spawn(repo: Path) -> None:
+    """enforce=true admits one in-flight matching spawn; a peer is refused before worktree create."""
+    import threading
+
+    from marshal_engine.budgets import BudgetExceeded
+
+    fleet = Fleet(
+        repo,
+        {"sleeper": _Sleeper()},
+        budgets=[BudgetSpec(backend="sleeper", window="week", limit_usd=100.0, enforce=True)],
+    )
+    results: list[object] = []
+    errors: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def worker(task_id: str) -> None:
+        barrier.wait()
+        try:
+            results.append(
+                fleet.run(
+                    "sleeper",
+                    TaskSpec(id=task_id, goal="x"),
+                    permission=PermissionMode.SAFE_EDIT,
+                )
+            )
+        except BudgetExceeded as exc:
+            errors.append(str(exc))
+
+    threads = [
+        threading.Thread(target=worker, args=("a",)),
+        threading.Thread(target=worker, args=("b",)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert "in-flight" in errors[0]
+    # Slot released after the holder finishes — a follow-up matching spawn may proceed.
+    follow = fleet.run(
+        "sleeper",
+        TaskSpec(id="c", goal="x"),
+        permission=PermissionMode.SAFE_EDIT,
+    )
+    assert follow.status == RunStatus.SUCCEEDED.value
+
+
 def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> None:
     # The remaining column floors at 0 (a cap that has been blown reads $0 remaining, not a
     # misleading negative). Spent comes from the windowed rollup; limit comes from the spec.
