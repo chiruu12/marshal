@@ -22,12 +22,15 @@ Goose is a headless CLI with structured output and mode-based permissions:
 Notes:
   * Permission tiers map to ``GOOSE_MODE`` via ``prepare()`` (env), not argv flags.
   * For Cursor-backed Goose, authenticate with ``cursor-agent login`` (Goose shells out to it).
+  * ``account_info()`` runs ``goose info -v --check`` so doctor fails closed when the binary is
+    present but provider auth/configure is missing (parity with Cursor's ``verifies_auth``).
   * Token/cost fields are often null depending on provider; usage is native when present.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -85,6 +88,33 @@ class GooseBackend(CodingAgentBackend):
         except (OSError, subprocess.SubprocessError):
             return False
         return proc.returncode == 0
+
+    def account_info(self) -> dict[str, str] | None:
+        """Provider + model from ``goose info -v --check`` when auth/configure succeeds.
+
+        ``goose info --check`` exercises the configured provider (including Cursor-backed
+        ``cursor-agent`` login). A None result while the binary is on PATH means not configured
+        or not authenticated — doctor treats that as FAIL via ``verifies_auth()``. Never raises.
+        """
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "info", "-v", "--check"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        blob = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        return _parse_info_check(blob, exit_ok=proc.returncode == 0)
+
+    def verifies_auth(self) -> bool:
+        # ``goose info --check`` only succeeds when the configured provider authenticates, so a
+        # None from account_info() (with the binary present) means "not configured / not logged
+        # in" — doctor must not green-light Goose on a bare ``--version``.
+        return True
 
     def prepare(self, opts: RunOpts) -> None:
         """Stamp GOOSE_MODE for headless permission semantics (argv has no --yes/--plan)."""
@@ -188,6 +218,59 @@ class GooseBackend(CodingAgentBackend):
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+_INFO_KEY_RE = re.compile(
+    r"^(GOOSE_PROVIDER|GOOSE_MODEL|active_provider)\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _parse_info_check(raw: str, *, exit_ok: bool) -> dict[str, str] | None:
+    """Extract ``{plan, model}`` from ``goose info [-v] --check`` output.
+
+    Returns None when the probe failed (non-zero exit or ``Auth: FAILED``). ``plan`` is the
+    configured provider (``GOOSE_PROVIDER`` / ``active_provider``); ``model`` is ``GOOSE_MODEL``
+    when present. Pure — unit-tested without a subprocess.
+    """
+    if not exit_ok:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("auth:"):
+            rest = stripped.split(":", 1)[1].strip().lower()
+            if rest.startswith("fail"):
+                return None
+
+    info: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = _INFO_KEY_RE.match(stripped)
+        if match is None:
+            continue
+        key = match.group(1).lower()
+        value = match.group(2).strip()
+        if not value:
+            continue
+        if key in ("goose_provider", "active_provider"):
+            # Prefer GOOSE_PROVIDER when both appear; first write wins unless upgrading from
+            # active_provider → GOOSE_PROVIDER (handled by scanning order + overwrite rules).
+            if key == "goose_provider" or "plan" not in info:
+                info["plan"] = value
+        elif key == "goose_model":
+            info["model"] = value
+
+    if not info:
+        # Check succeeded but verbose keys absent (non-verbose --check only) — still authenticated.
+        return {"plan": "configured"}
+    if "plan" not in info:
+        info["plan"] = "configured"
+    return info
 
 
 def _split_provider_model(raw: str | None) -> tuple[str | None, str | None]:
