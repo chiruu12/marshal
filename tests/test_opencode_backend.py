@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
-from marshal_engine.backends.opencode import OpenCodeBackend
+from marshal_engine.backends.opencode import OpenCodeBackend, permission_config_for
 
 
 @pytest.fixture
@@ -24,6 +25,59 @@ def test_map_permission(backend: OpenCodeBackend) -> None:
     assert backend.map_permission(PermissionMode.READ_ONLY) == ["--agent", "plan"]
     assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--dangerously-skip-permissions"]
     assert backend.map_permission(PermissionMode.YOLO) == ["--dangerously-skip-permissions"]
+
+
+def test_permission_config_safe_edit_denies_question_and_curated() -> None:
+    cfg = permission_config_for(PermissionMode.SAFE_EDIT)
+    assert cfg is not None
+    perms = cfg["permission"]
+    assert perms["question"] == "deny"
+    assert perms["*"] == "allow"
+    assert perms["external_directory"] == "deny"
+    assert perms["bash"]["rm"] == "deny"
+    assert perms["bash"]["rm *"] == "deny"
+    assert perms["edit"]["*.env"] == "deny"
+    assert perms["read"]["*.env"] == "deny"
+    # never ask - headless stdin is closed
+    assert '"ask"' not in json.dumps(cfg)
+
+
+def test_permission_config_yolo_only_denies_question() -> None:
+    cfg = permission_config_for(PermissionMode.YOLO)
+    assert cfg is not None
+    assert cfg["permission"] == {"*": "allow", "question": "deny"}
+    assert permission_config_for(PermissionMode.READ_ONLY) is None
+
+
+def test_prepare_stamps_opencode_config_content(
+    backend: OpenCodeBackend, tmp_path: Path
+) -> None:
+    opts = _opts(cwd=tmp_path, permission=PermissionMode.SAFE_EDIT, extra_env={"KEEP": "1"})
+    backend.prepare(opts)
+    raw = opts.extra_env["OPENCODE_CONFIG_CONTENT"]
+    assert opts.extra_env["KEEP"] == "1"
+    stamped = json.loads(raw)
+    assert stamped == permission_config_for(PermissionMode.SAFE_EDIT)
+    # argv stays skip-permissions; managed config is what differentiates safe-edit
+    argv = backend.build_invocation(TaskSpec(id="t", goal="x"), opts)
+    assert "--dangerously-skip-permissions" in argv
+
+
+def test_prepare_yolo_stamps_question_deny_only(
+    backend: OpenCodeBackend, tmp_path: Path
+) -> None:
+    opts = _opts(cwd=tmp_path, permission=PermissionMode.YOLO)
+    backend.prepare(opts)
+    stamped = json.loads(opts.extra_env["OPENCODE_CONFIG_CONTENT"])
+    assert stamped == permission_config_for(PermissionMode.YOLO)
+
+
+def test_prepare_readonly_skips_config_content(
+    backend: OpenCodeBackend, tmp_path: Path
+) -> None:
+    opts = _opts(cwd=tmp_path, permission=PermissionMode.READ_ONLY)
+    backend.prepare(opts)
+    assert "OPENCODE_CONFIG_CONTENT" not in opts.extra_env
 
 
 def test_build_invocation_basic(backend: OpenCodeBackend) -> None:

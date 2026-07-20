@@ -19,8 +19,10 @@ Notes / gaps baked in from research (verify against a live run):
   * `opencode serve` (HTTP, 127.0.0.1:4096) is a faster warm-server path - added later
     (capabilities.server_mode = True).
   * serve+attach hangs if any permission is `ask`; for `run` headless we keep stdin closed
-    (shared runner) so a stray prompt fails fast instead of deadlocking. yolo/safe-edit also
-    want `question: deny` in a dedicated opencode.json (engine-managed) - TODO config layer.
+    (shared runner) so a stray prompt fails fast instead of deadlocking. ``prepare()`` stamps
+    an engine-managed permission snippet via ``OPENCODE_CONFIG_CONTENT`` (``question: deny``
+    always for write tiers; curated bash/edit/read denies for ``safe-edit``). Skip-permissions
+    does NOT cover the ``question`` tool - the managed config closes that gap.
   * Canonical repo moved sst/opencode -> anomalyco/opencode; npm package still `opencode-ai`.
 """
 
@@ -42,6 +44,55 @@ from ..types import (
     UsageSource,
 )
 from .base import CodingAgentBackend
+
+#: Env var OpenCode reads as an inline JSON config override (high precedence; no worktree dirty).
+_OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
+
+
+def permission_config_for(mode: PermissionMode) -> dict[str, Any] | None:
+    """Pure builder: permission snippet stamped for a write-tier run, or None for read-only.
+
+    ``safe-edit`` gets curated denies (``question``, ``external_directory``, ``rm``, ``.env``,
+    ``.git``). ``yolo`` still denies ``question`` so headless runs cannot deadlock on a prompt,
+    but otherwise stays unrestricted. Never emits ``ask`` (stdin is closed).
+    """
+    if mode is PermissionMode.READ_ONLY:
+        return None
+    if mode is PermissionMode.YOLO:
+        return {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": {
+                "*": "allow",
+                "question": "deny",
+            },
+        }
+    # SAFE_EDIT
+    return {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {
+            "*": "allow",
+            "question": "deny",
+            "external_directory": "deny",
+            "bash": {
+                "*": "allow",
+                "rm": "deny",
+                "rm *": "deny",
+            },
+            "edit": {
+                "*": "allow",
+                "*.env": "deny",
+                "*.env.*": "deny",
+                ".git/*": "deny",
+                ".git/**": "deny",
+            },
+            "read": {
+                "*": "allow",
+                "*.env": "deny",
+                "*.env.*": "deny",
+                "*.env.example": "allow",
+            },
+        },
+    }
 
 
 class OpenCodeBackend(CodingAgentBackend):
@@ -65,6 +116,20 @@ class OpenCodeBackend(CodingAgentBackend):
     }
 
     # --- hooks ---------------------------------------------------------------------------
+
+    def prepare(self, opts: RunOpts) -> None:
+        """Stamp ``OPENCODE_CONFIG_CONTENT`` with the permission snippet for this tier.
+
+        Argv still uses ``--dangerously-skip-permissions`` for write tiers; the managed config
+        is what makes ``safe-edit`` distinct (curated denies + ``question: deny``).
+        """
+        cfg = permission_config_for(opts.permission)
+        if cfg is None:
+            return
+        opts.extra_env = {
+            **opts.extra_env,
+            _OPENCODE_CONFIG_CONTENT: json.dumps(cfg, separators=(",", ":")),
+        }
 
     def check_available(self) -> bool:
         if shutil.which(self.binary) is None:
