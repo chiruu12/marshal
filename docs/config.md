@@ -24,8 +24,8 @@ Each entry under `clients:` is a named client. The YAML key is the client name (
 
 | Key | Type | Default | What it does | Example |
 |-----|------|---------|--------------|---------|
-| `backend` | string | *(required)* | Backend id to invoke (`opencode`, `cursor`, `codex`, `claude-code`, `antigravity`, `command-code`, `goose`, …). Goose models use `provider/model` (e.g. `cursor-agent/auto`). | `backend: goose` |
-| `model` | string \| omitted | `null` | Model id passed to the backend. OpenCode with no model defaults to `opencode-go/glm-5.2` at resolve time. OpenCode `fireworks-ai/*` models are rejected at load. | `model: claude-sonnet-4-6` |
+| `backend` | string | *(required)* | Backend id to invoke (`opencode`, `cursor`, `codex`, `claude-code`, `antigravity`, `command-code`, `goose`, …). Goose models use `provider/model` (e.g. `cursor-agent/auto`) or a bare model; empty sides around `/` are rejected. | `backend: goose` |
+| `model` | string \| omitted | `null` | Model id passed to the backend. OpenCode with no model defaults to `opencode-go/glm-5.2` at resolve time. OpenCode `fireworks-ai/*` models are rejected at load. Goose rejects malformed `provider/` / `/model` strings before spawn. | `model: claude-sonnet-4-6` |
 | `permission` | `read-only` \| `safe-edit` \| `yolo` | from `defaults` | Overrides the fleet default for this client. | `permission: safe-edit` |
 | `timeout_s` | int | from `defaults` | Per-client hard timeout (seconds). | `timeout_s: 600` |
 | `secret_ref` | string \| omitted | `null` | **Advisory only.** When set to `env:VAR`, `marshal doctor` warns if `VAR` is unset. Marshal does **not** inject this into the backend process — each CLI authenticates via its own login. | `secret_ref: env:ANTHROPIC_API_KEY` |

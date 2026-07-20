@@ -266,6 +266,10 @@ Ad-hoc (no named client required):
 marshal run --backend goose --model cursor-agent/auto --goal "Reply with exactly: pong"
 ```
 
+Goose `--model` accepts either a bare model name (Goose's configured `active_provider`) or
+`provider/model` (e.g. `cursor-agent/auto`). Both sides of a slash must be non-empty —
+`cursor-agent/` and `/auto` are rejected before a worktree is created.
+
 ### `marshal usage`
 
 `marshal usage` rolls up the immutable `usage/events.jsonl` ledger into a human-friendly table with
@@ -417,7 +421,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
 | Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). PTY wrapper still TODO. |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
-| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
+| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.

@@ -51,6 +51,9 @@ versions may include breaking API changes until 1.0.
   `--repo` / `MARSHAL_REPO` fails immediately with doctor-aligned wording (`not a git work tree`)
   instead of leading with “copy fleet.config.example.yaml”. Valid git repos without
   `fleet.config.yaml` still get the missing-config warning.
+- **Goose `provider/model` validation** (#20). Malformed forms with an empty provider or model
+  around `/` (e.g. `cursor-agent/`, `/auto`) raise a clear `ValueError` during argv preflight
+  before worktree create. Valid `cursor-agent/auto` and bare model names are unchanged.
 - **Client-resolution errors name the config path** — missing `fleet.config.yaml` (wrong
   `--repo`/cwd), empty clients, and skipped backends no longer collapse into a bare
   `known: (none configured)`. CLI `run`/`spawn` warn on stderr when the config file is absent

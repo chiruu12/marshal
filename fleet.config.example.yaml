@@ -115,7 +115,8 @@ clients:
     secret_ref: env:ANTHROPIC_API_KEY   # optional preflight check; see header
 
   # Goose via Cursor Agent CLI as the model provider. Auth: `cursor-agent login` (Goose shells
-  # out to cursor-agent). Model form is `provider/model` → goose `--provider` + `--model`.
+  # out to cursor-agent). Model form is `provider/model` → goose `--provider` + `--model`
+  # (both sides required; `cursor-agent/` / `/auto` are rejected). Bare model names are fine too.
   goose-cursor:
     backend: goose
     model: cursor-agent/auto
