@@ -110,6 +110,9 @@ and the `marshal-workflow` Skill.
 **Cursor plan tier in `doctor`** - surfaces the authenticated CLI's subscription tier + current
 model (an honest account fact; individual accounts expose no usage/quota API, so no percentage is
 fabricated).
+**Goose auth probe in `doctor`** - `goose info -v --check` verifies provider configure/auth
+(including Cursor-backed `cursor-agent` login); a present-but-unauthenticated Goose CLI is a FAIL,
+not a green `available`.
 **Claude Code backend** (`backends/claude_code.py`) - `claude -p --output-format json` with
 `acceptEdits` for safe-edit; it reports `total_cost_usd` + tokens, so usage is `native` (honest
 cost, no estimation). Live-verified end-to-end (2026-06-26): edits land in the worktree and the

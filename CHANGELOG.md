@@ -9,6 +9,11 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Goose doctor auth/configure probe (#24).** `GooseBackend.account_info()` runs
+  `goose info -v --check` and `verifies_auth()` is true, so `marshal doctor` fails closed when the
+  Goose CLI is on PATH but provider auth/configure is missing (including Cursor-backed
+  `cursor-agent` login failures). Surfaces `plan:goose` with provider + model when the check
+  succeeds. Hint text still points at `goose configure` / `cursor-agent login`.
 - **Permission config layer (v0, C1/H4 / #17).** Cursor `safe-edit` `prepare()` merges a curated
   deny list into the worktree's `.cursor/cli.json` (`Shell(rm)`, `.env` read/write, `.git`
   writes) alongside `--force`. OpenCode `prepare()` stamps `OPENCODE_CONFIG_CONTENT` with

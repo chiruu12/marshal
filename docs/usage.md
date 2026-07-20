@@ -308,7 +308,10 @@ log storage has no file (the CLI returns non-zero and the MCP tool returns `log=
 case).
 
 `marshal doctor` also reports a backend's plan tier where the CLI exposes it (e.g. a `plan:cursor`
-line with the subscription tier + current model). For every config key see [`config.md`](config.md).
+line with the subscription tier + current model, or `plan:goose` with the configured provider +
+model after `goose info --check` succeeds). Goose now fails closed when the binary is present but
+provider auth/configure is missing — same posture as Cursor's authenticated `about` probe. For
+every config key see [`config.md`](config.md).
 
 ## Use it as a library
 
@@ -421,7 +424,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
 | Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). PTY wrapper still TODO. |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
-| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
+| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Doctor probes auth via `goose info --check` (fails closed if not configured / not logged in). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.

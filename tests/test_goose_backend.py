@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
-from marshal_engine.backends.goose import GooseBackend, _split_provider_model
+from marshal_engine.backends.goose import GooseBackend, _parse_info_check, _split_provider_model
 
 
 @pytest.fixture
@@ -218,3 +218,111 @@ def test_parse_output_malformed_json_ignored(backend: GooseBackend) -> None:
     res = backend.parse_output(out, "", 0)
     assert res.status is RunStatus.SUCCEEDED
     assert "start" in res.text and "end" in res.text
+
+
+# --- account_info / verifies_auth (goose info -v --check) --------------------------------------
+
+
+def test_verifies_auth_true(backend: GooseBackend) -> None:
+    assert backend.verifies_auth() is True
+
+
+def test_parse_info_check_success_verbose() -> None:
+    raw = """
+goose Version:
+  Version:                  1.43.0
+
+goose Configuration:
+  GOOSE_MODEL: auto
+  GOOSE_PROVIDER: cursor-agent
+  active_provider: cursor-agent
+
+Provider Check:
+  Auth:                     OK
+  Models:                   3 available
+"""
+    assert _parse_info_check(raw, exit_ok=True) == {
+        "plan": "cursor-agent",
+        "model": "auto",
+    }
+
+
+def test_parse_info_check_success_without_verbose_keys() -> None:
+    raw = """
+goose Version: 1.43.0
+
+Provider Check:
+  Auth:                     OK
+"""
+    assert _parse_info_check(raw, exit_ok=True) == {"plan": "configured"}
+
+
+def test_parse_info_check_auth_failed_returns_none() -> None:
+    raw = """
+goose Configuration:
+  GOOSE_PROVIDER: cursor-agent
+  GOOSE_MODEL: auto
+
+Provider Check:
+  Auth:                     FAILED Authentication error: You are not logged in to cursor-agent.
+  Hint:                     Check your API key or run 'goose configure'
+Error: provider check failed
+"""
+    # Even with provider keys present, Auth FAILED + non-zero exit must not green-light doctor.
+    assert _parse_info_check(raw, exit_ok=False) is None
+    assert _parse_info_check(raw, exit_ok=True) is None
+
+
+def test_parse_info_check_empty_or_nonzero() -> None:
+    assert _parse_info_check("", exit_ok=True) is None
+    assert _parse_info_check("GOOSE_PROVIDER: x", exit_ok=False) is None
+
+
+def test_account_info_uses_info_check(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = (
+            "GOOSE_PROVIDER: anthropic\nGOOSE_MODEL: claude-sonnet\n"
+            "Provider Check:\n  Auth:                     OK\n"
+        )
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr("marshal_engine.backends.goose.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "anthropic", "model": "claude-sonnet"}
+    assert calls and calls[0][:4] == ["goose", "info", "-v", "--check"]
+
+
+def test_account_info_none_when_check_fails(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 1
+        stdout = "Provider Check:\n  Auth:                     FAILED not logged in\n"
+        stderr = "Error: provider check failed\n"
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.subprocess.run",
+        lambda *a, **k: _Proc(),
+    )
+    assert backend.account_info() is None
+
+
+def test_account_info_none_when_binary_missing(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.goose.shutil.which", lambda _b: None)
+    assert backend.account_info() is None
