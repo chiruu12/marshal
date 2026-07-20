@@ -385,6 +385,16 @@ class Fleet:
                     f"backend {req.backend_name!r} does not support permission "
                     f"{req.permission.value!r} (supported: {supported})"
                 )
+            # Pure argv preflight before worktree create (e.g. Goose rejects `provider/` / `/model`).
+            backend.build_invocation(
+                req.task,
+                RunOpts(
+                    cwd=self.repo_root,
+                    permission=req.permission,
+                    model=req.model,
+                    timeout_s=req.timeout_s,
+                ),
+            )
             started = ts or _now()
             # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
             # dir, or the state record. task_id stays the grouping key on RunRecord.

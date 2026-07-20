@@ -725,6 +725,23 @@ def test_run_agent_unknown_backend_raises(repo: Path) -> None:
         svc.run_agent(backend="nonexistent", goal="x", task_id="t1")
 
 
+def test_run_agent_goose_malformed_model_raises(repo: Path) -> None:
+    """Ad-hoc Goose with a trailing-slash model fails before any worktree is created."""
+    from unittest.mock import MagicMock
+
+    from marshal_engine.backends.goose import GooseBackend
+
+    cfg = FleetConfig()
+    svc = MarshalService(repo, cfg, backends={"goose": GooseBackend()})
+    create = MagicMock(side_effect=svc.fleet.worktrees.create)
+    svc.fleet.worktrees.create = create  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="malformed"):
+        svc.run_agent(backend="goose", goal="x", task_id="t1", model="/auto")
+
+    create.assert_not_called()
+
+
 def test_run_agent_opencode_fireworks_model_raises_config_error(repo: Path) -> None:
     # Ad-hoc path: run_agent propagates the same ConfigError the synthesis raises, so a
     # Fireworks-billed run never starts on the Fleet.

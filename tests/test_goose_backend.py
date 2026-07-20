@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
-from marshal_engine.backends.goose import GooseBackend
+from marshal_engine.backends.goose import GooseBackend, _split_provider_model
 
 
 @pytest.fixture
@@ -76,6 +76,40 @@ def test_build_invocation_with_provider_model(backend: GooseBackend) -> None:
     )
     assert argv[argv.index("--provider") + 1] == "cursor-agent"
     assert argv[argv.index("--model") + 1] == "auto"
+
+
+@pytest.mark.parametrize(
+    ("raw", "provider", "model"),
+    [
+        (None, None, None),
+        ("", None, None),
+        ("   ", None, None),
+        ("gpt-4", None, "gpt-4"),
+        ("cursor-agent/auto", "cursor-agent", "auto"),
+        ("prov/a/b", "prov", "a/b"),  # nested id after first slash is the model
+    ],
+)
+def test_split_provider_model_valid(
+    raw: str | None, provider: str | None, model: str | None
+) -> None:
+    assert _split_provider_model(raw) == (provider, model)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["cursor-agent/", "/auto", "/", "  /auto", "cursor-agent/  ", "provider/"],
+)
+def test_split_provider_model_rejects_empty_side(raw: str) -> None:
+    with pytest.raises(ValueError, match="malformed"):
+        _split_provider_model(raw)
+
+
+def test_build_invocation_rejects_trailing_slash(backend: GooseBackend) -> None:
+    with pytest.raises(ValueError, match="empty model"):
+        backend.build_invocation(
+            TaskSpec(id="t1", goal="code"),
+            _opts(permission=PermissionMode.SAFE_EDIT, model="cursor-agent/"),
+        )
 
 
 def test_compose_prompt_with_context(backend: GooseBackend) -> None:

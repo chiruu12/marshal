@@ -13,6 +13,8 @@ Goose is a headless CLI with structured output and mode-based permissions:
   * Read-only / no-tools is ``GOOSE_MODE=chat``
   * ``--no-session`` keeps automated runs from writing session DB noise
   * Model field ``provider/model`` (e.g. ``cursor-agent/auto``) maps to ``--provider`` + ``--model``
+    (both sides required; trailing/leading slash forms raise ``ValueError``). A bare model name is
+    ``--model`` only.
   * Exits non-zero on hard failure; auth/provider errors may still exit 0 with an error message
     in the assistant text — ``parse_output`` treats those as FAILED when obvious. Plain-text
     failures on stdout (e.g. ``Unknown provider``) are also lifted into ``AgentResult.error``.
@@ -193,6 +195,10 @@ def _split_provider_model(raw: str | None) -> tuple[str | None, str | None]:
 
     ``cursor-agent/auto`` -> (``cursor-agent``, ``auto``). A bare model with no slash is
     ``--model`` only (Goose's configured ``active_provider`` applies). Empty -> neither.
+
+    When a ``/`` is present, both sides must be non-empty after strip. Trailing/leading slash
+    forms (``cursor-agent/``, ``/auto``) raise ``ValueError`` so callers fail fast instead of
+    emitting incomplete ``--provider`` / ``--model`` argv.
     """
     if not raw:
         return None, None
@@ -202,8 +208,15 @@ def _split_provider_model(raw: str | None) -> tuple[str | None, str | None]:
     if "/" not in text:
         return None, text
     provider_part, _, model_part = text.partition("/")
-    provider = provider_part.strip() or None
-    model = model_part.strip() or None
+    provider = provider_part.strip()
+    model = model_part.strip()
+    if not provider or not model:
+        empty = "provider" if not provider else "model"
+        raise ValueError(
+            f"goose model {raw!r} is malformed: use 'provider/model' "
+            f"(e.g. 'cursor-agent/auto') or a bare model name with no '/'; "
+            f"got empty {empty} around '/'"
+        )
     return provider, model
 
 

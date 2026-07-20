@@ -757,6 +757,23 @@ def test_unsupported_permission_raises_before_worktree_create(repo: Path) -> Non
     assert fleet.state.list() == []
 
 
+def test_goose_malformed_model_raises_before_worktree_create(repo: Path) -> None:
+    """Goose provider/model typos fail at argv preflight — no worktree / run record."""
+    from unittest.mock import MagicMock
+
+    from marshal_engine.backends.goose import GooseBackend
+
+    fleet = Fleet(repo, {"goose": GooseBackend()})
+    create = MagicMock(side_effect=fleet.worktrees.create)
+    fleet.worktrees.create = create  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="malformed"):
+        fleet.run("goose", TaskSpec(id="g1", goal="x"), model="cursor-agent/")
+
+    create.assert_not_called()
+    assert fleet.state.list() == []
+
+
 def test_usage_api_overrides_cost_with_admin_api(repo: Path) -> None:
     seen: dict[str, object] = {}
 
