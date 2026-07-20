@@ -73,10 +73,11 @@ _DESC_WS_HINT = (
 class Job(BaseModel):
     """One parallel job for run_many: which client runs what, optionally scoped.
 
-    All jobs in a run_many call run in the call's `workspace` (cross-workspace batches are not yet
-    supported - issue separate run_many calls per workspace). A job may also be specified ad-hoc
-    (omit `client`, set `backend` + optional `model`) for harness-first routing without a configured
-    fleet.config.yaml client.
+    A job may set ``workspace`` to target a registered repo; jobs without it use the call-level
+    ``workspace`` (default workspace when omitted). Mixed-workspace batches share one concurrency
+    cap; each workspace keeps its own config, worktrees, and ledger. A job may also be specified
+    ad-hoc (omit ``client``, set ``backend`` + optional ``model``) for harness-first routing without
+    a configured fleet.config.yaml client.
     """
 
     client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
@@ -86,6 +87,15 @@ class Job(BaseModel):
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
+    workspace: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional per-job workspace (from list_workspaces). Overrides the call-level "
+                "`workspace` for this job only."
+            )
+        ),
+    ] = None
 
 
 def build_service() -> MarshalService:
@@ -256,17 +266,28 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     @app.tool()
     async def run_many(
         jobs: Annotated[list[Job], Field(description="Jobs to run in parallel, each in its own worktree.")],
-        max_concurrency: Annotated[int, Field(description="Max jobs running at once.")] = 4,
-        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+        max_concurrency: Annotated[int, Field(description="Max jobs running at once (across all workspaces in the batch).")] = 4,
+        workspace: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Default workspace for jobs that omit per-job `workspace` "
+                    "(from list_workspaces); defaults to the primary workspace."
+                )
+            ),
+        ] = None,
     ) -> list[dict[str, Any]]:
-        """Run several clients in parallel in one workspace, each in its own worktree; returns all
-        run records (each tagged with the workspace)."""
-        svc = await offload(registry.get, workspace)
-        records = await offload(
-            svc.run_many, [j.model_dump() for j in jobs], max_concurrency=max_concurrency
+        """Run several jobs in parallel, each in its own worktree. Jobs may target different
+        registered workspaces via per-job `workspace` (call-level `workspace` is the default for
+        jobs that omit it). Returns all run records, each tagged with the workspace it ran in.
+        Ledgers and worktrees stay per-workspace; only the concurrency cap is shared."""
+        paired = await offload(
+            registry.run_many,
+            [j.model_dump() for j in jobs],
+            max_concurrency=max_concurrency,
+            default_workspace=workspace,
         )
-        ws = workspace or DEFAULT_WORKSPACE
-        return [tag(r.model_dump(mode="json"), ws) for r in records]
+        return [tag(r.model_dump(mode="json"), ws) for ws, r in paired]
 
     @app.tool()
     async def spawn(

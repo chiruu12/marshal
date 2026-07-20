@@ -391,6 +391,27 @@ class MarshalService:
             usage_api=req.usage_api,
         )
 
+    def job_request(self, job: dict[str, Any]) -> RunRequest:
+        """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
+
+        Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?, model?,
+        backend?, duration?}``. Used by single-repo ``run_many`` and the registry's cross-workspace
+        fan-out so validation stays fail-fast before any worktree is created.
+        """
+        return self._request_for(
+            job.get("client"),
+            job["goal"],
+            job.get("task_id"),
+            job.get("context_files"),
+            model=job.get("model"),
+            backend=job.get("backend"),
+            duration=job.get("duration"),
+        )
+
+    def run_request_captured(self, req: RunRequest) -> RunRecord:
+        """Run one request; capture any failure as a FAILED record (batch-safe, never raises)."""
+        return self.fleet._run_request(req)
+
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
         """Run several clients in parallel. Each job is
         {client, goal, task_id?, context_files?, model?, backend?, duration?}.
@@ -399,14 +420,7 @@ class MarshalService:
         also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's
         optional `duration` (preset name or positive seconds) overrides the resolved timeout_s.
         """
-        requests = [
-            self._request_for(
-                j.get("client"), j["goal"], j.get("task_id"), j.get("context_files"),
-                model=j.get("model"), backend=j.get("backend"),
-                duration=j.get("duration"),
-            )
-            for j in jobs
-        ]
+        requests = [self.job_request(j) for j in jobs]
         return self.fleet.run_many(requests, max_concurrency=max_concurrency)
 
     def spawn(

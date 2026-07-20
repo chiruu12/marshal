@@ -9,6 +9,10 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Cross-workspace `run_many` (#22 / M4).** MCP `run_many` jobs accept optional per-job
+  `workspace`; mixed batches share one concurrency cap via `WorkspaceRegistry.run_many` while each
+  workspace keeps its own config, worktrees, and ledger. Call-level `workspace` remains the default
+  for jobs that omit it. Docs + `marshal-orchestrate` Skill updated.
 - **Optional integrate hooks (#25 / H2).** `integrate_run_hooks: true` omits `git --no-verify` on
   `commit_run` / `integrate` so non-interactive pre-commit/pre-merge hooks run. Default remains
   `--no-verify` for headless reliability; doctor and `SECURITY.md` document the deadlock risk of
