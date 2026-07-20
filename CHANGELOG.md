@@ -61,6 +61,10 @@ versions may include breaking API changes until 1.0.
 - **Reference docs** — `docs/config.md` (every config key) and `docs/mcp-tools.md` (MCP tool census).
 
 ### Changed
+- **`docs/design.md` §5 permission table includes Goose** (#23). Column documents
+  `GOOSE_MODE=chat` (read-only) / `GOOSE_MODE=auto` (safe-edit and yolo, process-equivalent);
+  honesty note names Goose + Antigravity alongside Command Code. Aligned with `docs/usage.md` /
+  `SECURITY.md`.
 - **CLI `run`/`spawn` preflight git-ness** before the missing-config advisory (#19). A non-git
   `--repo` / `MARSHAL_REPO` fails immediately with doctor-aligned wording (`not a git work tree`)
   instead of leading with “copy fleet.config.example.yaml”. Valid git repos without
