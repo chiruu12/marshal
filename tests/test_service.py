@@ -556,7 +556,7 @@ def test_skipped_client_heals_when_backend_appears(repo: Path) -> None:
     # (installed, or a healed PATH) must promote its clients instead of erroring forever.
     svc, be = _toggle_svc(repo)
     assert svc.skipped_clients == ["late"]
-    with pytest.raises(ValueError, match="no such client"):
+    with pytest.raises(ValueError, match="client 'late' skipped"):
         svc.run_agent("late", "go", task_id="t1")
 
     be.available = True
@@ -575,12 +575,32 @@ def test_list_clients_reprobes_skipped(repo: Path) -> None:
 
 def test_still_unavailable_client_keeps_raising(repo: Path) -> None:
     svc, _be = _toggle_svc(repo)
-    with pytest.raises(ValueError, match="no such client"):
+    with pytest.raises(ValueError, match="client 'late' skipped"):
         svc.run_agent("late", "go", task_id="t1")
-    with pytest.raises(ValueError, match="no such client"):
+    with pytest.raises(ValueError, match="CLI unavailable"):
         svc.run_agent("late", "go", task_id="t2")  # reprobe found nothing; still skipped
     assert svc.skipped_clients == ["late"]
 
+
+def test_unknown_client_names_missing_config_path(repo: Path, tmp_path: Path) -> None:
+    # Wrong --repo/cwd with no fleet.config.yaml used to surface only
+    # `known: (none configured)` with no path - pin the actionable form.
+    missing = tmp_path / "no-such-fleet.config.yaml"
+    svc = MarshalService(repo, FleetConfig(), config_path=missing)
+    with pytest.raises(ValueError, match="no fleet config at") as excinfo:
+        svc.run_agent("goose-cursor", "pong")
+    msg = str(excinfo.value)
+    assert "(none configured)" in msg
+    assert str(missing) in msg
+
+
+def test_unknown_client_includes_config_path_when_loaded(repo: Path, tmp_path: Path) -> None:
+    cfg_path = tmp_path / "fleet.config.yaml"
+    cfg_path.write_text("clients: {}\n", encoding="utf-8")
+    empty = MarshalService(repo, FleetConfig(), config_path=cfg_path)
+    with pytest.raises(ValueError, match="declares no clients") as excinfo:
+        empty.run_agent("missing", "x")
+    assert str(cfg_path) in str(excinfo.value)
 
 # --- harness-first model selection: model override + ad-hoc (backend, model) spawn ------------
 

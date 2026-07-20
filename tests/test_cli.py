@@ -476,6 +476,29 @@ def test_models_malformed_config_returns_error(
     assert "models must be a list" in err
 
 
+def test_run_missing_config_warns_and_names_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Wrong cwd/--repo with no fleet.config.yaml must warn on stderr and name the path in the
+    # resolution error - not a bare `known: (none configured)`.
+    ret = cli.main(
+        [
+            "run",
+            "--repo",
+            str(tmp_path),
+            "--client",
+            "goose-cursor",
+            "--goal",
+            "pong",
+        ]
+    )
+    assert ret == 1
+    err = capsys.readouterr()[1]
+    assert "no fleet config" in err
+    assert "goose-cursor" in err
+    assert str(tmp_path / "fleet.config.yaml") in err
+
+
 def test_run_and_spawn_catch_budget_exceeded(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

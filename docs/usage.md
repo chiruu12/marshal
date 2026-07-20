@@ -248,6 +248,22 @@ marshal mcp                # run the MCP server over stdio
 repo without the MCP workspace registry. `run`/`spawn` accept `--repo`, `--config`, `--client` (or
 ad-hoc `--backend` + `--model`), and `--duration` (preset or seconds).
 
+**Config path matters.** `run`/`spawn` resolve clients from `<repo>/fleet.config.yaml` (or
+`$MARSHAL_CONFIG` / `--config`). Default `--repo` is cwd — running outside the project root with no
+`--repo`/`MARSHAL_REPO` loads zero clients and warns on stderr. Prefer:
+
+```bash
+marshal run --repo /path/to/project --client goose-cursor --goal "…"
+# or
+cd /path/to/project && marshal run --client goose-cursor --goal "…"
+```
+
+Ad-hoc (no named client required):
+
+```bash
+marshal run --backend goose --model cursor-agent/auto --goal "Reply with exactly: pong"
+```
+
 ### `marshal usage`
 
 `marshal usage` rolls up the immutable `usage/events.jsonl` ledger into a human-friendly table with
@@ -399,7 +415,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; safe-edit maps to `--yolo` (headless auto-accept blocks writes). |
 | Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). |
 | Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
-| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login`). Stream-json tokens when the provider reports them. |
+| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.

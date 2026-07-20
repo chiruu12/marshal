@@ -237,12 +237,7 @@ class MarshalService:
                 self._reprobe_skipped()
                 client = self._clients.get(client_name)
             if client is None:
-                known = ", ".join(self._clients) or "(none configured)"
-                raise ValueError(
-                    f"no such client: {client_name!r}; known: {known}; "
-                    "hint: pass backend=<name> (with optional model=) for an ad-hoc run, or "
-                    "check fleet.config.yaml and run doctor"
-                )
+                raise self._unknown_client_error(client_name)
             resolved_model = model if model is not None else resolve_model(client)
             if model is not None:
                 # A model override bypasses load_config's guard, so re-check it here (same rule):
@@ -280,6 +275,44 @@ class MarshalService:
             "must provide either a configured 'client' or a bare 'backend' (with optional 'model'); "
             "hint: list_clients shows configured clients, 'marshal backends' lists backend names"
         )
+
+    def _unknown_client_error(self, client_name: str) -> ValueError:
+        """Build an actionable error when a named client cannot be resolved.
+
+        Distinguishes three common failure modes that used to collapse into a vague
+        ``known: (none configured)``:
+        - the name is configured but its backend CLI is unavailable (skipped)
+        - no fleet config file at ``config_path`` (wrong ``--repo`` / cwd / env)
+        - config loaded but the name is simply not declared
+        """
+        if client_name in self.skipped_clients:
+            skipped = self.config.clients[client_name]
+            return ValueError(
+                f"client {client_name!r} skipped: backend {skipped.backend!r} CLI unavailable; "
+                f"hint: install/authenticate the backend and re-run `marshal doctor` "
+                f"(config: {self.config_path})"
+            )
+        known = ", ".join(self._clients) or "(none configured)"
+        parts = [f"no such client: {client_name!r}", f"known: {known}"]
+        if not self.config_path.exists():
+            parts.append(
+                f"no fleet config at {self.config_path} "
+                "(pass --repo/--config, set MARSHAL_REPO/MARSHAL_CONFIG, or "
+                "cp fleet.config.example.yaml fleet.config.yaml)"
+            )
+        elif not self.config.clients:
+            parts.append(f"config at {self.config_path} declares no clients")
+        else:
+            parts.append(f"config: {self.config_path}")
+            if self.skipped_clients:
+                parts.append(
+                    f"skipped (CLI unavailable): {', '.join(self.skipped_clients)}"
+                )
+        parts.append(
+            "hint: pass backend=<name> (with optional model=) for an ad-hoc run, or "
+            "check fleet.config.yaml and run doctor"
+        )
+        return ValueError("; ".join(parts))
 
     def _ensure_backend(self, name: str) -> CodingAgentBackend:
         """Lazily add a backend to the Fleet for ad-hoc (backend, model) spawns.

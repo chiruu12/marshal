@@ -325,14 +325,17 @@ def build_service_for(
     A malformed config still raises here - same as the single-repo path has always done.
 
     ``missing_config`` / ``config_warnings`` select STDERR phrasing for the MCP legacy entry point,
-    the workspace registry, and the CLI (silent when no config file).
+    the workspace registry, and the CLI. Prefer ``"legacy"`` (or ``"workspace"``) over ``"silent"``
+    whenever a human might see the process - a missing file with zero clients and no warning is how
+    ``known: (none configured)`` becomes mysterious. ``"silent"`` remains for hermetic callers that
+    deliberately tolerate an absent file.
     """
     if not wdef.config_path.exists():
         if missing_config == "legacy":
             _warn(
                 f"no fleet config at {wdef.config_path}; starting with zero clients. "
-                "Copy fleet.config.example.yaml to fleet.config.yaml (or set MARSHAL_CONFIG), then "
-                "reconnect. See SETUP.md."
+                "Copy fleet.config.example.yaml to fleet.config.yaml (or set MARSHAL_CONFIG / "
+                "pass --repo/--config), then retry. See SETUP.md."
             )
         elif missing_config == "workspace":
             _warn(

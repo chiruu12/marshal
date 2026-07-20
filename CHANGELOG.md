@@ -40,6 +40,10 @@ versions may include breaking API changes until 1.0.
 - **Reference docs** — `docs/config.md` (every config key) and `docs/mcp-tools.md` (MCP tool census).
 
 ### Changed
+- **Client-resolution errors name the config path** — missing `fleet.config.yaml` (wrong
+  `--repo`/cwd), empty clients, and skipped backends no longer collapse into a bare
+  `known: (none configured)`. CLI `run`/`spawn` warn on stderr when the config file is absent
+  (same posture as MCP), while ad-hoc `--backend` still works with zero clients.
 - **Memory prefers `LLM_API_KEY` env** over deprecated inline `memory.llm_api_key` in YAML (env
   wins when both are set).
 - **`enforce: true` budgets serialize matching in-flight spawns** (one concurrent holder per

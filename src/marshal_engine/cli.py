@@ -545,13 +545,15 @@ def _build_cli_service(args: argparse.Namespace) -> MarshalService:
     """Build a MarshalService for `run`/`spawn` from CLI args (mirrors mcp_server.build_service).
 
     A repo with no fleet.config.yaml still builds, with zero clients, so `marshal run --backend ...
-    --model ...` works ad-hoc without ever editing a config file.
+    --model ...` works ad-hoc without ever editing a config file. Missing config warns on stderr
+    (same posture as the MCP entry point) so a wrong ``--repo``/cwd does not look like
+    ``known: (none configured)`` with no explanation.
     """
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
     return build_service_for(
         WorkspaceDef(name=DEFAULT_WORKSPACE, path=repo, config_path=cfg_path),
-        missing_config="silent",
+        missing_config="legacy",
         config_warnings="plain",
     )
 
