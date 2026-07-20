@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -542,13 +543,36 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if report.fails else 0
 
 
+def _require_git_work_tree(repo: Path) -> None:
+    """Fail fast when ``--repo`` / ``MARSHAL_REPO`` is not a git work tree.
+
+    Matches ``marshal doctor`` wording so a non-git path does not lead with the missing-config
+    advisory (which sends drivers down a config rabbit hole).
+    """
+    try:
+        inside = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"{repo}: git not runnable") from exc
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        raise ValueError(
+            f"{repo}: not a git work tree (point MARSHAL_REPO / --repo at a git repo)"
+        )
+
+
 def _build_cli_service(args: argparse.Namespace) -> MarshalService:
     """Build a MarshalService for `run`/`spawn` from CLI args (mirrors mcp_server.build_service).
 
     A repo with no fleet.config.yaml still builds, with zero clients, so `marshal run --backend ...
     --model ...` works ad-hoc without ever editing a config file. Missing config warns on stderr
     (same posture as the MCP entry point) so a wrong ``--repo``/cwd does not look like
-    ``known: (none configured)`` with no explanation.
+    ``known: (none configured)`` with no explanation. Callers that need a git repo (``run`` /
+    ``spawn``) must preflight via ``_require_git_work_tree`` first so the advisory never masks a
+    non-git path.
     """
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
@@ -576,9 +600,12 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
 
 def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
     """Shared body for `run` (blocking) and `spawn` (background)."""
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     try:
+        # Before missing-config warnings: non-git --repo is the primary error (see issue #19).
+        _require_git_work_tree(repo)
         svc = _build_cli_service(args)
-    except ConfigError as exc:
+    except (ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     run_kwargs = {
@@ -594,8 +621,8 @@ def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
             else svc.run_agent(args.client, args.goal, **run_kwargs)
         )
     except (ValueError, ConfigError, BudgetExceeded, WorktreeError) as exc:
-        # WorktreeError: wrong --repo / non-git path (ad-hoc --backend reaches worktree create
-        # before any client-resolution error). Prefer a one-line stderr over a traceback.
+        # WorktreeError: worktree create/remove failures after a valid git repo was confirmed.
+        # Prefer a one-line stderr over a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.json:

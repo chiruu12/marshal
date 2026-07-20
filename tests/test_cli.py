@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -480,13 +481,16 @@ def test_models_malformed_config_returns_error(
 def test_run_missing_config_warns_and_names_path(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Wrong cwd/--repo with no fleet.config.yaml must warn on stderr and name the path in the
+    # Valid git repo with no fleet.config.yaml must warn on stderr and name the path in the
     # resolution error - not a bare `known: (none configured)`.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
     ret = cli.main(
         [
             "run",
             "--repo",
-            str(tmp_path),
+            str(repo),
             "--client",
             "goose-cursor",
             "--goal",
@@ -497,7 +501,30 @@ def test_run_missing_config_warns_and_names_path(
     err = capsys.readouterr()[1]
     assert "no fleet config" in err
     assert "goose-cursor" in err
-    assert str(tmp_path / "fleet.config.yaml") in err
+    assert str(repo / "fleet.config.yaml") in err
+
+
+def test_run_nongit_repo_fails_without_missing_config_advisory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-git --repo must fail with a git-repo error, not lead with the missing-config hint."""
+    ret = cli.main(
+        [
+            "run",
+            "--repo",
+            str(tmp_path),
+            "--backend",
+            "goose",
+            "--goal",
+            "x",
+        ]
+    )
+    assert ret == 1
+    err = capsys.readouterr().err
+    assert "not a git work tree" in err
+    assert "point MARSHAL_REPO" in err or "--repo" in err
+    assert "no fleet config" not in err
+    assert "Copy fleet.config.example.yaml" not in err
 
 
 def test_run_and_spawn_catch_budget_exceeded(
@@ -512,6 +539,7 @@ def test_run_and_spawn_catch_budget_exceeded(
         def spawn(self, *_a: object, **_k: object) -> object:
             raise BudgetExceeded("refusing new spawn (enforce=true)")
 
+    monkeypatch.setattr(cli, "_require_git_work_tree", lambda _repo: None)
     monkeypatch.setattr(cli, "_build_cli_service", lambda _args: _FakeSvc())
     args = argparse.Namespace(
         client=None,
@@ -533,7 +561,7 @@ def test_run_and_spawn_catch_budget_exceeded(
 def test_run_and_spawn_catch_worktree_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Non-git --repo (ad-hoc --backend) must exit 1 with stderr, not a traceback."""
+    """Worktree failures after a valid git repo must exit 1 with stderr, not a traceback."""
 
     class _FakeSvc:
         def run_agent(self, *_a: object, **_k: object) -> object:
@@ -542,6 +570,7 @@ def test_run_and_spawn_catch_worktree_error(
         def spawn(self, *_a: object, **_k: object) -> object:
             raise WorktreeError("worktree add failed: fatal: not a git repository")
 
+    monkeypatch.setattr(cli, "_require_git_work_tree", lambda _repo: None)
     monkeypatch.setattr(cli, "_build_cli_service", lambda _args: _FakeSvc())
     args = argparse.Namespace(
         client=None,
