@@ -201,6 +201,20 @@ def test_failed_run_without_error_surfaces_exit_code_and_stderr(tmp_path: Path) 
     assert res.error and "code 3" in res.error and "boom detail" in res.error
 
 
+def test_failed_run_without_error_surfaces_stdout_when_stderr_empty(tmp_path: Path) -> None:
+    # Goose-style: actionable failure text on stdout only. base.run must not drop it.
+    b = _Dummy(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('error: Error Unknown provider: fake\\n'); sys.exit(1)",
+        ]
+    )
+    res = b.run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    assert res.error and "Unknown provider" in res.error
+
+
 def test_run_missing_binary(tmp_path: Path) -> None:
     b = _Dummy(["marshal-no-such-binary-xyz123"])
     res = b.run(_task(), RunOpts(cwd=tmp_path))

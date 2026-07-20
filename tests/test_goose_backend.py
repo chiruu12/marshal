@@ -156,6 +156,21 @@ def test_parse_output_nonzero_exit(backend: GooseBackend) -> None:
     res = backend.parse_output("", "fatal error", 1)
     assert res.status is RunStatus.FAILED
     assert res.exit_code == 1
+    assert "fatal error" in (res.error or "")
+
+
+def test_parse_output_unknown_provider_stdout(backend: GooseBackend) -> None:
+    # Live-captured Goose failure: plain text on stdout, empty stderr, exit 1. Drivers must see
+    # "Unknown provider" on record.error — not a bare "exited with code 1".
+    out = (
+        "error: Error Unknown provider: nonexistent-provider.\n"
+        "Please check your system keychain and run 'goose configure' again.\n"
+    )
+    res = backend.parse_output(out, "", 1)
+    assert res.status is RunStatus.FAILED
+    assert res.error is not None
+    assert "Unknown provider" in res.error
+    assert res.text == ""
 
 
 def test_parse_output_malformed_json_ignored(backend: GooseBackend) -> None:

@@ -246,9 +246,9 @@ class CodingAgentBackend(ABC):
         result = self.finalize(result)
         result.duration_ms = _elapsed_ms()
         if result.status is RunStatus.FAILED and not result.error:
-            # parse_output found no reason (e.g. the backend errored on stderr, not in its JSON
-            # stream). Surface the exit code + a stderr tail so a failure is never a silent "failed".
-            result.error = _failure_reason(self.name, proc.returncode, err)
+            # parse_output found no reason (e.g. the backend errored outside its JSON stream).
+            # Consult stderr first, then stdout — Goose and others bury provider failures on stdout.
+            result.error = _failure_reason(self.name, proc.returncode, err, out)
         return result
 
     def _recover_partial_usage(self, stdout: str, stderr: str) -> UsageRecord | None:
@@ -304,8 +304,23 @@ def _as_text(value: object) -> str:
     return str(value)
 
 
-def _failure_reason(name: str, exit_code: int, stderr: str) -> str:
-    """A debuggable reason for a failed run that parse_output couldn't explain: exit code + stderr tail."""
-    tail = " ".join(stderr.strip().splitlines()[-3:])
+def _failure_reason(name: str, exit_code: int, stderr: str, stdout: str = "") -> str:
+    """Debuggable reason when parse_output left error empty: exit code + stderr/stdout tail.
+
+    Prefer stderr; fall back to stdout (some CLIs, notably Goose, print provider/config failures
+    only on stdout). Prefer lines that look like ``error:`` / ``Error `` when present.
+    """
+    tail = _failure_tail(stderr) or _failure_tail(stdout)
     reason = f"{name}: exited with code {exit_code}"
     return f"{reason}: {tail}" if tail else reason
+
+
+def _failure_tail(blob: str, limit: int = 500) -> str:
+    lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    for ln in lines:
+        lower = ln.lower()
+        if lower.startswith("error:") or lower.startswith("error "):
+            return ln[:limit]
+    return " ".join(lines[-3:])[:limit]

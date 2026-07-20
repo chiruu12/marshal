@@ -118,6 +118,9 @@ versions may include breaking API changes until 1.0.
 - **`prepare()` now runs before argv/env snapshot in `CodingAgentBackend.run()`.** Env stamps from
   `prepare()` (e.g. OpenCode `OPENCODE_CONFIG_CONTENT`, Goose `GOOSE_MODE`) were previously built
   into `child_env` *before* `prepare()` ran, so managed permission config never reached the child.
+- **Goose surfaces non-JSON failure text on `run.error` (#18).** Provider/config failures printed
+  as plain text on stdout (e.g. `Unknown provider`) are now extracted by `GooseBackend.parse_output`;
+  shared `_failure_reason` also falls back to a stdout tail when stderr is empty.
 - **MCP server + CLI + `MarshalService` + `Fleet` now recover the user's PATH before spawning
   backends.** An MCP host (Claude Code, Cursor, etc.) typically spawns Marshal with a stripped
   PATH that lacks the user's zshrc-managed directories (Homebrew, `~/.local/bin`, npm-global), so

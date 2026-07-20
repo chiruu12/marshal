@@ -14,7 +14,8 @@ Goose is a headless CLI with structured output and mode-based permissions:
   * ``--no-session`` keeps automated runs from writing session DB noise
   * Model field ``provider/model`` (e.g. ``cursor-agent/auto``) maps to ``--provider`` + ``--model``
   * Exits non-zero on hard failure; auth/provider errors may still exit 0 with an error message
-    in the assistant text — ``parse_output`` treats those as FAILED when obvious
+    in the assistant text — ``parse_output`` treats those as FAILED when obvious. Plain-text
+    failures on stdout (e.g. ``Unknown provider``) are also lifted into ``AgentResult.error``.
 
 Notes:
   * Permission tiers map to ``GOOSE_MODE`` via ``prepare()`` (env), not argv flags.
@@ -168,6 +169,9 @@ class GooseBackend(CodingAgentBackend):
         text = "".join(text_parts).strip()
         if error_msg is None:
             error_msg = _auth_or_fatal_error_from_text(text)
+        if error_msg is None and exit_code != 0:
+            # Provider/config failures often land as plain text on stdout (no JSON events).
+            error_msg = _plain_failure_from_streams(raw_stdout, raw_stderr)
 
         if found_usage:
             usage.source = UsageSource.NATIVE
@@ -272,3 +276,37 @@ def _auth_or_fatal_error_from_text(text: str) -> str | None:
             first = text.strip().splitlines()[0].strip() if text.strip() else text
             return first[:500] or text[:500]
     return None
+
+
+def _plain_failure_from_streams(stdout: str, stderr: str) -> str | None:
+    """Surface non-JSON failure text Goose prints on stdout (or stderr) when exit ≠ 0.
+
+    Live example (unknown provider): ``error: Error Unknown provider: …`` on stdout with an
+    empty stderr — without this, ``parse_output`` left ``error=None`` and base.run only
+    reported ``goose: exited with code 1``.
+    """
+    for blob in (stdout, stderr):
+        picked = _prefer_error_line(blob)
+        if picked:
+            return picked
+    return None
+
+
+def _prefer_error_line(blob: str, limit: int = 500) -> str | None:
+    """Prefer an ``error:`` / ``Error `` line; else a short non-empty tail. Skip JSON lines."""
+    lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    for ln in lines:
+        if ln.startswith("{"):
+            continue
+        lower = ln.lower()
+        if lower.startswith("error:") or lower.startswith("error "):
+            return ln[:limit]
+        if "unknown provider" in lower or "goose configure" in lower:
+            return ln[:limit]
+    # No structured cue — take the last few non-JSON lines as a truncated tail.
+    plain = [ln for ln in lines if not ln.startswith("{")]
+    if not plain:
+        return None
+    return " ".join(plain[-3:])[:limit]
