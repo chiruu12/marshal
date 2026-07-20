@@ -285,14 +285,26 @@ def run_checks(
             else f"{advisory} advisory (soft-warn only; set enforce: true to refuse over-cap spawns)"
         )
         checks.append(Check("budgets", OK if enforced == len(config.budgets) else WARN, detail, ""))
-    checks.append(
-        Check(
-            "integrate-hooks",
-            WARN,
-            "commit_run / integrate use git --no-verify (hooks skipped for headless reliability)",
-            "review diffs before integrate; rely on verify: / CI for gatekeeping",
+    if config.integrate_run_hooks:
+        checks.append(
+            Check(
+                "integrate-hooks",
+                WARN,
+                "integrate_run_hooks: true — commit_run / integrate run git hooks "
+                "(prompting hooks can deadlock headless merges)",
+                "use only non-interactive hooks; keep verify: / CI as a backup gate",
+            )
         )
-    )
+    else:
+        checks.append(
+            Check(
+                "integrate-hooks",
+                WARN,
+                "commit_run / integrate use git --no-verify (hooks skipped for headless reliability)",
+                "set integrate_run_hooks: true only for non-interactive hooks; "
+                "else review diffs and rely on verify: / CI",
+            )
+        )
 
     return checks
 

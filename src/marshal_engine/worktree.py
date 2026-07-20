@@ -56,6 +56,7 @@ class WorktreeManager:
         setup_timeout_s: int = 600,
         verify_cmd: list[str] | None = None,
         allow_unsafe_commands: bool = False,
+        integrate_run_hooks: bool = False,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.base_dir = Path(base_dir) if base_dir is not None else worktrees_dir(self.repo_root)
@@ -70,6 +71,9 @@ class WorktreeManager:
         self.verify_cmd = verify_cmd
         # When false, setup/verify refuse non-allowlisted basenames (see config.setup_command_refusal).
         self.allow_unsafe_commands = allow_unsafe_commands
+        # When false (default), commit/merge pass --no-verify so prompting hooks cannot deadlock
+        # headless integrate. True = run hooks; only safe when hooks are non-interactive.
+        self.integrate_run_hooks = integrate_run_hooks
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         # These git calls run on the driver's checkout (commit/merge/status), so they get the same
@@ -240,15 +244,20 @@ class WorktreeManager:
         """Stage and commit everything in the worktree onto its branch.
 
         Agents leave their work uncommitted; integrating it means committing it first. Returns
-        the new commit sha, or None if the worktree was clean (nothing to commit). Hooks are
-        skipped (`--no-verify`) since a prompting hook would deadlock a headless run.
+        the new commit sha, or None if the worktree was clean (nothing to commit). By default
+        hooks are skipped (`--no-verify`) so a prompting hook cannot deadlock a headless run;
+        set ``integrate_run_hooks=True`` to run them (non-interactive hooks only).
         """
         add = self._git("add", "-A", cwd=wt.path)
         if add.returncode != 0:
             raise WorktreeError(f"add failed for {wt.task_id!r}: {add.stderr.strip()}")
         if self._git("diff", "--cached", "--quiet", cwd=wt.path).returncode == 0:
             return None  # nothing staged -> nothing to commit
-        commit = self._git("commit", "--no-verify", "-m", message, cwd=wt.path)
+        commit_args = ["commit"]
+        if not self.integrate_run_hooks:
+            commit_args.append("--no-verify")
+        commit_args += ["-m", message]
+        commit = self._git(*commit_args, cwd=wt.path)
         if commit.returncode != 0:
             raise WorktreeError(f"commit failed for {wt.task_id!r}: {commit.stderr.strip()}")
         return self._git("rev-parse", "HEAD", cwd=wt.path).stdout.strip()
@@ -302,7 +311,10 @@ class WorktreeManager:
         left clean); a *blocked* merge that git refused to start because the target working tree
         is dirty/colliding (no changes made -> MergeResult.blocked); any other failure raises.
         """
-        args = ["merge", "--no-edit", "--no-verify"]  # --no-verify: headless, never run prompting hooks
+        # Default --no-verify: headless, never run prompting hooks. Opt in via integrate_run_hooks.
+        args = ["merge", "--no-edit"]
+        if not self.integrate_run_hooks:
+            args.append("--no-verify")
         if message is not None:
             args += ["-m", message]
         args.append(branch)

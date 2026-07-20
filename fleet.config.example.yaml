@@ -34,6 +34,12 @@ defaults:
 # execute as your user; this is not a sandbox (see SECURITY.md).
 # allow_unsafe_commands: true
 
+# Optional: run git hooks on commit_run / integrate. Default false uses `git --no-verify` so a
+# prompting pre-commit cannot deadlock a headless merge. Set true ONLY when hooks are known
+# non-interactive (format/lint that never prompts). Prompting hooks can still hang until the
+# git timeout; prefer verify: / CI when unsure. See SECURITY.md.
+# integrate_run_hooks: true
+
 # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
 # connection error) - with exponential backoff. Defaults to 2; set 0 to disable. Genuine task
 # failures and timeouts are never retried.

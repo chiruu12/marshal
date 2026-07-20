@@ -158,6 +158,25 @@ def test_allow_unsafe_commands_wrong_type_raises(tmp_path: Path) -> None:
         load_config(p)
 
 
+def test_integrate_run_hooks_defaults_false(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(_YAML)
+    assert load_config(p).integrate_run_hooks is False
+
+
+def test_integrate_run_hooks_true(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("integrate_run_hooks: true\n" + _YAML)
+    assert load_config(p).integrate_run_hooks is True
+
+
+def test_integrate_run_hooks_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("integrate_run_hooks: 1\n" + _YAML)
+    with pytest.raises(ConfigError, match="integrate_run_hooks"):
+        load_config(p)
+
+
 def test_setup_command_refusal_allowlist_and_opt_in() -> None:
     from marshal_engine.config import is_safe_setup_binary, setup_command_refusal
 

@@ -58,6 +58,12 @@ Fleet-wide layered context strings.
 |------|---------|--------------|---------|
 | bool \| omitted | `false` | Opt-in to run `worktree_setup` / `verify` when argv[0] is **not** on the allowlist (including any `sh -c …` form). When false, non-allowlisted commands are refused at run time (setup fails the run; verify → `verify_failed`). Does not sandbox allowlisted tools. | `allow_unsafe_commands: true` |
 
+### `integrate_run_hooks`
+
+| Type | Default | What it does | Example |
+|------|---------|--------------|---------|
+| bool \| omitted | `false` | When `false`, `commit_run` / `integrate` pass `git --no-verify` so prompting pre-commit/pre-merge hooks cannot deadlock a headless driver. Set `true` only when hooks are known **non-interactive** (format/lint that never prompts). Prompting hooks can hang until the git timeout (`GIT_TERMINAL_PROMPT=0` + closed stdin + timeout still apply). Prefer `verify:` / CI when unsure. | `integrate_run_hooks: true` |
+
 ### `retries`
 
 | Type | Default | What it does | Example |
