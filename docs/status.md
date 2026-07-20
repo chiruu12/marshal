@@ -11,7 +11,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 |--------|----------------|-------|
 | `types.py` | Shared Pydantic models + enums | done |
 | `backends/base.py` | Abstract backend + safe `run()` (no-stdin, hard timeout) | done |
-| `backends/{cursor,opencode,codex,command_code,antigravity,claude_code}.py` | Six adapters off one base class | done |
+| `backends/{cursor,opencode,codex,command_code,antigravity,claude_code,goose}.py` | Seven adapters off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
 | `pricing.py` | Token → cost price table (the `ESTIMATED` path) | done |
@@ -20,14 +20,22 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `fleet.py` | Orchestrator: worktree → run → price → record → persist | done |
 | `registry.py` | Construct backends by name | done |
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
+| `retry.py` | Transient-failure classifier + backoff for run retries | done |
+| `env.py` | Child env hygiene (`VIRTUAL_ENV` scrub) + user PATH recovery | done |
+| `logs.py` | Durable per-run stdout/stderr under `.marshal/logs/` | done |
+| `layout.py` | Centralized `.marshal` directory layout helpers | done |
+| `scaffold.py` | Repo-shape-aware `fleet.config.yaml` scaffold | done |
+| `budgets.py` | Dollar caps (soft-warn by default; optional `enforce: true`) | done |
+| `doctor.py` | `marshal doctor` preflight (toolchain, backends, hygiene advisories) | done |
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
 | `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |
+| `memory/` | Optional Cognee-backed Marshal Recall (`[memory]` extra) | done |
 | `service.py` | Testable core the MCP/CLI call into (single-repo) | done |
-| `cli.py` | `marshal doctor/backends/usage/status/workflows/workspace/mcp` | done |
-| `mcp_server.py` | 20-tool MCP surface over stdio (list_workspaces/add_workspace/doctor/run/run_many/spawn/cancel/benchmark/report/collect/integrate/workflows/memory_query/memory_add/memory_stats/...); each takes an optional `workspace` | done |
+| `cli.py` | `marshal doctor/backends/models/run/spawn/usage/status/logs/workflows/workflow/workspace/memory/clean/mcp` | done |
+| `mcp_server.py` | MCP surface over stdio ([`docs/mcp-tools.md`](mcp-tools.md)); each action/query tool takes an optional `workspace` | done |
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files. CI
-enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) + macOS (py3.12).
+enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) + macOS (py3.12).
 
 ## Backend verification matrix
 
@@ -37,8 +45,9 @@ enforces a 90% coverage floor (currently ~92%) and runs on Linux (py3.11-3.13) +
 | Cursor | yes | verified | verified | n/a by design (Admin API only) |
 | Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost `admin-api`/estimated/unavailable) |
-| Command Code | yes | plan mode | verified (auto-accept) | none (hosted account → `unavailable`)*** |
+| Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
 | Antigravity | yes | verified (reply) | verified** | none |
+| Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
 writes land and the JSONL parser extracts text + tokens correctly. A Codex client routed through
@@ -52,6 +61,9 @@ own dashboard, never a fabricated $0); `doctor` surfaces its provider + default 
 adapter's `prepare()` pre-registers the run's worktree in `~/.gemini/antigravity-cli/settings.json`
 `trustedWorkspaces` and passes `--add-dir <cwd>`; without the trust entry, agy diverts edits to its
 scratch dir (`--add-dir` alone was insufficient). Still no native usage (text-only output).
+Goose live-verified headless (2026-07-20) via `goose-cursor` / `cursor-agent/auto` (CLI 1.43,
+`GOOSE_MODE=auto`); reply-only smoke succeeded. Usage remains best-effort (provider-dependent
+stream-json tokens/cost).
 
 ## Roadmap
 
@@ -106,7 +118,8 @@ native cost flows to the ledger.
 worktree in agy's `trustedWorkspaces` before launch, so headless edits land in the worktree instead
 of the scratch dir (live-verified 2026-06-27). This closes the prior known limitation.
 **Command Code backend** (`backends/command_code.py`) - `command-code -p` (a hosted coding agent on
-its own account) with `plan` for read-only and `auto-accept` for safe-edit; `doctor` surfaces its
+its own account) with `plan` for read-only and `--yolo` for safe-edit (headless `auto-accept`
+blocks writes); `doctor` surfaces its
 provider + default model. `-p` prints plain text with no token/cost accounting, so usage is
 `unavailable` (a hosted account's spend lives in its own dashboard, never a fabricated $0).
 Live-verified headless (model `zai-org/GLM-5.2`).
@@ -122,5 +135,20 @@ backend set still reaches the Fleet, so `doctor` still reports a missing backend
 backend CLI is unavailable (runs with whatever fleet is present; raises only if all are unavailable)
 and surfaces non-succeeded runs as phase notes + `next_actions`. The `WorkflowService` Protocol gained
 a read-only `client_available()` probe.
+**Field-review fixes** (from a real 3-agent fleet session, 2026-07-17) - the state/config sync gaps:
+(1) workspace **config hot-reload** - the registry rebuilds a workspace's service when its
+`fleet.config.yaml` appears/changes/vanishes (mtime+size signature), so `list_clients`/`spawn` never
+serve a stale client list while `doctor` reads live; (2) **PATH fallback + self-healing clients** -
+`user_path()` falls back to well-known user bin dirs (`~/.local/bin`, Homebrew, …) when the
+login-shell probe fails, `doctor` probes freshly constructed backends when its snapshot lacks one,
+and clients skipped at startup re-probe (and heal) on resolution/`list_clients`; (3) the
+**`verify:` gate** - an optional per-workspace command (e.g. the repo's full test suite) that runs
+after a would-be-succeeded run with file changes; failure lands as **`verify_failed`** with the
+output tail on the record, worktree kept for review; (4) **repo-shape-aware scaffold** - a new
+workspace's starter config carries commented `worktree_setup` suggestions detected from the repo
+layout (root vs nested `pyproject.toml`/`package.json`/`go.mod`/`Cargo.toml`); (5) **orphan
+reaping** - scope-mode `clean` reconciles `.marshal/worktrees` against the ledger and reaps dirs
+with no (readable) run record (`orphans_removed`); (6) resolution errors carry actionable hints
+(ad-hoc `backend=` escape hatch, `doctor`, `add_workspace`).
 Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -53,6 +54,44 @@ def test_setup_is_noop_without_setup_cmd(repo: Path) -> None:
     assert wt.path.exists()
 
 
+# --- path-traversal security: task_id is a public input, so it must be sanitized -----------
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../escape",
+        "../../etc/evil",
+        "ok/../../escape",
+        "/absolute/path",
+        "with spaces/../../escape",
+    ],
+)
+def test_create_rejects_path_traversal_in_task_id(repo: Path, bad_id: str) -> None:
+    # The MCP surface (and workflows) accept an arbitrary `task_id` from the driver / spec. A
+    # `..` segment, an absolute path, or a slash that escapes the base dir must NOT be allowed
+    # to write the worktree anywhere on disk - that would be a real path-traversal hole.
+    m = WorktreeManager(repo)
+    base_resolved = m.base_dir.resolve()
+    with pytest.raises(WorktreeError):
+        m.create(bad_id)
+    # nothing landed outside the base dir
+    assert (base_resolved.parent).exists()  # the parent dir was never the target
+    # the escape target, if it would have been a child of the parent, must not exist either
+    for candidate in (base_resolved.parent / "escape", base_resolved.parent / "evil"):
+        assert not candidate.exists()
+
+
+def test_create_accepts_normal_ids_after_a_traversal_attempt(repo: Path) -> None:
+    # A rejected traversal attempt must leave no orphan state - the manager is reusable.
+    m = WorktreeManager(repo)
+    with pytest.raises(WorktreeError):
+        m.create("../escape")
+    wt = m.create("normal-after")
+    assert wt.path.exists()
+    assert wt.branch == "marshal/normal-after"
+
+
 def test_setup_failure_tears_down_and_raises(repo: Path) -> None:
     m = WorktreeManager(repo, setup_cmd=[sys.executable, "-c", "import sys; sys.exit(1)"])
     wt = m.create("setup_fail")
@@ -74,6 +113,79 @@ def test_setup_missing_binary_raises(repo: Path) -> None:
     with pytest.raises(WorktreeError, match="not found"):
         m.setup(wt)
     assert not (m.base_dir / "setup_nobin").exists()  # torn down
+
+
+# --- verify: the post-run gate (never raises, never tears down) ----------------------------
+
+
+def test_verify_runs_in_worktree_and_passes(repo: Path) -> None:
+    m = WorktreeManager(
+        repo, verify_cmd=[sys.executable, "-c", "open('gate-ran', 'w').write('ok'); print('gate ok')"]
+    )
+    wt = m.create("verify_ok")
+    ok, output = m.verify(wt)
+    assert ok is True
+    assert (wt.path / "gate-ran").exists()  # ran with cwd = the worktree
+    assert "gate ok" in output
+
+
+def test_verify_is_noop_without_cmd(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("verify_unset")
+    assert m.verify(wt) == (True, "")
+
+
+def test_verify_failure_keeps_worktree(repo: Path) -> None:
+    # Unlike setup, a failed verify NEVER tears down - the diff must stay reviewable.
+    m = WorktreeManager(
+        repo, verify_cmd=[sys.executable, "-c", "import sys; print('broke the build'); sys.exit(3)"]
+    )
+    wt = m.create("verify_fail")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "verify exited 3" in output
+    assert "broke the build" in output
+    assert wt.path.exists()  # kept for review
+
+
+def test_verify_missing_binary_reports_not_raises(repo: Path) -> None:
+    m = WorktreeManager(repo, verify_cmd=["marshal-no-such-binary-xyz123"])
+    wt = m.create("verify_nobin")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "could not run" in output
+    assert wt.path.exists()
+
+
+def test_verify_timeout_reports_not_raises(repo: Path) -> None:
+    m = WorktreeManager(
+        repo,
+        verify_cmd=[sys.executable, "-c", "import time; time.sleep(30)"],
+        setup_timeout_s=1,  # verify reuses the setup timeout knob
+    )
+    wt = m.create("verify_slow")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "timed out after 1s" in output
+    assert wt.path.exists()
+
+
+def test_verify_output_keeps_the_tail(repo: Path) -> None:
+    # Failures print last: a long run's output is truncated from the front, keeping the summary.
+    m = WorktreeManager(
+        repo,
+        verify_cmd=[
+            sys.executable,
+            "-c",
+            "import sys; print('x' * 6000); print('TAIL-MARKER'); sys.exit(1)",
+        ],
+    )
+    wt = m.create("verify_long")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "TAIL-MARKER" in output
+    assert len(output) < 4200  # capped (plus the small exit-code prefix)
+    assert "..." in output  # truncation is visible
 
 
 def test_changed_files_detects_edits_and_additions(repo: Path) -> None:
@@ -133,6 +245,43 @@ def test_create_duplicate_raises(repo: Path) -> None:
     m.create("dup")
     with pytest.raises(WorktreeError):
         m.create("dup")
+
+
+def test_discard_removes_worktree_and_branch(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("disc1")
+    m.discard(wt.path, wt.branch)
+    assert not wt.path.exists()
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/disc1"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "marshal/disc1" not in branches
+
+
+def test_discard_reclaims_dir_when_git_admin_entry_corrupt(repo: Path) -> None:
+    # The dir survives but git's admin entry is gone (a prior partial prune): `git worktree remove`
+    # refuses ("not a working tree"). discard must still reclaim the disk-heavy dir, not raise.
+    m = WorktreeManager(repo)
+    wt = m.create("disc3")
+    shutil.rmtree(repo / ".git" / "worktrees" / "disc3")  # corrupt: drop the admin entry, keep dir
+    assert wt.path.exists()
+    m.discard(wt.path, wt.branch)  # must not raise
+    assert not wt.path.exists()    # dir reclaimed via the rmtree fallback
+
+
+def test_discard_tolerates_already_gone_worktree(repo: Path) -> None:
+    # Batch cleanup must handle a worktree dir that's already gone (manually deleted / partial
+    # prior clean): no raise, and the dangling branch is still deleted.
+    m = WorktreeManager(repo)
+    wt = m.create("disc2")
+    shutil.rmtree(wt.path)  # nuke the dir behind git's back
+    m.discard(wt.path, wt.branch)  # must not raise
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/disc2"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "marshal/disc2" not in branches
 
 
 def test_current_branch_returns_checked_out_branch(repo: Path) -> None:

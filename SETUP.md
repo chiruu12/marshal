@@ -32,12 +32,12 @@ You only need the backends your `fleet.config.yaml` references. One is enough to
 ## 1. Install Marshal
 
 ```bash
-git clone <your-marshal-remote> marshal && cd marshal
+git clone https://github.com/chiruu12/marshal.git && cd marshal
 uv sync --extra mcp --extra dev
 ```
 
-The base package is Pydantic + PyYAML. `--extra mcp` adds the MCP server (the only way to *run*
-agents); `--extra dev` adds the test/lint toolchain.
+The base package is Pydantic + PyYAML. `--extra mcp` adds the MCP server; `--extra dev` adds the
+test/lint toolchain.
 
 ## 2. Configure a fleet
 
@@ -180,11 +180,11 @@ on your PATH.)
 
 ## 6. Your first run
 
-Marshal's **CLI is inspection-only** (`doctor`, `backends`, `status`, `usage`, `workflows`, `mcp`).
-You *run* agents by driving the MCP tools from Claude Code - ask it to `list_clients`, then
-`run_agent` a small task, then `collect_run` to review the diff, then `integrate` to merge it.
-Use `spawn` + `cancel_run` for long-running background work; use `run_workflow` for declarative
-recipes (see [`docs/usage.md`](docs/usage.md)).
+Run agents from the CLI (`marshal run` / `marshal spawn`) or by driving the MCP tools from Claude
+Code — ask it to `list_clients`, then `run_agent` a small task, then `collect_run` to review the
+diff, then `integrate` to merge it. Use `spawn` + `cancel_run` for long-running background work; use
+`run_workflow` for declarative recipes (see [`docs/usage.md`](docs/usage.md) and
+[`docs/mcp-tools.md`](docs/mcp-tools.md)).
 
 To try the engine directly without a driver, use it as a library:
 
@@ -211,7 +211,9 @@ until you `integrate`. State and usage live under `.marshal/`.
 |---------|-------|-----|
 | `marshal: command not found` | console script not on PATH after `uv sync` | use `uv run marshal ...`, or `uv tool install .` |
 | `doctor` says a backend's CLI is not available | the CLI isn't installed or isn't authenticated | install + log into that CLI (Prerequisites table) |
-| `no fleet config at ...` | no `fleet.config.yaml` | `cp fleet.config.example.yaml fleet.config.yaml` |
+| `doctor` says a backend's CLI is missing but it works in your terminal | Marshal was launched with a stripped PATH (MCP host, launchd, non-interactive SSH) | Marshal unions well-known user bin dirs (`~/.local/bin`, Homebrew, …) via `user_path()`; ensure the CLI is on your login-shell PATH, or set `MARSHAL_NO_PATH_FIX=1` only in hermetic CI |
+| a run ends `verify_failed` | the workspace's `verify:` gate rejected work that otherwise looked succeeded | read `verify_output` on the run record, `collect_run` the diff, fix or re-run; the worktree is kept for review |
+| `no fleet config at …` | no `fleet.config.yaml` | `cp fleet.config.example.yaml fleet.config.yaml` |
 | `marshal mcp` exits with an extra message | the `mcp` extra isn't installed | `uv sync --extra mcp` |
 | OpenCode model rejected at load | a `fireworks-ai/*` model bills Fireworks credits | use an `opencode-go/*` model |
 | a backend run shows cost `unavailable` | the backend reports no native cost and its model isn't priced | add the model to `src/marshal_engine/data/prices.yaml` |

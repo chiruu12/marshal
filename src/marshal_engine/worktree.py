@@ -8,16 +8,23 @@ safety boundary of the whole system - keep it boring and reliable.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from .env import child_env
+from .layout import worktrees_dir
 
 
 class WorktreeError(RuntimeError):
     """A git worktree operation failed."""
+
+
+# Cap on the verify-command output kept on a run record (chars, from the END - failures print
+# last). The full stdout/stderr of the agent itself is persisted separately by the run-log store.
+_VERIFY_OUTPUT_CAP = 4000
 
 
 class Worktree(BaseModel):
@@ -46,17 +53,19 @@ class WorktreeManager:
         git_timeout_s: int = 120,
         setup_cmd: list[str] | None = None,
         setup_timeout_s: int = 600,
+        verify_cmd: list[str] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
-        self.base_dir = (
-            Path(base_dir) if base_dir is not None else self.repo_root / ".marshal" / "worktrees"
-        )
+        self.base_dir = Path(base_dir) if base_dir is not None else worktrees_dir(self.repo_root)
         self.branch_prefix = branch_prefix
         self.git_timeout_s = git_timeout_s
         # Optional command run in each fresh worktree right after `git worktree add` (e.g. provision a
         # venv). None = skip. See _run_setup for why a failure tears the worktree down and raises.
         self.setup_cmd = setup_cmd
         self.setup_timeout_s = setup_timeout_s
+        # Optional gate command run in the worktree after a run that would otherwise succeed (e.g.
+        # the repo's full test suite). None = skip. See verify() - a failure never tears down.
+        self.verify_cmd = verify_cmd
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         # These git calls run on the driver's checkout (commit/merge/status), so they get the same
@@ -133,6 +142,38 @@ class WorktreeManager:
             raise WorktreeError(
                 f"worktree setup {self.setup_cmd!r} failed for {wt.task_id!r}: {reason}"
             )
+
+    def verify(self, wt: Worktree) -> tuple[bool, str]:
+        """Run the configured ``verify_cmd`` in the worktree; ``(ok, tail-truncated output)``.
+
+        The post-run counterpart of ``setup()``: same headless guards (VIRTUAL_ENV scrubbed, stdin
+        closed, hard timeout - reusing ``setup_timeout_s``), but it NEVER raises and NEVER tears
+        the worktree down - a failed gate still holds reviewable work, and the diff must survive
+        for the driver to inspect. ``(True, "")`` when no command is configured.
+        """
+        if not self.verify_cmd:
+            return True, ""
+        try:
+            proc = subprocess.run(
+                self.verify_cmd,
+                cwd=str(wt.path),
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=child_env(),
+                timeout=self.setup_timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"verify timed out after {self.setup_timeout_s}s"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"verify could not run {self.verify_cmd[0]!r}: {exc}"
+        output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        # Failures print last: keep the TAIL, where test runners put the summary.
+        if len(output) > _VERIFY_OUTPUT_CAP:
+            output = "..." + output[-_VERIFY_OUTPUT_CAP:]
+        if proc.returncode == 0:
+            return True, output
+        return False, f"verify exited {proc.returncode}\n{output}".strip()
 
     def changed_files(self, wt: Worktree) -> list[str]:
         """Paths changed inside the worktree (uncommitted).
@@ -317,6 +358,28 @@ class WorktreeManager:
     def prune(self) -> None:
         """Clean up administrative files for worktrees whose directories are gone."""
         self._git("worktree", "prune")
+
+    def discard(self, path: Path | str, branch: str | None) -> None:
+        """Tear down a finished run's worktree + branch, tolerant of a half-gone worktree.
+
+        Unlike `remove` (which needs a live worktree), this handles batch cleanup of a worktree in
+        any state: already gone (manually deleted / a prior partial clean), live, or *corrupt* (the
+        dir survives but git's admin entry was pruned, so `git worktree remove` refuses with "not a
+        working tree"). Reclaiming the disk is the whole point, so when git won't remove a still-
+        present dir we fall back to a best-effort `rmtree`. Then `prune` the admin files and delete
+        the branch (failures ignored - already gone, or checked out in a live worktree). The
+        immutable usage ledger and the run-state record are NOT touched here.
+        """
+        p = Path(path)
+        if p.exists():
+            rm = self._git("worktree", "remove", "--force", str(p))
+            if rm.returncode != 0 and p.exists():
+                # git refused (corrupt/missing admin entry); the dir is now just a plain directory -
+                # reclaim it directly so the disk isn't stranded under an `errors` entry forever.
+                shutil.rmtree(p, ignore_errors=True)
+        self.prune()
+        if branch:
+            self._git("branch", "-D", branch)
 
 
 def _setup_reason(exit_code: int, stderr: str, stdout: str) -> str:

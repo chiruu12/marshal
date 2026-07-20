@@ -16,11 +16,10 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 
 It plugs into your driver two ways:
 
-- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (20 tools):
-  `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`, `run_many`, `spawn`,
-  `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`, `status`, `usage`,
-  `list_workflows`, `run_workflow`, plus three memory tools (`memory_query`, `memory_add`,
-  `memory_stats`) for Marshal Recall. One server can target several repos at once - every tool takes an
+- **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (see
+  [`docs/mcp-tools.md`](docs/mcp-tools.md) for the full reference), including the Marshal Recall
+  memory tools (`memory_query`, `memory_add`, `memory_stats`). One server can
+  target several repos at once - every tool takes an
   optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
   add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
@@ -29,7 +28,7 @@ It plugs into your driver two ways:
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
   consensus), and `marshal-plan-consensus` (converge on an approach before building).
 
-> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and 20-tool MCP server work end to
+> **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and MCP server work end to
 > end: parallel fan-out (`run_many`), non-blocking `spawn` + `cancel_run`, merge-back (`collect_run` +
 > `integrate`), **declarative YAML workflows**, **multi-workspace** (one server, many repos), and a
 > **measured savings benchmark** (`benchmark`/`report`). OpenCode, Cursor, Claude Code, and Command
@@ -82,7 +81,10 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
   Codex routed through EastRouter (read back from its usage API), **estimated** where a model is
   priced, and `unavailable` otherwise (Cursor, Antigravity, Command Code, and OpenCode on an unpriced
   custom provider) - never a fake $0. A `usage`
-  command most orchestrators don't have. `marshal doctor` also reports each authenticated backend's
+  command most orchestrators don't have - per-backend/client/model/`backend×model` tables with
+  input/output/cache-read token columns and a native/admin-api/estimated cost split, time-windowed
+  via `--window day|week|month|all` (CLI) or `window: session|week|month|all` (MCP - `session`
+  means "since the server started"). `marshal doctor` also reports each authenticated backend's
   plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
   defenses for the real-world hangs and quirks documented in `docs/design.md`.
@@ -141,6 +143,19 @@ Validate recipes against your config with `marshal workflows`, then run one over
 time. The `marshal-workflow` Skill is the authoring + running playbook; templates live in
 [`examples/workflows/`](examples/workflows/).
 
+## Model catalog and duration presets
+
+- **Model catalog** (`models:` in `fleet.config.yaml`) is a sheet the driver can read with
+  `marshal models` (or the `list_models` MCP tool) - one row per `id` (provider/model), with
+  `backends` it runs on and short free-form strings for `cost` / `quota_type` / `notes`. The
+  catalog is pure data; it does NOT change routing (clients still own backend+model). Absent or
+  empty = no catalog to expose; a malformed row raises `ConfigError` at load.
+- **Duration presets** are per-spawn timeout overrides for `run_agent` / `spawn` / `run_many` (and
+  `marshal run` / `marshal spawn` with `--duration`). Pass a preset name (`short`=300s,
+  `medium`=1200s, `large`=6000s, `long`=24000s) or a positive integer of seconds. The override
+  replaces the resolved `timeout_s` on the `RunRequest` for that one call; validation happens up
+  front so a typo fails fast before any worktree is created.
+
 ## Marshal Recall (persistent fleet memory)
 
 Fleet runs no longer have to start from zero. **Marshal Recall** is a Cognee-backed memory layer that
@@ -197,6 +212,8 @@ top of it. See `docs/chauffeur-future.md`.
 
 - [`SETUP.md`](SETUP.md) - clone-to-first-run setup (prerequisites, install, auth, verify, wire in).
 - [`docs/usage.md`](docs/usage.md) - configure a fleet and drive it via MCP, CLI, or library.
+- [`docs/config.md`](docs/config.md) - every `fleet.config.yaml` key and `MARSHAL_*` env var.
+- [`docs/mcp-tools.md`](docs/mcp-tools.md) - MCP tool reference (parameters and return shapes).
 - [`docs/marshal-recall.md`](docs/marshal-recall.md) - persistent fleet memory (Cognee-backed recall).
 - [`docs/model-playbook.md`](docs/model-playbook.md) - which model/client to route a task to, by
   task weight (heavy/standard/light), with a copy-paste tiered fleet and cost-honesty notes.

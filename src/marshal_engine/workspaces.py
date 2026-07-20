@@ -16,9 +16,11 @@ Workspaces are declared in three layers (merged; first declaration of a name/pat
 Each workspace loads its OWN ``<repo>/fleet.config.yaml`` (clients travel with the repo) and keeps
 its OWN isolated ``.marshal`` worktrees + ledger. ``MARSHAL_CONFIG`` is scoped to "default" only.
 A ``from_env`` registry hot-reloads the file: a workspace ADDED to it (by hand, ``marshal workspace
-add``, or the ``add_workspace`` MCP tool) shows up without reconnecting the server - existing cached
-services are untouched. Changing or removing an existing workspace still needs a reconnect. The
-process-wide concurrency cap is fixed at startup. Logging is STDERR-only (stdout is JSON-RPC).
+add``, or the ``add_workspace`` MCP tool) shows up without reconnecting the server. Each workspace's
+``fleet.config.yaml`` is watched by on-disk signature (mtime+size): editing, adding, or deleting it
+rebuilds that workspace's service on next use, so its client list never goes stale. Renaming or
+removing a workspace entry still needs a reconnect. The process-wide concurrency cap is fixed at
+startup. Logging is STDERR-only (stdout is JSON-RPC).
 """
 
 from __future__ import annotations
@@ -32,13 +34,30 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from .config import ConfigError, FleetConfig, load_config, validate
+from .layout import runs_dir
+from .scaffold import detect_project_markers, scaffold_fleet_config
 from .service import MarshalService
 from .state import FleetState, RunRecord
+
+__all__ = [
+    "DEFAULT_MAX_CONCURRENT",
+    "DEFAULT_WORKSPACE",
+    "WorkspaceDef",
+    "WorkspaceRegistry",
+    "build_service_for",
+    "detect_project_markers",
+    "read_workspaces_file",
+    "register_workspace",
+    "remove_workspace",
+    "resolve_run_gate",
+    "resolve_workspaces",
+    "scaffold_fleet_config",
+]
 
 DEFAULT_WORKSPACE = "default"
 # Default ceiling on concurrent agent runs when more than one workspace is in play. Each agent CLI
@@ -176,32 +195,6 @@ def remove_workspace(
     return True
 
 
-_FLEET_STUB = """\
-# Marshal fleet config: declare the worker clients Marshal can route tasks to. Each client pins a
-# backend + model + permission. See fleet.config.example.yaml in the Marshal repo for the full
-# reference (opencode-go, EastRouter, usage_api, worktree_setup, context, etc.).
-defaults:
-  permission: safe-edit
-  timeout_s: 900
-
-# Add clients under `clients:` (an empty map = zero clients until you add one). Example - uncomment
-# and edit, then run `marshal doctor` to verify the backend is available:
-clients:
-  # claude:
-  #   backend: claude-code
-  #   model: claude-sonnet-4-6
-"""
-
-
-def scaffold_fleet_config(repo: Path | str) -> bool:
-    """Drop a starter ``fleet.config.yaml`` into a repo that has none. Returns False if one exists."""
-    cfg = Path(repo) / "fleet.config.yaml"
-    if cfg.exists():
-        return False
-    cfg.write_text(_FLEET_STUB, encoding="utf-8")
-    return True
-
-
 # --- resolution: default + file + env --------------------------------------------------------
 
 
@@ -314,37 +307,76 @@ def resolve_run_gate(
     return None
 
 
+_MissingConfigWarn = Literal["workspace", "legacy", "silent"]
+_ConfigWarnStyle = Literal["workspace", "plain"]
+
+
 def build_service_for(
-    wdef: WorkspaceDef, *, run_gate: threading.Semaphore | None = None
+    wdef: WorkspaceDef,
+    *,
+    run_gate: threading.Semaphore | None = None,
+    missing_config: _MissingConfigWarn = "workspace",
+    config_warnings: _ConfigWarnStyle = "workspace",
 ) -> MarshalService:
-    """Build the single-repo MarshalService for one workspace (mirrors the legacy build_service).
+    """Build the single-repo MarshalService for one workspace (the single construction path).
 
     A workspace whose config file is absent still builds, with zero clients, so a registered-but-
     unconfigured repo degrades gracefully instead of raising on first use (the never-crash grace).
     A malformed config still raises here - same as the single-repo path has always done.
+
+    ``missing_config`` / ``config_warnings`` select STDERR phrasing for the MCP legacy entry point,
+    the workspace registry, and the CLI. Prefer ``"legacy"`` (or ``"workspace"``) over ``"silent"``
+    whenever a human might see the process - a missing file with zero clients and no warning is how
+    ``known: (none configured)`` becomes mysterious. ``"silent"`` remains for hermetic callers that
+    deliberately tolerate an absent file.
     """
     if not wdef.config_path.exists():
-        _warn(
-            f"workspace {wdef.name!r}: no fleet config at {wdef.config_path}; starting with zero "
-            "clients. Add one with `marshal workspace add` --scaffold, copy fleet.config.example.yaml, "
-            "or set MARSHAL_CONFIG (default workspace). See SETUP.md."
-        )
+        if missing_config == "legacy":
+            _warn(
+                f"no fleet config at {wdef.config_path}; starting with zero clients. "
+                "Copy fleet.config.example.yaml to fleet.config.yaml (or set MARSHAL_CONFIG / "
+                "pass --repo/--config), then retry. See SETUP.md."
+            )
+        elif missing_config == "workspace":
+            _warn(
+                f"workspace {wdef.name!r}: no fleet config at {wdef.config_path}; starting with zero "
+                "clients. Add one with `marshal workspace add` --scaffold, copy fleet.config.example.yaml, "
+                "or set MARSHAL_CONFIG (default workspace). See SETUP.md."
+            )
         return MarshalService(
             wdef.path, FleetConfig(), config_path=wdef.config_path, run_gate=run_gate
         )
     config = load_config(wdef.config_path)
     for warning in validate(config):
-        _warn(f"workspace {wdef.name!r} config warning: {warning}")
+        if config_warnings == "plain":
+            _warn(f"config warning: {warning}")
+        else:
+            _warn(f"workspace {wdef.name!r} config warning: {warning}")
     return MarshalService(wdef.path, config, config_path=wdef.config_path, run_gate=run_gate)
+
+
+# A config file's identity on disk: (st_mtime_ns, st_size), or None when absent. mtime_ns alone
+# can collide on coarse-timestamp filesystems; size catches a same-instant rewrite.
+_ConfigSig = tuple[int, int] | None
+
+
+def _config_signature(path: Path) -> _ConfigSig:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
 
 
 class WorkspaceRegistry:
     """Lazily builds + caches one MarshalService per workspace; resolves run_ids to their owner.
 
     Build is memoized only on SUCCESS (a transient failure never poisons a workspace) behind a
-    per-workspace lock. When constructed with a ``resolver`` (the ``from_env`` path), it hot-reloads:
-    each operation re-resolves the declarations and ADDS any new workspaces, leaving cached services
-    untouched - so a freshly registered repo is usable without reconnecting the server.
+    per-workspace lock, and keyed to the config file's on-disk signature: when a workspace's
+    ``fleet.config.yaml`` appears, changes, or disappears, the next ``get()`` rebuilds its service
+    so the client list never goes stale. When constructed with a ``resolver`` (the ``from_env``
+    path), it also hot-reloads the declarations file, ADDING any new workspaces - so a freshly
+    registered repo is usable without reconnecting the server.
     """
 
     def __init__(
@@ -364,7 +396,12 @@ class WorkspaceRegistry:
             self._defs.setdefault(d.name, d)
         self._run_gate = run_gate
         self._builder = builder or (lambda d: build_service_for(d, run_gate=run_gate))
-        self._cache: dict[str, MarshalService] = dict(prebuilt or {})
+        # Stamp prebuilt entries with the signature of the SAME path get() compares against (the
+        # def's config_path), so an unchanged config always yields a cache hit.
+        self._cache: dict[str, tuple[MarshalService, _ConfigSig]] = {}
+        for n, svc in (prebuilt or {}).items():
+            known = self._defs.get(n)
+            self._cache[n] = (svc, _config_signature(known.config_path) if known else None)
         self._locks: dict[str, threading.Lock] = {name: threading.Lock() for name in self._defs}
         self._resolver = resolver
         # The env this registry resolves against, so `add()` writes the SAME file the resolver reads.
@@ -421,20 +458,34 @@ class WorkspaceRegistry:
         return list(self._defs)
 
     def get(self, name: str | None = None) -> MarshalService:
-        """Return the workspace's service, building (and caching) it on first touch."""
+        """Return the workspace's service, building it on first touch and REBUILDING it when the
+        workspace's ``fleet.config.yaml`` has appeared, changed, or vanished since the cached build.
+        """
         self._refresh()
         wsname = name or DEFAULT_WORKSPACE
         wdef = self._defs.get(wsname)
         if wdef is None:
-            raise ValueError(f"unknown workspace {wsname!r}; known: {', '.join(self.names())}")
-        svc = self._cache.get(wsname)
-        if svc is not None:
-            return svc
-        with self._locks[wsname]:
-            svc = self._cache.get(wsname)
-            if svc is None:
-                svc = self._builder(wdef)  # may raise; failures are NOT cached (retryable)
-                self._cache[wsname] = svc
+            raise ValueError(
+                f"unknown workspace {wsname!r}; known: {', '.join(self.names())}; "
+                "hint: register it with add_workspace (MCP) or 'marshal workspace add <name> <path>'"
+            )
+        cached = self._cache.get(wsname)
+        if cached is not None and cached[1] == _config_signature(wdef.config_path):
+            return cached[0]
+        with self._locks.setdefault(wsname, threading.Lock()):
+            # Read the signature BEFORE building: if the file changes mid-build, the stored (stale)
+            # signature mismatches on the next get() and triggers another rebuild - the safe
+            # direction. A build failure propagates and leaves any previous entry in place (its
+            # signature still mismatches, so every later get() retries): a transient parse error
+            # never takes down a previously working workspace. The evicted service is NOT shut
+            # down - in-flight background spawns hold their own Fleet reference and write terminal
+            # state to the shared on-disk ledger, so nothing is lost by dropping ours.
+            sig = _config_signature(wdef.config_path)
+            cached = self._cache.get(wsname)
+            if cached is not None and cached[1] == sig:
+                return cached[0]
+            svc = self._builder(wdef)  # may raise; failures are NOT cached (retryable)
+            self._cache[wsname] = (svc, sig)
             return svc
 
     def add(self, name: str, path: Path | str) -> WorkspaceDef:
@@ -442,15 +493,14 @@ class WorkspaceRegistry:
         refresh so it is immediately resolvable. Writes against the registry's own env."""
         wdef = register_workspace(name, path, environ=self._environ)
         self._refresh()
+        # Evict any cached service for this name so re-registering is always picked up (the path
+        # may have changed, and add_workspace scaffolds a config right after this call).
+        with self._locks.setdefault(name, threading.Lock()):
+            self._cache.pop(name, None)
         return wdef
 
     def _runs_dir(self, wdef: WorkspaceDef) -> Path:
-        # The service-free scan assumes the standard ledger layout (<repo>/.marshal/runs) - the one
-        # every MCP entry point produces (build_service_for never overrides Fleet's base_dir). A
-        # library caller wrapping a service built with a custom base_dir would break this scan; the
-        # MCP server never does, so the registry sources the path here rather than from a service it
-        # may not have built yet (the cold-scan path has no service).
-        return wdef.path / ".marshal" / "runs"
+        return runs_dir(wdef.path)
 
     def owner_of(self, run_id: str, hint: str | None = None) -> str | None:
         """The workspace that owns ``run_id``, or None. Cheap path stat; never builds a service.

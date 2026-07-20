@@ -387,6 +387,42 @@ def test_apply_cognee_config_non_fastembed_no_default_model(
     assert "embedding_model" not in emb_call
 
 
+def test_apply_cognee_config_env_api_key_wins_over_yaml(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    monkeypatch.setenv("LLM_API_KEY", "from-env")
+    cfg = MemoryConfig(
+        enabled=True,
+        data_dir=str(tmp_path / "memory"),
+        llm_provider="openai",
+        llm_api_key="from-yaml",
+    )
+    mem = CogneeMemory(cfg)
+    _run(mem.recall("goal", "repo"))
+
+    llm_call = fake.config.set_llm_config.call_args.args[0]
+    assert llm_call["llm_api_key"] == "from-env"
+
+
+def test_apply_cognee_config_yaml_api_key_used_when_env_unset(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _install_fake_cognee(monkeypatch)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    cfg = MemoryConfig(
+        enabled=True,
+        data_dir=str(tmp_path / "memory"),
+        llm_provider="openai",
+        llm_api_key="from-yaml",
+    )
+    mem = CogneeMemory(cfg)
+    _run(mem.recall("goal", "repo"))
+
+    llm_call = fake.config.set_llm_config.call_args.args[0]
+    assert llm_call["llm_api_key"] == "from-yaml"
+
+
 def test_recall_sync_runs_without_running_loop(
     enabled_config: MemoryConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -20,12 +20,13 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
 from .config import ConfigError, FleetConfig, load_config, resolve_secret
-from .registry import default_backends
+from .registry import default_backends, make_backend
 
 OK = "ok"
 WARN = "warn"
@@ -39,24 +40,35 @@ BACKEND_HINTS: dict[str, str] = {
     "command-code": "npm i -g command-code, then `command-code login`",
     "antigravity": "install the Antigravity CLI (agy), then complete its OAuth login",
     "claude-code": "install Claude Code (claude), then authenticate via its login or set ANTHROPIC_API_KEY",
+    "goose": (
+        "install Goose CLI (https://block.github.io/goose), then `goose configure`. "
+        "For Cursor-backed runs use model `cursor-agent/<model>` and `cursor-agent login`. "
+        "Headless needs GOOSE_MODE=auto (Marshal sets this)."
+    ),
 }
 
 MIN_PYTHON = (3, 11)
 
 
-@dataclass
-class Check:
-    """One preflight result. ``fix`` is shown only when ``status`` is not ``ok``.
-
-    Deliberately a dataclass, not a Pydantic model: it's a trivial CLI-only display struct,
-    constructed positionally a dozen times below, and never serialized or returned over MCP - so a
-    model would add keyword-arg verbosity with zero validation/serialization benefit.
-    """
+class Check(BaseModel):
+    """One preflight result. ``fix`` is shown only when ``status`` is not ``ok``."""
 
     name: str
     status: str
     detail: str
     fix: str = ""
+
+    def __init__(self, name: str, status: str, detail: str, fix: str = "", /) -> None:
+        super().__init__(name=name, status=status, detail=detail, fix=fix)
+
+
+class DoctorReport(BaseModel):
+    """Preflight verdict: per-check results plus a roll-up. ``ok`` is true when nothing failed."""
+
+    checks: list[Check]
+    fails: int
+    warns: int
+    ok: bool
 
 
 def _first_line(text: str) -> str:
@@ -168,20 +180,36 @@ def run_checks(
     probes = dict(backends) if backends is not None else default_backends()
     for name in sorted({c.backend for c in config.clients.values()}):
         backend = probes.get(name)
-        available = backend.check_available() if backend is not None else False
-        checks.append(
-            Check(
-                f"backend:{name}",
-                OK if available else FAIL,
-                "available" if available else "CLI not on PATH / not authenticated",
-                "" if available else BACKEND_HINTS.get(name, f"install the {name} CLI"),
+        hint = BACKEND_HINTS.get(name, f"install the {name} CLI")
+        if backend is None:
+            # The caller's snapshot (e.g. a service built before this backend was configured)
+            # doesn't know the name. Probe a freshly constructed backend - the same construction
+            # path a spawn's _ensure_backend uses - so doctor's verdict matches what a run would
+            # actually do instead of failing on a stale snapshot.
+            try:
+                backend = make_backend(name)
+            except ValueError:
+                checks.append(Check(f"backend:{name}", FAIL, "unknown backend name", hint))
+                continue
+        if not backend.check_available():
+            checks.append(Check(f"backend:{name}", FAIL, "CLI not on PATH / not runnable", hint))
+            continue
+        # The CLI is present. If the backend exposes an authenticated-only probe (account_info),
+        # use it to verify credentials too: a logged-out CLI still passes `--version` but dies on
+        # the first real run, so doctor must not green-light it as merely "available".
+        info = backend.account_info()
+        if info is None and backend.verifies_auth():
+            # account_info() is an authed-only probe that returned nothing: almost always "logged
+            # out", but a transient probe failure (timeout/blip) looks the same - so name both. FAIL
+            # (not WARN) is deliberate: a false FAIL costs a re-run; a false OK costs a wasted fan-out.
+            checks.append(
+                Check(f"backend:{name}", FAIL, "CLI present but not authenticated (or auth probe failed)", hint)
             )
-        )
+            continue
+        checks.append(Check(f"backend:{name}", OK, "available"))
         # Surface plan/account context for backends that expose it (e.g. Cursor's plan tier).
-        if available and backend is not None:
-            info = backend.account_info()
-            if info:
-                checks.append(Check(f"plan:{name}", OK, _format_plan(info)))
+        if info:
+            checks.append(Check(f"plan:{name}", OK, _format_plan(info)))
 
     # --- secrets (advisory: secret_ref is NOT injected; CLI login is the real auth path) ------
     for c in config.clients.values():
@@ -200,6 +228,48 @@ def run_checks(
             )
         )
 
+    # --- trust-boundary / hygiene advisories (config present; never FAIL these) --------------
+    if config.worktree_setup or config.verify:
+        fields = []
+        if config.worktree_setup:
+            fields.append("worktree_setup")
+        if config.verify:
+            fields.append("verify")
+        checks.append(
+            Check(
+                "unsafe-commands",
+                WARN,
+                f"{' + '.join(fields)} run arbitrary argv in each worktree as your user",
+                "treat fleet.config.yaml like code you execute; only point it at trusted repos",
+            )
+        )
+    if config.memory.llm_api_key:
+        checks.append(
+            Check(
+                "memory-inline-key",
+                WARN,
+                "memory.llm_api_key is set inline in fleet.config.yaml (deprecated)",
+                "export LLM_API_KEY instead and remove llm_api_key from YAML",
+            )
+        )
+    if config.budgets:
+        enforced = sum(1 for b in config.budgets if b.enforce)
+        advisory = len(config.budgets) - enforced
+        detail = (
+            f"{enforced} enforced, {advisory} advisory (soft-warn only)"
+            if enforced
+            else f"{advisory} advisory (soft-warn only; set enforce: true to refuse over-cap spawns)"
+        )
+        checks.append(Check("budgets", OK if enforced == len(config.budgets) else WARN, detail, ""))
+    checks.append(
+        Check(
+            "integrate-hooks",
+            WARN,
+            "commit_run / integrate use git --no-verify (hooks skipped for headless reliability)",
+            "review diffs before integrate; rely on verify: / CI for gatekeeping",
+        )
+    )
+
     return checks
 
 
@@ -208,3 +278,9 @@ def summarize(checks: list[Check]) -> tuple[int, int]:
     fails = sum(1 for c in checks if c.status == FAIL)
     warns = sum(1 for c in checks if c.status == WARN)
     return fails, warns
+
+
+def doctor_report(checks: list[Check]) -> DoctorReport:
+    """Build the unified doctor payload consumed by the CLI and MCP surfaces."""
+    fails, warns = summarize(checks)
+    return DoctorReport(checks=checks, fails=fails, warns=warns, ok=fails == 0)

@@ -1,0 +1,73 @@
+# Build new backend adapters in parallel - Marshal building itself
+# This workflow spawns agents to implement new coding-agent backend adapters.
+# Each agent runs in an isolated worktree and produces a new backend implementation.
+#
+# Usage:
+#   marshal workflow run build-adapters --input backends=neuralwatt,cline,qwen --repo <repo>
+#
+# Or use run_many directly:
+#   marshal run_many --client claude --goal "Implement neuralwatt adapter..."
+#   marshal run_many --client cursor --goal "Implement cline adapter..."
+#   marshal run_many --client opencode --goal "Implement qwen adapter..."
+#
+# Requirements:
+#   - Multiple agents configured in fleet.config.yaml (e.g., claude, cursor, opencode, codex)
+#   - All agents must have SAFE_EDIT permission or higher
+#   - Each run will create files in src/marshal_engine/backends/ + tests/
+#
+# After each run:
+#   marshal collect_run <run_id>  # inspect the diff
+#   marshal integrate <run_id>     # merge into main (if approved)
+
+name: build-adapters
+description: Spawn agents to implement backend adapters in parallel worktrees
+
+inputs:
+  - backends  # comma-separated list of backends to build (e.g., "neuralwatt,cline,qwen")
+
+phases:
+  - name: implementations
+    run: fan_out
+    clients: [claude, cursor, opencode]  # <- configure these in fleet.config.yaml
+    goal: |
+      Implement a new backend adapter for {backends} in src/marshal_engine/backends/.
+
+      Follow these rules EXACTLY:
+
+      1. One adapter per agent. Example: if backends="neuralwatt,cline", agent 1 does neuralwatt, agent 2 does cline, agent 3 does nothing (or picks the most important).
+
+      2. IMPLEMENTATION: Create src/marshal_engine/backends/<backend_name>.py
+         - Subclass CodingAgentBackend (see base.py)
+         - Implement 4 required hooks: check_available(), build_invocation(), map_permission(), parse_output()
+         - Reference implementations: cursor.py, opencode.py (both in same directory)
+         - NO interactive/prompting permission modes - must support headless execution
+         - Usage must be tagged with source: native/estimated/unavailable, never $0
+
+      3. TESTS: Create tests/test_<backend_name>_backend.py
+         - Contract tests only (no process spawning, no network)
+         - Pattern: tests/test_opencode_backend.py
+         - Must test: map_permission(), build_invocation(), parse_output() with real output fixtures
+         - Use pytest with fixtures
+
+      4. REGISTRATION: Add to src/marshal_engine/registry.py
+         - Import: from .backends.<backend_name> import <Backend>Backend
+         - Add entry to _FACTORIES dict
+         - Example: "neuralwatt": NeuralwattBackend,
+
+      5. DOCTOR: Add hint to src/marshal_engine/doctor.py BACKEND_HINTS dict
+         - Example: "neuralwatt": "install neuralwatt CLI, then `neuralwatt auth`"
+
+      6. GIT: Commit your changes with a message like:
+         "add <backend_name> backend adapter + contract tests"
+
+      After implementing:
+      - Run tests: uv run pytest tests/test_<backend_name>_backend.py -v
+      - Run linting: uv run ruff check src tests
+      - Run type checking: uv run mypy src tests
+      - All must pass before committing
+
+      Reference docs: src/marshal_engine/backends/design.md (section 2-3 on backend contract and testing)
+
+  - run: collect                                         # surface every adapter's diff
+  - run: integrate  # auto: false (user reviews each diff before merging)
+    auto: false

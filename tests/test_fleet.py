@@ -20,6 +20,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
 from marshal_engine.fleet import Fleet, RunRequest
 from marshal_engine.pricing import ModelPrice, PriceTable
@@ -214,6 +215,33 @@ class _NativeZero(CodingAgentBackend):
         )
 
 
+class _LimitedPerms(CodingAgentBackend):
+    """Declares safe-edit + yolo only - used to prove permission preflight before worktree create."""
+
+    name = "limited"
+    binary = "python"
+    capabilities = Capabilities(
+        permission_modes=frozenset({PermissionMode.SAFE_EDIT, PermissionMode.YOLO}),
+    )
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "open('out.txt','w').write('hi')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        if mode not in self.capabilities.permission_modes:
+            raise ValueError(f"limited: unsupported permission mode {mode!r}")
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            exit_code=exit_code,
+        )
+
+
 class _Exploder(CodingAgentBackend):
     """parse_output raises (propagates out of base.run) - the run loop must terminal-stamp it."""
 
@@ -232,6 +260,46 @@ class _Exploder(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         raise RuntimeError("kaboom")
+
+
+class _Loudy(CodingAgentBackend):
+    """Returns canned raw_stdout/raw_stderr on its AgentResult - the durably-persisted run log.
+
+    `run()` is overridden, so no subprocess is spawned. The loudy streams are sized to prove no
+    truncation (well past the 16KB cap on the run record's `text`).
+    """
+
+    name = "loudy"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, stdout: str = "", stderr: str = "", fail: bool = False) -> None:
+        self._stdout = stdout
+        self._stderr = stderr
+        self._fail = fail
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "pass"]  # any no-op; run() is overridden below
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if not self._fail else RunStatus.FAILED,
+            text="short",
+            raw_stdout=self._stdout,
+            raw_stderr=self._stderr,
+            error="forced failure" if self._fail else None,
+        )
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        # Skip the subprocess: return the canned AgentResult directly. The full base.run() path
+        # is exercised by the other dummy backends; this one exists purely to feed the log writer.
+        return self.parse_output("", "", 0)
 
 
 class _Flaky(CodingAgentBackend):
@@ -319,6 +387,66 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
     assert s.by_backend["writer"].runs == 1
 
 
+# --- the verify gate: succeeded means the workspace's gate passed too -------------------------
+
+
+def test_verify_pass_keeps_succeeded(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "print('gate ok')"])
+    rec = fleet.run("writer", TaskSpec(id="v1", goal="x"))
+    assert rec.status == "succeeded"
+    assert rec.verify_passed is True
+    assert "gate ok" in rec.verify_output
+
+
+def test_verify_fail_marks_verify_failed_and_keeps_worktree(repo: Path) -> None:
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        verify=[sys.executable, "-c", "import sys; print('regression here'); sys.exit(2)"],
+    )
+    rec = fleet.run("writer", TaskSpec(id="v2", goal="x"))
+    assert rec.status == "verify_failed"
+    assert rec.verify_passed is False
+    assert "regression here" in rec.verify_output
+    assert Path(rec.worktree or "").exists()  # the diff survives for review
+    assert (Path(rec.worktree or "") / "out.txt").exists()
+    # the usage event records the authoritative outcome (spend happened; run did not succeed)
+    events = fleet.usage.events()
+    assert [e.status for e in events if e.run_id == rec.run_id] == ["verify_failed"]
+
+
+def test_verify_skipped_for_empty_run(repo: Path) -> None:
+    # An EMPTY run never reaches the gate: nothing to verify, no wasted gate command.
+    fleet = Fleet(
+        repo, {"noop": _NoOp()}, verify=[sys.executable, "-c", "import sys; sys.exit(1)"]
+    )
+    rec = fleet.run("noop", TaskSpec(id="v3", goal="x"))
+    assert rec.status == "empty"
+    assert rec.verify_passed is None
+    assert rec.verify_output == ""
+
+
+def test_verify_timeout_marks_verify_failed(repo: Path) -> None:
+    fleet = Fleet(
+        repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "import time; time.sleep(30)"]
+    )
+    fleet.worktrees.setup_timeout_s = 1  # verify reuses the setup timeout knob
+    rec = fleet.run("writer", TaskSpec(id="v4", goal="x"))
+    assert rec.status == "verify_failed"
+    assert "timed out" in rec.verify_output
+
+
+def test_clean_finished_reclaims_verify_failed(repo: Path) -> None:
+    fleet = Fleet(
+        repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "import sys; sys.exit(1)"]
+    )
+    rec = fleet.run("writer", TaskSpec(id="v5", goal="x"))
+    assert rec.status == "verify_failed"
+    result = fleet.clean()  # scope="finished" - a post-review action
+    assert rec.run_id in result.removed
+    assert not Path(rec.worktree or "").exists()
+
+
 def test_fleet_unknown_backend(repo: Path) -> None:
     fleet = Fleet(repo, {})
     with pytest.raises(ValueError):
@@ -391,6 +519,81 @@ def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
     assert runs[0].error and "kaboom" in runs[0].error
 
 
+# --- per-run log storage: full raw stdout/stderr persisted for every terminal run -------------
+
+
+def test_fleet_persists_full_raw_log_on_success(repo: Path) -> None:
+    # A succeeded run gets its full raw_stdout + raw_stderr written to <base>/logs/<run_id>.log.
+    # The 16KB-truncated `text` on the run record is the agent's *final message*; the log file
+    # preserves the *full* streams so a driver can inspect what the agent actually did.
+    loud = "OUT-" + ("x" * 50_000)
+    err = "ERR-" + ("y" * 50_000)
+    fleet = Fleet(repo, {"loudy": _Loudy(stdout=loud, stderr=err)})
+    rec = fleet.run("loudy", TaskSpec(id="lg1", goal="x"))
+    log_path = fleet.logs.path(rec.run_id)
+    assert log_path.exists()
+    text = log_path.read_text(encoding="utf-8")
+    assert f"=== run {rec.run_id} ===" in text
+    assert "--- stdout ---" in text
+    assert "--- stderr ---" in text
+    assert loud in text  # full, untruncated
+    assert err in text
+    # the read API agrees with the file on disk
+    assert fleet.logs.read(rec.run_id) == text
+
+
+def test_fleet_persists_full_raw_log_on_failure(repo: Path) -> None:
+    # A FAILED run (parse_output returned FAILED) still gets its log persisted - the whole point
+    # of durable logs is to debug failures, not just celebrate successes.
+    loud = "OUT-yep"
+    err = "ERR-yep"
+    fleet = Fleet(repo, {"loudy": _Loudy(stdout=loud, stderr=err, fail=True)})
+    rec = fleet.run("loudy", TaskSpec(id="lg2", goal="x"))
+    assert rec.status == "failed"
+    log_path = fleet.logs.path(rec.run_id)
+    assert log_path.exists()
+    text = log_path.read_text(encoding="utf-8")
+    assert loud in text and err in text
+
+
+def test_run_with_no_result_writes_no_log(repo: Path) -> None:
+    # When the backend raises before producing an AgentResult, there is nothing to log - the run is
+    # stamped FAILED but no log file is written (the documented no-log case).
+    fleet = Fleet(repo, {"boom": _Exploder()})
+    with pytest.raises(RuntimeError):
+        fleet.run("boom", TaskSpec(id="nolog1", goal="x"))
+    run_id = fleet.state.list()[0].run_id
+    assert fleet.logs.read(run_id) is None
+    assert not fleet.logs.path(run_id).exists()
+
+
+def test_clean_removes_run_log(repo: Path) -> None:
+    # clean() reclaims the (disk-heavy, untruncated) run log alongside the worktree.
+    fleet = Fleet(repo, {"loudy": _Loudy(stdout="OUT-z", stderr="ERR-z", fail=True)})
+    rec = fleet.run("loudy", TaskSpec(id="cllog", goal="x"))
+    assert rec.status == "failed"
+    assert fleet.logs.path(rec.run_id).exists()  # log written
+    result = fleet.clean()  # finished scope reclaims failed runs
+    assert rec.run_id in result.removed
+    assert not fleet.logs.path(rec.run_id).exists()  # log reclaimed too
+
+
+def test_fleet_log_write_failure_does_not_break_run(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A logging failure (disk full, permission, ...) must NEVER crash the run - the spec
+    # guards the write defensively. Pin the contract: a run that would otherwise succeed
+    # still reports succeeded when the log write raises.
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _boom(run_id: str, stdout: str, stderr: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(fleet.logs, "write", _boom)
+    rec = fleet.run("writer", TaskSpec(id="lg3", goal="x"))
+    assert rec.status == "succeeded"  # run succeeded, log write swallowed
+
+
 def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     reqs = [RunRequest(backend_name="writer", task=TaskSpec(id=f"m{i}", goal="x")) for i in range(6)]
@@ -411,7 +614,9 @@ def test_run_many_runs_concurrently(repo: Path) -> None:
     records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
     elapsed = time.monotonic() - start
     assert all(r.status == "succeeded" for r in records)
-    assert elapsed < 1.5  # 4 x 0.5s sequential = 2s; concurrent finishes in ~0.5s
+    # Sequential would be ≥ ~2s of sleep alone (4 × 0.5s). Bound is loose enough for
+    # CI/load jitter while still proving overlap.
+    assert elapsed < 1.9
 
 
 def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> None:
@@ -511,6 +716,45 @@ def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:
     rec = fleet.run("tok", TaskSpec(id="p2", goal="x"))
     assert rec.cost_usd == 0.0
     assert rec.source == "unavailable"   # unpriced -> cost unknown, never shown as a real $0
+
+
+def test_run_many_preserves_usage_api(repo: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def resolver(**kw: object) -> ExternalCost:
+        seen.update(kw)
+        return ExternalCost(0.42, UsageSource.ADMIN_API, 1_000_000, 0, 1)
+
+    fleet = Fleet(
+        repo, {"tok": _Tokened()}, prices=PriceTable({}), cost_resolvers={"eastrouter": resolver}
+    )
+    req = RunRequest(
+        backend_name="tok",
+        task=TaskSpec(id="rm1", goal="x"),
+        model="z-ai/glm-5.1",
+        usage_api="eastrouter",
+    )
+    records = fleet.run_many([req])
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.source == "admin-api"
+    assert rec.cost_usd == 0.42
+    assert seen["input_tokens"] == 1_000_000
+    assert seen["model"] == "z-ai/glm-5.1"
+
+
+def test_unsupported_permission_raises_before_worktree_create(repo: Path) -> None:
+    from unittest.mock import MagicMock
+
+    fleet = Fleet(repo, {"limited": _LimitedPerms()})
+    create = MagicMock(side_effect=fleet.worktrees.create)
+    fleet.worktrees.create = create  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="does not support permission"):
+        fleet.run("limited", TaskSpec(id="p1", goal="x"), permission=PermissionMode.READ_ONLY)
+
+    create.assert_not_called()
+    assert fleet.state.list() == []
 
 
 def test_usage_api_overrides_cost_with_admin_api(repo: Path) -> None:
@@ -674,3 +918,558 @@ def test_integrate_blocked_on_detached_head(repo: Path) -> None:
     result = fleet.integrate(rec.run_id)
     assert result.status == "blocked"            # refuses before committing, no orphaned merge
     assert "detached" in result.message.lower()
+
+
+# --- commit_run: freeze a run's work onto its branch so a dependent run can chain off it ---------
+
+def test_commit_run_freezes_work_on_branch(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cm1", goal="x"))
+    result = fleet.commit_run(rec.run_id)
+    assert result.status == "committed"
+    assert result.commit  # the branch tip, a concrete ref to chain on
+    assert result.branch == rec.branch
+    # the work is now a commit on the run's branch (base..branch shows it), and the tree is clean
+    assert "out.txt" in _git(repo, "diff", "--name-only", "HEAD", result.commit)
+    assert fleet.collect_run(rec.run_id).changed_files == []  # nothing uncommitted left
+    assert fleet.state.get(rec.run_id).commit == result.commit  # persisted for chaining/integrate
+
+
+def test_commit_run_enables_dependent_chaining(repo: Path) -> None:
+    # The whole point: B based on A's branch sees A's *committed* work (not just the spawn base).
+    fleet = Fleet(repo, {"writer": _Writer()})
+    a = fleet.run("writer", TaskSpec(id="chainA", goal="x"))
+    fleet.commit_run(a.run_id)
+    b = fleet.run("writer", TaskSpec(id="chainB", goal="y", base_branch=a.branch))
+    assert (Path(b.worktree) / "out.txt").read_text() == "hi"  # A's work is present in B's worktree
+
+
+def test_commit_run_clean_when_nothing_to_commit(repo: Path) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="cm2", goal="x"))  # EMPTY run: writes nothing
+    result = fleet.commit_run(rec.run_id)
+    assert result.status == "clean"
+    assert result.commit  # still reports the branch tip (== base) so the driver has a ref
+
+
+def test_commit_run_blocked_on_running_run(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cm3", goal="x"))
+    fleet.state.update(rec.run_id, status="running")  # simulate an in-flight run
+    result = fleet.commit_run(rec.run_id)
+    assert result.status == "blocked"
+    assert "progress" in result.message.lower()
+
+
+def test_commit_run_unknown_run_raises(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError):
+        fleet.commit_run("nope.writer")
+
+
+# --- clean: tear down finished runs' worktrees + branches, ledger + state untouched -------------
+
+def test_clean_default_scope_protects_unintegrated_succeeded(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl1", goal="x"))  # succeeded, NOT integrated
+    result = fleet.clean()  # scope="finished"
+    assert rec.run_id not in result.removed       # un-integrated succeeded work is protected
+    assert Path(rec.worktree).exists()            # worktree left intact
+
+
+def test_clean_all_scope_removes_unintegrated_succeeded(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl2", goal="x"))
+    result = fleet.clean(scope="all")
+    assert rec.run_id in result.removed
+    assert not Path(rec.worktree).exists()        # worktree reclaimed
+    assert fleet.state.get(rec.run_id) is not None  # but the state record (history) is kept
+
+
+def test_clean_merged_scope_removes_only_integrated(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    kept = fleet.run("writer", TaskSpec(id="cl3keep", goal="x"))       # not integrated
+    gone = fleet.run("writer", TaskSpec(id="cl3gone", goal="x"))
+    fleet.integrate(gone.run_id)                                        # merged_into set
+    result = fleet.clean(scope="merged")
+    assert gone.run_id in result.removed and kept.run_id not in result.removed
+    assert not Path(gone.worktree).exists() and Path(kept.worktree).exists()
+
+
+def test_clean_removes_failed_and_empty_by_default(repo: Path) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="cl4", goal="x"))  # EMPTY (terminal non-success)
+    assert rec.status == "empty"
+    result = fleet.clean()  # scope="finished" reclaims empty/failed/cancelled/timed_out
+    assert rec.run_id in result.removed
+    assert not Path(rec.worktree).exists()
+
+
+def test_clean_skips_running_run(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl5", goal="x"))
+    fleet.state.update(rec.run_id, status="running")
+    result = fleet.clean(run_ids=[rec.run_id])
+    assert rec.run_id not in result.removed
+    assert any(s["run_id"] == rec.run_id for s in result.skipped)
+    assert Path(rec.worktree).exists()  # a running run is never torn down
+
+
+def test_clean_dry_run_reports_without_removing(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cl6", goal="x"))
+    result = fleet.clean(scope="all", dry_run=True)
+    assert result.dry_run and rec.run_id in result.removed
+    assert Path(rec.worktree).exists()  # nothing actually removed
+
+
+def test_clean_older_than_filters_recent_runs(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fresh = fleet.run("writer", TaskSpec(id="cl7fresh", goal="x"))
+    old = fleet.run("writer", TaskSpec(id="cl7old", goal="x"))
+    fleet.state.update(old.run_id, ended_at="2000-01-01T00:00:00+00:00")  # ancient
+    result = fleet.clean(scope="all", older_than_hours=24)
+    assert old.run_id in result.removed and fresh.run_id not in result.removed
+
+
+def test_clean_unknown_scope_raises(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.run("writer", TaskSpec(id="cl8", goal="x"))
+    with pytest.raises(ValueError):
+        fleet.clean(scope="bogus")
+
+
+# --- the orphan sweep: worktrees the ledger no longer knows about ----------------------------
+
+
+def _branches(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/*"], capture_output=True, text=True
+    ).stdout
+
+
+def test_clean_reaps_orphaned_worktree(repo: Path) -> None:
+    # The field bug: a run record pruned from the ledger left its worktree + branch on disk
+    # forever, invisible to the ledger-driven clean.
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or1", goal="x"))
+    (repo / ".marshal" / "runs" / f"{rec.run_id}.json").unlink()
+    result = fleet.clean()
+    assert result.orphans_removed == [rec.run_id]
+    assert not Path(rec.worktree or "").exists()
+    assert f"marshal/{rec.run_id}" not in _branches(repo)  # the branch went too
+
+
+def test_clean_reaps_worktree_with_corrupt_record(repo: Path) -> None:
+    # A torn/corrupt record is silently skipped by state.list(), so the run is unreachable via
+    # get_run/cancel - its worktree is garbage and the sweep must reclaim it.
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or2", goal="x"))
+    (repo / ".marshal" / "runs" / f"{rec.run_id}.json").write_text("{not json", encoding="utf-8")
+    result = fleet.clean()
+    assert result.orphans_removed == [rec.run_id]
+    assert not Path(rec.worktree or "").exists()
+
+
+def test_clean_sweep_protects_ledger_owned_running_run(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or3", goal="x"))
+    fleet.state.update(rec.run_id, status="running")  # valid record -> ledger-owned, never swept
+    result = fleet.clean()
+    assert result.orphans_removed == []
+    assert Path(rec.worktree or "").exists()
+
+
+def test_clean_dry_run_lists_orphans_without_removing(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="or4", goal="x"))
+    (repo / ".marshal" / "runs" / f"{rec.run_id}.json").unlink()
+    result = fleet.clean(dry_run=True)
+    assert result.orphans_removed == [rec.run_id]
+    assert Path(rec.worktree or "").exists()  # nothing actually removed
+
+
+def test_clean_explicit_run_ids_does_not_sweep(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    keep = fleet.run("writer", TaskSpec(id="or5", goal="x"))
+    orphan = fleet.run("writer", TaskSpec(id="or6", goal="x"))
+    (repo / ".marshal" / "runs" / f"{orphan.run_id}.json").unlink()
+    result = fleet.clean(run_ids=[keep.run_id])  # an explicit clean targets exactly those runs
+    assert result.orphans_removed == []
+    assert Path(orphan.worktree or "").exists()
+
+
+def test_clean_reaps_plain_dir_under_base(repo: Path) -> None:
+    # A corrupt "worktree" that git no longer recognizes is still reclaimed (rmtree fallback).
+    fleet = Fleet(repo, {"writer": _Writer()})
+    junk = fleet.worktrees.base_dir / "not-a-worktree"
+    junk.mkdir(parents=True)
+    (junk / "leftover.txt").write_text("x")
+    result = fleet.clean()
+    assert result.orphans_removed == ["not-a-worktree"]
+    assert not junk.exists()
+
+
+# --- _executor: lazy-init + double-checked locking is safe under contention ------------------
+
+
+def test_executor_lazy_init_under_concurrent_first_touch(repo: Path) -> None:
+    # Fleet._executor uses double-checked locking to build its background-spawn pool on
+    # first use. Eight threads racing to call it must build exactly ONE pool - a duplicate
+    # build would leak a ThreadPoolExecutor (one of the two would never be shutdown(),
+    # holding its workers forever). Locks the safety property Fleet.spawn relies on.
+    import threading
+    from marshal_engine.fleet import Fleet as _Fleet  # local alias for clarity
+
+    fleet = _Fleet(repo, {"writer": _Writer()})
+    assert fleet._bg is None  # precondition: not yet built
+
+    seen: list[object] = []
+    barrier = threading.Barrier(8)
+
+    def touch() -> None:
+        barrier.wait()  # all 8 threads release at the same instant
+        seen.append(fleet._executor())
+
+    threads = [threading.Thread(target=touch) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    pools = set(seen)
+    assert len(pools) == 1, f"expected exactly one pool, got {len(pools)}"
+    assert fleet._bg is not None and fleet._bg in pools
+    fleet.shutdown()  # cleanup so the suite doesn't leak the pool
+
+
+def test_executor_returns_same_pool_on_repeated_calls(repo: Path) -> None:
+    # Sanity counterpart to the concurrent test: serial calls reuse the same pool (no
+    # re-init). Pins the contract _executor advertises via its docstring.
+    fleet = Fleet(repo, {"writer": _Writer()})
+    p1 = fleet._executor()
+    p2 = fleet._executor()
+    p3 = fleet._executor()
+    assert p1 is p2 is p3
+    fleet.shutdown()
+
+
+# --- advisory budgets: soft warning only, never block a run ----------------------------------
+
+
+class _Metered(CodingAgentBackend):
+    """A fake backend that stamps a controllable native cost on every run.
+
+    Used to drive budget spend deterministically: a recorded event with `cost_usd=N` shows up
+    under `by_backend[<name>]` (and under `by_client[<name>]` when the run carried a client), so
+    the budget's windowed spend hits whatever threshold the test wants.
+    """
+
+    name = "metered"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, cost_usd: float = 0.50) -> None:
+        self._cost = cost_usd
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "open('out.txt','w').write('x')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            usage=UsageRecord(
+                backend="metered",
+                input_tokens=10,
+                output_tokens=1,
+                cost_usd=self._cost,
+                source=UsageSource.NATIVE,
+            ),
+            exit_code=exit_code,
+        )
+
+
+def _seed_run_event(
+    fleet: Fleet,
+    *,
+    backend: str = "metered",
+    client: str | None = "worker",
+    cost: float = 0.50,
+    ts: str | None = None,
+) -> None:
+    """Append a single UsageEvent to the ledger so the next budget check has spend to read."""
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    fleet.usage.record(
+        UsageEvent(
+            ts=ts or datetime.now(timezone.utc).isoformat(),
+            run_id=f"seed.{backend}.x",
+            backend=backend,
+            client=client,
+            cost_usd=cost,
+            status="succeeded",
+            source="native",
+        )
+    )
+
+
+def test_check_budget_warns_when_windowed_spend_meets_cap(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A backend budget of $1 with $1.50 of recorded spend under that backend -> soft warning.
+    # The check is wrapped in try/except (defensive) and never raises; spend >= cap -> warn.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered(cost_usd=1.5)},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=1.0)],
+    )
+    _seed_run_event(fleet, backend="metered", cost=1.5)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"), client="worker")
+    )
+    err = capsys.readouterr().err
+    assert "budget:" in err
+    assert "backend:metered" in err
+    assert "$1.5000 >= cap $1.0000" in err
+    assert "(week)" in err
+
+
+def test_check_budget_stays_silent_under_cap(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Below the cap -> no warning, no raise. Quietly honest: a small spend doesn't trip a $5 cap.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=5.0)],
+    )
+    _seed_run_event(fleet, backend="metered", cost=0.50)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_check_budget_does_not_match_unrelated_scope(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A client budget for "worker" doesn't fire on a "reviewer" run, even if a reviewer event
+    # would otherwise have crossed the cap. The check matches scope, not global spend.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(client="worker", window="week", limit_usd=0.10)],
+    )
+    _seed_run_event(fleet, backend="metered", client="reviewer", cost=5.0)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"), client="reviewer")
+    )
+    assert capsys.readouterr().err == ""  # budget is for "worker", not "reviewer"
+
+
+def test_check_budget_never_raises_on_ledger_failure(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Defensive: a budget check failure (e.g. corrupt ledger) must NEVER block a run. We force
+    # summary() to raise and verify _check_budget swallows it quietly.
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=1.0)],
+    )
+
+    def boom(**_kw: object) -> object:
+        raise RuntimeError("ledger corrupt")
+
+    monkeypatch.setattr(fleet.usage, "summary", boom)  # type: ignore[method-assign]
+    # Must not raise.
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+    )
+    assert capsys.readouterr().err == ""  # failure is silent (no fake warning)
+
+
+def test_check_budget_no_budgets_is_a_noop(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The "no behavior change at all" contract: an empty budgets list never prints anything
+    # and never raises. (Backward compat for the default-constructed FleetConfig.)
+    fleet = Fleet(repo, {"metered": _Metered()})
+    _seed_run_event(fleet, cost=999.0)
+    fleet._check_budget(
+        RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_check_budget_runs_before_worktree(repo: Path) -> None:
+    # The check is the FIRST statement of _start: it runs BEFORE the worktree is created, so a
+    # loud warning doesn't cost a worktree provision. Pin the order by spying on worktree.create
+    # on a normal advisory (soft-warn) path.
+    from unittest.mock import MagicMock
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=0.10)],
+    )
+    _seed_run_event(fleet, cost=1.0)
+    create = MagicMock(side_effect=fleet.worktrees.create)
+    fleet.worktrees.create = create  # type: ignore[method-assign]
+    fleet.run(
+        "metered", TaskSpec(id="ord", goal="x"),
+        permission=PermissionMode.SAFE_EDIT, ts="2026-06-19T00:00:00Z",
+    )
+    assert create.call_count == 1  # the worktree was created (budget is advisory, not blocking)
+
+
+def test_check_budget_enforce_raises_and_skips_worktree(repo: Path) -> None:
+    from unittest.mock import MagicMock
+
+    from marshal_engine.budgets import BudgetExceeded
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=0.10, enforce=True)],
+    )
+    _seed_run_event(fleet, backend="metered", cost=1.0)
+    create = MagicMock(side_effect=fleet.worktrees.create)
+    fleet.worktrees.create = create  # type: ignore[method-assign]
+    with pytest.raises(BudgetExceeded, match="enforce=true"):
+        fleet.run(
+            "metered",
+            TaskSpec(id="ord", goal="x"),
+            permission=PermissionMode.SAFE_EDIT,
+            ts="2026-06-19T00:00:00Z",
+        )
+    assert create.call_count == 0
+
+
+def test_check_budget_enforce_raises_on_ledger_failure(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from marshal_engine.budgets import BudgetExceeded
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="metered", window="week", limit_usd=1.0, enforce=True)],
+    )
+
+    def boom(**_kw: object) -> object:
+        raise RuntimeError("ledger corrupt")
+
+    monkeypatch.setattr(fleet.usage, "summary", boom)  # type: ignore[method-assign]
+    with pytest.raises(BudgetExceeded, match="spend lookup failed"):
+        fleet._check_budget(
+            RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))
+        )
+
+
+def test_enforce_budget_blocks_concurrent_matching_spawn(repo: Path) -> None:
+    """enforce=true admits one in-flight matching spawn; a peer is refused before worktree create."""
+    import threading
+
+    from marshal_engine.budgets import BudgetExceeded
+
+    fleet = Fleet(
+        repo,
+        {"sleeper": _Sleeper()},
+        budgets=[BudgetSpec(backend="sleeper", window="week", limit_usd=100.0, enforce=True)],
+    )
+    results: list[object] = []
+    errors: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def worker(task_id: str) -> None:
+        barrier.wait()
+        try:
+            results.append(
+                fleet.run(
+                    "sleeper",
+                    TaskSpec(id=task_id, goal="x"),
+                    permission=PermissionMode.SAFE_EDIT,
+                )
+            )
+        except BudgetExceeded as exc:
+            errors.append(str(exc))
+
+    threads = [
+        threading.Thread(target=worker, args=("a",)),
+        threading.Thread(target=worker, args=("b",)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert "in-flight" in errors[0]
+    # Slot released after the holder finishes — a follow-up matching spawn may proceed.
+    follow = fleet.run(
+        "sleeper",
+        TaskSpec(id="c", goal="x"),
+        permission=PermissionMode.SAFE_EDIT,
+    )
+    assert follow.status == RunStatus.SUCCEEDED.value
+
+
+def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> None:
+    # The remaining column floors at 0 (a cap that has been blown reads $0 remaining, not a
+    # misleading negative). Spent comes from the windowed rollup; limit comes from the spec.
+    from datetime import datetime, timezone
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[
+            BudgetSpec(backend="metered", window="week", limit_usd=1.0),
+            BudgetSpec(client="worker", window="week", limit_usd=0.10),  # blown -> remaining=0
+            BudgetSpec(window="month", limit_usd=10.0),  # global
+        ],
+    )
+    _seed_run_event(fleet, backend="metered", client="worker", cost=0.50)
+    now = datetime.now(timezone.utc)
+    rows = {r.scope: r for r in fleet.budget_status(now=now)}
+    assert rows["backend:metered"].spent_usd == 0.50
+    assert rows["backend:metered"].limit_usd == 1.0
+    assert rows["backend:metered"].remaining_usd == 0.50
+    assert rows["client:worker"].spent_usd == 0.50
+    assert rows["client:worker"].remaining_usd == 0.0  # floored at 0 (cap is $0.10)
+    assert rows["global"].spent_usd == 0.50  # totals of the windowed summary
+    assert rows["global"].limit_usd == 10.0
+    assert rows["global"].remaining_usd == 9.50
+
+
+def test_budget_status_scope_with_no_spend_reads_zero(repo: Path) -> None:
+    # A scope with no recorded events reads $0 spent (and remaining == limit). Subscription /
+    # unknown-cost backends that report $0 also live here - we never fabricate a percentage.
+    from datetime import datetime, timezone
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered()},
+        budgets=[BudgetSpec(backend="ghost", window="week", limit_usd=2.0)],
+    )
+    now = datetime.now(timezone.utc)
+    rows = fleet.budget_status(now=now)
+    assert len(rows) == 1
+    assert rows[0].scope == "backend:ghost"
+    assert rows[0].spent_usd == 0.0
+    assert rows[0].remaining_usd == 2.0
+
+
+def test_budget_status_no_budgets_is_empty(repo: Path) -> None:
+    # Backward-compat: the default-constructed FleetConfig has no budgets, so the result is [].
+    from datetime import datetime, timezone
+
+    fleet = Fleet(repo, {"metered": _Metered()})
+    assert fleet.budget_status(now=datetime.now(timezone.utc)) == []

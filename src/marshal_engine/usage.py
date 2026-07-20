@@ -2,16 +2,18 @@
 
 No database: an `events.jsonl` (one line per run) plus a derived summary, so usage is auditable and
 queryable. Every event carries a `source` so estimated/scraped costs are never confused with
-provider-reported ones. `summary()` returns a typed `UsageSummary` (computed on read, never stored).
+provider-reported ones. `summary()` returns a typed `UsageSummary` (computed on read, never stored),
+optionally filtered to a `[since, until]` time window over each event's `ts`.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from .types import AgentResult, UsageRecord, UsageSource
+from .types import AgentResult, RunStatus, UsageRecord, UsageSource
 
 
 class UsageEvent(BaseModel):
@@ -82,6 +84,7 @@ class UsageSummary(BaseModel):
     by_backend: dict[str, Bucket] = {}
     by_client: dict[str, Bucket] = {}
     by_model: dict[str, Bucket] = {}
+    by_backend_model: dict[str, Bucket] = {}
 
 
 class UsageTracker:
@@ -112,26 +115,84 @@ class UsageTracker:
             out.append(UsageEvent.model_validate_json(line))
         return out
 
-    def summary(self) -> UsageSummary:
+    def summary(
+        self,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> UsageSummary:
+        """Roll up events; optionally restrict to a [since, until] window over each event's `ts`.
+
+        Both bounds are compared in UTC against the event's ISO-8601 timestamp. Either bound may
+        be None (open-ended). No args = aggregate over the whole ledger (unchanged behavior).
+        """
         by_backend: dict[str, Bucket] = {}
         by_client: dict[str, Bucket] = {}
         by_model: dict[str, Bucket] = {}
+        by_backend_model: dict[str, Bucket] = {}
         totals = Bucket()
         for e in self.events():
+            if not _in_window(e, since, until):
+                continue
             _add(totals, e)
             _add(by_backend.setdefault(e.backend, Bucket()), e)
             _add(by_client.setdefault(e.client or "-", Bucket()), e)
             _add(by_model.setdefault(e.model or "-", Bucket()), e)
-        for bucket in (totals, *by_backend.values(), *by_client.values(), *by_model.values()):
+            bm_key = f"{e.backend}/{e.model or '-'}"
+            _add(by_backend_model.setdefault(bm_key, Bucket()), e)
+        for bucket in (
+            totals,
+            *by_backend.values(),
+            *by_client.values(),
+            *by_model.values(),
+            *by_backend_model.values(),
+        ):
             _finalize(bucket)
         return UsageSummary(
-            totals=totals, by_backend=by_backend, by_client=by_client, by_model=by_model
+            totals=totals,
+            by_backend=by_backend,
+            by_client=by_client,
+            by_model=by_model,
+            by_backend_model=by_backend_model,
         )
+
+
+def _to_utc(ts: datetime) -> datetime:
+    """Coerce a datetime to a UTC-aware value for comparison (naive datetimes are treated as UTC)."""
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _parse_event_ts(raw: str) -> datetime | None:
+    """Parse a UsageEvent.ts (ISO-8601); return None when it's unparseable.
+
+    Unparseable events are dropped from the windowed rollup: a malformed timestamp can't be
+    compared, so it's safer to exclude than to misclassify. (All-time summaries still include them
+    because they don't consult `_in_window`.)
+    """
+    try:
+        return _to_utc(datetime.fromisoformat(raw))
+    except ValueError:
+        return None
+
+
+def _in_window(e: UsageEvent, since: datetime | None, until: datetime | None) -> bool:
+    """True when `e` falls in [since, until] (either bound may be None for open-ended)."""
+    if since is None and until is None:
+        return True
+    ts = _parse_event_ts(e.ts)
+    if ts is None:
+        return False
+    if since is not None and ts < _to_utc(since):
+        return False
+    if until is not None and ts > _to_utc(until):
+        return False
+    return True
 
 
 def _add(bucket: Bucket, e: UsageEvent) -> None:
     bucket.runs += 1
-    if e.status == "succeeded":
+    if e.status == RunStatus.SUCCEEDED.value:
         bucket.succeeded += 1
     bucket.cost_usd = round(bucket.cost_usd + e.cost_usd, 6)
     if e.source == UsageSource.NATIVE.value:

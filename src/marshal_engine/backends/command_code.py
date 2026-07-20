@@ -25,8 +25,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
 from ..types import (
@@ -75,17 +73,6 @@ class CommandCodeBackend(CodingAgentBackend):
 
     # --- hooks ---------------------------------------------------------------------------
 
-    def check_available(self) -> bool:
-        if shutil.which(self.binary) is None:
-            return False
-        try:
-            proc = subprocess.run(
-                [self.binary, "--version"], capture_output=True, text=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
-
     def account_info(self) -> dict[str, str] | None:
         """Provider + default model from `~/.commandcode/config.json` (no network, never raises).
 
@@ -108,12 +95,6 @@ class CommandCodeBackend(CodingAgentBackend):
             info["model"] = model
         return info or None
 
-    def map_permission(self, mode: PermissionMode) -> list[str]:
-        try:
-            return list(self._PERMISSION[mode])
-        except KeyError:
-            raise ValueError(f"command-code: unsupported permission mode {mode!r}") from None
-
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [
             self.binary,
@@ -128,14 +109,6 @@ class CommandCodeBackend(CodingAgentBackend):
         if opts.model:
             argv += ["-m", opts.model]
         return argv
-
-    @staticmethod
-    def _compose_prompt(task: TaskSpec) -> str:
-        prompt = task.goal
-        if task.context_files:
-            files = "\n".join(f"- {f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant files:\n{files}"
-        return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         text = _ANSI.sub("", raw_stdout).strip()

@@ -37,8 +37,11 @@ If `list_workspaces` shows only `default`, ignore all of this: it behaves exactl
 single-repo server.
 
 ## 0. Know your clients
-Optionally run `doctor` first (read-only) to confirm the backends you'll use are installed +
-authenticated - catching a missing/unauthenticated CLI up front beats discovering it from a failed run.
+**Run `doctor` before the first batch** (read-only). It now verifies *auth*, not just that a CLI is
+on PATH: a logged-out backend that still answers `--version` is reported `CLI present but not
+authenticated` (with the login command), instead of a green "available" that then dies one second
+into a real run. Treat a backend's login as standing setup you confirm up front — cheap to check,
+expensive to skip across a whole fan-out.
 Call `list_clients` to see the configured workers (name, backend, model, permission). Each client is
 a routing choice the user set up (a cheap bulk worker, a careful reviewer, etc.). You route tasks to
 clients **by name** - you never choose backends directly. To decide *which* client a task should go
@@ -53,10 +56,19 @@ Split the goal into tasks that can run in parallel **without colliding**:
 - Write a self-contained prompt per task: the goal, acceptance criteria, and the *minimal* files and
   context the worker needs. The worker sees only what you give it plus its worktree - not your whole
   session. Scope tightly; that is the point (less drift, less token waste).
-- When you know it, declare `files_touched` per task - it documents the intended scope.
+- When you know the intended file scope, pass `context_files` on the task so the worker sees only
+  what it needs.
 
-If the work is inherently sequential (task B needs A's output), run it in **rounds**: integrate A,
-then plan B against the new state.
+**Never fan out a dependency chain in one `run_many`.** Marshal shines on *independent* work. If task
+B needs A's output, batching them in parallel makes each branch off the same base, blind to the
+others - they re-invent the same scaffolding and collide at integrate. For sequential work, do one of:
+- **Rounds (simplest):** integrate A into your branch, then plan B against the new state.
+- **Chain off A's branch (no integrate yet):** `commit_run(A)` freezes A's work as a commit on its own
+  branch (your branch stays untouched), then `spawn`/`run_agent` B with `base_branch` = A's branch so B
+  builds on A's actual output. Without `commit_run`, basing B on A's branch sees only the spawn base -
+  the agent leaves its work uncommitted, so the branch ref never moved.
+- **When dependence is unavoidable, ship the contract in the prompt:** the exact signatures/imports of
+  the foundation plus "this already exists - import it, do not redefine it."
 
 ## 2. Spawn
 - One task: `run_agent(client, goal, task_id?)`.
@@ -68,7 +80,10 @@ then plan B against the new state.
 ## 3. Monitor
 - `status()` lists every run with status + cost; `get_run(run_id)` fetches one.
 - A run ends in `succeeded`, `empty` (ran clean but produced no work - do not integrate it),
-  `failed`, `timed_out`, or `cancelled`. Only `succeeded` runs are integration candidates.
+  `failed`, `timed_out`, `cancelled`, or `verify_failed` (the work exists but the workspace's
+  `verify:` gate rejected it - collect the diff and read the record's `verify_output` before
+  deciding; not an integration candidate as-is). Only `succeeded` runs are integration candidates,
+  and when the workspace configures a `verify:` command, `succeeded` also means that gate passed.
 
 ## 4. Collect - review before you trust
 - `collect_run(run_id)` returns the run's **diff + changed files**, read-only. Read it. You are the
@@ -91,6 +106,24 @@ Handle the outcome:
 Integrate **one run at a time**, reviewing each. Worktree isolation means main is never touched until
 this step.
 
+## 6. Clean up - reclaim the worktrees
+A long session leaves a worktree + branch per run. When you're done, `clean(scope?, dry_run?)` tears
+them down in one call (the usage ledger and run-state history are kept; only the disk-heavy worktrees
+and branches go). It **never** touches a running run. Scopes:
+- `merged` - only runs you already integrated. Safest.
+- `finished` (default) - merged runs plus failed/timed_out/cancelled/empty/verify_failed ones;
+  **protects un-integrated `succeeded` runs** (a candidate you might still want to review). A
+  `verify_failed` run's worktree holds reviewable work - collect/review it before cleaning.
+- `all` - every finished run, including un-integrated succeeded work.
+
+Scope-mode cleans also reap **orphans** automatically - worktree dirs whose run record was pruned or
+corrupted (they are invisible to ledger-driven cleanup and would otherwise leak on disk forever);
+they show up under `orphans_removed`.
+
+Run `clean(dry_run=true)` first to see what would go, or `clean(run_ids=[…])` to tear down specific
+runs. Don't clean a run whose work you haven't collected/integrated unless you're sure you're done
+with it.
+
 ## Cost
 `usage()` shows per-provider cost (totals and by backend/client/model, with `$/run` and
 `$/succeeded`). Every figure is tagged by `source` (native / admin-api / estimated / unavailable) -
@@ -102,5 +135,8 @@ never treat an estimate (or an `unavailable` `$0`) as ground truth. To compare r
   workspace's repo, never another.
 - Workers are headless - prompts must be self-sufficient (no questions are possible).
 - Review diffs before integrating; `succeeded` is not `correct`.
-- Keep tasks independent to avoid merge conflicts; sequence dependent work in rounds.
+- Keep tasks independent to avoid merge conflicts; **never fan out a dependency chain** - sequence it
+  in rounds, or chain off a committed branch with `commit_run` + `base_branch`.
+- Confirm backends are authenticated (`doctor`) before the first batch, not after a wasted run.
 - Worktree isolation is the safety net - main is untouched until you integrate.
+- Clean up finished runs with `clean` when done; it never removes a running run or the usage ledger.

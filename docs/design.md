@@ -159,11 +159,36 @@ Key per-backend detail:
  "cost_usd":0.041,"duration_ms":8200,"status":"success",
  "source":"native|admin-api|estimated|unavailable"}
 ```
-`usage/summary.json` (cumulative rollup, updated each run): `by_client`, `by_backend`, `by_model`, `totals`.
+`usage/summary.json` (cumulative rollup, updated each run): `by_client`, `by_backend`, `by_model`, `totals`, plus a compound `by_backend_model` keyed `<backend>/<model>` for when one backend runs multiple models.
+
+**Per-run raw logs** (`logs/<run_id>.log`): one file per terminal run (success or failure) with the
+agent's full raw stdout + stderr under a `=== run <id> ===` / `--- stdout ---` / `--- stderr ---`
+header. The run record's `text` field is the agent's *final message* truncated to 16 KB - useful
+for a reply/analysis task but rarely enough to debug a failure. The log file preserves the *whole*
+stream so a driver can `get_run_log` (MCP) or `marshal logs <run_id>` (CLI) and inspect tool calls,
+tracebacks, and stderr noise after the fact. Writes are atomic (unique temp + `os.replace`, same
+idiom as `FleetState`); a write failure is swallowed in `Fleet._execute` and stderr-logged, so
+the log store is best-effort and never breaks a finished run.
 
 Apply a local `(backend, model) → price` table for backends that report tokens but not cost.
 **Tag every record `source`** so estimated/scraped costs are auditable and never presented as ground truth.
-Surface a `usage` MCP tool / `<name> usage` CLI with `--since` and `--by client|backend|model`.
+Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via `--window day|week|month|all` (CLI) or `window session|week|month|all` (MCP). The MCP `usage` tool's `window` (`session` / `week` / `month` / `all`) maps to a `since`; the Fleet stamps its `session_start` at process start, so a driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
+
+**Advisory budgets (soft-warn, never block).** An optional top-level `budgets:` list in
+`fleet.config.yaml` declares $ caps per scope (a `backend:`, a `client:`, or the whole fleet when
+neither is set) per time window (`session` / `week` / `month`). `Fleet._start` is the FIRST
+statement of the run path, so the check runs before the worktree is provisioned. A scope whose
+windowed spend meets/exceeds its cap prints a stderr warning like
+`[marshal] budget: client:implementer spent $5.40 >= cap $5.00 (week)`; the run proceeds
+unaffected. The check is wrapped in a defensive `try/except` so a budget-lookup failure (corrupt
+ledger, IO error) silently degrades to "no warning" - a budget is never allowed to break a run.
+**Honesty:** a budget's "spend" comes from the ledger's `cost_usd`, which is real only for
+meterable backends (`native` / `admin-api` / `estimated`); subscription / unknown-cost backends
+report `$0`, so a $ cap on them simply never triggers and shows `$0.00` spent - we do NOT
+fabricate a percentage or "remaining" from a missing cost. The MCP `usage` tool (and
+`marshal usage --config fleet.config.yaml --json`) returns a `budgets` list with
+`scope / window / spent_usd / limit_usd / remaining_usd` (remaining floored at 0) per budget, so
+the driver can see remaining alongside spend.
 
 ---
 
@@ -182,7 +207,23 @@ clients:
   refactorer:  { backend: codex,    permission: safe-edit }
 ```
 
-Runtime state - worktrees, per-run JSON, usage - lands under `.marshal/`. Auth is per-CLI login;
+**Optional model catalog (the driver's "sheet").** A top-level `models:` list is pure data the
+driver can read (`list_models` MCP tool / `marshal models` CLI) — `id` (provider/model), which
+`backends` can run it, and short free-form strings for `cost` (e.g. `native`/`admin-api`/
+`estimated`/`unavailable`), `quota_type` (e.g. `metered`/`subscription`/`unavailable`), and
+`notes`. **The catalog is metadata only — it does NOT change routing** (clients still own
+backend+model). Absent or empty = no catalog to expose; a malformed entry raises `ConfigError`
+at load (the same hard-fail behavior as the other config errors).
+
+**Per-spawn timeout override (duration presets).** `run_agent`, `spawn`, and `run_many` accept
+an optional `duration` — either a preset name (`short`=300s, `medium`=1200s, `large`=6000s,
+`long`=24000s) or a positive integer of seconds. The override replaces the resolved `timeout_s`
+on the `RunRequest` for that one call; the client's `timeout_s` in `fleet.config.yaml` stays the
+default. Same idea for the CLI: `marshal run --duration large ...`. Validation happens up front
+in `_request_for` (via `resolve_duration`), so a typo or non-positive value fails fast before
+any worktree is created.
+
+Runtime state - worktrees, per-run JSON, usage, **per-run raw logs** - lands under `.marshal/`. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
 **Worktree environment isolation.** The driver usually runs inside its own activated venv, so
@@ -193,15 +234,24 @@ install and tests stale code. A fresh worktree has no `.venv` (it's gitignored),
 top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) provisions one right
 after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
 
+**Verify gate.** The optional top-level `verify` command (e.g. `uv run pytest -q`) is
+`worktree_setup`'s post-run counterpart: it runs in the worktree after a run that would otherwise
+be `succeeded` *and changed files* (agents love passing their own narrower test subset while
+breaking the repo gate). A non-zero exit/timeout demotes the run to `verify_failed` - the worktree
+and diff are KEPT for review (unlike a setup failure, verify never tears down), and the command's
+output tail lands on the run record (`verify_passed` / `verify_output`). Runs with no gate
+configured, no file changes, or a non-success outcome are untouched (`verify_passed=None`).
+
 **Graceful backend skip.** `MarshalService.__init__` probes each configured backend's CLI at
 startup; a client whose backend is unavailable is **skipped** (stderr warning, recorded on
 `skipped_clients`) rather than failing a run mid-flight. The **full** backend set still goes to the
 Fleet, so `doctor` (which probes every configured backend) still reports a missing one as a FAIL.
 
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
-Shipped today (17): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `run_agent`,
-`run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `collect_run`, `integrate`,
-`status`, `usage`, `list_workflows`, `run_workflow`. Current state is tracked in `docs/status.md`.
+Shipped today (21): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `list_models`,
+`run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `get_run_log`,
+`collect_run`, `commit_run`, `integrate`, `clean`, `status`, `usage`, `list_workflows`,
+`run_workflow`. Current state is tracked in `docs/status.md`.
 
 Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
 fleet works in both MCP and Skills hosts.
@@ -240,6 +290,7 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 10. **Worktree lifecycle:** spec creation, naming, owner-tracking, orphan detection, `git worktree prune` on crash. Track which run owns which worktree in the usage log.
 11. **Concurrency caps:** each CLI is 150-400 MB RAM → cap parallel runs per fleet and per client or a fan-out OOMs the host.
 12. **Secrets by reference** (`env:VAR`/file), validate presence at load, fail fast with a clear message. Never inline.
+13. **Durable per-run logs are best-effort.** `RunLogStore.write` is atomic (unique temp + `os.replace`, same idiom as `FleetState`), so a torn read never sees partial content; but a *write failure* (disk full, permission) must never break a finished run — `Fleet._execute` wraps the write in `try/except` and stderr-logs the cause. A run that predates log storage simply has no file (the CLI returns non-zero, the MCP tool returns `log=null`).
 
 ---
 
@@ -257,7 +308,7 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 - **Phase 0 - repo:** lay down `pyproject.toml` (uv), the package skeleton, and `docs/`.
 - **Phase 1 - engine:** base class + `CursorBackend` + `OpenCodeBackend` + `CodexBackend` (pure `build_invocation`/`map_permission` + `parse_output`), worktree manager, process runner (timeout!), result collector. CLI-testable standalone before any MCP. Contract tests per backend.
 - **Phase 2 - usage:** `events.jsonl` + `summary.json`, price table, `source` tagging, OpenCode native + on-disk reconciliation, Cursor Admin-API path, `usage` command.
-- **Phase 3 - MCP server:** the 17 tools (incl. `list_workspaces`/`add_workspace`; each action/query tool takes an optional `workspace`) + `fleet.config.yaml` loader + persistent fleet state + localhost hardening. Multi-workspace tenancy lives in `workspaces.py` (one server, several repos via `~/.marshal/workspaces.yaml`, hot-reloaded); the engine stays single-repo.
+- **Phase 3 - MCP server:** the MCP tool surface ([`mcp-tools.md`](mcp-tools.md); incl. `list_workspaces`/`add_workspace`, `commit_run` for dependent chaining, `clean` for worktree teardown; each action/query tool takes an optional `workspace`) + `fleet.config.yaml` loader + persistent fleet state + localhost hardening. Multi-workspace tenancy lives in `workspaces.py` (one server, several repos via `~/.marshal/workspaces.yaml`, hot-reloaded); the engine stays single-repo.
 - **Phase 4 - Skills:** the `marshal-*` driver playbooks - `marshal-orchestrate` (decompose → spawn → review → integrate), `marshal-benchmark` (measured strategy comparison), `marshal-workflow` (declarative YAML recipes), `marshal-review-gate` + `marshal-plan-consensus` (consensus review / approach convergence).
 - **Phase 5 - harden + docs:** retries/backoff, concurrency caps, worktree cleanup, dry-run, OpenCode warm-server fast path, README/onboarding → flip public.
 

@@ -142,7 +142,7 @@ def test_validate_unknown_client_rejected() -> None:
     spec = WorkflowSpec(
         name="w", phases=[PhaseSpec(run="fan_out", clients=["ghost"], goal="g")]
     )
-    with pytest.raises(ConfigError, match="unknown client"):
+    with pytest.raises(ConfigError, match="unknown client.*hint: client names come from"):
         validate_workflow(spec, _config("real"))
 
 
@@ -439,3 +439,68 @@ def test_runner_fan_out_failed_run_surfaces_note_and_action() -> None:
     impl = result.phases[0]
     assert any("a.1" in n and "did not succeed" in n for n in impl.notes)
     assert any("a.1" in action and "failed" in action for action in result.next_actions)
+
+
+# --- runtime invariants: a malformed phase must fail with a clear error, not crash ----------
+
+
+def test_runner_agent_phase_without_client_raises_config_error() -> None:
+    # `run: agent` requires a `client` (validate_workflow enforces this for spec users). If a
+    # caller ever constructs a WorkflowSpec programmatically and bypasses validation, the
+    # runner must still fail with a clean ConfigError - not a TypeError on `None.client`,
+    # and not a vanished assert under `python -O`.
+    spec = WorkflowSpec(
+        name="w",
+        phases=[PhaseSpec(name="bare", run="agent", goal="go")],  # no `client`
+    )
+    svc = StubService(_config("a"))
+    with pytest.raises(ConfigError, match="missing 'client'"):
+        WorkflowRunner(svc).run(spec, {})
+    assert svc.calls == []  # nothing ran - the check fired before any primitive
+
+
+def test_runner_survives_service_run_many_failure() -> None:
+    # A phase's primitive raising (e.g. `run_many` failing because no configured client exists
+    # at runtime) must NOT abort the whole workflow. The runner records the failure as a phase
+    # note + a `next_action` and keeps going so the driver sees the full picture.
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[
+            PhaseSpec(name="impl", run="fan_out", clients=["a"], goal="{t}"),
+            PhaseSpec(name="collect", run="collect"),
+        ],
+    )
+
+    class _RaisingService(StubService):
+        def run_many(self, jobs, *, max_concurrency=4):  # noqa: ANN001, ARG002
+            raise ConfigError("simulated backend blowup")
+
+    svc = _RaisingService(_config("a"))
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+
+    impl = result.phases[0]
+    assert any("simulated backend blowup" in n for n in impl.notes)
+    assert any("simulated backend blowup" in a for a in result.next_actions)
+    # the workflow did NOT raise - the failure is captured, not propagated
+    assert result.status == "error"
+
+
+def test_runner_survives_service_run_agent_failure() -> None:
+    # Same contract for `run: agent` phases: the service's run_agent raising must surface as
+    # a phase note + next_action, not crash the workflow.
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[PhaseSpec(name="impl", run="agent", client="a", goal="{t}")],
+    )
+
+    class _RaisingService(StubService):
+        def run_agent(self, client_name, goal, *, task_id=None):  # noqa: ANN001, ARG002
+            raise ValueError("client vanished")
+
+    svc = _RaisingService(_config("a"))
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+    impl = result.phases[0]
+    assert any("client vanished" in n for n in impl.notes)
+    assert any("client vanished" in a for a in result.next_actions)

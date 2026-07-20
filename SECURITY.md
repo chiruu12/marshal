@@ -55,19 +55,25 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
 
 ## Known trust-boundary gaps (honest inventory)
 
-These are intentional or not-yet-hardened behaviors.
+These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces several as warnings.
 
 - **Permission config layer is partial (v0).** Cursor `safe-edit` merges an engine-managed deny
   list into the worktree's `.cursor/cli.json` (destructive `rm`, `.env` read/write, `.git` writes)
   alongside `--force`. OpenCode `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` with `question: deny`
   plus curated bash/edit/read/`external_directory` denies; `yolo` still gets `question: deny` only
   (headless: skip-permissions does not cover `question`). **Still deferred:** Command Code
-  (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar) and Antigravity (no PTY wrapper;
-  stdout can be swallowed without a TTY; no distinct safe-edit scoping beyond
-  `trustedWorkspaces`). Worktree isolation remains the hard boundary for those adapters and for
-  everything the curated denies do not cover.
+  (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar), Goose (`safe-edit`/`yolo` both
+  `GOOSE_MODE=auto`), and Antigravity (no PTY wrapper; stdout can be swallowed without a TTY; no
+  distinct safe-edit scoping beyond `trustedWorkspaces`). Worktree isolation remains the hard
+  boundary for those adapters and for everything the curated denies do not cover.
 - **`worktree_setup` / `verify` are config-driven subprocesses** when configured. They run
   arbitrary argv from `fleet.config.yaml` in each worktree as your user. Treat that file like
   executable code; only use trusted configs.
 - **`commit_run` / `integrate` use `git --no-verify`.** Hooks are skipped so a prompting
-  pre-commit cannot deadlock a headless merge. Review diffs and gate with CI.
+  pre-commit cannot deadlock a headless merge. Gate with `verify:`, review diffs, and CI.
+- **Memory secrets:** prefer `export LLM_API_KEY=...`. When both env and inline
+  `memory.llm_api_key` are set, **env wins**. Inline YAML is deprecated; doctor warns when it is
+  present.
+- **Budgets default to soft-warn.** Caps never block spawns unless you set `enforce: true` on a
+  budget entry. Enforced budgets also serialize matching in-flight spawns (one at a time per
+  budget) so concurrent fan-out cannot TOCTOU past the ledger snapshot before spend is recorded.

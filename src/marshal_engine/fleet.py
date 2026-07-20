@@ -18,13 +18,22 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .backends.base import CodingAgentBackend
+from .budgets import BudgetExceeded as BudgetExceeded
+from .budgets import BudgetStatus as BudgetStatus
+from .budgets import EnforceBudgetGate as EnforceBudgetGate
+from .budgets import check_budget as check_budget
+from .budgets import compute_budget_status as compute_budget_status
+from .config import BudgetSpec
 from .eastrouter import CostResolver, default_cost_resolvers
+from .env import merge_user_path
+from .layout import marshal_dir
+from .logs import RunLogStore
 from .pricing import PriceTable, PricingError
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
@@ -43,6 +52,57 @@ def _still_running(rec: RunRecord) -> bool:
     """update_if predicate: stamp a terminal status only if the run hasn't already reached one
     (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
     return rec.status == RunStatus.RUNNING.value
+
+
+#: Terminal, non-success run statuses that `clean` reclaims by default (no un-landed work worth keeping).
+#: VERIFY_FAILED is included deliberately: its worktree survives the run itself for review, but a
+#: driver-invoked clean of finished runs is a post-review action - review before cleaning.
+_CLEANABLE_NONSUCCESS = frozenset(
+    {
+        RunStatus.FAILED.value,
+        RunStatus.TIMED_OUT.value,
+        RunStatus.CANCELLED.value,
+        RunStatus.EMPTY.value,
+        RunStatus.VERIFY_FAILED.value,
+    }
+)
+
+
+def _is_terminal(rec: RunRecord) -> bool:
+    """True once a run has stopped - i.e. it is neither queued nor still running."""
+    return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
+
+
+def _in_clean_scope(rec: RunRecord, scope: str) -> bool:
+    """Whether `clean(scope=...)` should reclaim this run (a running/queued run never is)."""
+    if not _is_terminal(rec):
+        return False
+    if scope == "all":
+        return True
+    if scope == "merged":
+        return rec.merged_into is not None
+    if scope == "finished":
+        return rec.merged_into is not None or rec.status in _CLEANABLE_NONSUCCESS
+    raise ValueError(f"unknown clean scope: {scope!r} (use 'merged', 'finished', or 'all')")
+
+
+def _ended_before(rec: RunRecord, cutoff: datetime | None) -> bool:
+    """True if the run ended at or before `cutoff` (always True when no age filter is set).
+
+    A run with no parseable `ended_at` is treated as NOT old enough under an age filter - we don't
+    reclaim a run whose age we can't establish.
+    """
+    if cutoff is None:
+        return True
+    if not rec.ended_at:
+        return False
+    try:
+        ended = datetime.fromisoformat(rec.ended_at)
+    except ValueError:
+        return False
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+    return ended <= cutoff
 
 
 def _load_default_prices() -> PriceTable:
@@ -82,6 +142,40 @@ class IntegrateResult(BaseModel):
     conflicts: list[str] = []
     commit: str | None = None
     message: str = ""
+
+
+class CommitResult(BaseModel):
+    """Outcome of freezing a run's work onto its own branch (so a dependent run can chain off it).
+
+    status: "committed" (a new commit was made), "clean" (no *new* commit was needed - the working
+    tree was already clean; this is NOT "the branch is empty", e.g. an agent that self-committed),
+    "blocked" (the run is still in progress; wait for it to finish), or "error" (a git op failed -
+    see `message`). To chain, always use `branch`/`commit` regardless of status - `commit` is the
+    branch tip whenever it could be resolved, the concrete ref to base a dependent run on
+    (`spawn(..., base_branch=branch)`). Don't gate chaining on `status == "committed"`.
+    """
+
+    run_id: str
+    status: str
+    branch: str | None = None
+    commit: str | None = None
+    message: str = ""
+
+
+class CleanResult(BaseModel):
+    """Outcome of tearing down finished runs' worktrees + branches (the usage ledger is untouched).
+
+    Reclaims the disk-heavy worktrees; the run-state records are kept so status/history stay
+    queryable. A run that is still running is never cleaned (reported under `skipped`).
+    """
+
+    removed: list[str] = []
+    skipped: list[dict[str, str]] = []  # {run_id, reason}
+    errors: list[dict[str, str]] = []   # {run_id, error}
+    # Worktree dirs under the manager's base_dir with NO (readable) run record - leaked by a
+    # hand-pruned or torn ledger file. Reaped by scope-mode cleans (see Fleet.clean).
+    orphans_removed: list[str] = []
+    dry_run: bool = False
 
 
 class StrategyResult(BaseModel):
@@ -135,19 +229,33 @@ class Fleet:
         base_dir: Path | str | None = None,
         worktree_base: Path | str | None = None,
         worktree_setup: list[str] | None = None,
+        verify: list[str] | None = None,
         retries: RetryPolicy | None = None,
         prices: PriceTable | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
         run_gate: threading.Semaphore | None = None,
+        budgets: list[BudgetSpec] | None = None,
         on_run_complete: Callable[[RunRecord, str | None], None] | None = None,
     ) -> None:
+        # Recover the user's interactive PATH so a Fleet constructed in a context that didn't
+        # source the user's rc files (an MCP server with a stripped PATH) still spawns agent
+        # CLIs from user-managed locations (Homebrew, npm-global, ~/.local/bin). mcp_server.main
+        # and cli.main already do this at process entry, but Fleet is a public engine primitive -
+        # a library caller (or test) that constructs a Fleet directly without going through the
+        # CLI/MCP entry would otherwise spawn agents against a broken PATH. Idempotent + cached,
+        # so the duplicate call is a no-op. MARSHAL_NO_PATH_FIX=1 still opts out.
+        merge_user_path()
         self.repo_root = Path(repo_root)
-        base = Path(base_dir) if base_dir is not None else self.repo_root / ".marshal"
+        base = Path(base_dir) if base_dir is not None else marshal_dir(self.repo_root)
         self.worktrees = WorktreeManager(
-            self.repo_root, worktree_base or base / "worktrees", setup_cmd=worktree_setup
+            self.repo_root,
+            worktree_base or base / "worktrees",
+            setup_cmd=worktree_setup,
+            verify_cmd=verify,
         )
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")
+        self.logs = RunLogStore(base / "logs")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
         self.prices = prices if prices is not None else _load_default_prices()
         # Provider usage-API resolvers (keyed by a client's `usage_api`) that backfill REAL cost from a
@@ -163,6 +271,11 @@ class Fleet:
         # MCP layer shares ONE semaphore across all of them to bound total agent processes (each
         # CLI is 150-400 MB). None = uncapped here (a single-repo Fleet keeps its prior behavior).
         self._run_gate = run_gate
+        # $ budgets per scope (backend / client / global) and time window (session / week / month).
+        # None / [] = no budgets. Default is soft-warn; enforce=true raises BudgetExceeded and
+        # serializes matching in-flight spawns via EnforceBudgetGate (see budgets.py).
+        self.budgets: list[BudgetSpec] = list(budgets) if budgets else []
+        self._budget_gate = EnforceBudgetGate()
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
@@ -175,6 +288,10 @@ class Fleet:
         self._bg: ThreadPoolExecutor | None = None
         self._bg_lock = threading.Lock()
         self._bg_max = 4
+        # When this Fleet (the long-lived MCP server) started. The MCP `usage` tool maps a `window`
+        # of "session" to this instant, so the driver can see what it has spent THIS session
+        # without restating the timestamp.
+        self.session_start: datetime = datetime.now(timezone.utc)
         self._on_run_complete = on_run_complete
 
     def run(
@@ -200,6 +317,16 @@ class Fleet:
             timeout_s=timeout_s,
             usage_api=usage_api,
         )
+        return self.run_request(req, ts=ts, cleanup=cleanup)
+
+    def run_request(
+        self,
+        req: RunRequest,
+        *,
+        ts: str | None = None,
+        cleanup: bool = False,
+    ) -> RunRecord:
+        """Run one RunRequest synchronously: worktree -> backend -> usage -> persist. Blocks until done."""
         run_id, wt, started = self._start(req, ts)
         return self._execute(req, run_id, wt, started, cleanup=cleanup)
 
@@ -214,17 +341,15 @@ class Fleet:
         try:
             self._executor().submit(self._execute_bg, request, run_id, wt, started)
         except RuntimeError as exc:
-            # The pool was shut down between _start and submit; don't strand a RUNNING record.
+            # The pool was shut down between _start and submit; don't strand a RUNNING record
+            # or an enforce-budget concurrency slot.
+            self._budget_gate.release_run(run_id)
             self.state.update(
                 run_id, status=RunStatus.FAILED.value, ended_at=_now(),
                 error=f"spawn: executor unavailable: {exc}",
             )
             raise
         return run_id
-
-    def spawn_many(self, requests: list[RunRequest], *, ts: str | None = None) -> list[str]:
-        """Spawn several runs in the background; return their run_ids in order."""
-        return [self.spawn(req, ts=ts) for req in requests]
 
     def shutdown(self, *, wait: bool = True) -> None:
         """Shut the background spawn pool (drains in-flight runs). A no-op if none were spawned."""
@@ -243,39 +368,69 @@ class Fleet:
 
     def _start(self, req: RunRequest, ts: str | None) -> tuple[str, Worktree, str]:
         """Synchronous prefix: validate, create the worktree, record RUNNING -> (run_id, wt, ts)."""
-        if req.backend_name not in self.backends:
-            raise ValueError(f"no such backend: {req.backend_name!r}")
-        started = ts or _now()
-        # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
-        # dir, or the state record. task_id stays the grouping key on RunRecord.
-        run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
-        # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
-        # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
-        # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
-        # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
-        with self._create_lock:
-            wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
-        self.worktrees.setup(wt)
-        self.state.add(
-            RunRecord(
-                run_id=run_id,
-                task_id=req.task.id,
-                backend=req.backend_name,
-                client=req.client,
-                model=req.model,
-                status=RunStatus.RUNNING.value,
-                worktree=str(wt.path),
-                branch=wt.branch,
-                started_at=started,
-            )
+        # Budget gate FIRST - BEFORE the worktree is created. Advisory budgets soft-warn;
+        # enforce=true budgets raise BudgetExceeded (ledger cap and/or concurrent in-flight slot).
+        # Advisory lookup failures degrade silently; enforced lookup failures fail closed.
+        budget_keys = self._budget_gate.begin(
+            self.usage, self.session_start, self.budgets, req
         )
-        return run_id, wt, started
+        try:
+            if req.backend_name not in self.backends:
+                raise ValueError(f"no such backend: {req.backend_name!r}")
+            backend = self.backends[req.backend_name]
+            modes = backend.capabilities.permission_modes
+            if modes and req.permission not in modes:
+                supported = ", ".join(sorted(m.value for m in modes))
+                raise ValueError(
+                    f"backend {req.backend_name!r} does not support permission "
+                    f"{req.permission.value!r} (supported: {supported})"
+                )
+            started = ts or _now()
+            # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
+            # dir, or the state record. task_id stays the grouping key on RunRecord.
+            run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
+            # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
+            # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
+            # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
+            # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
+            with self._create_lock:
+                wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+            self.worktrees.setup(wt)
+            self.state.add(
+                RunRecord(
+                    run_id=run_id,
+                    task_id=req.task.id,
+                    backend=req.backend_name,
+                    client=req.client,
+                    model=req.model,
+                    status=RunStatus.RUNNING.value,
+                    worktree=str(wt.path),
+                    branch=wt.branch,
+                    started_at=started,
+                )
+            )
+            self._budget_gate.bind(budget_keys, run_id)
+            return run_id, wt, started
+        except Exception:
+            self._budget_gate.release(budget_keys)
+            raise
+
+    def _check_budget(self, req: RunRequest) -> None:
+        """Ledger-only budget check (tests / diagnostics). Spawn path uses ``_budget_gate.begin``."""
+        check_budget(self.usage, self.session_start, self.budgets, req)
+
+    def budget_status(self, now: datetime | None = None) -> list[BudgetStatus]:
+        return compute_budget_status(
+            self.usage, self.session_start, self.budgets, now or datetime.now(timezone.utc),
+        )
 
     def _execute(
         self, req: RunRequest, run_id: str, wt: Worktree, ts: str, *, cleanup: bool = False
     ) -> RunRecord:
         """Execute suffix: run the backend, price + classify, persist the terminal record."""
         backend = self.backends[req.backend_name]
+        result: AgentResult | None = None
+        record: RunRecord | None = None
         try:
             def _record_pid(pid: int) -> None:
                 self.state.update(run_id, pid=pid)
@@ -297,6 +452,20 @@ class Fleet:
             self._price_usage(usage, req.model)      # normalize cost + source (estimate/unavailable)
             self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
+            # The workspace's optional verify gate: only a would-be-SUCCEEDED run that actually
+            # CHANGED FILES is gated (the EMPTY downgrade already happened above; a text-only
+            # reply can't have broken the repo, so don't burn a full test run on an unchanged
+            # tree). A failed gate demotes to VERIFY_FAILED; the worktree is kept for review.
+            verify_passed: bool | None = None
+            verify_output = ""
+            if (
+                status is RunStatus.SUCCEEDED
+                and self.worktrees.verify_cmd
+                and self._worktree_has_changes(wt)
+            ):
+                verify_passed, verify_output = self.worktrees.verify(wt)
+                if not verify_passed:
+                    status = RunStatus.VERIFY_FAILED
             event = UsageEvent.from_result(
                 result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
                 client=req.client, model=req.model,
@@ -320,6 +489,8 @@ class Fleet:
                 ended_at=_now(),
                 error=result.error,
                 attempts=attempts,
+                verify_passed=verify_passed,
+                verify_output=verify_output,
             )
             if self._on_run_complete is not None:
                 try:
@@ -339,6 +510,25 @@ class Fleet:
                 run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}"
             )
             raise
+        finally:
+            # Release enforce-budget concurrency slots once spend is (or would have been) recorded
+            # so the next matching spawn can re-check the ledger.
+            self._budget_gate.release_run(run_id)
+            # Persist the FULL raw stdout/stderr for every terminal run (success OR failure) so a
+            # driver can inspect what the agent actually did after the fact. Best-effort: a logging
+            # failure (disk full, permission, ...) must never break a finished run; stderr the cause
+            # for visibility. Skipped when no AgentResult was produced (e.g. the backend crashed
+            # before parse_output returned - there is nothing to log). On a retried run this is the
+            # final attempt's output.
+            if result is not None:
+                try:
+                    self.logs.write(
+                        run_id,
+                        result.raw_stdout or "",
+                        result.raw_stderr or "",
+                    )
+                except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
+                    print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
 
         if cleanup:
             self.worktrees.remove(wt)
@@ -401,16 +591,9 @@ class Fleet:
         return [r for r in results if r is not None]
 
     def _run_request(self, req: RunRequest) -> RunRecord:
-        """run() one request, capturing any failure as a FAILED record so a batch survives it."""
+        """run_request one request, capturing any failure as a FAILED record so a batch survives it."""
         try:
-            return self.run(
-                req.backend_name,
-                req.task,
-                permission=req.permission,
-                model=req.model,
-                client=req.client,
-                timeout_s=req.timeout_s,
-            )
+            return self.run_request(req)
         except Exception as exc:  # noqa: BLE001 - one job's failure must not abort the batch
             return RunRecord(
                 run_id=f"{req.task.id}.{req.backend_name}",
@@ -477,6 +660,16 @@ class Fleet:
             usage.cost_usd = ext.cost_usd
             usage.source = ext.source
 
+    def _worktree_has_changes(self, wt: Worktree) -> bool:
+        """Whether the worktree holds uncommitted changes - the verify gate's trigger.
+
+        Can't tell (a git failure) counts as changed: a wasted gate run beats a missed regression.
+        """
+        try:
+            return bool(self.worktrees.changed_files(wt))
+        except WorktreeError:
+            return True
+
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
         """A clean exit that produced no work (no text, no file changes) is EMPTY, not success."""
         if result.status is not RunStatus.SUCCEEDED:
@@ -500,6 +693,130 @@ class Fleet:
             diff=self.worktrees.diff(wt),
         )
 
+    def commit_run(self, run_id: str, *, message: str | None = None) -> CommitResult:
+        """Freeze a finished run's work as a commit on its OWN branch, so a dependent run can chain
+        off it via ``spawn(..., base_branch=<that run's branch>)``.
+
+        This is integrate's first half without the merge: it commits the worktree's work onto
+        ``marshal/<run_id>`` but NEVER touches the driver's branch (worktree isolation holds).
+        Without it, basing a worktree on a prior run's branch gets only the spawn base, because the
+        agent left its work uncommitted and the branch ref never moved. Refuses a still-running run
+        (its files are half-written). The immutable usage ledger is untouched.
+        """
+        rec = self.state.get(run_id)
+        if rec is None:
+            raise ValueError(f"no such run: {run_id!r}")
+        if rec.status == RunStatus.RUNNING.value:
+            return CommitResult(
+                run_id=run_id,
+                status="blocked",
+                branch=rec.branch,
+                message="run is still in progress; wait for it to finish before committing",
+            )
+        wt = self._worktree_for(run_id)
+        if not wt.branch:
+            raise ValueError(f"run {run_id!r} has no branch to commit")
+        try:
+            sha = self.worktrees.commit_all(wt, message or f"marshal: {run_id}")
+            tip = self.worktrees.branch_tip(wt.branch)
+        except WorktreeError as exc:
+            return CommitResult(run_id=run_id, status="error", branch=wt.branch, message=str(exc))
+        self.state.update(run_id, commit=tip)
+        return CommitResult(
+            run_id=run_id,
+            status="committed" if sha is not None else "clean",
+            branch=wt.branch,
+            commit=tip,
+        )
+
+    def clean(
+        self,
+        *,
+        scope: str = "finished",
+        run_ids: list[str] | None = None,
+        older_than_hours: float | None = None,
+        dry_run: bool = False,
+    ) -> CleanResult:
+        """Tear down finished runs' worktrees + branches to reclaim disk; never a running run.
+
+        The run's persisted log is reclaimed alongside its worktree (both disk-heavy). The immutable
+        usage ledger is never touched, and run-state records are kept so status and
+        cost history stay queryable (a cleaned run's worktree path simply no longer exists, which is
+        what `collect_run`/`integrate` already report). ``scope`` (ignored when ``run_ids`` is given):
+          * ``"merged"``   - only runs already integrated (``merged_into`` set). Safest.
+          * ``"finished"`` - (default) merged runs + failed/timed_out/cancelled/empty runs; protects
+            un-integrated *succeeded* work (a candidate you may still want to review).
+          * ``"all"``      - every terminal run, including un-integrated succeeded ones. DESTRUCTIVE:
+            this ``git branch -D``\\s those branches too, so an un-reviewed succeeded run's commits
+            survive only in git's reflog until gc.
+        ``run_ids`` cleans exactly those (still refuses a running run, reported under ``skipped``;
+        ``older_than_hours`` is ignored in this mode). ``older_than_hours`` (scope mode only) keeps
+        only runs that ended at least that long ago. ``dry_run`` reports what would be removed
+        without touching anything.
+
+        Scope-mode cleans also reconcile the worktree base dir against the ledger and reap
+        ORPHANS - dirs whose run record is missing or unreadable (hand-pruned, or torn; a live run
+        always has a readable record, so it is never touched). Reported under ``orphans_removed``;
+        ``older_than_hours`` does not apply (an orphan has no trustworthy end timestamp).
+        """
+        result = CleanResult(dry_run=dry_run)
+        if run_ids is not None:
+            targets: list[RunRecord] = []
+            for rid in run_ids:
+                rec = self.state.get(rid)
+                if rec is None:
+                    result.skipped.append({"run_id": rid, "reason": "no such run"})
+                elif not _is_terminal(rec):
+                    result.skipped.append(
+                        {"run_id": rid, "reason": f"not finished (status={rec.status})"}
+                    )
+                else:
+                    targets.append(rec)
+        else:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours) \
+                if older_than_hours is not None else None
+            targets = [
+                r for r in self.state.list()
+                if _in_clean_scope(r, scope) and _ended_before(r, cutoff)
+            ]
+        for rec in targets:
+            if dry_run:
+                result.removed.append(rec.run_id)
+                continue
+            try:
+                self.worktrees.discard(rec.worktree or "", rec.branch)
+                self.logs.remove(rec.run_id)  # reclaim the (untruncated) run log too; best-effort
+                result.removed.append(rec.run_id)
+            except WorktreeError as exc:
+                result.errors.append({"run_id": rec.run_id, "error": str(exc)})
+        if run_ids is None and self.worktrees.base_dir.exists():
+            # Reconcile the worktree dir against the ledger: a dir whose run record is gone
+            # (hand-pruned) or unreadable (torn/corrupt - state.list() silently skips those) is
+            # invisible to every ledger-driven pass above and would leak forever. Scoped strictly
+            # to Marshal's own base_dir, so foreign worktrees are never touched. A genuinely
+            # running run always has a readable record (writes are atomic temp+replace) and is
+            # skipped here; an explicit run_ids clean targets exactly those runs, so no sweep.
+            for child in sorted(self.worktrees.base_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                rid = child.name  # the dir name IS the run_id (_start passes it as the task_id)
+                try:
+                    known = self.state.get(rid) is not None
+                except (ValidationError, OSError, ValueError):
+                    known = False  # unreadable record: unreachable via get_run/cancel - garbage
+                if known:
+                    continue  # ledger-owned; the scope pass above already decided its fate
+                if dry_run:
+                    result.orphans_removed.append(rid)
+                    continue
+                try:
+                    self.worktrees.discard(child, f"{self.worktrees.branch_prefix}/{rid}")
+                    self.logs.remove(rid)
+                    result.orphans_removed.append(rid)
+                except WorktreeError as exc:
+                    result.errors.append({"run_id": rid, "error": str(exc)})
+        return result
+
     def cancel_run(self, run_id: str) -> RunRecord:
         """Cancel a running run: SIGTERM its process group, then mark cancelled.
 
@@ -511,7 +828,7 @@ class Fleet:
         rec = self.state.get(run_id)
         if rec is None:
             raise ValueError(f"no such run: {run_id!r}")
-        if rec.status != "running":
+        if rec.status != RunStatus.RUNNING.value:
             return rec
         if rec.pid is not None:
             try:
@@ -522,7 +839,7 @@ class Fleet:
         # write atomically under the per-run lock, so a run that finished (succeeded/failed) between
         # the kill and now is never overwritten with "cancelled".
         return self.state.update_if(
-            run_id, lambda r: r.status == "running", status="cancelled", ended_at=_now()
+            run_id, lambda r: r.status == RunStatus.RUNNING.value, status="cancelled", ended_at=_now()
         )
 
     def integrate(

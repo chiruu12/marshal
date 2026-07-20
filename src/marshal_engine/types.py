@@ -35,6 +35,10 @@ class RunStatus(str, Enum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
+    # The agent finished and produced work, but the workspace's `verify:` command rejected it.
+    # Distinct from FAILED so a driver can tell "the run broke" from "reviewable work exists but
+    # the repo's gate said no" - the worktree is kept for review either way.
+    VERIFY_FAILED = "verify_failed"
 
 
 class UsageSource(str, Enum):
@@ -68,7 +72,6 @@ class TaskSpec(BaseModel):
     role: str | None = None                # routing role (planner/coder/writer/reviewer/...);
                                            # policy maps role -> backend. Engine stays mechanism.
     context_files: list[str] = []          # minimal files the worker should see
-    files_touched: list[str] = []          # declared scope -> conflict analysis
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
 
 
@@ -104,7 +107,6 @@ class AgentResult(BaseModel):
     text: str = ""                         # final assistant message
     session_id: str | None = None
     usage: UsageRecord | None = None
-    files_changed: list[str] = []
     exit_code: int | None = None
     duration_ms: int = 0                    # wall-clock around the run, stamped by base.run()
     error: str | None = None

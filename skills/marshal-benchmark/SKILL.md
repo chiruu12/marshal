@@ -36,8 +36,8 @@ playbook runs one goal through N strategies and compares them.
   `unavailable` `$0` as free.
 - The benchmark measures cost, latency, and outcome **status** - not correctness. A cheapest strategy
   can still produce worse code. Review the diffs (`collect_run`) before drawing conclusions.
-- `empty` / `failed` strategies still cost tokens; they appear in per-run cost but are excluded from
-  `cheapest` / `fastest`.
+- `empty` / `failed` / `verify_failed` strategies still cost tokens; they appear in per-run cost but
+  are excluded from `cheapest` / `fastest`.
 
 ## What to do with the result
 - Route future work of this kind to the strategy with the best cost/quality trade-off (the cheapest

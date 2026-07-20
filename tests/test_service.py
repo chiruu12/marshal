@@ -20,8 +20,17 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, FleetConfig, FleetContext, load_config
+from marshal_engine.config import (
+    DEFAULT_OPENCODE_MODEL,
+    BudgetSpec,
+    ClientConfig,
+    ConfigError,
+    FleetConfig,
+    FleetContext,
+    load_config,
+)
 from marshal_engine.service import MarshalService
+from marshal_engine.service import ModelList, ModelSpec
 
 
 class _Echo(CodingAgentBackend):
@@ -163,6 +172,22 @@ def _svc(repo: Path) -> MarshalService:
     return MarshalService(repo, cfg, backends={"echo": _Echo()})
 
 
+def test_config_verify_reaches_fleet_and_gates_runs(repo: Path) -> None:
+    import sys as _sys
+
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT)},
+        verify=[_sys.executable, "-c", "import sys; print('gate says no'); sys.exit(1)"],
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    assert svc.fleet.worktrees.verify_cmd == cfg.verify  # config -> Fleet -> WorktreeManager
+    rec = svc.run_agent("worker", "do something", task_id="tv")
+    # _Echo replies with text but changes no files: succeeded, and the gate is SKIPPED - a
+    # text-only reply cannot have broken the repo, so no test run is burned on it.
+    assert rec.status == "succeeded"
+    assert rec.verify_passed is None
+
+
 def test_list_clients(repo: Path) -> None:
     svc = _svc(repo)
     result = svc.list_clients()
@@ -195,8 +220,45 @@ def test_run_agent_records(repo: Path) -> None:
 
 def test_run_agent_unknown_client(repo: Path) -> None:
     svc = _svc(repo)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="hint: pass backend="):  # points at the ad-hoc escape hatch
         svc.run_agent("nope", "x")
+
+
+def test_session_start_is_a_utc_datetime(repo: Path) -> None:
+    # session_start is the long-lived MCP server's "wake" timestamp; a "since session" window maps
+    # to this instant. Stable for the life of the service, UTC, and accessible on the service.
+    from datetime import datetime, timezone
+
+    svc = _svc(repo)
+    assert isinstance(svc.session_start, datetime)
+    assert svc.session_start.tzinfo is not None
+    assert svc.session_start.tzinfo.utcoffset(svc.session_start) == timezone.utc.utcoffset(svc.session_start)
+
+
+def test_service_usage_since_filters_events(repo: Path) -> None:
+    # MarshalService.usage(since=...) plumbs the bound into the UsageTracker so a windowed rollup
+    # works end-to-end through the service. The `_Echo` backend always stamps `now`, so seeding the
+    # ledger with an old event shows the filter in action.
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    svc = _svc(repo)
+    ledger = svc.fleet.usage
+    ledger.record(UsageEvent(ts="2020-01-01T00:00:00Z", run_id="old",
+                             backend="echo", cost_usd=1.00))
+    ledger.record(UsageEvent(ts="2026-06-19T00:00:00Z", run_id="new",
+                             backend="echo", cost_usd=0.05))
+
+    # No args: both events (unchanged behavior).
+    assert svc.usage().totals.runs == 2
+
+    # since=2026-01-01 drops the 2020 event.
+    s = svc.usage(since=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert s.totals.runs == 1
+    assert abs(s.totals.cost_usd - 0.05) < 1e-9
+    # The new by_backend_model breakdown is also present.
+    assert "echo/-" in s.by_backend_model
 
 
 def _capture_svc(repo: Path, backend: _Capture, *, worker: str | None = None) -> MarshalService:
@@ -216,6 +278,34 @@ def test_run_agent_threads_context_files_to_the_task(repo: Path) -> None:
     svc = _capture_svc(repo, backend)
     svc.run_agent("worker", "do x", task_id="t1", context_files=["a.py", "b.py"])
     assert backend.tasks[-1].context_files == ["a.py", "b.py"]
+
+
+def test_run_agent_threads_base_branch_to_the_task(repo: Path) -> None:
+    subprocess.run(["git", "branch", "marshal/chainA"], cwd=repo, check=True, capture_output=True)
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_agent("worker", "do x", task_id="t1", base_branch="marshal/chainA")
+    assert backend.tasks[-1].base_branch == "marshal/chainA"
+
+
+def test_spawn_threads_base_branch_to_the_task(repo: Path) -> None:
+    subprocess.run(["git", "branch", "marshal/prior"], cwd=repo, check=True, capture_output=True)
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    try:
+        svc.spawn("worker", "do x", task_id="sp1", base_branch="marshal/prior")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not backend.tasks:
+            time.sleep(0.05)
+        assert backend.tasks[-1].base_branch == "marshal/prior"
+    finally:
+        svc.shutdown()
+
+
+def test_request_for_threads_base_branch(repo: Path) -> None:
+    svc = _svc(repo)
+    req = svc._request_for("worker", "x", base_branch="feature/base")
+    assert req.task.base_branch == "feature/base"
 
 
 def test_goal_is_prefixed_with_worker_preamble(repo: Path) -> None:
@@ -264,6 +354,24 @@ def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     collected = svc.collect_run(rec.run_id)
     assert collected.run_id == rec.run_id
     assert collected.branch == rec.branch
+
+
+def test_commit_run_delegates(repo: Path) -> None:
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "do something", task_id="t1")
+    result = svc.commit_run(rec.run_id)
+    assert result.status in ("committed", "clean")  # _Echo writes nothing -> clean
+    assert result.commit  # a concrete branch-tip ref to chain on
+    assert svc.get_run(rec.run_id).commit == result.commit
+
+
+def test_clean_delegates(repo: Path) -> None:
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "do something", task_id="t1")  # succeeded, un-integrated
+    assert svc.clean().removed == []                  # default scope protects it
+    result = svc.clean(scope="all")                    # opt in to clean it
+    assert rec.run_id in result.removed
+    assert svc.get_run(rec.run_id) is not None         # state/history kept; only the worktree went
 
 
 def _bench_svc(repo: Path, backends: dict[str, object], **clients: str) -> MarshalService:
@@ -421,3 +529,381 @@ def test_all_available_skipped_is_empty(repo: Path) -> None:
     svc = _svc(repo)  # single 'echo' client, _Echo.check_available() is True
     assert svc.skipped_clients == []
     assert {c.name for c in svc.list_clients().clients} == {"worker"}
+
+
+class _Toggle(_Echo):
+    """An echo backend whose availability can be flipped mid-test (CLI installed mid-session)."""
+
+    name = "toggle"
+
+    def __init__(self) -> None:
+        self.available = False
+
+    def check_available(self) -> bool:
+        return self.available
+
+
+def _toggle_svc(repo: Path) -> tuple[MarshalService, _Toggle]:
+    be = _Toggle()
+    cfg = FleetConfig(
+        clients={"late": ClientConfig(name="late", backend="toggle", permission=PermissionMode.SAFE_EDIT)}
+    )
+    return MarshalService(repo, cfg, backends={"toggle": be}), be
+
+
+def test_skipped_client_heals_when_backend_appears(repo: Path) -> None:
+    # Availability is snapshotted at construction; a backend CLI that shows up mid-session
+    # (installed, or a healed PATH) must promote its clients instead of erroring forever.
+    svc, be = _toggle_svc(repo)
+    assert svc.skipped_clients == ["late"]
+    with pytest.raises(ValueError, match="client 'late' skipped"):
+        svc.run_agent("late", "go", task_id="t1")
+
+    be.available = True
+    rec = svc.run_agent("late", "go", task_id="t2")  # heals on resolution, then runs
+    assert rec.status == "succeeded"
+    assert svc.skipped_clients == []
+
+
+def test_list_clients_reprobes_skipped(repo: Path) -> None:
+    svc, be = _toggle_svc(repo)
+    assert svc.list_clients().clients == []
+    be.available = True
+    assert {c.name for c in svc.list_clients().clients} == {"late"}
+    assert svc.skipped_clients == []
+
+
+def test_still_unavailable_client_keeps_raising(repo: Path) -> None:
+    svc, _be = _toggle_svc(repo)
+    with pytest.raises(ValueError, match="client 'late' skipped"):
+        svc.run_agent("late", "go", task_id="t1")
+    with pytest.raises(ValueError, match="CLI unavailable"):
+        svc.run_agent("late", "go", task_id="t2")  # reprobe found nothing; still skipped
+    assert svc.skipped_clients == ["late"]
+
+
+def test_unknown_client_names_missing_config_path(repo: Path, tmp_path: Path) -> None:
+    # Wrong --repo/cwd with no fleet.config.yaml used to surface only
+    # `known: (none configured)` with no path - pin the actionable form.
+    missing = tmp_path / "no-such-fleet.config.yaml"
+    svc = MarshalService(repo, FleetConfig(), config_path=missing)
+    with pytest.raises(ValueError, match="no fleet config at") as excinfo:
+        svc.run_agent("goose-cursor", "pong")
+    msg = str(excinfo.value)
+    assert "(none configured)" in msg
+    assert str(missing) in msg
+
+
+def test_unknown_client_includes_config_path_when_loaded(repo: Path, tmp_path: Path) -> None:
+    cfg_path = tmp_path / "fleet.config.yaml"
+    cfg_path.write_text("clients: {}\n", encoding="utf-8")
+    empty = MarshalService(repo, FleetConfig(), config_path=cfg_path)
+    with pytest.raises(ValueError, match="declares no clients") as excinfo:
+        empty.run_agent("missing", "x")
+    assert str(cfg_path) in str(excinfo.value)
+
+# --- harness-first model selection: model override + ad-hoc (backend, model) spawn ------------
+
+
+def _opencode_svc(repo: Path) -> MarshalService:
+    """A service whose configured client uses the opencode backend (the Fireworks guard is opencode-specific)."""
+    cfg = FleetConfig(
+        clients={
+            "impl": ClientConfig(
+                name="impl", backend="opencode", model="opencode-go/anything",
+                permission=PermissionMode.SAFE_EDIT,
+            )
+        }
+    )
+    # Inject a no-op opencode backend so the service doesn't try to call the real `opencode` CLI
+    # in CI; the synthesis path only consults make_backend() for ad-hoc, but the configured client
+    # is the one that exercises the Fireworks guard via the override channel.
+    from marshal_engine.backends.opencode import OpenCodeBackend
+
+    fake = OpenCodeBackend()
+    fake.check_available = lambda: True  # type: ignore[method-assign]
+    return MarshalService(repo, cfg, backends={"opencode": fake})
+
+
+def test_request_for_adhoc_synthesizes_ephemeral_config(repo: Path) -> None:
+    # Ad-hoc: backend=echo (already on the fleet via _Echo), no client. The synthesized request
+    # uses fleet-default permission + timeout, the caller's model, and an `adhoc-<backend>` client
+    # name. resolve_model still applies its opencode default for ad-hoc opencode without a model.
+    svc = _svc(repo)
+    req = svc._request_for(None, "x", backend="echo", model="custom-model")
+    assert req.backend_name == "echo"
+    assert req.model == "custom-model"
+    assert req.client == "adhoc-echo"
+    assert req.permission == PermissionMode.SAFE_EDIT  # fleet default
+    assert req.timeout_s == 600  # fleet default
+
+    # Ad-hoc opencode without an explicit model: resolve_model defaults to the Go subscription.
+    req2 = svc._request_for(None, "x", backend="opencode")
+    assert req2.backend_name == "opencode"
+    assert req2.model == DEFAULT_OPENCODE_MODEL
+
+
+def test_request_for_both_client_and_backend_prefers_client(repo: Path) -> None:
+    # When both `client_name` and `backend` are given, client wins (backend is ignored). The
+    # client's resolved backend/model are used; `model` still overrides the resolved model.
+    svc = _svc(repo)
+    # The service's "worker" client is backend="echo" with no model. Ad-hoc would be "opencode".
+    # Passing both -> the run uses "echo" (client's), not "opencode".
+    req = svc._request_for("worker", "x", backend="opencode")
+    assert req.backend_name == "echo"
+    assert req.client == "worker"
+    # And the explicit model still overrides whatever the client resolves to.
+    req2 = svc._request_for("worker", "x", backend="opencode", model="explicit")
+    assert req2.backend_name == "echo"
+    assert req2.model == "explicit"
+
+
+def test_request_for_neither_client_nor_backend_raises(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="hint: list_clients"):
+        svc._request_for(None, "x")
+
+
+def test_request_for_unknown_backend_raises_with_valid_names(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError) as exc:
+        svc._request_for(None, "x", backend="nonexistent")
+    # The registry's own message lists the valid backends; the test asserts the names are surfaced.
+    msg = str(exc.value)
+    assert "nonexistent" in msg
+    assert "known" in msg
+    # Each registered backend name appears in the error so the driver can fix the typo.
+    from marshal_engine.registry import backend_names
+
+    for name in backend_names():
+        assert name in msg
+
+
+def test_request_for_adhoc_opencode_fireworks_model_raises(repo: Path) -> None:
+    # The Fireworks guard applies to ad-hoc opencode configs the same way it does to configured
+    # ones - synthesized at request-time, so a typo'd model fails fast before any spawn.
+    svc = _svc(repo)
+    with pytest.raises(ConfigError, match="Fireworks"):
+        svc._request_for(None, "x", backend="opencode", model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+
+
+def test_run_agent_model_override_on_configured_client(repo: Path) -> None:
+    # end-to-end: a configured client with model "configured-model", then call with model="override";
+    # the override reaches the RunRecord (which is what get_run / status / usage / report see).
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(
+                name="worker", backend="echo", model="configured-model",
+                permission=PermissionMode.SAFE_EDIT,
+            )
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    rec = svc.run_agent("worker", "do x", task_id="t1", model="override")
+    assert rec.status == "succeeded"
+    assert rec.model == "override"  # override reaches the persisted record
+
+    # And without the override, the client's resolved model is used.
+    rec2 = svc.run_agent("worker", "do x", task_id="t2")
+    assert rec2.model == "configured-model"  # resolve_model(client)
+
+
+def test_run_agent_adhoc_backend_runs_without_configured_client(repo: Path) -> None:
+    # A service with NO clients (e.g. an empty config) can still spawn by bare (backend, model).
+    cfg = FleetConfig()  # no clients
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    rec = svc.run_agent(backend="echo", goal="do x", task_id="t1", model="adhoc-model")
+    assert rec.status == "succeeded"
+    assert rec.backend == "echo"
+    assert rec.model == "adhoc-model"
+    assert rec.client == "adhoc-echo"
+
+
+def test_run_agent_unknown_backend_raises(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="nonexistent"):
+        svc.run_agent(backend="nonexistent", goal="x", task_id="t1")
+
+
+def test_run_agent_opencode_fireworks_model_raises_config_error(repo: Path) -> None:
+    # Ad-hoc path: run_agent propagates the same ConfigError the synthesis raises, so a
+    # Fireworks-billed run never starts on the Fleet.
+    svc = _opencode_svc(repo)
+    with pytest.raises(ConfigError, match="Fireworks"):
+        svc.run_agent(backend="opencode", goal="x", task_id="t1",
+                      model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+
+
+def test_run_agent_client_model_override_fireworks_raises(repo: Path) -> None:
+    # Override path: a model override on a CONFIGURED opencode client must hit the same Fireworks
+    # guard as an ad-hoc opencode run. Overrides bypass load_config, so _request_for re-checks.
+    svc = _opencode_svc(repo)  # configured client "impl" is backend=opencode
+    with pytest.raises(ConfigError, match="Fireworks"):
+        svc.run_agent("impl", "x", task_id="t1",
+                      model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+
+
+# --- list_models + duration presets ---------------------------------------------------------
+
+
+def test_list_models_empty_catalog_by_default(repo: Path) -> None:
+    svc = _svc(repo)  # no models in the config
+    result = svc.list_models()
+    assert isinstance(result, ModelList)
+    assert result.models == []
+    assert result.driver_context is None  # no context.driver in this config
+
+
+def test_list_models_surfaces_catalog_and_driver_context(repo: Path) -> None:
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT)},
+        context=FleetContext(driver="Use the catalog to pick a model."),
+        models=[
+            ModelSpec(id="<provider>/<model-a>", backends=["opencode"], cost="native", quota_type="subscription"),
+            ModelSpec(id="<provider>/<model-b>", backends=["cursor"], cost="estimated", quota_type="metered"),
+        ],
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    result = svc.list_models()
+    assert [m.model_dump() for m in result.models] == [
+        {"id": "<provider>/<model-a>", "backends": ["opencode"], "cost": "native", "quota_type": "subscription", "notes": ""},
+        {"id": "<provider>/<model-b>", "backends": ["cursor"], "cost": "estimated", "quota_type": "metered", "notes": ""},
+    ]
+    assert result.driver_context == "Use the catalog to pick a model."
+
+
+def test_request_for_duration_preset_overrides_client_timeout(repo: Path) -> None:
+    # The client's configured timeout (300s) is replaced when a duration preset is passed.
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", timeout_s=300,
+                                        permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    req = svc._request_for("worker", "x", duration="short")  # short = 300s same as client; try "long"
+    assert req.timeout_s == 300  # "short" == 300
+    req2 = svc._request_for("worker", "x", duration="long")  # 24000s, far past client's 300
+    assert req2.timeout_s == 24000
+    # And the integer form is also accepted
+    req3 = svc._request_for("worker", "x", duration=42)
+    assert req3.timeout_s == 42
+
+
+def test_request_for_duration_invalid_preset_raises(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ConfigError, match="unknown duration"):
+        svc._request_for("worker", "x", duration="xl")
+    with pytest.raises(ConfigError, match="must be > 0"):
+        svc._request_for("worker", "x", duration=0)
+
+
+def test_request_for_duration_overrides_ephemeral_default_too(repo: Path) -> None:
+    # Ad-hoc (backend, model) path: the synthesized ClientConfig's default timeout_s=600 is
+    # overridden by the duration parameter.
+    cfg = FleetConfig()  # no clients
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    req = svc._request_for(None, "x", backend="echo", model="adhoc-model", duration="large")
+    assert req.timeout_s == 6000  # "large" = 6000s
+    assert req.client == "adhoc-echo"
+    assert req.model == "adhoc-model"
+
+
+def test_run_agent_duration_reaches_run_record(repo: Path) -> None:
+    # End-to-end: a `duration` override on run_agent reaches the RunRequest (and thus the run record).
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", timeout_s=300,
+                                        permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    rec = svc.run_agent("worker", "x", task_id="t1", duration="long")
+    assert rec.status == "succeeded"
+    # The Fleet doesn't echo timeout back on the record (it lives on the RunRequest), but we can
+    # assert the side-effect: a record with this task_id exists and the override didn't error.
+    assert rec.run_id.startswith("t1.echo.")
+
+
+def test_spawn_duration_reaches_run_record(repo: Path) -> None:
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", timeout_s=300,
+                                        permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    try:
+        rec = svc.spawn("worker", "x", task_id="sp1", duration="medium")
+        assert rec.run_id.startswith("sp1.echo.")
+        assert rec.status in ("running", "succeeded")
+    finally:
+        svc.shutdown()
+
+
+def test_run_many_per_job_duration(repo: Path) -> None:
+    # Each job in run_many can carry its own duration; the override reaches the RunRequest.
+    cfg = FleetConfig(
+        clients={
+            "a": ClientConfig(name="a", backend="echo", timeout_s=300, permission=PermissionMode.SAFE_EDIT),
+            "b": ClientConfig(name="b", backend="echo", timeout_s=300, permission=PermissionMode.SAFE_EDIT),
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    jobs = [
+        {"client": "a", "goal": "x", "task_id": "j1", "duration": "short"},
+        {"client": "b", "goal": "y", "task_id": "j2", "duration": 999},
+    ]
+    records = svc.run_many(jobs, max_concurrency=2)
+    assert [r.task_id for r in records] == ["j1", "j2"]
+    assert all(r.status == "succeeded" for r in records)
+
+
+def test_run_many_duration_invalid_preset_fails_fast(repo: Path) -> None:
+    # A bad duration in any job must fail the whole call BEFORE any run starts (validated up
+    # front via resolve_duration in _request_for).
+    cfg = FleetConfig(
+        clients={"a": ClientConfig(name="a", backend="echo", permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    with pytest.raises(ConfigError, match="unknown duration"):
+        svc.run_many([{"client": "a", "goal": "x", "duration": "xl"}])
+    assert svc.status() == []  # nothing ran
+
+
+# --- advisory budgets: MarshalService passes them through to the Fleet ----------------------
+
+
+def test_service_budget_status_passes_config_through_to_fleet(repo: Path) -> None:
+    # The service threads FleetConfig.budgets into the Fleet so the MCP `usage` tool and any
+    # library caller see the same snapshot. A no-config-budgets service returns [].
+    cfg = FleetConfig(
+        clients={"a": ClientConfig(name="a", backend="echo", permission=PermissionMode.SAFE_EDIT)},
+        budgets=[
+            BudgetSpec(backend="echo", window="week", limit_usd=1.0),
+            BudgetSpec(window="month", limit_usd=5.0),
+        ],
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    assert [b.model_dump() for b in svc.fleet.budgets] == [
+        {
+            "backend": "echo",
+            "client": None,
+            "window": "week",
+            "limit_usd": 1.0,
+            "enforce": False,
+        },
+        {
+            "backend": None,
+            "client": None,
+            "window": "month",
+            "limit_usd": 5.0,
+            "enforce": False,
+        },
+    ]
+    rows = svc.budget_status()
+    assert [r.scope for r in rows] == ["backend:echo", "global"]
+    assert [r.limit_usd for r in rows] == [1.0, 5.0]
+    # No runs yet -> $0 spent, full limit remaining on every budget.
+    assert all(r.spent_usd == 0.0 for r in rows)
+    assert [r.remaining_usd for r in rows] == [1.0, 5.0]
+
+
+def test_service_no_budgets_returns_empty_list(repo: Path) -> None:
+    # Backward-compat: a service built from a config without `budgets:` returns [].
+    svc = _svc(repo)
+    assert svc.budget_status() == []

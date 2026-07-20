@@ -22,9 +22,6 @@ rather than blocking.
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
 from typing import Any
 
 from ..types import (
@@ -37,7 +34,7 @@ from ..types import (
     UsageRecord,
     UsageSource,
 )
-from .base import CodingAgentBackend
+from .base import CodingAgentBackend, parse_jsonl
 
 
 class CodexBackend(CodingAgentBackend):
@@ -54,30 +51,13 @@ class CodexBackend(CodingAgentBackend):
         ),
     )
 
-    _SANDBOX: dict[PermissionMode, list[str]] = {
+    _PERMISSION: dict[PermissionMode, list[str]] = {
         PermissionMode.READ_ONLY: ["--sandbox", "read-only"],
         PermissionMode.SAFE_EDIT: ["--sandbox", "workspace-write"],
         PermissionMode.YOLO: ["--dangerously-bypass-approvals-and-sandbox"],
     }
 
     # --- hooks ---------------------------------------------------------------------------
-
-    def check_available(self) -> bool:
-        if shutil.which(self.binary) is None:
-            return False
-        try:
-            proc = subprocess.run(
-                [self.binary, "--version"], capture_output=True, text=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
-
-    def map_permission(self, mode: PermissionMode) -> list[str]:
-        try:
-            return list(self._SANDBOX[mode])
-        except KeyError:
-            raise ValueError(f"codex: unsupported permission mode {mode!r}") from None
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "exec", "--json", "--color", "never", "--skip-git-repo-check"]
@@ -90,16 +70,8 @@ class CodexBackend(CodingAgentBackend):
         argv.append(self._compose_prompt(task))
         return argv
 
-    @staticmethod
-    def _compose_prompt(task: TaskSpec) -> str:
-        prompt = task.goal
-        if task.context_files:
-            files = "\n".join(f"- {f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant files:\n{files}"
-        return prompt
-
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        events = _parse_jsonl(raw_stdout)
+        events = parse_jsonl(raw_stdout)
 
         session_id: str | None = None
         text_parts: list[str] = []
@@ -146,21 +118,6 @@ class CodexBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
-
-
-def _parse_jsonl(raw: str) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            events.append(obj)
-    return events
 
 
 def _extract_text(ev: dict[str, Any]) -> str | None:

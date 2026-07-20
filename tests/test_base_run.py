@@ -201,6 +201,20 @@ def test_failed_run_without_error_surfaces_exit_code_and_stderr(tmp_path: Path) 
     assert res.error and "code 3" in res.error and "boom detail" in res.error
 
 
+def test_failed_run_without_error_surfaces_stdout_when_stderr_empty(tmp_path: Path) -> None:
+    # Goose-style: actionable failure text on stdout only. base.run must not drop it.
+    b = _Dummy(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('error: Error Unknown provider: fake\\n'); sys.exit(1)",
+        ]
+    )
+    res = b.run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    assert res.error and "Unknown provider" in res.error
+
+
 def test_run_missing_binary(tmp_path: Path) -> None:
     b = _Dummy(["marshal-no-such-binary-xyz123"])
     res = b.run(_task(), RunOpts(cwd=tmp_path))
@@ -258,3 +272,55 @@ def test_timeout_recovery_error_does_not_mask_timeout(tmp_path: Path) -> None:
     res = _BoomParser().run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
     assert res.status is RunStatus.TIMED_OUT  # recovery failure swallowed, timeout still reported
     assert res.usage is None
+
+
+# --- extract_usage contract: the seam Cursor/Codex use to backfill real cost --------------
+
+
+class _CapturingUsage(_Dummy):
+    """A dummy that overrides extract_usage to capture the post-parse_output result it sees.
+
+    The seam is the ONLY hook backends without in-output usage (Cursor's admin API, Codex's
+    admin API, future pricing APIs) have for stamping a real cost onto a run after the
+    process has exited. It MUST receive the result parse_output built - the same status, the
+    same text, the same exit_code - so a backend can decide "did this run actually produce
+    tokens I should charge for?" before swapping in admin-api usage.
+    """
+
+    def __init__(self) -> None:
+        super().__init__([sys.executable, "-c", "print('hi')"])
+        self.captured: AgentResult | None = None
+
+    def extract_usage(self, result: AgentResult) -> UsageRecord:
+        self.captured = result
+        return UsageRecord(
+            backend="capturing", source=UsageSource.ADMIN_API, cost_usd=0.99
+        )
+
+
+def test_extract_usage_default_returns_result_usage() -> None:
+    # The base class default is `result.usage` - a backend that didn't override the seam
+    # must still get its parse_output result.usage passed through unchanged. Locks down
+    # the contract Fleet._execute relies on: `usage = backend.extract_usage(result)`.
+    b = _Dummy([sys.executable, "-c", "print('hi')"])
+    result = b.run(_task(), RunOpts(cwd=Path("/tmp")))
+    # The default seam returns result.usage (None here because _Dummy doesn't set one)
+    assert b.extract_usage(result) is result.usage
+
+
+def test_extract_usage_override_receives_post_parse_output() -> None:
+    # The seam must be called with the AgentResult parse_output produced - same status, text,
+    # exit_code - so a backend can condition on them. Locks down the contract Cursor's
+    # admin-api fetch and Codex's account-info lookup rely on.
+    backend = _CapturingUsage()
+    result = backend.run(_task(), RunOpts(cwd=Path("/tmp")))
+    # Fleet calls extract_usage on the result of base.run() - simulate the call here so
+    # the contract test stays in test_base_run (the seam's home).
+    usage = backend.extract_usage(result)
+    assert abs(usage.cost_usd - 0.99) < 1e-9
+    assert usage.source is UsageSource.ADMIN_API
+    # the override saw the same status/text/exit_code the caller sees
+    assert backend.captured is not None
+    assert backend.captured.status is result.status
+    assert backend.captured.text == result.text
+    assert backend.captured.exit_code == result.exit_code

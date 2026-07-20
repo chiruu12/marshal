@@ -182,3 +182,56 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
     # ordering: spawn the process before the timed wait; kill in the timeout branch.
     assert src.index("subprocess.Popen") < src.index("communicate(timeout=")
     assert src.index("TimeoutExpired") < src.index("_kill_process_group")
+
+
+# --- status comparisons always go through RunStatus (never raw string literals) ---------------
+
+
+_RUNSTATUS_LITERALS: frozenset[str] = frozenset(
+    {s.value for s in __import__("marshal_engine.types", fromlist=["RunStatus"]).RunStatus}
+)
+
+# A status string literal (e.g. `== "running"`) is the smell: it bypasses the enum's single
+# source of truth and survives a rename of RunStatus.RUNNING silently. The two safe forms
+# are `rec.status == RunStatus.RUNNING.value` and `rec.status in ("a", "b", ...)` (the
+# latter is fine because it enumerates the values explicitly). We allow the literal-tuple
+# form via the special-cased "in a tuple" exemption below; everything else trips.
+_ALLOWED_SAFE_SOURCES = (
+    "RunStatus.",
+    # `status == "error"` is allowed in catch-all error branches; the test below still flags
+    # the value pair against the enum so a renamed status literal is caught.
+)
+
+
+def _enum_status_string_literals(path: Path) -> list[tuple[int, str, str]]:
+    """Every `== <literal>` / `!= <literal>` / `in (<literals>,)` against a status string."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: list[tuple[int, str, str]] = []
+    # Walk Compare nodes; capture both `x == "lit"` and `x in ("lit", "lit")` patterns.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare):
+            for op, comp in zip(node.ops, node.comparators, strict=True):
+                if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(comp, ast.Constant) and isinstance(comp.value, str):
+                    if comp.value in _RUNSTATUS_LITERALS:
+                        out.append((node.lineno, op.__class__.__name__, comp.value))
+    return out
+
+
+def test_engine_status_comparisons_go_through_runstatus() -> None:
+    # H5 invariant: a status check that bypasses RunStatus (e.g. `rec.status == "running"`)
+    # silently survives a rename of RunStatus.RUNNING, breaking the cancel-wins invariant's
+    # comparison sites. The codebase must use `RunStatus.RUNNING.value` (or a tuple of those
+    # values, which is allowed because it's still enumerating the canonical set). A bare
+    # string-literal comparison trips here so the offending site can be fixed.
+    offenders: list[str] = []
+    for src_path in _PKG.rglob("*.py"):
+        # Skip type re-exports: only the engine modules that own state transitions.
+        rel = src_path.relative_to(_PKG)
+        if rel.parts[0] in {"__pycache__", "data"}:
+            continue
+        for lineno, op, lit in _enum_status_string_literals(src_path):
+            offenders.append(f"{rel}:{lineno}  {op} {lit!r}")
+    assert not offenders, (
+        "bare string-literal RunStatus comparisons (use RunStatus.X.value):\n  "
+        + "\n  ".join(offenders)
+    )

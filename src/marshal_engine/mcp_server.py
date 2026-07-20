@@ -27,25 +27,41 @@ blocking `run` never freezes the event loop: the driver can still poll `status`/
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
-from .config import FleetConfig, load_config, validate
+from .env import merge_user_path
+from .scaffold import scaffold_fleet_config
 from .service import MarshalService
-from .workspaces import DEFAULT_WORKSPACE, WorkspaceRegistry, scaffold_fleet_config
+from .workspaces import (
+    DEFAULT_WORKSPACE,
+    WorkspaceDef,
+    WorkspaceRegistry,
+    build_service_for,
+)
 
 _T = TypeVar("_T")
 
 # Shared parameter descriptions so the tool schema the driver sees is self-describing (not just
 # title + type). Reused across the tools and the run_many Job model.
 _DESC_CLIENT = "Name of a configured client (from list_clients)."
+_DESC_MODEL = "Optional model override; when set with a client, replaces the client's resolved model. When set with `backend` (ad-hoc), is the model to run."
+_DESC_BACKEND = "Optional bare backend name for an ad-hoc spawn (e.g. 'opencode', 'claude-code'); bypasses fleet.config.yaml. Ignored if `client` is also set."
+_DESC_DURATION = (
+    "Optional per-spawn timeout override. A preset name (short=300s, medium=1200s, large=6000s, "
+    "long=24000s) or a positive integer of seconds. When set, it overrides the resolved timeout."
+)
 _DESC_GOAL = "Natural-language task for the worker agent."
 _DESC_TASK_ID = "Optional grouping id; runs sharing a task_id can be compared head-to-head by report()."
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt)."
+_DESC_BASE_BRANCH = (
+    "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
+    "chain dependent work off a prior run's branch."
+)
 _DESC_RUN_ID = "A run id returned by run_agent / spawn / run_many."
 _DESC_WORKSPACE = "Target workspace name (from list_workspaces); defaults to the primary workspace."
 _DESC_WS_HINT = (
@@ -58,13 +74,18 @@ class Job(BaseModel):
     """One parallel job for run_many: which client runs what, optionally scoped.
 
     All jobs in a run_many call run in the call's `workspace` (cross-workspace batches are not yet
-    supported - issue separate run_many calls per workspace).
+    supported - issue separate run_many calls per workspace). A job may also be specified ad-hoc
+    (omit `client`, set `backend` + optional `model`) for harness-first routing without a configured
+    fleet.config.yaml client.
     """
 
-    client: Annotated[str, Field(description=_DESC_CLIENT)]
+    client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
     goal: Annotated[str, Field(description=_DESC_GOAL)]
     task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
+    model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
+    backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
+    duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
 
 
 def build_service() -> MarshalService:
@@ -75,20 +96,24 @@ def build_service() -> MarshalService:
     """
     repo = Path(os.environ.get("MARSHAL_REPO", "."))
     cfg_path = Path(os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
-    if not cfg_path.exists():
-        # Start anyway, with zero clients, so the server (e.g. a freshly installed plugin) never
-        # crashes on connect. list_clients() returns [] and the driver is told to configure a fleet.
-        print(
-            f"[marshal] no fleet config at {cfg_path}; starting with zero clients. "
-            "Copy fleet.config.example.yaml to fleet.config.yaml (or set MARSHAL_CONFIG), then "
-            "reconnect. See SETUP.md.",
-            file=sys.stderr,
-        )
-        return MarshalService(repo, FleetConfig(), config_path=cfg_path)
-    config = load_config(cfg_path)
-    for warning in validate(config):
-        print(f"[marshal] config warning: {warning}", file=sys.stderr)
-    return MarshalService(repo, config, config_path=cfg_path)
+    return build_service_for(
+        WorkspaceDef(name=DEFAULT_WORKSPACE, path=repo, config_path=cfg_path),
+        missing_config="legacy",
+        config_warnings="plain",
+    )
+
+
+def _window_since(session_start: datetime, now: datetime, window: str) -> datetime | None:
+    """Map a `usage` window name to the [since, now) start (UTC). None for "all" (no filter)."""
+    if window == "all":
+        return None
+    if window == "session":
+        return session_start
+    if window == "week":
+        return now - timedelta(days=7)
+    if window == "month":
+        return now - timedelta(days=30)
+    raise ValueError(f"unknown usage window: {window!r} (use session|week|month|all)")
 
 
 def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
@@ -111,6 +136,38 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     def tag(payload: dict[str, Any], workspace: str) -> dict[str, Any]:
         """Stamp a result with the workspace it came from, so the driver can route follow-ups."""
         return {**payload, "workspace": workspace}
+
+    def dump_result(result: Any) -> dict[str, Any]:
+        if isinstance(result, BaseModel):
+            return result.model_dump(mode="json")
+        assert isinstance(result, dict)
+        return result
+
+    async def ws_call(
+        workspace: str | None,
+        fn: Callable[..., _T],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Resolve a workspace service, offload ``fn(svc, *args, **kwargs)``, tag the JSON payload."""
+        svc = await offload(registry.get, workspace)
+        ws = workspace or DEFAULT_WORKSPACE
+        result = await offload(fn, svc, *args, **kwargs)
+        return tag(dump_result(result), ws)
+
+    async def run_call(
+        run_id: str,
+        workspace: str | None,
+        fn: Callable[..., _T],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Resolve a run's owning workspace, offload ``fn(svc, *args, **kwargs)``, tag the payload."""
+        name, svc = await offload(registry.require_run, run_id, workspace)
+        result = await offload(fn, svc, *args, **kwargs)
+        return tag(dump_result(result), name)
 
     @app.tool()
     async def list_workspaces() -> list[dict[str, Any]]:
@@ -148,8 +205,16 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """List configured backend clients (name, backend, model, permission) plus the fleet's
         driver-facing context, for the chosen workspace. Returns {clients, driver_context, workspace}."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.list_clients)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.list_clients())
+
+    @app.tool()
+    async def list_models(
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> dict[str, Any]:
+        """List the optional `models:` catalog (id, backends, cost, quota_type, notes) plus the
+        fleet's driver-facing context, for the chosen workspace. Pure data - does NOT influence
+        routing (clients still own backend+model). Returns {models, driver_context, workspace}."""
+        return await ws_call(workspace, lambda svc: svc.list_models())
 
     @app.tool()
     async def doctor(
@@ -158,26 +223,35 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """Preflight the SELECTED workspace: toolchain, repo, config, and each configured backend's
         CLI availability + auth. Read-only - run it before spawning to catch a missing/unauthenticated
         backend up front. Returns per-check results + a fails/warns roll-up + the workspace."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.doctor)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.doctor())
 
     @app.tool()
     async def run_agent(
-        client: Annotated[str, Field(description=_DESC_CLIENT)],
         goal: Annotated[str, Field(description=_DESC_GOAL)],
+        client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
+        model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
+        backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
+        duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Run a task on a client's backend in an isolated git worktree (in `workspace`'s repo);
         returns the run record stamped with its workspace.
 
-        Blocks until the run finishes; for long work prefer spawn (returns at once + cancellable)."""
-        svc = await offload(registry.get, workspace)
-        rec = await offload(
-            svc.run_agent, client, goal, task_id=task_id, context_files=context_files
+        Blocks until the run finishes; for long work prefer spawn (returns at once + cancellable).
+        `model` overrides the client's resolved model when `client` is set; for an ad-hoc spawn,
+        pass `backend` (+ optional `model`) with no `client`. `duration` overrides the resolved
+        timeout (a preset name or positive seconds). `base_branch` bases the worktree on a branch
+        other than HEAD (e.g. a prior run's branch after commit_run)."""
+        return await ws_call(
+            workspace,
+            lambda svc: svc.run_agent(
+                client, goal, task_id=task_id, context_files=context_files,
+                base_branch=base_branch, model=model, backend=backend, duration=duration,
+            ),
         )
-        return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def run_many(
@@ -196,19 +270,27 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
     @app.tool()
     async def spawn(
-        client: Annotated[str, Field(description=_DESC_CLIENT)],
         goal: Annotated[str, Field(description=_DESC_GOAL)],
+        client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
+        model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
+        backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
+        duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Start a run in the background in `workspace`'s repo; returns its RUNNING record immediately.
-        Poll get_run/status, and cancel_run to stop it."""
-        svc = await offload(registry.get, workspace)
-        rec = await offload(
-            svc.spawn, client, goal, task_id=task_id, context_files=context_files
+        Poll get_run/status, and cancel_run to stop it. `model`/`backend`/`duration`/`base_branch`
+        follow the same rules as run_agent (override the client's model, ad-hoc spawn by bare backend,
+        per-spawn timeout override, or chain off a prior run's branch)."""
+        return await ws_call(
+            workspace,
+            lambda svc: svc.spawn(
+                client, goal, task_id=task_id, context_files=context_files,
+                base_branch=base_branch, model=model, backend=backend, duration=duration,
+            ),
         )
-        return tag(rec.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def benchmark(
@@ -220,11 +302,10 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Run one goal through several clients (routing strategies) in one workspace and compare
         cost/latency/outcome."""
-        svc = await offload(registry.get, workspace)
-        result = await offload(
-            svc.benchmark, goal, clients, task_id=task_id, max_concurrency=max_concurrency
+        return await ws_call(
+            workspace,
+            lambda svc: svc.benchmark(goal, clients, task_id=task_id, max_concurrency=max_concurrency),
         )
-        return tag(result.model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def report(
@@ -233,8 +314,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Derive the strategy comparison for a past benchmark task_id from the workspace's ledger
         (read-only). task_ids are per-workspace, so pass the workspace the benchmark ran in."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.report, task_id)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.report(task_id))
 
     @app.tool()
     async def get_run(
@@ -244,7 +324,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """Get a run record by id, located across all workspaces (or via the `workspace` hint).
 
         status is one of: succeeded | empty (ran clean but produced no work - do NOT integrate) |
-        failed | timed_out | cancelled. Only `succeeded` runs are integration candidates."""
+        failed | timed_out | cancelled | verify_failed (produced work but the workspace's `verify:`
+        gate rejected it - review the diff and `verify_output` before deciding). Only `succeeded`
+        runs are integration candidates."""
         resolved = await offload(registry.resolve_run, run_id, workspace)
         if resolved is None:
             return None
@@ -253,13 +335,50 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         return tag(rec.model_dump(mode="json"), name) if rec else None
 
     @app.tool()
+    async def get_run_log(
+        run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
+        workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
+    ) -> dict[str, Any]:
+        """Return a run's persisted full stdout/stderr (or null if no log was written).
+
+        Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
+        a `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---` section -
+        the FULL streams, not the 16KB-truncated `text` on the run record. `log` is null when no
+        log exists (a run that pre-dates log storage, or a backend that crashed before producing
+        one). The owning workspace is resolved by the same scan as `get_run`, with the same
+        `workspace` hint."""
+        resolved = await offload(registry.resolve_run, run_id, workspace)
+        if resolved is None:
+            return tag({"run_id": run_id, "log": None}, workspace or DEFAULT_WORKSPACE)
+        name, svc = resolved
+        text = await offload(svc.run_log, run_id)
+        return tag({"run_id": run_id, "log": text}, name)
+
+    @app.tool()
     async def collect_run(
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
         """Collect a run's diff and changed files (read-only; nothing is merged)."""
-        name, svc = await offload(registry.require_run, run_id, workspace)
-        return tag((await offload(svc.collect_run, run_id)).model_dump(mode="json"), name)
+        return await run_call(run_id, workspace, lambda svc: svc.collect_run(run_id))
+
+    @app.tool()
+    async def commit_run(
+        run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
+        message: Annotated[str | None, Field(description="Commit message (default: marshal: <run_id>).")] = None,
+        workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
+    ) -> dict[str, Any]:
+        """Freeze a finished run's work as a commit on its OWN branch (the driver's branch is untouched).
+
+        Use this to CHAIN dependent work: commit_run(A), then spawn(B, base_branch=A's branch) so B
+        builds on A's actual output. Without it, basing a run on a prior run's branch sees only the
+        spawn base (the agent left its work uncommitted). NOT a substitute for integrate - it never
+        merges into your branch. To chain, use the returned `branch`/`commit` regardless of status.
+        Status is one of: committed | clean (no new commit needed - tree already clean, NOT "branch
+        empty") | blocked (run still running) | error (a git op needs a human, see message)."""
+        return await run_call(
+            run_id, workspace, lambda svc: svc.commit_run(run_id, message=message),
+        )
 
     @app.tool()
     async def cancel_run(
@@ -267,8 +386,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
         """Cancel a running run by id (process-group SIGTERM); returns the updated run record."""
-        name, svc = await offload(registry.require_run, run_id, workspace)
-        return tag((await offload(svc.cancel_run, run_id)).model_dump(mode="json"), name)
+        return await run_call(run_id, workspace, lambda svc: svc.cancel_run(run_id))
 
     @app.tool()
     async def integrate(
@@ -282,24 +400,60 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         that the code is correct. Integrate one run at a time. Outcome status is one of: merged |
         conflict (aborted, repo left clean) | blocked (target dirty/detached, or the run is still
         running - fix and retry) | empty (nothing to integrate) | error (a git op needs a human)."""
-        name, svc = await offload(registry.require_run, run_id, workspace)
-        return tag((await offload(svc.integrate, run_id, cleanup=cleanup)).model_dump(mode="json"), name)
+        return await run_call(
+            run_id, workspace, lambda svc: svc.integrate(run_id, cleanup=cleanup),
+        )
+
+    @app.tool()
+    async def clean(
+        scope: Annotated[Literal["merged", "finished", "all"], Field(description="'merged' (integrated only, safest) | 'finished' (default: merged + failed/timed_out/cancelled/empty/verify_failed; keeps un-integrated succeeded work - review verify_failed diffs before cleaning) | 'all' (every terminal run; DESTRUCTIVE - also drops un-reviewed succeeded runs' branches).")] = "finished",
+        run_ids: Annotated[list[str] | None, Field(description="Clean exactly these run ids instead of by scope (a running run is refused; older_than_hours is ignored).")] = None,
+        older_than_hours: Annotated[float | None, Field(description="Only clean runs that ended at least this many hours ago (ignored when run_ids is given).")] = None,
+        dry_run: Annotated[bool, Field(description="Report what would be removed without touching anything.")] = False,
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> dict[str, Any]:
+        """Tear down finished runs' worktrees + branches in a workspace to reclaim disk.
+
+        Never cleans a running run. The immutable usage ledger is untouched and run-state records
+        are kept, so status/cost history stays queryable (a cleaned run's worktree just no longer
+        exists). `scope="all"` is destructive - it deletes the branch of every terminal run,
+        including un-integrated `succeeded` work (commits survive only in git's reflog until gc).
+        Scope-mode cleans also reap ORPHANS: worktree dirs under Marshal's own base dir whose run
+        record is missing/unreadable (they are invisible to ledger-driven cleanup and would leak
+        forever). Returns {removed, orphans_removed, skipped, errors, dry_run}. Use dry_run first
+        to preview."""
+        return await ws_call(
+            workspace,
+            lambda svc: svc.clean(
+                scope=scope, run_ids=run_ids, older_than_hours=older_than_hours, dry_run=dry_run,
+            ),
+        )
 
     @app.tool()
     async def list_workflows(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
-    ) -> list[dict[str, Any]]:
-        """List declared workflow recipes (name, description, inputs, phase summary) for a workspace."""
+    ) -> dict[str, Any]:
+        """List declared workflow recipes (name, description, inputs, phase summary) for a workspace.
+
+        Malformed recipe files are returned in ``errors`` (filename -> message) so a driver can tell
+        a broken recipe from a missing one."""
         svc = await offload(registry.get, workspace)
-        return [
+        listing = await offload(svc.list_workflows)
+        return tag(
             {
-                "name": w.name,
-                "description": w.description,
-                "inputs": w.inputs,
-                "phases": [{"name": p.name, "run": p.run} for p in w.phases],
-            }
-            for w in await offload(svc.list_workflows)
-        ]
+                "workflows": [
+                    {
+                        "name": w.name,
+                        "description": w.description,
+                        "inputs": w.inputs,
+                        "phases": [{"name": p.name, "run": p.run} for p in w.phases],
+                    }
+                    for w in listing.workflows
+                ],
+                "errors": listing.errors,
+            },
+            workspace or DEFAULT_WORKSPACE,
+        )
 
     @app.tool()
     async def run_workflow(
@@ -309,16 +463,15 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Run a workflow recipe by name in `workspace`'s repo. Integration is gated off by default -
         the result's `next_actions` lists the runs to review and integrate. Validates before any spawn."""
-        svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.run_workflow, name, inputs)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        return await ws_call(workspace, lambda svc: svc.run_workflow(name, inputs))
 
     @app.tool()
     async def status(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE + " Omit to list ALL workspaces.")] = None,
     ) -> list[dict[str, Any]]:
-        """List fleet runs with status and cost (status ∈ succeeded/empty/failed/timed_out/cancelled).
-        Omit `workspace` to aggregate across every workspace (each run tagged with its workspace);
-        pass one to scope to it."""
+        """List fleet runs with status and cost (status ∈ succeeded/empty/failed/timed_out/
+        cancelled/verify_failed). Omit `workspace` to aggregate across every workspace (each run
+        tagged with its workspace); pass one to scope to it."""
         return [
             tag(rec.model_dump(mode="json"), ws)
             for ws, rec in await offload(registry.ledger_runs, workspace)
@@ -326,11 +479,34 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
     @app.tool()
     async def usage(
+        window: Annotated[
+            Literal["session", "week", "month", "all"],
+            Field(description=(
+                "Time window: 'session' (since the MCP server started - the Fleet's session_start), "
+                "'week' (last 7d), 'month' (last 30d), 'all' (the full ledger, default). The "
+                "resolved window and `since` are echoed back in the response."
+            )),
+        ] = "all",
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """Per-provider usage summary (totals + by backend/client/model) for one workspace."""
+        """Per-provider usage summary (totals + by backend/client/model, plus a per-backend/model
+        breakdown and token totals) for one workspace. Time-windowed via `window`; default is the
+        full ledger. `by_backend_model` is keyed like 'opencode/<model-a>'. When the workspace's
+        fleet config declares advisory `budgets:`, a `budgets` list is included with per-budget
+        scope / window / windowed spend / limit / remaining (advisory only - never blocks a run)."""
         svc = await offload(registry.get, workspace)
-        return tag((await offload(svc.usage)).model_dump(mode="json"), workspace or DEFAULT_WORKSPACE)
+        now = datetime.now(timezone.utc)
+        since = _window_since(svc.session_start, now, window)
+        summary = await offload(svc.usage, since, None)
+        budgets = await offload(svc.budget_status, now)
+        payload = {
+            "window": window,
+            "since": since.isoformat() if since is not None else None,
+            **summary.model_dump(mode="json"),
+        }
+        if budgets:
+            payload["budgets"] = [b.model_dump(mode="json") for b in budgets]
+        return tag(payload, workspace or DEFAULT_WORKSPACE)
 
     @app.tool()
     async def memory_query(
@@ -371,6 +547,12 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
 
 def main() -> None:
+    # The MCP host (Claude Code, Cursor, ...) often spawns us with a stripped PATH that lacks the
+    # user's zshrc-managed directories (Homebrew, ~/.local/bin, npm-global). Backend CLIs installed
+    # there then look missing to shutil.which and `marshal doctor` falsely FAILs them. Augment PATH
+    # from the user's login shell *before* the registry builds backends, so every tool sees the
+    # real environment. No-op if PATH is already complete or MARSHAL_NO_PATH_FIX=1.
+    merge_user_path()
     registry = WorkspaceRegistry.from_env()
     # Build the default workspace eagerly so the connect-time config message + warnings still fire at
     # startup (named workspaces build lazily on first touch).

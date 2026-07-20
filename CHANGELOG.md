@@ -14,13 +14,134 @@ versions may include breaking API changes until 1.0.
   writes) alongside `--force`. OpenCode `prepare()` stamps `OPENCODE_CONFIG_CONTENT` with
   `question: deny` plus curated bash/edit/read/`external_directory` denies for `safe-edit`
   (`yolo` still gets `question: deny` only so headless cannot deadlock). Contract tests cover
-  config emission. Command Code / Antigravity PTY remain deferred (documented in `SECURITY.md`
-  and `docs/design.md` §5).
+  config emission. Command Code / Goose / Antigravity PTY remain deferred (documented in
+  `SECURITY.md` and `docs/design.md` §5).
+- **Goose backend** (`backends/goose.py`) + `marshal workflow run` CLI — merged from local main
+  (`44c48eb`); contract tests included. Goose `safe-edit`/`yolo` map to `GOOSE_MODE=auto` for
+  headless runs (CLI ≥ 1.43).
+- **Optional hard budget caps** — `budgets[].enforce: true` refuses matching spawns when windowed
+  spend already meets the cap (`BudgetExceeded`); default remains soft-warn.
+- **Doctor hygiene advisories** — warns on `worktree_setup`/`verify` (config-driven subprocesses),
+  inline `memory.llm_api_key`, advisory-only budgets, and `git --no-verify` on integrate/commit.
+- **Docs-sync invariant test** (`tests/test_docs_sync.py`) — MCP tools, CLI subcommands, and
+  `fleet.config.example.yaml` must stay aligned with the code surface.
+- **Ad-hoc backend spawn and per-run `model` override** on `run_agent`/`spawn`/`marshal run`/`marshal
+  spawn` — pass `backend` (+ optional `model`) with no `client`, or override a configured client's
+  model for one call.
+- **Model catalog + duration presets** — optional `models:` block in `fleet.config.yaml` surfaced
+  via `list_models` / `marshal models`; per-spawn `duration` presets (`short`/`medium`/`large`/`long`
+  or positive seconds) on MCP and CLI run entrypoints.
+- **Durable per-run logs** — full stdout/stderr under `.marshal/logs/<run_id>.log`, with
+  `get_run_log` (MCP) and `marshal logs` (CLI).
+- **Advisory `budgets:`** — soft-warn dollar caps per backend/client/fleet window; spend surfaced
+  in `usage` / `marshal usage --config`.
+- **Workspace config hot-reload** — the registry rebuilds a workspace's service when its
+  `fleet.config.yaml` appears/changes/vanishes (mtime+size signature).
+- **`verify:` post-run gate** — optional per-workspace command after a would-be-succeeded run with
+  file changes; failure lands as `verify_failed` with output tail on the run record.
+- **Repo-shape-aware scaffold** — `add_workspace`/`marshal workspace add` drops starter config with
+  commented `worktree_setup` suggestions detected from the repo layout.
+- **Orphaned-worktree reaping** — scope-mode `clean` reconciles `.marshal/worktrees` against the
+  ledger and reaps dirs with no readable run record (`orphans_removed`).
+- **Actionable resolution-error hints** — ad-hoc `backend=` escape hatch, `doctor`, `add_workspace`.
+- **Reference docs** — `docs/config.md` (every config key) and `docs/mcp-tools.md` (MCP tool census).
+
+### Changed
+- **Client-resolution errors name the config path** — missing `fleet.config.yaml` (wrong
+  `--repo`/cwd), empty clients, and skipped backends no longer collapse into a bare
+  `known: (none configured)`. CLI `run`/`spawn` warn on stderr when the config file is absent
+  (same posture as MCP), while ad-hoc `--backend` still works with zero clients.
+- **CLI `run`/`spawn` catch `WorktreeError`** (wrong `--repo` / non-git path on ad-hoc
+  `--backend`) with a clean stderr message and exit code 1 instead of a traceback.
+- **Memory prefers `LLM_API_KEY` env** over deprecated inline `memory.llm_api_key` in YAML (env
+  wins when both are set).
+- **`enforce: true` budgets serialize matching in-flight spawns** (one concurrent holder per
+  budget) so `run_many` / parallel `spawn` cannot TOCTOU past the ledger snapshot.
+- **CLI `run`/`spawn` catch `BudgetExceeded`** with a clean stderr message and exit code 1
+  (all backends / ad-hoc providers).
+- **Goose adapter updated for CLI ≥ 1.43** — `--output-format stream-json`, `-t` prompt,
+  `--no-session`; headless permission via `GOOSE_MODE` (`auto` / `chat`) instead of removed
+  `--yes` / `--plan` / `--json`. Parser accepts stream-json and bulk json; auth errors embedded
+  in assistant text are treated as FAILED. Model `provider/model` (e.g. `cursor-agent/auto`)
+  maps to Goose `--provider` + `--model` for Cursor Agent–backed runs. Live-verified
+  `goose-cursor` / ad-hoc `cursor-agent/auto` (2026-07-20).
+- **`docs/status.md` module table** refreshed (budgets, layout, logs, scaffold, retry, env, doctor,
+  goose, memory); Goose row marked live-verified.
+- **`run_many` preserves client `usage_api`** and runs permission preflight before worktree creation.
+- **Backend adapter boilerplate consolidated** into the base class; OpenCode export reconciliation
+  moved to a post-success finalize hook.
+- **`base_branch` on MCP `spawn`/`run_agent`** for dependent chaining; `files_touched` removed.
+- **Unified service construction** (`build_service_for`) and workflow recipe errors surfaced over
+  MCP (`list_workflows` returns `{workflows, errors, workspace}`).
+- **Centralized `.marshal` layout** (`layout.py`) and CLI `--repo` path resolution for
+  `usage`/`status`/`logs`/`models`/….
+- **Budgets extracted** to `budgets.py`.
+- **`doctor` PATH fallback + self-healing skipped clients** — `user_path()` unions well-known user
+  bin dirs when the login-shell probe fails; clients skipped at startup re-probe on
+  resolution/`list_clients`.
+
+### Added
+- **`marshal usage` time windows + per-breakdown token table.** A new `UsageTracker.summary(since,
+  until)` window (compared in UTC over each event's `ts`), surfaced via `MarshalService.usage(...)`
+  and a new MCP `usage(window: session|week|month|all)` parameter (`session` = since the Fleet's
+  `session_start` stamped at process start). The CLI gets `--window day|week|month|all` (rolling
+  windows, since the CLI has no server reference). The human `marshal usage` output now prints
+  aligned `by_backend`, `by_client`, `by_model`, and the new compound `by_backend_model` tables
+  with `name · runs · succeeded · cost_usd · cost split · input_tokens · output_tokens ·
+  cache_read_tokens` columns - the per-client/model/cache-read spend the previous output silently
+  dropped. `--json` keeps the existing `totals / by_backend / by_client / by_model` shape (the
+  test that pins it still passes) and adds `by_backend_model`, `window`, and the resolved `since`.
+- **`commit_run` - freeze a run's work onto its own branch for dependent chaining.** A new MCP tool +
+  `Fleet.commit_run(run_id)` commits a finished run's (otherwise uncommitted) work onto its
+  `marshal/<run_id>` branch **without touching your branch**, so a dependent run can `spawn` with
+  `base_branch` = that branch and build on the actual output. Previously, basing a run on a prior
+  run's branch saw only the spawn base (the agent left its work uncommitted). Returns
+  `committed`/`clean`/`blocked`/`error`; refuses a still-running run. (An adversarial design review
+  chose this explicit, driver-invoked primitive over auto-committing every run inside the engine -
+  it keeps `collect_run` honest/read-only and integration the only step that moves history into your
+  branch.)
+- **`marshal clean` - one-shot teardown of finished runs' worktrees + branches.** New CLI command +
+  MCP tool + `Fleet.clean(...)`. Reclaims the disk-heavy worktrees and their branches in one call
+  while keeping the immutable usage ledger **and** the run-state records (status/cost history stay
+  queryable). Never touches a running run. Scopes: `merged` (integrated only), `finished` (default -
+  also failed/timed_out/cancelled/empty, but **protects un-integrated `succeeded` work**), `all`.
+  Supports `--older-than`, explicit run ids, and `--dry-run`.
+
+### Changed
+- **`doctor` now verifies authentication, not just CLI presence.** For a backend that exposes an
+  authenticated-only probe (Cursor's `about`), a CLI that is installed but **logged out** - which
+  still answers `--version` - is now reported as `CLI present but not authenticated` (with the login
+  command) instead of a green `available` that then dies one second into a real run. Backends without
+  a cheap authed probe are unchanged (CLI presence reported; auth not claimed).
 
 ### Fixed
 - **`prepare()` now runs before argv/env snapshot in `CodingAgentBackend.run()`.** Env stamps from
-  `prepare()` (e.g. OpenCode `OPENCODE_CONFIG_CONTENT`) were previously built into `child_env`
-  *before* `prepare()` ran, so the managed permission config never reached the child process.
+  `prepare()` (e.g. OpenCode `OPENCODE_CONFIG_CONTENT`, Goose `GOOSE_MODE`) were previously built
+  into `child_env` *before* `prepare()` ran, so managed permission config never reached the child.
+- **Goose surfaces non-JSON failure text on `run.error` (#18).** Provider/config failures printed
+  as plain text on stdout (e.g. `Unknown provider`) are now extracted by `GooseBackend.parse_output`;
+  shared `_failure_reason` also falls back to a stdout tail when stderr is empty.
+- **MCP server + CLI + `MarshalService` + `Fleet` now recover the user's PATH before spawning
+  backends.** An MCP host (Claude Code, Cursor, etc.) typically spawns Marshal with a stripped
+  PATH that lacks the user's zshrc-managed directories (Homebrew, `~/.local/bin`, npm-global), so
+  user-installed CLIs (`opencode`, `cursor-agent`, ...) looked missing to `shutil.which` and
+  `marshal doctor` falsely FAILed them, AND the spawned agent subprocess inherited the same
+  broken PATH and died with "binary not found". All four entry points (`mcp_server.main`,
+  `cli.main`, `MarshalService.__init__`, `Fleet.__init__`) now derive the user's interactive
+  PATH from `$SHELL -ilc 'echo $PATH'` and union it into `os.environ['PATH']` (in place,
+  additive only, idempotent, cached). Opt out with `MARSHAL_NO_PATH_FIX=1` for hermetic CI
+  environments where the user PATH is wrong.
+- **OpenCode backend now reconciles the final report from `opencode export`.** Opencode's
+  `--format json` stream can drop the final `text` part on long replies (the agent's full final
+  report is missing from stdout, observed with the GLM-5.2 / kimi models — the user had to
+  finish the thread manually to recover the result), and can also drop the final `step-finish`
+  (so cost/tokens drift to zero). On a successful run the backend now shells out once to
+  `opencode export <session_id>` (~100-500ms, reads the same on-disk session the CLI itself
+  wrote) and uses its authoritative `info.tokens`/`info.cost` and full `messages[].parts[].text`
+  to override whatever the live stream gave us. Failed runs, runs without a `sessionID`, and
+  exports that fail (no binary, old CLI without `export`, corrupt session) all fall back to the
+  live stream — never crash a run over recovery. Opt out per-instance with
+  `backend.reconcile_from_export = False` (hermetic tests / power users).
 - **EastRouter cost reader now paginates `/v1/usage`.** A single page (`?limit=1000`) could miss a
   long run's records when the account was busy (a 283s run + a concurrent benchmark pushed them past
   page 1), so its **real** `admin-api` cost silently fell back to `unavailable`. The reader now walks

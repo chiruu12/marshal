@@ -19,6 +19,14 @@ defaults:
 # the driver's VIRTUAL_ENV so the command targets the worktree. A non-zero exit fails the run early.
 # worktree_setup: uv sync --extra dev --extra mcp
 
+# Optional: a gate command run in the worktree AFTER a run that would otherwise be `succeeded`
+# and actually changed files (e.g. the repo's full test suite - agents love passing their own
+# narrower subset; text-only replies are never gated). A non-zero exit marks the run
+# `verify_failed` instead of `succeeded`; the worktree and diff are KEPT for review, and the
+# command's output tail lands on the run record (`verify_output`). Same string-or-argv shape and
+# env hygiene as worktree_setup. Omit to trust the agent's own outcome.
+# verify: uv run pytest -q
+
 # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
 # connection error) - with exponential backoff. Defaults to 2; set 0 to disable. Genuine task
 # failures and timeouts are never retried.
@@ -34,6 +42,48 @@ retries: 2
 #     Prefer small, focused commits. Run `uv run pytest -q` before finishing.
 #     Target Python 3.12; do not introduce new dependencies.
 #   driver: Fleet runs read-only review + safe-edit implementation; integrate manually.
+
+# Optional model catalog - pure data the driver can read with `marshal models` / `list_models`.
+# Each entry: id (provider/model), backends that can run it, and short free-form strings for cost
+# (e.g. native|admin-api|estimated|unavailable), quota_type (metered|subscription|unavailable), and
+# notes. The catalog is metadata only - it does NOT change routing (clients still own backend+model).
+# Absent or empty = no catalog to expose.
+# models:
+#   - id: <provider>/<model-a>
+#     backends: [opencode]
+#     cost: native
+#     quota_type: subscription
+#     notes: placeholder
+#   - id: <provider>/<model-b>
+#     backends: [claude-code, cursor]
+#     cost: estimated
+#     quota_type: metered
+#     notes: placeholder
+
+# Optional $ budgets - checked at run start before worktree creation. Default is soft-warn only;
+# set enforce: true to refuse matching spawns when spend already meets the cap, and to serialize
+# matching in-flight spawns (one at a time) so parallel fan-out cannot overshoot before spend is
+# recorded. Scope to a backend, a client, or the whole fleet (omit both backend and client).
+# window is session | week | month. Subscription / unknown-cost backends report $0, so a budget
+# on them never triggers.
+# budgets:
+#   - client: planner
+#     window: week
+#     limit_usd: 25.0
+#     enforce: true
+#   - backend: claude-code
+#     window: month
+#     limit_usd: 100.0
+#   - window: session
+#     limit_usd: 10.0
+
+# Optional Marshal Recall memory layer (Cognee-backed, off by default). When enabled, Marshal
+# remembers each run's outcome and recalls relevant learnings into the next worker's goal.
+# Needs the [memory] extra + Cognee env (export LLM_API_KEY — do not inline llm_api_key in YAML);
+# see docs/marshal-recall.md.
+# memory:
+#   enabled: true
+#   recall_top_k: 5
 
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
@@ -63,3 +113,18 @@ clients:
     model: claude-sonnet-4-6
     permission: safe-edit
     secret_ref: env:ANTHROPIC_API_KEY   # optional preflight check; see header
+
+  # Goose via Cursor Agent CLI as the model provider. Auth: `cursor-agent login` (Goose shells
+  # out to cursor-agent). Model form is `provider/model` → goose `--provider` + `--model`.
+  goose-cursor:
+    backend: goose
+    model: cursor-agent/auto
+    permission: safe-edit
+
+  # Optional per-client usage API - fetch REAL post-run cost from a provider admin API instead of
+  # the local price table. Unset = estimated or unavailable. See docs/config.md.
+  # metered:
+  #   backend: opencode
+  #   model: opencode-go/glm-5.2
+  #   permission: safe-edit
+  #   usage_api: eastrouter

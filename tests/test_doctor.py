@@ -16,18 +16,27 @@ class _FakeBackend(CodingAgentBackend):
     capabilities = Capabilities()
 
     def __init__(
-        self, name: str, *, available: bool, account: dict[str, str] | None = None
+        self,
+        name: str,
+        *,
+        available: bool,
+        account: dict[str, str] | None = None,
+        verifies_auth: bool = False,
     ) -> None:
         self.name = name
         self.binary = name
         self._available = available
         self._account = account
+        self._verifies_auth = verifies_auth
 
     def check_available(self) -> bool:
         return self._available
 
     def account_info(self) -> dict[str, str] | None:
         return self._account
+
+    def verifies_auth(self) -> bool:
+        return self._verifies_auth
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         return [self.binary]
@@ -80,6 +89,35 @@ def test_happy_path_has_no_failures(tmp_path: Path, monkeypatch) -> None:
     assert _by_name(checks, "backend:opencode").status == OK
     # secret_ref is never injected, so an unset env var is a warning, not a failure.
     assert _by_name(checks, "secret:impl").status == WARN
+    # Hygiene advisories are warnings, never failures.
+    assert _by_name(checks, "integrate-hooks").status == WARN
+    fails, _ = summarize(checks)
+    assert fails == 0
+
+
+def test_doctor_warns_on_unsafe_commands_and_inline_memory_key(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+worktree_setup: uv sync
+verify: uv run pytest -q
+memory:
+  enabled: false
+  llm_api_key: sk-inline-test
+budgets:
+  - window: week
+    limit_usd: 5.0
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    assert _by_name(checks, "unsafe-commands").status == WARN
+    assert "worktree_setup" in _by_name(checks, "unsafe-commands").detail
+    assert _by_name(checks, "memory-inline-key").status == WARN
+    assert _by_name(checks, "budgets").status == WARN
+    assert "advisory" in _by_name(checks, "budgets").detail
     fails, _ = summarize(checks)
     assert fails == 0
 
@@ -94,6 +132,34 @@ def test_missing_backend_cli_fails(tmp_path: Path) -> None:
     assert "opencode auth login" in backend.fix
     fails, _ = summarize(checks)
     assert fails >= 1
+
+
+def test_probe_missing_from_snapshot_constructs_fresh_backend(tmp_path: Path, monkeypatch) -> None:
+    # A service built before this backend was configured hands doctor a snapshot without it.
+    # Doctor must probe a freshly constructed backend (the same path a spawn takes), not FAIL on
+    # the stale snapshot.
+    import marshal_engine.doctor as doctor_mod
+
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    monkeypatch.setattr(
+        doctor_mod, "make_backend", lambda name: _FakeBackend(name, available=True)
+    )
+    checks = run_checks(repo, cfg, backends={})  # empty snapshot: the config's backend is absent
+
+    assert _by_name(checks, "backend:opencode").status == OK
+
+
+def test_unknown_backend_name_fails_distinctly(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(
+        tmp_path / "fleet.config.yaml", "clients:\n  x:\n    backend: no-such-backend\n"
+    )
+    checks = run_checks(repo, cfg, backends={})
+
+    backend = _by_name(checks, "backend:no-such-backend")
+    assert backend.status == FAIL
+    assert backend.detail == "unknown backend name"  # not the misleading "CLI not on PATH"
 
 
 def test_set_secret_is_ok(tmp_path: Path, monkeypatch) -> None:
@@ -146,6 +212,41 @@ def test_no_plan_check_when_account_info_absent_or_unavailable(tmp_path: Path) -
         backends={"opencode": _FakeBackend("opencode", available=False, account={"plan": "Pro"})},
     )
     assert "plan:opencode" not in _names(unavail)
+
+
+def test_present_but_unauthenticated_backend_fails(tmp_path: Path) -> None:
+    # A backend whose account_info() is an authenticated-only probe (verifies_auth=True): CLI is
+    # present but returns no account info -> not logged in. Doctor must FAIL it, not green-light it.
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    backend = _FakeBackend("opencode", available=True, account=None, verifies_auth=True)
+    checks = run_checks(repo, cfg, backends={"opencode": backend})
+    b = _by_name(checks, "backend:opencode")
+    assert b.status == FAIL
+    assert "not authenticated" in b.detail
+    assert "opencode auth login" in b.fix
+    assert "plan:opencode" not in _names(checks)
+
+
+def test_authenticated_probe_backend_is_ok_with_plan(tmp_path: Path) -> None:
+    # verifies_auth=True AND account info present -> authenticated: OK + a plan line.
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    backend = _FakeBackend(
+        "opencode", available=True, account={"plan": "Ultra", "model": "x"}, verifies_auth=True
+    )
+    checks = run_checks(repo, cfg, backends={"opencode": backend})
+    assert _by_name(checks, "backend:opencode").status == OK
+    assert _by_name(checks, "plan:opencode").detail == "Ultra (model x)"
+
+
+def test_no_auth_probe_backend_stays_available_without_account(tmp_path: Path) -> None:
+    # verifies_auth=False (the default for most backends): a None account_info is "no plan info",
+    # not "unauthenticated" - the CLI is still reported available (auth simply not verified).
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    assert _by_name(checks, "backend:opencode").status == OK
 
 
 def test_only_referenced_backends_are_probed(tmp_path: Path) -> None:
