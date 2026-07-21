@@ -295,6 +295,37 @@ def test_run_safe_edit_symlinked_cursor_dir_fails_closed(
     assert (shared / "rules.md").read_text() == "keep"
 
 
+def test_run_safe_edit_restore_refuses_mid_run_cursor_dir_symlink(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    """If the agent swaps ``.cursor/`` for a symlink mid-run, restore must not write through it."""
+    shared = tmp_path / "shared-cursor"
+    shared.mkdir()
+    (shared / "sentinel").write_text("untouched")
+    # After verifying denies, replace the real .cursor/ dir with a symlink to shared/.
+    fake_cursor_agent(
+        _fake_body(
+            action=(
+                "import shutil\n"
+                f"shared = {str(shared)!r}\n"
+                "shutil.rmtree('.cursor')\n"
+                "Path('.cursor').symlink_to(shared)\n"
+            )
+        )
+    )
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    original = b'{"permissions":{"allow":["Shell(git)"]}}\n'
+    (wt / ".cursor" / "cli.json").write_bytes(original)
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.FAILED
+    assert "failed to restore" in (res.error or "")
+    assert "symlink" in (res.error or "")
+    assert not (shared / "cli.json").exists()  # restore did not escape into shared/
+    assert (shared / "sentinel").read_text() == "untouched"
+    assert (wt / ".cursor").is_symlink()  # residue left; run failed rather than rewriting through it
+
+
 def test_run_read_only_skips_transaction(
     backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
 ) -> None:

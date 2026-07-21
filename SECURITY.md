@@ -63,8 +63,10 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   mode) is restored before the run returns, so the overlay is visible to the live agent but never
   to run status, diffs, commits, or integration. An existing malformed/unreadable/non-object/
   symlink/non-regular `cli.json` (or a symlinked `.cursor/`) fails the run closed (preserved
-  byte-for-byte, agent never launched); a restoration failure fails the run rather than
-  reporting success with policy residue. These remain curated denies, not a sandbox. OpenCode
+  byte-for-byte, agent never launched). Restore re-checks those path constraints before
+  unlink/replace so a mid-run `.cursor/`→symlink swap cannot redirect cleanup outside the
+  worktree; a restoration failure fails the run rather than reporting success with policy
+  residue. These remain curated denies, not a sandbox. OpenCode
   `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` with `question: deny`
   plus curated bash/edit/read/`external_directory` denies; `yolo` still gets `question: deny` only
   (headless: skip-permissions does not cover `question`). **Still deferred:** Command Code

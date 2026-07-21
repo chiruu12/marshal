@@ -227,24 +227,22 @@ class _CliJsonSnapshot(NamedTuple):
     dir_existed: bool
 
 
-def _snapshot_cli_json(path: Path) -> _CliJsonSnapshot:
-    """Capture ``path``'s exact state (existence, bytes, permission bits) for later restore.
+def _require_safe_cli_json_paths(path: Path) -> None:
+    """Refuse to read/write through a symlinked ``.cursor/`` or symlinked/non-regular ``cli.json``.
 
-    Fail closed on symlinks and non-regular files: ``path.exists()`` follows links, so a
-    naive read/replace would turn a symlink into a regular file (or destroy a broken
-    link) and still report success - leaving a false worktree delta. Same for a
-    symlinked ``.cursor/`` parent, which would write the overlay outside the worktree.
+    ``Path`` helpers follow directory symlinks, so ``mkstemp(dir=parent)`` / ``unlink`` /
+    ``os.replace`` on ``path`` would operate on the link target - escaping the worktree and
+    potentially clobbering another Cursor config. Call this at snapshot, merge, AND restore
+    time: an agent can replace ``.cursor/`` with a symlink after prepare and before finally.
     """
     parent = path.parent
-    dir_existed = parent.is_dir()
-    if dir_existed and parent.is_symlink():
+    if parent.is_symlink():
         raise OSError(
-            f"{parent} is a symlink; refusing to write a safe-edit overlay through it"
+            f"{parent} is a symlink; refusing to read/write a safe-edit overlay through it"
         )
-    try:
-        st = path.lstat()
-    except FileNotFoundError:
-        return _CliJsonSnapshot(None, None, dir_existed)
+    if not os.path.lexists(path):
+        return
+    st = path.lstat()
     if stat.S_ISLNK(st.st_mode):
         raise OSError(
             f"{path} is a symlink; refusing to snapshot/replace it for a safe-edit run"
@@ -254,6 +252,23 @@ def _snapshot_cli_json(path: Path) -> _CliJsonSnapshot:
             f"{path} is not a regular file; refusing to snapshot/replace it for a "
             "safe-edit run"
         )
+
+
+def _snapshot_cli_json(path: Path) -> _CliJsonSnapshot:
+    """Capture ``path``'s exact state (existence, bytes, permission bits) for later restore.
+
+    Fail closed on symlinks and non-regular files: ``path.exists()`` follows links, so a
+    naive read/replace would turn a symlink into a regular file (or destroy a broken
+    link) and still report success - leaving a false worktree delta. Same for a
+    symlinked ``.cursor/`` parent, which would write the overlay outside the worktree.
+    """
+    _require_safe_cli_json_paths(path)
+    parent = path.parent
+    dir_existed = parent.is_dir()
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return _CliJsonSnapshot(None, None, dir_existed)
     return _CliJsonSnapshot(path.read_bytes(), stat.S_IMODE(st.st_mode), dir_existed)
 
 
@@ -264,7 +279,11 @@ def _restore_cli_json(path: Path, snapshot: _CliJsonSnapshot) -> None:
     created it AND it is empty (agent-created content in there is real work - keep it; git
     never reports an empty directory, so a leftover empty dir is not a worktree delta either).
     Present before -> rewrite the original bytes + mode atomically (temp + ``os.replace``).
+
+    Re-validates paths before any write/unlink so a mid-run swap of ``.cursor/`` for a
+    symlink cannot redirect restore outside the worktree (fail the run instead).
     """
+    _require_safe_cli_json_paths(path)
     if snapshot.file_bytes is None:
         try:
             path.unlink()
@@ -277,6 +296,8 @@ def _restore_cli_json(path: Path, snapshot: _CliJsonSnapshot) -> None:
                 pass  # non-empty (agent work) or already gone - both fine
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Parent may have been recreated; refuse again before mkstemp/replace follow it.
+    _require_safe_cli_json_paths(path)
     fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
@@ -302,16 +323,11 @@ def _merge_safe_edit_cli_json(path: Path) -> None:
     one - the original path is left untouched.
     """
     data: dict[str, Any] = {}
-    if path.parent.is_dir() and path.parent.is_symlink():
-        raise RuntimeError(
-            f"{path.parent} is a symlink; refusing to write a safe-edit overlay through it"
-        )
+    try:
+        _require_safe_cli_json_paths(path)
+    except OSError as exc:
+        raise RuntimeError(str(exc)) from exc
     if os.path.lexists(path):
-        if path.is_symlink() or not path.is_file():
-            raise RuntimeError(
-                f"existing {path} is a symlink or non-regular file; fix or remove it "
-                "before a safe-edit run - refusing to overwrite it"
-            )
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError as exc:
