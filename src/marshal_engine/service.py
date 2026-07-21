@@ -36,6 +36,7 @@ from .fleet import (
     CleanResult,
     CollectResult,
     CommitResult,
+    EnforceBudgetGate,
     Fleet,
     IntegrateResult,
     RunRequest,
@@ -102,6 +103,8 @@ class MarshalService:
         backends: Mapping[str, CodingAgentBackend] | None = None,
         config_path: Path | str | None = None,
         run_gate: threading.Semaphore | None = None,
+        budget_gate: EnforceBudgetGate | None = None,
+        session_start: datetime | None = None,
     ) -> None:
         # Defense-in-depth: mcp_server.main() and cli.main() already call this at process entry,
         # but a library user (or any future code path) that constructs a MarshalService directly
@@ -143,6 +146,11 @@ class MarshalService:
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
             budgets=config.budgets,
+            # Pass-through injection (default None keeps Fleet's own defaults): the workspace
+            # registry supplies a durable per-repo gate + session clock so a config hot-reload
+            # rebuild doesn't fork enforce-budget state or reset session-window accounting.
+            budget_gate=budget_gate,
+            session_start=session_start,
             on_run_complete=self._on_run_complete_hook,
         )
         # Serializes lazy ad-hoc backend registration (_ensure_backend) so concurrent MCP tool

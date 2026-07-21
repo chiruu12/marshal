@@ -237,6 +237,8 @@ class Fleet:
         cost_resolvers: Mapping[str, CostResolver] | None = None,
         run_gate: threading.Semaphore | None = None,
         budgets: list[BudgetSpec] | None = None,
+        budget_gate: EnforceBudgetGate | None = None,
+        session_start: datetime | None = None,
         on_run_complete: Callable[[RunRecord, str | None], None] | None = None,
     ) -> None:
         # Recover the user's interactive PATH so a Fleet constructed in a context that didn't
@@ -279,7 +281,12 @@ class Fleet:
         # None / [] = no budgets. Default is soft-warn; enforce=true raises BudgetExceeded and
         # serializes matching in-flight spawns via EnforceBudgetGate (see budgets.py).
         self.budgets: list[BudgetSpec] = list(budgets) if budgets else []
-        self._budget_gate = EnforceBudgetGate()
+        # The gate is injectable (like run_gate) so a layer that REBUILDS Fleets over the same
+        # ledger - the workspace registry on config hot-reload - can keep ONE gate per repo:
+        # in-flight runs on the evicted Fleet still hold slots the replacement consults, and the
+        # old Fleet's terminal release frees them for the new one. Default: a private gate,
+        # exactly the prior single-Fleet behavior.
+        self._budget_gate = budget_gate if budget_gate is not None else EnforceBudgetGate()
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()
@@ -294,8 +301,11 @@ class Fleet:
         self._bg_max = 4
         # When this Fleet (the long-lived MCP server) started. The MCP `usage` tool maps a `window`
         # of "session" to this instant, so the driver can see what it has spent THIS session
-        # without restating the timestamp.
-        self.session_start: datetime = datetime.now(timezone.utc)
+        # without restating the timestamp. Injectable for the same reason as budget_gate: a
+        # rebuilt Fleet must not silently reset every `window: session` budget clock.
+        self.session_start: datetime = (
+            session_start if session_start is not None else datetime.now(timezone.utc)
+        )
         self._on_run_complete = on_run_complete
 
     def run(
@@ -428,6 +438,15 @@ class Fleet:
         except Exception:
             self._budget_gate.release(budget_keys)
             raise
+
+    @property
+    def budget_gate(self) -> EnforceBudgetGate:
+        """The enforce-budget concurrency gate this Fleet consults (read-only accessor).
+
+        Exposed so the workspace registry can carry the SAME gate into a replacement Fleet on
+        config hot-reload (see workspaces.WorkspaceRuntime) instead of forking it.
+        """
+        return self._budget_gate
 
     def _check_budget(self, req: RunRequest) -> None:
         """Ledger-only budget check (tests / diagnostics). Spawn path uses ``_budget_gate.begin``."""

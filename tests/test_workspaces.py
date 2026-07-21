@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -23,9 +24,11 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.budgets import BudgetExceeded, EnforceBudgetGate
 from marshal_engine.config import ClientConfig, FleetConfig
 from marshal_engine.service import MarshalService
 from marshal_engine.state import FleetState, RunRecord
+from marshal_engine.usage import UsageEvent
 from marshal_engine.workspaces import (
     DEFAULT_MAX_CONCURRENT,
     WorkspaceDef,
@@ -799,6 +802,176 @@ def test_registry_rebuild_preserves_inflight_run(tmp_path: Path) -> None:
         time.sleep(0.05)
     got = new.get_run(rec.run_id)
     assert got is not None and got.status == "succeeded"
+
+
+# --- registry: durable runtime (enforce gate + session clock) across hot-reload ----------------
+
+
+_ENFORCE_SESSION_BUDGET_YAML = (
+    "budgets:\n  - window: session\n    limit_usd: 5.0\n    enforce: true\n"
+)
+
+
+def _durable_registry(
+    wdef: WorkspaceDef, backends_factory: Callable[[], dict[str, CodingAgentBackend]]
+) -> WorkspaceRegistry:
+    """A registry whose builder injects fake backends but opts into the registry's durable
+    runtime via ``runtime_for`` - the same wiring the default build_service_for builder uses."""
+    from marshal_engine.config import load_config
+
+    holder: list[WorkspaceRegistry] = []
+
+    def build(d: WorkspaceDef) -> MarshalService:
+        cfg = load_config(d.config_path) if d.config_path.exists() else FleetConfig()
+        rt = holder[0].runtime_for(d)
+        return MarshalService(
+            d.path, cfg, backends=backends_factory(), config_path=d.config_path,
+            session_start=rt.session_start, budget_gate=rt.budget_gate,
+        )
+
+    reg = WorkspaceRegistry([wdef], builder=build)
+    holder.append(reg)
+    return reg
+
+
+def test_enforce_budget_survives_midflight_config_reload(tmp_path: Path) -> None:
+    """#36 AC: with an ``enforce: true`` budget and one run in flight, an unrelated config edit
+    (which rebuilds the service) must not admit a second matching spawn - and the old run's
+    terminal release must free the slot for the NEW service."""
+    import os as _os
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    cfg = repo / "fleet.config.yaml"
+    cfg.write_text("clients:\n  worker:\n    backend: slow\n" + _ENFORCE_SESSION_BUDGET_YAML)
+    wdef = WorkspaceDef("default", repo.resolve(), cfg)
+    reg = _durable_registry(wdef, lambda: {"slow": _Slow()})
+
+    old = reg.get()
+    rec = old.spawn("worker", "first")  # holds the enforce slot until it finishes
+
+    cfg.write_text(
+        "clients:\n  worker:\n    backend: slow\n  extra:\n    backend: slow\n"
+        + _ENFORCE_SESSION_BUDGET_YAML
+    )
+    _os.utime(cfg, ns=(1, 1))  # force a distinct signature on coarse-timestamp filesystems
+    new = reg.get()
+    assert new is not old
+    assert new.fleet.budget_gate is old.fleet.budget_gate  # one gate per repo, never a fork
+
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        new.spawn("worker", "second")  # still refused: the old Fleet's run holds the shared slot
+
+    # Drain the OLD Fleet's background pool: this blocks past the run's finally (which releases
+    # the shared gate slot), so the check below is deterministic rather than status-poll racy.
+    old.shutdown()
+    finished = new.get_run(rec.run_id)
+    assert finished is not None and finished.status == "succeeded"
+    third = new.run_agent("worker", "third", task_id="t3")  # release freed the shared slot
+    assert third.status == "succeeded"
+
+
+def test_session_clock_and_spend_survive_config_reload(tmp_path: Path) -> None:
+    """#36 AC: a config hot-reload must not reset ``window: session`` accounting - the
+    replacement service keeps the same session_start and still counts pre-reload spend."""
+    import os as _os
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    cfg = repo / "fleet.config.yaml"
+    cfg.write_text(
+        "budgets:\n  - window: session\n    limit_usd: 0.5\n    enforce: true\n"
+        "clients:\n  worker:\n    backend: echo\n"
+    )
+    wdef = WorkspaceDef("default", repo.resolve(), cfg)
+    reg = _durable_registry(wdef, lambda: {"echo": _Echo()})
+
+    old = reg.get()
+    old.fleet.usage.record(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(), run_id="seed", backend="echo",
+            cost_usd=1.0, source="estimated",
+        )
+    )
+    time.sleep(0.05)  # a (buggy) reset session_start would now exclude the seeded event
+
+    cfg.write_text(cfg.read_text() + "  # unrelated tweak\n")
+    _os.utime(cfg, ns=(1, 1))
+    new = reg.get()
+    assert new is not old
+    assert new.session_start == old.session_start  # the session clock did not restart
+    status = new.fleet.budget_status()[0]
+    assert status.spent_usd == pytest.approx(1.0)  # pre-reload spend still in the window
+    with pytest.raises(BudgetExceeded, match="cap"):
+        new.run_agent("worker", "over-cap")  # the un-reset window keeps the cap enforced
+
+
+def test_add_eviction_preserves_runtime(tmp_path: Path) -> None:
+    """add()'s cache pop (re-registration) rebuilds the service but keeps the same durable
+    runtime - it is keyed by resolved repo path, not by the cache entry."""
+    repo_a, repo_b = tmp_path / "a", tmp_path / "b"
+    for r in (repo_a, repo_b):
+        r.mkdir()
+        _init_repo(r)
+    reg_file = tmp_path / "workspaces.yaml"
+    env = {"MARSHAL_REPO": str(repo_a), "MARSHAL_WORKSPACES_FILE": str(reg_file)}
+    reg = WorkspaceRegistry.from_env(env)
+    reg.add("beta", repo_b)
+    first = reg.get("beta")
+    reg.add("beta", repo_b)  # evicts the cached service
+    second = reg.get("beta")
+    assert second is not first
+    assert second.fleet.budget_gate is first.fleet.budget_gate
+    assert second.session_start == first.session_start
+
+
+def test_workspaces_do_not_share_budget_gate(tmp_path: Path) -> None:
+    """Two workspaces are two repos with two ledgers - their enforce gates must stay separate."""
+    repo_a, repo_b = tmp_path / "a", tmp_path / "b"
+    for r in (repo_a, repo_b):
+        r.mkdir()
+        _init_repo(r)
+    defs = [
+        WorkspaceDef("default", repo_a.resolve(), repo_a / "fleet.config.yaml"),
+        WorkspaceDef("beta", repo_b.resolve(), repo_b / "fleet.config.yaml"),
+    ]
+    reg = WorkspaceRegistry(defs)  # the default build_service_for builder (no config = 0 clients)
+    a, b = reg.get("default"), reg.get("beta")
+    assert a.fleet.budget_gate is not b.fleet.budget_gate
+    # The default builder binds the registry's own capsule - the durable identity get() reuses.
+    assert a.fleet.budget_gate is reg.runtime_for(defs[0]).budget_gate
+    assert a.session_start == reg.runtime_for(defs[0]).session_start
+
+
+def test_prebuilt_service_seeds_durable_runtime(tmp_path: Path) -> None:
+    """for_service (the single-repo MCP path): a rebuild after a config edit inherits the
+    prebuilt service's gate + session clock instead of forking them."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    svc = _echo_service(repo)
+    reg = WorkspaceRegistry.for_service(svc)
+    rt = reg.runtime_for(WorkspaceDef("default", Path(svc.repo_root).resolve(), Path(svc.config_path)))
+    assert rt.budget_gate is svc.fleet.budget_gate
+    assert rt.session_start == svc.fleet.session_start
+
+
+def test_direct_construction_keeps_private_gate_default(tmp_path: Path) -> None:
+    """Library path unchanged: bare Fleets/services get their OWN gate + clock unless injected."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    svc1, svc2 = _echo_service(repo), _echo_service(repo)
+    assert svc1.fleet.budget_gate is not svc2.fleet.budget_gate  # default: private per Fleet
+
+    gate = EnforceBudgetGate()
+    ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    cfg = FleetConfig(clients={"worker": ClientConfig(name="worker", backend="echo")})
+    svc3 = MarshalService(repo, cfg, backends={"echo": _Echo()}, budget_gate=gate, session_start=ts)
+    assert svc3.fleet.budget_gate is gate  # injection is honored end-to-end
+    assert svc3.session_start == ts
 
 
 def test_mcp_add_workspace_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
