@@ -44,6 +44,32 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
   `fleet.config.yaml` is an **advisory preflight check only** - Marshal verifies the named env var
   is present but does not read, store, or inject its value.
 
+## MCP driver authority
+
+The MCP driver (the agent connected to `marshal mcp`) is a powerful caller, and a compromised or
+prompt-injected driver exercises that power with your credentials. What a driver can do:
+
+- **Choose an ad-hoc backend/model** on calls that permit it (`run_agent`, `spawn`, `run_many`
+  jobs): passing a bare `backend` bypasses the configured clients in `fleet.config.yaml`, subject
+  to the CLIs installed and logged in on the host and the requested permission tier.
+- **Invoke `integrate`** - the one explicit operation that merges a run's branch into the selected
+  workspace's **current branch**. Everything before it is worktree-isolated; integrate is where
+  agent work lands on your branch.
+- **Invoke `add_workspace`** - but **only** when the operator started the server with
+  `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` (exact value; captured once at server start - see
+  `docs/config.md`). By default the tool refuses every call before any path lookup, registry
+  write, or scaffolding, so a driver cannot expand the set of repos Marshal may modify.
+
+Worktree isolation assumes the **workspace set is operator-selected**. It protects files within
+whichever repository Marshal targets; it does not protect the host from the driver choosing a
+different repository. The safe default flow: leave MCP registration disabled, register repos
+yourself with `marshal workspace add <name> <path>` (hot-reloaded - no reconnect), review diffs
+with `collect_run`, and `integrate` deliberately.
+
+Residual risk of opting in: `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` delegates registration of
+**any existing directory on the host** to the driver. It is not a path sandbox or allowlist -
+enable it only when you trust the driver and everything that can reach its prompt.
+
 ## What you are responsible for
 
 - **Running untrusted task prompts through a write-enabled backend executes code on your host.** A

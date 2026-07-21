@@ -33,6 +33,14 @@ List repos this server can target.
 
 Register a repo in `~/.marshal/workspaces.yaml` (hot-reloaded; no reconnect needed).
 
+**Disabled by default.** The tool stays discoverable, but every call is refused unless the server
+process was started with `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` (exact value; captured once
+at server build — see `docs/config.md` for the semantics). The refusal happens before any path
+validation, registry write, or scaffolding, and its message points at the operator alternative:
+`marshal workspace add <name> <path>`, which hot-reloads into the running server the same way.
+Enabling the opt-in lets the MCP driver register **any existing directory on the host** as a
+target repo — it is not a path allowlist. See `SECURITY.md` before turning it on.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `name` | string | *(required)* | Short name (`[A-Za-z0-9._-]+`, not `default`). |
@@ -40,6 +48,8 @@ Register a repo in `~/.marshal/workspaces.yaml` (hot-reloaded; no reconnect need
 | `scaffold` | bool | `false` | Drop a starter `fleet.config.yaml` if the repo has none. |
 
 **Returns:** `{ name, path, config_path, scaffolded }`.
+
+**Errors:** refused with the policy message above when the opt-in is not set.
 
 ## Diagnose
 

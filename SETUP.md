@@ -115,6 +115,7 @@ Marshal exposes its tools over an MCP server (`marshal mcp`, stdio). It reads th
 | `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | the central registry of extra repos (recommended) |
 | `MARSHAL_WORKSPACES` | - | extra repos inline (`name=/abs/path`, comma/newline) |
 | `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | cap on concurrent agent runs across all workspaces |
+| `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION` | unset (disabled) | set to exactly `1` to let the driver register repos via the `add_workspace` MCP tool (see `docs/config.md`) |
 
 **Multiple repos from one server.** Marshal can target several repos at once, each fully isolated
 (own `fleet.config.yaml`, own worktrees, own ledger). Declare them once in the central registry:
@@ -135,10 +136,13 @@ marshal workspace add backend          # path defaults to the current dir; scaff
 
 That scaffolds a starter `fleet.config.yaml` (edit in your clients), registers the repo in
 `~/.marshal/workspaces.yaml`, and - because the running server hot-reloads the file - the driver sees
-it **without a reconnect**. The driver can also register one itself via the `add_workspace` tool, and
-discovers all of them with `list_workspaces`. Pass the name on any tool: `run_agent(...,
-workspace="backend")`; omitting it uses the default. (`marshal workspace list` / `remove` round it
-out.) With no registry file and no `MARSHAL_WORKSPACES`, the server is single-repo exactly as before.
+it **without a reconnect**. The driver discovers all of them with `list_workspaces` and passes the
+name on any tool: `run_agent(..., workspace="backend")`; omitting it uses the default. (`marshal
+workspace list` / `remove` round it out.) The MCP `add_workspace` tool is **disabled by default** -
+registering repos is an operator decision; start the server with
+`MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` only if you deliberately want the driver to do it (see
+`SECURITY.md`). With no registry file and no `MARSHAL_WORKSPACES`, the server is single-repo exactly
+as before.
 
 ### Option A - install the Claude Code plugin (one step)
 

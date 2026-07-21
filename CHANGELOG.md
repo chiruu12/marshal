@@ -13,6 +13,14 @@ versions may include breaking API changes until 1.0.
   on the `feature/marshal-recall-cognee` branch for future reference.
 
 ### Fixed
+- **MCP workspace registration fails closed by default (#39).** The `add_workspace` MCP tool now
+  refuses every call - before any path validation, registry write, or scaffolding - unless the
+  server was started with `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` (exact value, captured once
+  at server build). A prompt-injected driver can no longer expand the set of repos Marshal may
+  modify on a default install. The refusal message names the operator alternative
+  (`marshal workspace add <name> <path>`, hot-reloaded into the running server) and the opt-in.
+  CLI, registry-file, and env-var registration are unchanged. `SECURITY.md` now documents MCP
+  driver authority (ad-hoc backend choice, `integrate`, gated `add_workspace`).
 - **Cursor safe-edit deny overlay no longer pollutes run results (#37).** The `.cursor/cli.json`
   merge is now a transaction owned by `CursorBackend.run()`: the file's exact prior state
   (existence, bytes, mode) is snapshotted before the run and restored before Fleet observes the

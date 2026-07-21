@@ -121,8 +121,10 @@ and keeps its own `.marshal` ledger.
 | `workspaces` | map name → path | `{}` | Named repos the MCP server can target via `workspace=`. Names must match `[A-Za-z0-9._-]+` and cannot be `default`. Paths must be existing directories. | `workspaces: { backend: /abs/path/to/backend }` |
 | `max_concurrent` | int (> 0) \| omitted | `null` | Process-wide cap on concurrent agent runs across all workspaces when multi-repo is in play. Overridden by `MARSHAL_MAX_CONCURRENT`. | `max_concurrent: 8` |
 
-Register workspaces with `marshal workspace add` or the `add_workspace` MCP tool; the file is
-hot-reloaded for **additions** without reconnecting.
+Register workspaces with `marshal workspace add` (the recommended, operator-run path); the file is
+hot-reloaded for **additions** without reconnecting. The MCP `add_workspace` tool is an explicit
+server opt-in: it refuses unless the server was started with
+`MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` (see below).
 
 ## Environment variables
 
@@ -133,6 +135,7 @@ hot-reloaded for **additions** without reconnecting.
 | `MARSHAL_WORKSPACES` | string | unset | Additional workspaces: comma- or newline-separated `name=/abs/path` entries (back-compat with the registry file). | `MARSHAL_WORKSPACES=frontend=/abs/fe,backend=/abs/be` |
 | `MARSHAL_WORKSPACES_FILE` | path | `~/.marshal/workspaces.yaml` | Path to the central workspace registry file. | `MARSHAL_WORKSPACES_FILE=/cfg/workspaces.yaml` |
 | `MARSHAL_MAX_CONCURRENT` | int (> 0) | unset | Process-wide concurrent-run cap. Takes precedence over the registry file's `max_concurrent`. When multi-repo is active and neither is set, defaults to `8`. A lone default workspace with no registry file stays uncapped. | `MARSHAL_MAX_CONCURRENT=4` |
+| `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION` | exactly `"1"` | unset (disabled) | Enables the MCP `add_workspace` tool. The value must be **exactly `1`** — unset, empty, `0`, `false`, `true`, or anything else keeps the tool disabled (fail-closed; no generic truthiness). Captured once when the MCP app is built, so mutating the environment mid-session cannot widen authority. Affects **only** the MCP tool: `marshal workspace add`, registry-file edits, and the `MARSHAL_WORKSPACES`/`MARSHAL_REPO` env vars are unaffected. Enabling it delegates registration of any existing host directory to the MCP driver — see `SECURITY.md`. | `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` |
 | `MARSHAL_NO_PATH_FIX` | any (truthy) | unset | When set, skip merging the user's login-shell `PATH` at engine entry. Use in hermetic CI or when PATH is already correct. | `MARSHAL_NO_PATH_FIX=1` |
 
 ## Per-spawn duration presets (MCP / CLI)

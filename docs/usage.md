@@ -157,6 +157,7 @@ Point your driver at `marshal mcp`. Environment:
 | `MARSHAL_WORKSPACES_FILE` | `~/.marshal/workspaces.yaml` | The central registry of extra workspaces (the recommended way). |
 | `MARSHAL_WORKSPACES` | - | Extra workspaces inline: comma/newline-separated `name=/abs/path` entries. |
 | `MARSHAL_MAX_CONCURRENT` | 8 when multi-repo | Process-wide cap on concurrent agent runs across all workspaces. |
+| `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION` | unset (disabled) | Set to exactly `1` to enable the `add_workspace` MCP tool (see `docs/config.md`). |
 
 **Multiple repos from one server.** Declare them in `~/.marshal/workspaces.yaml` (or the inline
 `MARSHAL_WORKSPACES` env). The file is the canonical "all config" for the registry:
@@ -171,8 +172,11 @@ workspaces:
 
 Each workspace loads its **own** `<repo>/fleet.config.yaml` (clients travel with the repo). Every
 tool takes an optional `workspace` param (see `list_workspaces`); the run-handle tools take it as a
-hint. Add a repo with `marshal workspace add <name> [path]` or the `add_workspace` tool - it appears
-**without reconnecting** the server. Config edits hot-reload the same way: adding, changing, or
+hint. Add a repo with `marshal workspace add <name> [path]` (operator-run; the default path) - it
+appears **without reconnecting** the server. The MCP `add_workspace` tool can do the same but is
+**disabled by default**; enable it deliberately with `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1`
+on the server process (see `docs/config.md` and `SECURITY.md`). Config edits hot-reload the same
+way: adding, changing, or
 deleting a workspace's `fleet.config.yaml` is picked up on the next tool call. A reload keeps the
 workspace's budget continuity: the enforce-budget in-flight guard and the `session` window clock
 survive the rebuild (limits themselves come from the newly loaded config), so an unrelated edit

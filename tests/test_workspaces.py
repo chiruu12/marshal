@@ -974,10 +974,17 @@ def test_direct_construction_keeps_private_gate_default(tmp_path: Path) -> None:
     assert svc3.session_start == ts
 
 
-def test_mcp_add_workspace_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("mcp")
-    import asyncio
+_MCP_REG_OPT_IN = "MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION"
 
+
+def _registry_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[object, WorkspaceRegistry, Path, Path]:
+    """An env-driven registry + MCP app over repo `a` (default), with repo `b` unregistered.
+
+    Returns (app, registry, reg_file, repo_b). The opt-in env var must be set/unset by the caller
+    BEFORE this runs - build_app captures it at construction time.
+    """
     from marshal_engine.mcp_server import build_app
 
     repo_a, repo_b = tmp_path / "a", tmp_path / "b"
@@ -990,11 +997,103 @@ def test_mcp_add_workspace_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("MARSHAL_WORKSPACES", raising=False)
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     reg = WorkspaceRegistry.from_env()
-    app = build_app(reg)
+    return build_app(reg), reg, reg_file, repo_b
 
-    asyncio.run(app.call_tool("add_workspace", {"name": "beta", "path": str(repo_b)}))
+
+def test_mcp_add_workspace_refused_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+
+    monkeypatch.delenv(_MCP_REG_OPT_IN, raising=False)
+    app, reg, reg_file, repo_b = _registry_app(tmp_path, monkeypatch)
+
+    with pytest.raises(Exception, match="marshal workspace add") as exc_info:
+        asyncio.run(app.call_tool("add_workspace", {"name": "beta", "path": str(repo_b), "scaffold": True}))
+    assert _MCP_REG_OPT_IN in str(exc_info.value)  # the refusal names the server-side opt-in
+    assert "beta" not in reg.names()  # nothing registered
+    assert not reg_file.exists()  # registry file never written
+    assert not (repo_b / "fleet.config.yaml").exists()  # scaffold=true wrote nothing
+
+
+def test_mcp_add_workspace_opt_in_allows_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+
+    monkeypatch.setenv(_MCP_REG_OPT_IN, "1")
+    app, reg, reg_file, repo_b = _registry_app(tmp_path, monkeypatch)
+
+    _content, structured = asyncio.run(
+        app.call_tool("add_workspace", {"name": "beta", "path": str(repo_b), "scaffold": True})
+    )
     assert "beta" in reg.names()  # registered + hot-reloaded into the live registry
     assert read_workspaces_file(reg_file)[0].get("beta") == str(repo_b.resolve())
+    payload = structured.get("result", structured)
+    assert payload["scaffolded"] is True  # the full mutating path ran under the opt-in
+    assert (repo_b / "fleet.config.yaml").exists()
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "true", "yes", " 1"])
+def test_mcp_add_workspace_opt_in_fails_closed_for_other_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Only the exact value "1" enables the tool - never generic string truthiness."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    monkeypatch.setenv(_MCP_REG_OPT_IN, value)
+    app, reg, reg_file, repo_b = _registry_app(tmp_path, monkeypatch)
+
+    with pytest.raises(Exception, match="disabled by default"):
+        asyncio.run(app.call_tool("add_workspace", {"name": "beta", "path": str(repo_b), "scaffold": True}))
+    assert "beta" not in reg.names()
+    assert not reg_file.exists()
+    assert not (repo_b / "fleet.config.yaml").exists()
+
+
+def test_mcp_add_workspace_denial_precedes_path_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disabled tool must not act as a path-existence oracle: the refusal is the policy
+    message, not "path is not an existing directory"."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    monkeypatch.delenv(_MCP_REG_OPT_IN, raising=False)
+    app, reg, reg_file, _repo_b = _registry_app(tmp_path, monkeypatch)
+
+    with pytest.raises(Exception, match="disabled by default") as exc_info:
+        asyncio.run(app.call_tool("add_workspace", {"name": "x", "path": str(tmp_path / "nope")}))
+    assert "existing directory" not in str(exc_info.value)
+    assert not reg_file.exists()
+
+
+def test_mcp_add_workspace_concurrent_denials_have_no_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+
+    monkeypatch.delenv(_MCP_REG_OPT_IN, raising=False)
+    app, reg, reg_file, repo_b = _registry_app(tmp_path, monkeypatch)
+
+    async def _fan_out() -> list[BaseException | object]:
+        calls = [
+            app.call_tool("add_workspace", {"name": f"ws{i}", "path": str(repo_b), "scaffold": True})
+            for i in range(4)
+        ]
+        return await asyncio.gather(*calls, return_exceptions=True)
+
+    results = asyncio.run(_fan_out())
+    assert len(results) == 4
+    for r in results:
+        assert isinstance(r, Exception) and "disabled by default" in str(r)  # every call refused
+    assert reg.names() == ["default"]  # no registration leaked through the race
+    assert not reg_file.exists()
+    assert not (repo_b / "fleet.config.yaml").exists()
 
 
 def test_mcp_list_clients_reflects_config_edit(tmp_path: Path) -> None:
