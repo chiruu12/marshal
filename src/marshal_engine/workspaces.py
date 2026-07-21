@@ -34,12 +34,14 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 
+from .budgets import EnforceBudgetGate
 from .config import ConfigError, FleetConfig, load_config, validate
 from .layout import runs_dir
 from .scaffold import detect_project_markers, scaffold_fleet_config
@@ -52,6 +54,7 @@ __all__ = [
     "DEFAULT_WORKSPACE",
     "WorkspaceDef",
     "WorkspaceRegistry",
+    "WorkspaceRuntime",
     "build_service_for",
     "detect_project_markers",
     "read_workspaces_file",
@@ -87,6 +90,23 @@ class WorkspaceDef:
     name: str
     path: Path
     config_path: Path
+
+
+@dataclass(frozen=True)
+class WorkspaceRuntime:
+    """Durable per-workspace runtime identity that must SURVIVE service rebuilds.
+
+    A config hot-reload (or an ``add()`` cache eviction) replaces a workspace's
+    ``MarshalService``/``Fleet`` while old runs may still be in flight. Two pieces of Fleet state
+    must not fork across that boundary: the ``EnforceBudgetGate`` (or a fresh empty gate would
+    admit a second spawn past an ``enforce: true`` cap while the old Fleet's run still holds the
+    slot) and ``session_start`` (or every ``window: session`` budget clock would silently reset).
+    The registry keeps one capsule per resolved repo path and binds it into every replacement
+    service; budget *specs* still come from the newly loaded config, so limits hot-reload.
+    """
+
+    session_start: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    budget_gate: EnforceBudgetGate = field(default_factory=EnforceBudgetGate)
 
 
 # --- the central registry file (~/.marshal/workspaces.yaml) -----------------------------------
@@ -318,6 +338,7 @@ def build_service_for(
     wdef: WorkspaceDef,
     *,
     run_gate: threading.Semaphore | None = None,
+    runtime: WorkspaceRuntime | None = None,
     missing_config: _MissingConfigWarn = "workspace",
     config_warnings: _ConfigWarnStyle = "workspace",
 ) -> MarshalService:
@@ -332,7 +353,13 @@ def build_service_for(
     whenever a human might see the process - a missing file with zero clients and no warning is how
     ``known: (none configured)`` becomes mysterious. ``"silent"`` remains for hermetic callers that
     deliberately tolerate an absent file.
+
+    ``runtime`` (like ``run_gate``) is an optional injectable: the registry passes the workspace's
+    durable ``WorkspaceRuntime`` so a hot-reload rebuild keeps the same enforce-budget gate and
+    session clock. None (library / one-shot callers) keeps the Fleet's own defaults.
     """
+    budget_gate = runtime.budget_gate if runtime is not None else None
+    session_start = runtime.session_start if runtime is not None else None
     if not wdef.config_path.exists():
         if missing_config == "legacy":
             _warn(
@@ -347,7 +374,8 @@ def build_service_for(
                 "or set MARSHAL_CONFIG (default workspace). See SETUP.md."
             )
         return MarshalService(
-            wdef.path, FleetConfig(), config_path=wdef.config_path, run_gate=run_gate
+            wdef.path, FleetConfig(), config_path=wdef.config_path, run_gate=run_gate,
+            budget_gate=budget_gate, session_start=session_start,
         )
     config = load_config(wdef.config_path)
     for warning in validate(config):
@@ -355,7 +383,10 @@ def build_service_for(
             _warn(f"config warning: {warning}")
         else:
             _warn(f"workspace {wdef.name!r} config warning: {warning}")
-    return MarshalService(wdef.path, config, config_path=wdef.config_path, run_gate=run_gate)
+    return MarshalService(
+        wdef.path, config, config_path=wdef.config_path, run_gate=run_gate,
+        budget_gate=budget_gate, session_start=session_start,
+    )
 
 
 # A config file's identity on disk: (st_mtime_ns, st_size), or None when absent. mtime_ns alone
@@ -398,13 +429,31 @@ class WorkspaceRegistry:
         for d in defs:
             self._defs.setdefault(d.name, d)
         self._run_gate = run_gate
-        self._builder = builder or (lambda d: build_service_for(d, run_gate=run_gate))
+        # Durable per-workspace runtime (enforce-budget gate + session clock), keyed by RESOLVED
+        # repo path - not display name - so two names for two repos never share a gate. Entries
+        # survive both eviction paths (config-signature rebuild and add()'s cache pop): the
+        # replacement Fleet consults the same gate the evicted Fleet's in-flight runs hold and
+        # release. (``_refresh`` is additive only — remapping an existing name to a new path needs
+        # a reconnect; add() does not rewrite ``_defs``.)
+        self._runtimes: dict[Path, WorkspaceRuntime] = {}
+        self._runtimes_lock = threading.Lock()
+        self._builder = builder or (
+            lambda d: build_service_for(d, run_gate=run_gate, runtime=self.runtime_for(d))
+        )
         # Stamp prebuilt entries with the signature of the SAME path get() compares against (the
-        # def's config_path), so an unchanged config always yields a cache hit.
+        # def's config_path), so an unchanged config always yields a cache hit. Seed each one's
+        # runtime from its live Fleet, so a later rebuild inherits the prebuilt service's gate +
+        # session clock instead of forking them (for_service is the single-repo MCP path).
         self._cache: dict[str, tuple[MarshalService, _ConfigSig]] = {}
         for n, svc in (prebuilt or {}).items():
             known = self._defs.get(n)
             self._cache[n] = (svc, _config_signature(known.config_path) if known else None)
+            # Tests may prebuild lightweight stand-ins with no Fleet; skip seeding for those.
+            fleet = getattr(svc, "fleet", None)
+            if known is not None and fleet is not None:
+                self._runtimes[known.path.resolve()] = WorkspaceRuntime(
+                    session_start=fleet.session_start, budget_gate=fleet.budget_gate
+                )
         self._locks: dict[str, threading.Lock] = {name: threading.Lock() for name in self._defs}
         self._resolver = resolver
         # The env this registry resolves against, so `add()` writes the SAME file the resolver reads.
@@ -431,6 +480,22 @@ class WorkspaceRegistry:
     @property
     def run_gate(self) -> threading.Semaphore | None:
         return self._run_gate
+
+    def runtime_for(self, wdef: WorkspaceDef) -> WorkspaceRuntime:
+        """The workspace's durable runtime capsule, created on first touch (path-keyed).
+
+        Every build of a workspace's service - first build, config-signature rebuild, post-
+        ``add()`` rebuild - goes through this, so the enforce-budget gate and session clock keep
+        one identity per repo for the registry's whole lifetime. Custom ``builder`` callables can
+        call it too, to opt into the same continuity.
+        """
+        key = wdef.path.resolve()
+        with self._runtimes_lock:
+            runtime = self._runtimes.get(key)
+            if runtime is None:
+                runtime = WorkspaceRuntime()
+                self._runtimes[key] = runtime
+            return runtime
 
     def _refresh(self) -> None:
         """Re-resolve declarations and ADD any new workspaces (hot-reload). No-op when static.

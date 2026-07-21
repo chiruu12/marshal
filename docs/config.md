@@ -94,6 +94,13 @@ limit). Parallel `run_many` / concurrent `spawn` would otherwise all pass the sa
 snapshot and overshoot the cap before any usage is recorded. The next matching spawn is refused
 until the holder finishes (and records spend). Advisory budgets do not take a concurrency slot.
 
+Editing `fleet.config.yaml` hot-reloads budget **specs** (limits, scopes, `enforce`) on the next
+call, but never forks budget **state**: the in-flight guard and the `session` window clock are kept
+per workspace across the reload, so an **unrelated** config edit mid-run cannot admit a concurrent
+spawn past an enforced cap or reset session spend accounting. Changing an enforce budget's own
+`limit_usd` / scope / `enforce` shape mid-flight can still re-key the concurrency slot (an in-flight
+run under the old key does not block a spawn admitted under the new key).
+
 | Key | Type | Default | What it does | Example |
 |-----|------|---------|--------------|---------|
 | `backend` | string \| omitted | `null` | Scope the cap to one backend. Set **at most one** of `backend` or `client`; omit both for a fleet-wide cap. | `backend: claude-code` |
