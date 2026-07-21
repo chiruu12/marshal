@@ -18,7 +18,10 @@ Notes / gaps baked in from research:
     The account-level Cursor Admin API (team/enterprise, per service-account) is wired later.
   * `--force`/`--yolo` mean "allow everything not explicitly denied". For ``safe-edit``,
     ``prepare()`` writes a curated deny list into the worktree's ``.cursor/cli.json``
-    (alongside ``--force``). ``yolo`` intentionally skips that list.
+    (alongside ``--force``). The write is TEMPORARY: ``run()`` snapshots the file's exact
+    prior state (existence, bytes, mode) and restores it before returning, so the deny
+    overlay is visible to the live agent process but never to Fleet's status/diff/commit
+    views. ``yolo`` intentionally skips that list.
   * There is no `--cwd`; `--workspace` sets the repo root. `--trust` avoids the trust prompt.
   * `check_available` should pin/assert a minimum version - several headless hang bugs are
     version-gated and only fixed in recent builds.
@@ -30,10 +33,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..types import (
     AgentResult,
@@ -86,11 +90,59 @@ class CursorBackend(CodingAgentBackend):
 
         Only ``safe-edit`` gets the curated deny list; ``yolo`` is unrestricted by design and
         ``read-only`` already uses ``--mode plan``. Merge-preserving and idempotent so a
-        repo-committed cli.json's allow/deny entries are kept.
+        repo-committed cli.json's allow/deny entries are kept. The write is transient:
+        ``run()`` restores the file's exact prior state before returning, so the overlay
+        never appears in Fleet's status/diff/commit views. Fails closed (raises) on an
+        existing malformed, unreadable, or non-object config rather than replacing it.
         """
         if opts.permission is not PermissionMode.SAFE_EDIT:
             return
         _merge_safe_edit_cli_json(Path(opts.cwd) / ".cursor" / "cli.json")
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        """Shared run loop, wrapped in a ``.cursor/cli.json`` transaction for ``safe-edit``.
+
+        Snapshot the config's exact prior state (existence, bytes, mode), let the base loop
+        call ``prepare()`` (which installs the deny overlay) and spawn the agent, then restore
+        the snapshot before returning - so the overlay applies to the live process but Fleet
+        never observes it as agent work (EMPTY classification, verify gate, collect, commit,
+        integrate all see the original tree). Restoration is exact: an agent edit to the
+        config file during the run is discarded with the overlay (defending the deny file
+        against a hostile agent is issue #40). A restoration failure fails the run - never
+        return success with Marshal's policy residue still in the worktree.
+        """
+        if opts.permission is not PermissionMode.SAFE_EDIT:
+            return super().run(task, opts)
+        path = Path(opts.cwd) / ".cursor" / "cli.json"
+        try:
+            snapshot = _snapshot_cli_json(path)
+        except OSError as exc:
+            # Without a restorable snapshot the transaction cannot hold: fail closed with the
+            # file untouched and the agent process never launched.
+            return AgentResult(
+                status=RunStatus.FAILED,
+                error=(
+                    f"{self.name}: cannot snapshot existing {path} ({exc}); "
+                    "fix its permissions or remove it before a safe-edit run"
+                ),
+            )
+        restore_error: str | None = None
+        try:
+            result = super().run(task, opts)
+        finally:
+            try:
+                _restore_cli_json(path, snapshot)
+            except OSError as exc:
+                restore_error = (
+                    f"{self.name}: failed to restore {path} after the run ({exc}); "
+                    "the worktree may still contain Marshal's temporary safe-edit deny "
+                    "overlay - restore or remove .cursor/cli.json manually before "
+                    "committing or integrating this run"
+                )
+        if restore_error is not None:
+            result.status = RunStatus.FAILED
+            result.error = f"{result.error}; {restore_error}" if result.error else restore_error
+        return result
 
     def account_info(self) -> dict[str, str] | None:
         """Plan tier + default model from `cursor-agent about`. Cursor exposes no quota/usage API
@@ -167,19 +219,87 @@ class CursorBackend(CodingAgentBackend):
 # --- module helpers ----------------------------------------------------------------------
 
 
+class _CliJsonSnapshot(NamedTuple):
+    """Exact prior state of ``.cursor/cli.json``: ``file_bytes is None`` = did not exist."""
+
+    file_bytes: bytes | None
+    mode: int | None
+    dir_existed: bool
+
+
+def _snapshot_cli_json(path: Path) -> _CliJsonSnapshot:
+    """Capture ``path``'s exact state (existence, bytes, permission bits) for later restore."""
+    dir_existed = path.parent.is_dir()
+    if not path.exists():
+        return _CliJsonSnapshot(None, None, dir_existed)
+    return _CliJsonSnapshot(path.read_bytes(), stat.S_IMODE(path.stat().st_mode), dir_existed)
+
+
+def _restore_cli_json(path: Path, snapshot: _CliJsonSnapshot) -> None:
+    """Put ``path`` back into its snapshotted state, byte-for-byte.
+
+    Absent before -> remove the generated file, and remove ``.cursor/`` only when this run
+    created it AND it is empty (agent-created content in there is real work - keep it; git
+    never reports an empty directory, so a leftover empty dir is not a worktree delta either).
+    Present before -> rewrite the original bytes + mode atomically (temp + ``os.replace``).
+    """
+    if snapshot.file_bytes is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        if not snapshot.dir_existed:
+            try:
+                os.rmdir(path.parent)
+            except OSError:
+                pass  # non-empty (agent work) or already gone - both fine
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(snapshot.file_bytes)
+        if snapshot.mode is not None:
+            os.chmod(tmp_str, snapshot.mode)
+        os.replace(tmp_str, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_str)
+        except OSError:
+            pass
+        raise
+
+
 def _merge_safe_edit_cli_json(path: Path) -> None:
     """Union ``SAFE_EDIT_DENY`` into ``path``'s ``permissions.deny``, preserving other keys.
 
     Atomic write (unique temp + ``os.replace``) so a concurrent reader never sees a torn file.
+    Fails closed on an existing malformed, unreadable, or non-object document: raising here
+    (surfaced by the base run loop as a failed run) beats silently replacing a user's config
+    with a Marshal-generated one - the original file is left byte-for-byte untouched.
     """
     data: dict[str, Any] = {}
     if path.exists():
         try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (json.JSONDecodeError, OSError):
-            data = {}
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                f"existing {path} is unreadable ({exc}); fix its permissions or remove it "
+                "before a safe-edit run"
+            ) from exc
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"existing {path} is not valid JSON ({exc}); fix or remove it before a "
+                "safe-edit run - refusing to overwrite it"
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(
+                f"existing {path} is valid JSON but not an object; fix or remove it before "
+                "a safe-edit run - refusing to overwrite it"
+            )
+        data = loaded
     perms_raw = data.get("permissions")
     perms: dict[str, Any] = perms_raw if isinstance(perms_raw, dict) else {}
     deny_raw = perms.get("deny")

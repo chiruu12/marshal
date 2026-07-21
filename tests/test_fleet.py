@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
 from marshal_engine.fleet import Fleet, RunRequest
@@ -1490,3 +1492,136 @@ def test_budget_status_no_budgets_is_empty(repo: Path) -> None:
 
     fleet = Fleet(repo, {"metered": _Metered()})
     assert fleet.budget_status(now=datetime.now(timezone.utc)) == []
+
+
+# --- Cursor safe-edit cli.json transaction: Fleet never observes the deny overlay (#37) --------
+#
+# These run a REAL CursorBackend through the shared base run loop and Fleet, with a local fake
+# `cursor-agent` on PATH - the composition the bug lived in (prepare's worktree write leaking
+# into status/verify/commit/integrate). The fake exits 1 unless every curated deny is present in
+# `.cursor/cli.json` WHILE it runs, so a cleanup that disabled the overlay would fail these tests.
+
+_FAKE_CURSOR = """\
+import json
+import sys
+from pathlib import Path
+
+cfg = Path(".cursor/cli.json")
+data = json.loads(cfg.read_text(encoding="utf-8"))
+deny = data.get("permissions", {}).get("deny", [])
+missing = [r for r in __DENIES__ if r not in deny]
+if missing:
+    print("missing denies: %s" % missing, file=sys.stderr)
+    sys.exit(1)
+__ACTION__
+print(json.dumps({"type": "result", "is_error": False, "result": __TEXT__, "session_id": "s1"}))
+"""
+
+
+def _cursor_body(action: str = "", text: str = "done", extra_denies: list[str] | None = None) -> str:
+    denies = list(SAFE_EDIT_DENY) + (extra_denies or [])
+    return (
+        _FAKE_CURSOR.replace("__DENIES__", repr(denies))
+        .replace("__ACTION__", action)
+        .replace("__TEXT__", repr(text))
+    )
+
+
+# Deliberate odd formatting a JSON re-serialize would never reproduce - proves byte-for-byte restore.
+_CUSTOM_CONFIG = b'{ "permissions": { "allow": ["Shell(git)"], "deny": ["WebFetch(evil.example)"] } }\n'
+
+
+def _commit_cursor_config(repo: Path, content: bytes) -> None:
+    (repo / ".cursor").mkdir()
+    (repo / ".cursor" / "cli.json").write_bytes(content)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "add cursor config")
+
+
+def test_cursor_noop_safe_edit_is_empty_and_skips_verify(
+    repo: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    fake_cursor_agent(_cursor_body(text=""))  # denies verified live; no writes, no text
+    fleet = Fleet(
+        repo, {"cursor": CursorBackend()}, verify=[sys.executable, "-c", "import sys; sys.exit(1)"]
+    )
+    rec = fleet.run("cursor", TaskSpec(id="ce1", goal="x"), permission=PermissionMode.SAFE_EDIT)
+    assert rec.status == "empty", rec.error   # honest EMPTY, not a false SUCCEEDED
+    assert rec.verify_passed is None          # the always-failing gate proves verify never ran
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == []
+    assert collected.diff == ""
+    assert not (Path(rec.worktree or "") / ".cursor").exists()  # no overlay residue
+
+
+def test_cursor_real_work_integrates_without_policy_leakage(
+    repo: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    _commit_cursor_config(repo, _CUSTOM_CONFIG)
+    fake_cursor_agent(
+        _cursor_body(
+            action="Path('out.txt').write_text('hi')",
+            extra_denies=["WebFetch(evil.example)"],  # the repo's own deny must survive the merge
+        )
+    )
+    fleet = Fleet(repo, {"cursor": CursorBackend()})
+    rec = fleet.run("cursor", TaskSpec(id="ci1", goal="x"), permission=PermissionMode.SAFE_EDIT)
+    assert rec.status == "succeeded", rec.error
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == ["out.txt"]     # the overlay is not agent work
+    assert ".cursor" not in collected.diff
+    merged = fleet.integrate(rec.run_id)
+    assert merged.status == "merged"
+    assert merged.changed_files == ["out.txt"]
+    assert (repo / "out.txt").read_text() == "hi"
+    assert (repo / ".cursor" / "cli.json").read_bytes() == _CUSTOM_CONFIG  # main config exact
+
+
+def test_cursor_commit_run_excludes_policy_overlay(
+    repo: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    _commit_cursor_config(repo, _CUSTOM_CONFIG)
+    fake_cursor_agent(
+        _cursor_body(
+            action="Path('out.txt').write_text('hi')",
+            extra_denies=["WebFetch(evil.example)"],
+        )
+    )
+    fleet = Fleet(repo, {"cursor": CursorBackend()})
+    rec = fleet.run("cursor", TaskSpec(id="cm1", goal="x"), permission=PermissionMode.SAFE_EDIT)
+    assert rec.status == "succeeded", rec.error
+    result = fleet.commit_run(rec.run_id)
+    assert result.status == "committed"
+    assert _git(repo, "diff", "--name-only", "HEAD", result.commit or "").split() == ["out.txt"]
+    assert (Path(rec.worktree or "") / ".cursor" / "cli.json").read_bytes() == _CUSTOM_CONFIG
+
+
+def test_cursor_corrupt_config_fails_closed_and_is_preserved(
+    repo: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    corrupt = b'{"permissions": [broken'
+    _commit_cursor_config(repo, corrupt)
+    # if this fake ever launches it leaves a marker - proving the run was refused pre-spawn
+    fake_cursor_agent("from pathlib import Path\nPath('ran.txt').write_text('x')\n")
+    fleet = Fleet(repo, {"cursor": CursorBackend()})
+    rec = fleet.run("cursor", TaskSpec(id="cc1", goal="x"), permission=PermissionMode.SAFE_EDIT)
+    assert rec.status == "failed"
+    assert "not valid JSON" in (rec.error or "")      # actionable prepare error
+    wt = Path(rec.worktree or "")
+    assert not (wt / "ran.txt").exists()              # the agent process never launched
+    assert (wt / ".cursor" / "cli.json").read_bytes() == corrupt    # worktree copy preserved
+    assert (repo / ".cursor" / "cli.json").read_bytes() == corrupt  # main copy untouched
+    assert fleet.collect_run(rec.run_id).changed_files == []
+
+
+def test_cursor_timeout_still_cleans_up_overlay(
+    repo: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    fake_cursor_agent(_cursor_body(action="import time\ntime.sleep(60)"))
+    fleet = Fleet(repo, {"cursor": CursorBackend()})
+    rec = fleet.run(
+        "cursor", TaskSpec(id="ct1", goal="x"), permission=PermissionMode.SAFE_EDIT, timeout_s=1
+    )
+    assert rec.status == "timed_out"
+    assert not (Path(rec.worktree or "") / ".cursor").exists()  # finally-path cleanup held
+    assert fleet.collect_run(rec.run_id).changed_files == []

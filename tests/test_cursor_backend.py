@@ -1,8 +1,13 @@
-"""Contract tests for CursorBackend (pure hooks + JSON parse; no spawning/network)."""
+"""Contract tests for CursorBackend: pure hooks + JSON parse, plus the safe-edit
+``.cursor/cli.json`` transaction lifecycle (run-level tests spawn a local fake
+``cursor-agent`` - still no network, no real Cursor install)."""
 
 from __future__ import annotations
 
 import json
+import os
+import stat
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -19,6 +24,33 @@ def backend() -> CursorBackend:
 def _opts(**kw: object) -> RunOpts:
     kw.setdefault("cwd", Path("/tmp/wt"))
     return RunOpts(**kw)  # type: ignore[arg-type]
+
+
+# The fake agent verifies the deny overlay is LIVE while the process runs (exit 1 if any
+# curated deny is missing), performs a test-specific action, then emits Cursor's result JSON.
+_FAKE_CURSOR = """\
+import json
+import sys
+from pathlib import Path
+
+cfg = Path(".cursor/cli.json")
+data = json.loads(cfg.read_text(encoding="utf-8"))
+deny = data.get("permissions", {}).get("deny", [])
+missing = [r for r in __DENIES__ if r not in deny]
+if missing:
+    print("missing denies: %s" % missing, file=sys.stderr)
+    sys.exit(1)
+__ACTION__
+print(json.dumps({"type": "result", "is_error": False, "result": __TEXT__, "session_id": "s1"}))
+"""
+
+
+def _fake_body(action: str = "", text: str = "done") -> str:
+    return (
+        _FAKE_CURSOR.replace("__DENIES__", repr(list(SAFE_EDIT_DENY)))
+        .replace("__ACTION__", action)
+        .replace("__TEXT__", repr(text))
+    )
 
 
 def test_map_permission(backend: CursorBackend) -> None:
@@ -80,6 +112,148 @@ def test_prepare_yolo_and_readonly_skip_cli_json(
     backend.prepare(_opts(cwd=wt, permission=PermissionMode.YOLO))
     backend.prepare(_opts(cwd=wt, permission=PermissionMode.READ_ONLY))
     assert not (wt / ".cursor" / "cli.json").exists()
+
+
+def test_prepare_fails_closed_on_malformed_cli_json(
+    backend: CursorBackend, tmp_path: Path
+) -> None:
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    original = b'{"permissions": [broken'
+    (wt / ".cursor" / "cli.json").write_bytes(original)
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert (wt / ".cursor" / "cli.json").read_bytes() == original  # byte-for-byte untouched
+
+
+def test_prepare_fails_closed_on_non_object_cli_json(
+    backend: CursorBackend, tmp_path: Path
+) -> None:
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    original = b'["Shell(rm)"]'  # valid JSON, but not an object
+    (wt / ".cursor" / "cli.json").write_bytes(original)
+    with pytest.raises(RuntimeError, match="not an object"):
+        backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert (wt / ".cursor" / "cli.json").read_bytes() == original
+
+
+# --- the safe-edit cli.json transaction (real run() through a fake cursor-agent) ---------------
+
+
+def test_run_safe_edit_overlay_live_then_removed(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    """No prior config: denies are visible to the live process, gone after run()."""
+    fake_cursor_agent(_fake_body(action="Path('out.txt').write_text('hi')"))
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.SUCCEEDED, res.error  # fake exits 1 if any deny was missing
+    assert (wt / "out.txt").read_text() == "hi"
+    assert not (wt / ".cursor").exists()  # overlay + created dir both removed
+
+
+def test_run_safe_edit_restores_existing_config_bytes_and_mode(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    fake_cursor_agent(_fake_body())
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    cli = wt / ".cursor" / "cli.json"
+    # deliberate odd formatting a JSON re-serialize would never reproduce
+    original = b'{ "permissions":{"allow": [ "Shell(git)" ] },  "version": 1 }\n\n'
+    cli.write_bytes(original)
+    os.chmod(cli, 0o600)
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.SUCCEEDED, res.error
+    assert cli.read_bytes() == original
+    assert stat.S_IMODE(cli.stat().st_mode) == 0o600
+
+
+def test_run_safe_edit_cleans_up_after_process_failure(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    fake_cursor_agent(_fake_body(action="sys.exit(2)"))
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.FAILED
+    assert not (wt / ".cursor").exists()  # cleanup is outcome-independent
+
+
+def test_run_safe_edit_discards_agent_edit_to_config(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    """The config is a protected control-plane file for the run: agent edits are discarded."""
+    fake_cursor_agent(_fake_body(action="cfg.write_text('{\\'hacked\\': true}')"))
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    cli = wt / ".cursor" / "cli.json"
+    original = b'{"permissions": {"deny": ["WebFetch(evil.example)"]}}'
+    cli.write_bytes(original)
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.SUCCEEDED, res.error
+    assert cli.read_bytes() == original
+
+
+def test_run_safe_edit_restore_failure_fails_the_run(
+    backend: CursorBackend,
+    tmp_path: Path,
+    fake_cursor_agent: Callable[[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never return success while Marshal's policy residue may still be in the worktree."""
+    from marshal_engine.backends import cursor as cursor_mod
+
+    fake_cursor_agent(_fake_body(action="Path('out.txt').write_text('hi')"))
+    wt = tmp_path / "wt"
+    wt.mkdir()
+
+    def _boom(path: Path, snapshot: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cursor_mod, "_restore_cli_json", _boom)
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.FAILED
+    assert "failed to restore" in (res.error or "")
+    assert "disk full" in (res.error or "")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permission bits")
+def test_run_safe_edit_unreadable_config_fails_before_launch(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    fake_cursor_agent(_fake_body(action="Path('ran.txt').write_text('x')"))
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    cli = wt / ".cursor" / "cli.json"
+    cli.write_bytes(b"{}")
+    os.chmod(cli, 0o000)
+    try:
+        res = backend.run(
+            TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT)
+        )
+    finally:
+        os.chmod(cli, 0o644)
+    assert res.status is RunStatus.FAILED
+    assert "cannot snapshot" in (res.error or "")
+    assert not (wt / "ran.txt").exists()  # the agent process never launched
+    assert cli.read_bytes() == b"{}"      # and the file was never touched
+
+
+def test_run_read_only_skips_transaction(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    fake_cursor_agent(
+        'import json\nprint(json.dumps({"type": "result", "is_error": False, '
+        '"result": "looked", "session_id": "s1"}))\n'
+    )
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.READ_ONLY))
+    assert res.status is RunStatus.SUCCEEDED
+    assert not (wt / ".cursor").exists()
 
 
 def test_build_invocation_basic(backend: CursorBackend) -> None:

@@ -57,9 +57,14 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
 
 These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces several as warnings.
 
-- **Permission config layer is partial (v0).** Cursor `safe-edit` merges an engine-managed deny
-  list into the worktree's `.cursor/cli.json` (destructive `rm`, `.env` read/write, `.git` writes)
-  alongside `--force`. OpenCode `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` with `question: deny`
+- **Permission config layer is partial (v0).** Cursor `safe-edit` applies an engine-managed deny
+  list (destructive `rm`, `.env` read/write, `.git` writes) alongside `--force` via a *temporary*
+  merge into the worktree's `.cursor/cli.json`: the file's exact prior state (existence, bytes,
+  mode) is restored before the run returns, so the overlay is visible to the live agent but never
+  to run status, diffs, commits, or integration. An existing malformed/unreadable/non-object
+  `cli.json` fails the run closed (preserved byte-for-byte, agent never launched); a restoration
+  failure fails the run rather than reporting success with policy residue. These remain curated
+  denies, not a sandbox. OpenCode `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` with `question: deny`
   plus curated bash/edit/read/`external_directory` denies; `yolo` still gets `question: deny` only
   (headless: skip-permissions does not cover `question`). **Still deferred:** Command Code
   (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar), Goose (`safe-edit`/`yolo` both
