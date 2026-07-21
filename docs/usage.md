@@ -175,9 +175,10 @@ hint. Add a repo with `marshal workspace add <name> [path]` or the `add_workspac
 **without reconnecting** the server. Config edits hot-reload the same way: adding, changing, or
 deleting a workspace's `fleet.config.yaml` is picked up on the next tool call. A reload keeps the
 workspace's budget continuity: the enforce-budget in-flight guard and the `session` window clock
-survive the rebuild (limits themselves come from the newly loaded config), so an edit mid-run never
-admits a second spawn past an `enforce: true` cap or resets session spend accounting. With no file
-and no `MARSHAL_WORKSPACES`, it's the single-repo server it always was.
+survive the rebuild (limits themselves come from the newly loaded config), so an unrelated edit
+mid-run does not admit a second spawn past an `enforce: true` cap or reset session spend accounting
+(see `docs/config.md` for the residual when an enforce budget's own definition changes). With no
+file and no `MARSHAL_WORKSPACES`, it's the single-repo server it always was.
 
 Example Claude Code MCP entry. A bare `uv sync` does not put a `marshal` command on your PATH, so
 invoke it through uv with the absolute path to your Marshal checkout (or run `uv tool install .`

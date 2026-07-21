@@ -430,10 +430,11 @@ class WorkspaceRegistry:
             self._defs.setdefault(d.name, d)
         self._run_gate = run_gate
         # Durable per-workspace runtime (enforce-budget gate + session clock), keyed by RESOLVED
-        # repo path - not display name - so two names for two repos never share a gate, and a
-        # re-registered name pointing at a new path gets a fresh capsule. Entries survive both
-        # eviction paths (config-signature rebuild and add()'s cache pop): the replacement Fleet
-        # consults the same gate the evicted Fleet's in-flight runs hold and release.
+        # repo path - not display name - so two names for two repos never share a gate. Entries
+        # survive both eviction paths (config-signature rebuild and add()'s cache pop): the
+        # replacement Fleet consults the same gate the evicted Fleet's in-flight runs hold and
+        # release. (``_refresh`` is additive only — remapping an existing name to a new path needs
+        # a reconnect; add() does not rewrite ``_defs``.)
         self._runtimes: dict[Path, WorkspaceRuntime] = {}
         self._runtimes_lock = threading.Lock()
         self._builder = builder or (

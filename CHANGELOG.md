@@ -11,9 +11,10 @@ versions may include breaking API changes until 1.0.
 ### Fixed
 - **Config hot-reload no longer forks budget state (#36).** Rebuilding a workspace's service on a
   `fleet.config.yaml` edit (or an `add_workspace` re-registration) now reuses a durable per-repo
-  runtime — the same `EnforceBudgetGate` and `session_start` — so an `enforce: true` cap still
-  refuses a concurrent spawn while a pre-reload run is in flight, and `window: session` spend
-  accounting is not reset. Budget limits/scopes still hot-reload from the new config.
+  runtime — the same `EnforceBudgetGate` and `session_start` — so an unrelated edit mid-run keeps
+  `enforce: true` concurrency and `window: session` accounting intact. Budget limits/scopes still
+  hot-reload from the new config; changing an enforce budget's own definition mid-flight can
+  re-key its concurrency slot.
 
 ### Added
 - **Cross-workspace `run_many` (#22 / M4).** MCP `run_many` jobs accept optional per-job
