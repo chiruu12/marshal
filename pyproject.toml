@@ -30,8 +30,8 @@ dependencies = [
 mcp = ["mcp>=1.28.1"]
 dev = [
     "pytest>=8",
-    "ruff>=0.15.20",
-    "mypy>=1.11",
+    "ruff>=0.15.22",
+    "mypy>=2.3.0",
     "types-PyYAML>=6",
     "pytest-cov>=5",
 ]
