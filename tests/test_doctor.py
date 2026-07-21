@@ -113,7 +113,7 @@ integrate_run_hooks: true
     assert "non-interactive" in (hooks.fix or "")
 
 
-def test_doctor_warns_on_unsafe_commands_and_inline_memory_key(tmp_path: Path) -> None:
+def test_doctor_warns_on_unsafe_commands_and_advisory_budgets(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path / "repo")
     body = """
 clients:
@@ -122,9 +122,6 @@ clients:
     model: opencode-go/glm-5.2
 worktree_setup: uv sync
 verify: uv run pytest -q
-memory:
-  enabled: false
-  llm_api_key: sk-inline-test
 budgets:
   - window: week
     limit_usd: 5.0
@@ -135,7 +132,6 @@ budgets:
     assert unsafe.status == WARN
     assert "worktree_setup" in unsafe.detail
     assert "allowlisted" in unsafe.detail
-    assert _by_name(checks, "memory-inline-key").status == WARN
     assert _by_name(checks, "budgets").status == WARN
     assert "advisory" in _by_name(checks, "budgets").detail
     fails, _ = summarize(checks)

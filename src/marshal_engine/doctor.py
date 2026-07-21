@@ -267,15 +267,6 @@ def run_checks(
             )
             hint = "treat fleet.config.yaml like code you execute; only point it at trusted repos"
         checks.append(Check("unsafe-commands", WARN, detail, hint))
-    if config.memory.llm_api_key:
-        checks.append(
-            Check(
-                "memory-inline-key",
-                WARN,
-                "memory.llm_api_key is set inline in fleet.config.yaml (deprecated)",
-                "export LLM_API_KEY instead and remove llm_api_key from YAML",
-            )
-        )
     if config.budgets:
         enforced = sum(1 for b in config.budgets if b.enforce)
         advisory = len(config.budgets) - enforced

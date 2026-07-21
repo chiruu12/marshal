@@ -99,7 +99,7 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     expected = {
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
         "status", "usage", "get_run", "get_run_log", "collect_run", "commit_run", "integrate", "clean",
-        "cancel_run", "list_workflows", "run_workflow", "doctor", "memory_query", "memory_stats",
+        "cancel_run", "list_workflows", "run_workflow", "doctor",
     }
     assert expected <= names
 
