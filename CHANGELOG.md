@@ -9,6 +9,18 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **Cursor safe-edit deny overlay no longer pollutes run results (#37).** The `.cursor/cli.json`
+  merge is now a transaction owned by `CursorBackend.run()`: the file's exact prior state
+  (existence, bytes, mode) is snapshotted before the run and restored before Fleet observes the
+  worktree. A no-op Cursor safe-edit run is honestly `EMPTY` (and skips verify) instead of a false
+  `SUCCEEDED`, and `commit_run`/`integrate` can no longer land Marshal's transient deny policy on
+  the user's branch. An existing malformed, unreadable, non-object, symlink, or non-regular
+  `cli.json` (or a symlinked `.cursor/` directory) now fails the run closed - preserved
+  byte-for-byte, agent never launched - instead of being silently replaced. Restore
+  re-validates paths before unlink/replace so a mid-run swap of `.cursor/` for a symlink
+  cannot redirect cleanup outside the worktree; a restoration failure fails the run rather
+  than returning success with policy residue. The denies remain a curated list, not a
+  sandbox (deny fidelity hardening is #40).
 - **Config hot-reload no longer forks budget state (#36).** Rebuilding a workspace's service on a
   `fleet.config.yaml` edit (or an `add_workspace` re-registration) now reuses a durable per-repo
   runtime — the same `EnforceBudgetGate` and `session_start` — so an unrelated edit mid-run keeps

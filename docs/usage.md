@@ -432,7 +432,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Backend | Edits | Usage in output | Notes |
 |---------|-------|-----------------|-------|
 | OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies). |
-| Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. `safe-edit` merges an engine-managed deny list into `.cursor/cli.json` alongside `--force`. |
+| Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. `safe-edit` temporarily merges an engine-managed deny list into the worktree's `.cursor/cli.json` alongside `--force`; the file's exact prior state is restored before the run returns, so the overlay never shows up in diffs, commits, or integration. A pre-existing malformed `cli.json` fails the run (preserved untouched). |
 | Codex | yes | best-effort | `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
 | Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
 | Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). PTY wrapper still TODO. |
