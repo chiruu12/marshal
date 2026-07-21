@@ -7,6 +7,9 @@ environment:
   MARSHAL_WORKSPACES  additional workspaces: comma/newline-separated `name=/abs/path` entries, each
                       with its OWN <repo>/fleet.config.yaml and its OWN isolated .marshal ledger
   MARSHAL_MAX_CONCURRENT  process-wide cap on concurrent agent runs across ALL workspaces
+  MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION  the `add_workspace` tool is DISABLED unless this is
+                      exactly "1" (captured once at build_app time); registration stays available
+                      via `marshal workspace add`, the registry file, and the env vars above
 
 Every action/query tool takes an optional `workspace` param (defaults to "default"); the run-handle
 tools (get_run/collect_run/cancel_run/integrate) resolve a run's owning workspace by a cheap scan of
@@ -45,6 +48,11 @@ from .workspaces import (
 )
 
 _T = TypeVar("_T")
+
+# The MCP driver is an untrusted caller; letting it enlarge the set of repos Marshal may modify is
+# an operator decision. `add_workspace` refuses unless the server was started with this env var set
+# to exactly "1" (any other value fails closed - no generic truthiness).
+_ALLOW_MCP_REGISTRATION_ENV = "MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION"
 
 # Shared parameter descriptions so the tool schema the driver sees is self-describing (not just
 # title + type). Reused across the tools and the run_many Job model.
@@ -138,6 +146,8 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
 
     registry = target if isinstance(target, WorkspaceRegistry) else WorkspaceRegistry.for_service(target)
     app = FastMCP("marshal")
+    # Captured ONCE at construction: mid-session os.environ mutation must not widen authority.
+    allow_mcp_registration = os.environ.get(_ALLOW_MCP_REGISTRATION_ENV) == "1"
 
     async def offload(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
         """Run a (possibly long, blocking) service call off the event loop."""
@@ -196,7 +206,18 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """Register a repo as a workspace in the central registry (~/.marshal/workspaces.yaml) so it
         can be targeted by `workspace=`. Available immediately - no reconnect. The path must be an
         existing directory; a repo with no fleet.config.yaml registers with zero clients until one is
-        added (pass scaffold=true to drop a starter in). Then call list_workspaces / list_clients."""
+        added (pass scaffold=true to drop a starter in). Then call list_workspaces / list_clients.
+
+        DISABLED BY DEFAULT: refuses unless the server was started with
+        MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1. On refusal, ask the operator to run
+        `marshal workspace add <name> <path>` instead (hot-reloaded - no reconnect needed)."""
+        if not allow_mcp_registration:
+            raise ValueError(
+                "MCP workspace registration is disabled by default. Ask the operator to register "
+                "the repo with `marshal workspace add <name> <path>` (hot-reloaded, no reconnect "
+                f"needed), or to restart the MCP server with {_ALLOW_MCP_REGISTRATION_ENV}=1 to "
+                "allow registration through this tool."
+            )
 
         def _do() -> dict[str, Any]:
             wdef = registry.add(name, path)  # writes the file this registry reads; hot-reloads in

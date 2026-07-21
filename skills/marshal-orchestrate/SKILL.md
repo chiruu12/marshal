@@ -30,8 +30,12 @@ run ledger.
 - `run_many` accepts optional per-job `workspace` — one call can fan out across registered repos
   under a shared `max_concurrency`. Call-level `workspace` is the default for jobs that omit it.
   Ledgers stay per-workspace (no merged usage across repos).
-- Need a repo that isn't registered yet? `add_workspace(name, path, scaffold?)` registers it in the
-  central `~/.marshal/workspaces.yaml` and it's usable immediately (no reconnect). Pass
+- Need a repo that isn't registered yet? Registration is an **operator decision**: the
+  `add_workspace(name, path, scaffold?)` tool is disabled by default and only works when the server
+  was started with `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1`. If your call is refused, do NOT
+  retry or look for another way in - report the exact command to the user instead:
+  `marshal workspace add <name> <path>`. It hot-reloads into the running server (no reconnect), so
+  you can continue as soon as they've run it. When the server does permit the tool, pass
   `scaffold=true` to drop a starter `fleet.config.yaml` if the repo has none; then check
   `list_clients(workspace=name)` and have the user fill in clients before routing real work.
 

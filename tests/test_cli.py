@@ -299,6 +299,9 @@ def test_workspace_add_list_remove(
     repo.mkdir()
     monkeypatch.setenv("MARSHAL_REPO", str(tmp_path))
     monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(tmp_path / "w.yaml"))
+    # The MCP-only registration gate must not affect the human-run CLI: prove the whole
+    # add/list/remove flow works with the opt-in absent.
+    monkeypatch.delenv("MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION", raising=False)
 
     assert cli.main(["workspace", "add", "alpha", str(repo)]) == 0
     assert (repo / "fleet.config.yaml").exists()  # scaffolded by default
