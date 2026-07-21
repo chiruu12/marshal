@@ -242,6 +242,59 @@ def test_run_safe_edit_unreadable_config_fails_before_launch(
     assert cli.read_bytes() == b"{}"      # and the file was never touched
 
 
+def test_run_safe_edit_symlink_cli_json_fails_closed(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    """A symlink must not be replaced with a regular file under a successful result."""
+    fake_cursor_agent(_fake_body(action="Path('ran.txt').write_text('x')"))
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    target = tmp_path / "outside.json"
+    target.write_bytes(b'{"permissions":{"allow":["Shell(git)"]}}\n')
+    cli = wt / ".cursor" / "cli.json"
+    cli.symlink_to(target)
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.FAILED
+    assert "symlink" in (res.error or "")
+    assert not (wt / "ran.txt").exists()
+    assert cli.is_symlink()
+    assert target.read_bytes() == b'{"permissions":{"allow":["Shell(git)"]}}\n'
+
+
+def test_run_safe_edit_broken_symlink_cli_json_fails_closed(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    fake_cursor_agent(_fake_body(action="Path('ran.txt').write_text('x')"))
+    wt = tmp_path / "wt"
+    (wt / ".cursor").mkdir(parents=True)
+    cli = wt / ".cursor" / "cli.json"
+    cli.symlink_to("missing-target.json")
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.FAILED
+    assert "symlink" in (res.error or "")
+    assert not (wt / "ran.txt").exists()
+    assert cli.is_symlink() and not cli.exists()
+
+
+def test_run_safe_edit_symlinked_cursor_dir_fails_closed(
+    backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
+) -> None:
+    """Writing through a symlinked ``.cursor/`` would escape the worktree."""
+    fake_cursor_agent(_fake_body(action="Path('ran.txt').write_text('x')"))
+    shared = tmp_path / "shared-cursor"
+    shared.mkdir()
+    (shared / "rules.md").write_text("keep")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".cursor").symlink_to(shared)
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.FAILED
+    assert "symlink" in (res.error or "")
+    assert not (wt / "ran.txt").exists()
+    assert not (shared / "cli.json").exists()
+    assert (shared / "rules.md").read_text() == "keep"
+
+
 def test_run_read_only_skips_transaction(
     backend: CursorBackend, tmp_path: Path, fake_cursor_agent: Callable[[str], Path]
 ) -> None:

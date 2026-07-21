@@ -228,11 +228,33 @@ class _CliJsonSnapshot(NamedTuple):
 
 
 def _snapshot_cli_json(path: Path) -> _CliJsonSnapshot:
-    """Capture ``path``'s exact state (existence, bytes, permission bits) for later restore."""
-    dir_existed = path.parent.is_dir()
-    if not path.exists():
+    """Capture ``path``'s exact state (existence, bytes, permission bits) for later restore.
+
+    Fail closed on symlinks and non-regular files: ``path.exists()`` follows links, so a
+    naive read/replace would turn a symlink into a regular file (or destroy a broken
+    link) and still report success - leaving a false worktree delta. Same for a
+    symlinked ``.cursor/`` parent, which would write the overlay outside the worktree.
+    """
+    parent = path.parent
+    dir_existed = parent.is_dir()
+    if dir_existed and parent.is_symlink():
+        raise OSError(
+            f"{parent} is a symlink; refusing to write a safe-edit overlay through it"
+        )
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
         return _CliJsonSnapshot(None, None, dir_existed)
-    return _CliJsonSnapshot(path.read_bytes(), stat.S_IMODE(path.stat().st_mode), dir_existed)
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(
+            f"{path} is a symlink; refusing to snapshot/replace it for a safe-edit run"
+        )
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(
+            f"{path} is not a regular file; refusing to snapshot/replace it for a "
+            "safe-edit run"
+        )
+    return _CliJsonSnapshot(path.read_bytes(), stat.S_IMODE(st.st_mode), dir_existed)
 
 
 def _restore_cli_json(path: Path, snapshot: _CliJsonSnapshot) -> None:
@@ -274,12 +296,22 @@ def _merge_safe_edit_cli_json(path: Path) -> None:
     """Union ``SAFE_EDIT_DENY`` into ``path``'s ``permissions.deny``, preserving other keys.
 
     Atomic write (unique temp + ``os.replace``) so a concurrent reader never sees a torn file.
-    Fails closed on an existing malformed, unreadable, or non-object document: raising here
-    (surfaced by the base run loop as a failed run) beats silently replacing a user's config
-    with a Marshal-generated one - the original file is left byte-for-byte untouched.
+    Fails closed on an existing malformed, unreadable, non-object, symlink, or non-regular
+    document (and on a symlinked ``.cursor/`` parent): raising here (surfaced by the base run
+    loop as a failed run) beats silently replacing a user's config with a Marshal-generated
+    one - the original path is left untouched.
     """
     data: dict[str, Any] = {}
-    if path.exists():
+    if path.parent.is_dir() and path.parent.is_symlink():
+        raise RuntimeError(
+            f"{path.parent} is a symlink; refusing to write a safe-edit overlay through it"
+        )
+    if os.path.lexists(path):
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(
+                f"existing {path} is a symlink or non-regular file; fix or remove it "
+                "before a safe-edit run - refusing to overwrite it"
+            )
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError as exc:
