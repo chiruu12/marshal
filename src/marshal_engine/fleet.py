@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -239,7 +239,6 @@ class Fleet:
         budgets: list[BudgetSpec] | None = None,
         budget_gate: EnforceBudgetGate | None = None,
         session_start: datetime | None = None,
-        on_run_complete: Callable[[RunRecord, str | None], None] | None = None,
     ) -> None:
         # Recover the user's interactive PATH so a Fleet constructed in a context that didn't
         # source the user's rc files (an MCP server with a stripped PATH) still spawns agent
@@ -306,7 +305,6 @@ class Fleet:
         self.session_start: datetime = (
             session_start if session_start is not None else datetime.now(timezone.utc)
         )
-        self._on_run_complete = on_run_complete
 
     def run(
         self,
@@ -525,17 +523,6 @@ class Fleet:
                 verify_passed=verify_passed,
                 verify_output=verify_output,
             )
-            if self._on_run_complete is not None:
-                try:
-                    diff: str | None = None
-                    try:
-                        d = self.worktrees.diff(wt)
-                        diff = d if d else None
-                    except Exception:  # noqa: BLE001 - best-effort diff for memory hook
-                        pass
-                    self._on_run_complete(record, diff)
-                except Exception:  # noqa: BLE001 - memory hook must never fail a run
-                    logger.exception("marshal: on_run_complete hook failed for run %s", run_id)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
             # only if still running, so a concurrent cancel's terminal status wins.

@@ -17,9 +17,8 @@ them, collects their diffs, tracks per-provider usage, and hands results back fo
 It plugs into your driver two ways:
 
 - **MCP server** - you declare N backend "clients"; the driver calls a lean tool surface (see
-  [`docs/mcp-tools.md`](docs/mcp-tools.md) for the full reference), including the Marshal Recall
-  memory tools (`memory_query`, `memory_add`, `memory_stats`). One server can
-  target several repos at once - every tool takes an
+  [`docs/mcp-tools.md`](docs/mcp-tools.md) for the full reference). One server can target several
+  repos at once - every tool takes an
   optional `workspace`, repos are registered in `~/.marshal/workspaces.yaml` (or `marshal workspace
   add`), and new ones show up without a reconnect (see [SETUP.md](SETUP.md)).
 - **Skills** - orchestration playbooks that teach the driver *what* Marshal can do and *how* to run
@@ -156,35 +155,6 @@ time. The `marshal-workflow` Skill is the authoring + running playbook; template
   replaces the resolved `timeout_s` on the `RunRequest` for that one call; validation happens up
   front so a typo fails fast before any worktree is created.
 
-## Marshal Recall (persistent fleet memory)
-
-Fleet runs no longer have to start from zero. **Marshal Recall** is a Cognee-backed memory layer that
-gives the fleet a shared second self: after each run Marshal remembers the task, repo, client, status,
-and diff summary; before the next run it recalls relevant past learnings and injects them into the
-worker goal - so the next agent starts already knowing what the last one figured out, instead of you
-re-supplying context. Memory is partitioned by repo (dataset), tagged by client/status/task
-(node_set), and scoped per task group (session).
-
-It carries across tools, not just runs. Any MCP-capable session can write to and read from the same
-repo-scoped graph: note a learning from one tool with `marshal memory add "..."` and a later run in
-another tool recalls it.
-
-Operations: **remember** (automatic after runs), **recall** (automatic before runs), **add** (store a
-freeform note from any session), **improve** (enrich the graph), **forget** (drop a repo or wipe all).
-Enable via a `memory:` block in `fleet.config.yaml` (off by default); pair with Cognee env
-(`LLM_API_KEY`, optional `LLM_MODEL` with `openai/<model>` for OpenAI-compatible endpoints, `fastembed`
-for local embeddings). CLI: `marshal memory query|add|stats|improve|forget`. MCP: `memory_query`,
-`memory_add`, `memory_stats`. Install: `pip install 'marshal[memory,fastembed]'`.
-
-Cheaper at scale: extraction dominates Cognee's per-run token cost, so we contributed per-stage model
-routing upstream ([topoteretes/cognee#3806](https://github.com/topoteretes/cognee/pull/3806)) to route
-a cheap or local model to extraction. Marshal Recall is its first consumer.
-
-Try it: [`examples/marshal_recall_demo.py`](examples/marshal_recall_demo.py). Full reference:
-[`docs/marshal-recall.md`](docs/marshal-recall.md). The same memory design is also available
-standalone for any MCP harness as [second-self](https://github.com/chiruu12/second-self);
-Marshal Recall is its fleet-scale sibling.
-
 ## Architecture
 
 ```
@@ -214,7 +184,6 @@ top of it. See `docs/chauffeur-future.md`.
 - [`docs/usage.md`](docs/usage.md) - configure a fleet and drive it via MCP, CLI, or library.
 - [`docs/config.md`](docs/config.md) - every `fleet.config.yaml` key and `MARSHAL_*` env var.
 - [`docs/mcp-tools.md`](docs/mcp-tools.md) - MCP tool reference (parameters and return shapes).
-- [`docs/marshal-recall.md`](docs/marshal-recall.md) - persistent fleet memory (Cognee-backed recall).
 - [`docs/model-playbook.md`](docs/model-playbook.md) - which model/client to route a task to, by
   task weight (heavy/standard/light), with a copy-paste tiered fleet and cost-honesty notes.
 - [`docs/status.md`](docs/status.md) - what's built, the backend verification matrix, and the roadmap.

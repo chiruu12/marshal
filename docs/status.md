@@ -29,10 +29,12 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `doctor.py` | `marshal doctor` preflight (toolchain, backends, hygiene advisories) | done |
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
 | `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |
-| `memory/` | Optional Cognee-backed Marshal Recall (`[memory]` extra) | done |
 | `service.py` | Testable core the MCP/CLI call into (single-repo) | done |
-| `cli.py` | `marshal doctor/backends/models/run/spawn/usage/status/logs/workflows/workflow/workspace/memory/clean/mcp` | done |
+| `cli.py` | `marshal doctor/backends/models/run/spawn/usage/status/logs/workflows/workflow/workspace/clean/mcp` | done |
 | `mcp_server.py` | MCP surface over stdio ([`docs/mcp-tools.md`](mcp-tools.md)); each action/query tool takes an optional `workspace` | done |
+
+The experimental Cognee-backed Marshal Recall implementation is preserved on
+`feature/marshal-recall-cognee`; it is not part of core Marshal.
 
 Quality gate: full unit suite passes; ruff and mypy (strict) clean across all source files. CI
 enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) + macOS (py3.12).

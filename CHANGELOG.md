@@ -8,6 +8,10 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Removed
+- **Marshal Recall extracted from core.** The experimental Cognee-backed memory feature is preserved
+  on the `feature/marshal-recall-cognee` branch for future reference.
+
 ### Fixed
 - **Cursor safe-edit deny overlay no longer pollutes run results (#37).** The `.cursor/cli.json`
   merge is now a transaction owned by `CursorBackend.run()`: the file's exact prior state
@@ -59,8 +63,8 @@ versions may include breaking API changes until 1.0.
 - **Optional hard budget caps** — `budgets[].enforce: true` refuses matching spawns when windowed
   spend already meets the cap (`BudgetExceeded`); default remains soft-warn.
 - **Doctor hygiene advisories** — warns on `worktree_setup`/`verify` (config-driven subprocesses;
-  allowlist / `allow_unsafe_commands` gate), inline `memory.llm_api_key`, advisory-only budgets, and
-  `git --no-verify` on integrate/commit.
+  allowlist / `allow_unsafe_commands` gate), advisory-only budgets, and `git --no-verify` on
+  integrate/commit.
 - **Docs-sync invariant test** (`tests/test_docs_sync.py`) — MCP tools, CLI subcommands, and
   `fleet.config.example.yaml` must stay aligned with the code surface.
 - **Ad-hoc backend spawn and per-run `model` override** on `run_agent`/`spawn`/`marshal run`/`marshal

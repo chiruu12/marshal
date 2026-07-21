@@ -228,9 +228,6 @@ the default workspace.
 | `get_run_log(run_id)` | The full raw stdout/stderr persisted for a run (under `<base>/logs/<run_id>.log`), or `null` when no log was written. The 16KB-truncated `text` on the run record is the agent's *final message*; the log preserves the *whole* stream so a driver can inspect what the agent actually did (esp. on a failure). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. Returns `{workflows, errors, workspace}` — malformed recipe files land in `errors` (filename → message). |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
-| `memory_query(query)` | Recall a Marshal Recall memory snippet from the workspace's past runs (empty-handed message when memory is disabled or nothing matches). |
-| `memory_add(text, tags?)` | Store a freeform note into the workspace's shared memory graph, recallable via `memory_query`. |
-| `memory_stats()` | Memory configuration + data paths for a workspace (works without Cognee installed). |
 
 ## Use it as a CLI
 
@@ -249,11 +246,6 @@ marshal workflow run NAME  # execute a workflow recipe (--input key=value, --max
 marshal workspace list     # show the workspace registry
 marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.yaml; path defaults to cwd)
 marshal workspace remove <name>      # drop a workspace from the registry
-marshal memory query "…"   # recall from Marshal Recall's memory for this repo
-marshal memory add "…"     # store a freeform note (--tags a,b) in this repo's memory
-marshal memory stats       # show memory config + data paths (--json)
-marshal memory improve     # run memify on this repo's memory dataset
-marshal memory forget      # forget this repo's memory dataset (--all wipes every dataset)
 marshal mcp                # run the MCP server over stdio
 ```
 

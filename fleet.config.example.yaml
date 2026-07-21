@@ -90,14 +90,6 @@ retries: 2
 #   - window: session
 #     limit_usd: 10.0
 
-# Optional Marshal Recall memory layer (Cognee-backed, off by default). When enabled, Marshal
-# remembers each run's outcome and recalls relevant learnings into the next worker's goal.
-# Needs the [memory] extra + Cognee env (export LLM_API_KEY — do not inline llm_api_key in YAML);
-# see docs/marshal-recall.md.
-# memory:
-#   enabled: true
-#   recall_top_k: 5
-
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
   # fireworks-ai/* model is rejected at load so you never burn Fireworks credits.

@@ -134,7 +134,6 @@ hot-reloaded for **additions** without reconnecting.
 | `MARSHAL_WORKSPACES_FILE` | path | `~/.marshal/workspaces.yaml` | Path to the central workspace registry file. | `MARSHAL_WORKSPACES_FILE=/cfg/workspaces.yaml` |
 | `MARSHAL_MAX_CONCURRENT` | int (> 0) | unset | Process-wide concurrent-run cap. Takes precedence over the registry file's `max_concurrent`. When multi-repo is active and neither is set, defaults to `8`. A lone default workspace with no registry file stays uncapped. | `MARSHAL_MAX_CONCURRENT=4` |
 | `MARSHAL_NO_PATH_FIX` | any (truthy) | unset | When set, skip merging the user's login-shell `PATH` at engine entry. Use in hermetic CI or when PATH is already correct. | `MARSHAL_NO_PATH_FIX=1` |
-| `LLM_API_KEY` | string | unset | Preferred secret for Marshal Recall (Cognee). Wins over deprecated inline `memory.llm_api_key` when both are set. | `export LLM_API_KEY=...` |
 
 ## Per-spawn duration presets (MCP / CLI)
 

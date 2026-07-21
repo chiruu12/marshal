@@ -28,9 +28,6 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.28.1"]
-# Local fastembed embeddings (no cloud API key): pip install 'marshal[memory,fastembed]'
-memory = ["cognee>=1.0"]
-fastembed = ["cognee[fastembed]>=1.0"]
 dev = [
     "pytest>=8",
     "ruff>=0.15.20",
@@ -66,10 +63,6 @@ files = ["src"]
 
 [[tool.mypy.overrides]]
 module = "mcp.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "cognee.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

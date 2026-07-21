@@ -84,9 +84,6 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   pre-commit cannot deadlock a headless merge. Set `integrate_run_hooks: true` only when hooks are
   known non-interactive; prompting hooks can still hang until the git timeout. Gate with
   `verify:`, review diffs, and CI regardless.
-- **Memory secrets:** prefer `export LLM_API_KEY=...`. When both env and inline
-  `memory.llm_api_key` are set, **env wins**. Inline YAML is deprecated; doctor warns when it is
-  present.
 - **Budgets default to soft-warn.** Caps never block spawns unless you set `enforce: true` on a
   budget entry. Enforced budgets also serialize matching in-flight spawns (one at a time per
   budget) so concurrent fan-out cannot TOCTOU past the ledger snapshot before spend is recorded.
