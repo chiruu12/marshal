@@ -12,6 +12,7 @@ import pytest
 from marshal_engine import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -192,9 +193,47 @@ def test_list_clients(repo: Path) -> None:
     svc = _svc(repo)
     result = svc.list_clients()
     assert [c.model_dump() for c in result.clients] == [
-        {"name": "worker", "backend": "echo", "model": None, "permission": "safe-edit"}
+        {
+            "name": "worker",
+            "backend": "echo",
+            "model": None,
+            "permission": "safe-edit",
+            # Dummy adapters default to boundary-only (honest fail-closed).
+            "permission_fidelity": "boundary-only",
+        }
     ]
     assert result.driver_context is None  # no context.driver in this config
+
+
+def test_list_clients_permission_fidelity_from_backend_capabilities(repo: Path) -> None:
+    # Fidelity comes from backend.capabilities, not the configured permission string.
+    class _Enforced(CodingAgentBackend):
+        name = "enforced"
+        binary = "python"
+        capabilities = Capabilities(permission_fidelity=PermissionFidelity.ENFORCED_DENIES)
+
+        def check_available(self) -> bool:
+            return True
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return [sys.executable, "-c", "print('ok')"]
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(status=RunStatus.SUCCEEDED, text="ok", exit_code=exit_code)
+
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(name="worker", backend="enforced", permission=PermissionMode.SAFE_EDIT)
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"enforced": _Enforced()})
+    clients = svc.list_clients().clients
+    assert len(clients) == 1
+    assert clients[0].permission == "safe-edit"
+    assert clients[0].permission_fidelity == "enforced-denies"
 
 
 def test_list_clients_surfaces_driver_context(repo: Path) -> None:

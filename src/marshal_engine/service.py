@@ -70,6 +70,7 @@ class ClientInfo(BaseModel):
     backend: str
     model: str | None
     permission: str
+    permission_fidelity: str
 
 
 class ClientList(BaseModel):
@@ -161,6 +162,7 @@ class MarshalService:
                     backend=c.backend,
                     model=resolve_model(c),
                     permission=c.permission.value,
+                    permission_fidelity=self.fleet.backends[c.backend].capabilities.permission_fidelity.value,
                 )
                 for c in self._clients.values()
             ],
@@ -537,11 +539,12 @@ class MarshalService:
         )
 
     def doctor(self) -> DoctorReport:
-        """Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth).
+        """Preflight the setup (toolchain, repo, config, per-backend CLI + auth + fidelity).
 
         Read-only and side-effect-light - it only probes versions/availability - so a driver can
         check a backend is ready *before* spawning, instead of learning it from a failed run. Probes
-        the fleet's configured backends (the same instances runs use).
+        the fleet's configured backends (the same instances runs use). Also emits a static
+        ``permission:`` check per known backend (ok for enforced-denies, warn for boundary-only).
         """
         with self._adhoc_lock:
             probed = dict(self.fleet.backends)

@@ -21,7 +21,14 @@ import marshal_engine
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.config import ClientConfig
 from marshal_engine.registry import backend_names, default_backends
-from marshal_engine.types import PermissionMode, RunOpts, UsageRecord, UsageSource
+from marshal_engine.types import (
+    Capabilities,
+    PermissionFidelity,
+    PermissionMode,
+    RunOpts,
+    UsageRecord,
+    UsageSource,
+)
 
 _PKG = Path(marshal_engine.__file__).resolve().parent
 _REPO_ROOT = _PKG.parents[1]  # .../src/marshal_engine -> .../src -> repo root
@@ -97,6 +104,39 @@ def test_capabilities_agree_with_map_permission(name: str) -> None:
         else:
             with pytest.raises(ValueError):
                 backend.map_permission(mode)
+
+
+# --- permission_fidelity honesty (#40) -------------------------------------------------------
+
+
+#: Built-in backends that install a safe-edit restriction beyond the worktree.
+_ENFORCED_DENIES = frozenset({"cursor", "opencode", "codex"})
+#: Built-in backends where Marshal cannot promise a deny layer (worktree is the boundary).
+_BOUNDARY_ONLY = frozenset({"command-code", "goose", "antigravity", "claude-code"})
+
+
+def test_capabilities_default_permission_fidelity_is_boundary_only() -> None:
+    # Invariant: unknown/dummy adapters fail honest — never claim enforcement by accident.
+    assert Capabilities().permission_fidelity is PermissionFidelity.BOUNDARY_ONLY
+
+
+@pytest.mark.parametrize("name", sorted(_BACKENDS))
+def test_built_in_backend_permission_fidelity(name: str) -> None:
+    # Invariant: every built-in adapter declares an explicit fidelity; the matrix matches #40.
+    fidelity = _BACKENDS[name].capabilities.permission_fidelity
+    if name in _ENFORCED_DENIES:
+        assert fidelity is PermissionFidelity.ENFORCED_DENIES
+    elif name in _BOUNDARY_ONLY:
+        assert fidelity is PermissionFidelity.BOUNDARY_ONLY
+    else:
+        raise AssertionError(f"backend {name!r} missing from fidelity matrix")
+    # Every registered backend must appear in exactly one bucket.
+    assert name in _ENFORCED_DENIES | _BOUNDARY_ONLY
+
+
+def test_fidelity_matrix_covers_every_registered_backend() -> None:
+    assert set(_BACKENDS) == _ENFORCED_DENIES | _BOUNDARY_ONLY
+    assert not (_ENFORCED_DENIES & _BOUNDARY_ONLY)
 
 
 # --- the headless prompting footgun ----------------------------------------------------------

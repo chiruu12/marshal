@@ -55,6 +55,7 @@ def _cmd_backends(args: argparse.Namespace) -> int:
                     "json_output": c.json_output,
                     "native_usage": c.native_usage,
                     "permission_modes": sorted(m.value for m in c.permission_modes),
+                    "permission_fidelity": c.permission_fidelity.value,
                 }
             )
         print(json.dumps(data, indent=2))
@@ -65,7 +66,8 @@ def _cmd_backends(args: argparse.Namespace) -> int:
         modes = sorted(m.value for m in c.permission_modes)
         print(
             f"{name:13} available={str(b.check_available()):5} "
-            f"json={str(c.json_output):5} usage={str(c.native_usage):5} modes={modes}"
+            f"json={str(c.json_output):5} usage={str(c.native_usage):5} "
+            f"modes={modes} fidelity={c.permission_fidelity.value}"
         )
     return 0
 

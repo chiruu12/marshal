@@ -61,7 +61,8 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 
 **Returns:** `{ clients, driver_context, workspace }`
 
-- `clients`: `[{ name, backend, model, permission }]`
+- `clients`: `[{ name, backend, model, permission, permission_fidelity }]`
+- `permission_fidelity`: `enforced-denies` \| `boundary-only` — what `safe-edit` actually enforces for this client's backend (see `docs/design.md` §5 / `SECURITY.md`)
 - `driver_context`: string \| null — from `fleet.config.yaml` `context.driver`
 
 ### `list_models`
@@ -76,7 +77,9 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 
 ### `doctor`
 
-Preflight the selected workspace (toolchain, repo, config, per-backend CLI + auth). Read-only.
+Preflight the selected workspace (toolchain, repo, config, per-backend CLI + auth, and static
+`permission:<backend>` fidelity checks). Read-only. `permission:*` is `ok` for `enforced-denies`
+and `warn` for `boundary-only` (never a failure); it appears even when the CLI probe fails.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

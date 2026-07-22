@@ -45,6 +45,7 @@ from typing import Any
 from ..types import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -64,13 +65,34 @@ _EXPORT_TIMEOUT_S = 15.0
 #: Env var OpenCode reads as an inline JSON config override (high precedence; no worktree dirty).
 _OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
 
+#: Ordered bash deny patterns for ``safe-edit`` (inserted after ``"*": "allow"`` so last-match
+#: wins). OpenCode's documented grammar is simple wildcards only (``*`` / ``?``); no regex,
+#: brace expansion, or negative matching. These cover curated cheap cases (``rm``, ``git config``,
+#: redirection / ``tee`` / ``sed`` into ``.env`` / ``.git``) - not complete shell mediation.
+#: Wrappers (``sh -c``), env prefixes, alternate writers, and parser/version gaps can bypass.
+SAFE_EDIT_BASH_DENIES: tuple[tuple[str, str], ...] = (
+    ("rm", "deny"),
+    ("rm *", "deny"),
+    ("git config", "deny"),
+    ("git config *", "deny"),
+    ("*>*.env", "deny"),
+    ("*>*.env.*", "deny"),
+    ("*>*.git/*", "deny"),
+    ("tee *.env", "deny"),
+    ("tee *.env.*", "deny"),
+    ("tee *.git/*", "deny"),
+    ("sed *.env", "deny"),
+    ("sed *.env.*", "deny"),
+    ("sed *.git/*", "deny"),
+)
+
 
 def permission_config_for(mode: PermissionMode) -> dict[str, Any] | None:
     """Pure builder: permission snippet stamped for a write-tier run, or None for read-only.
 
-    ``safe-edit`` gets curated denies (``question``, ``external_directory``, ``rm``, ``.env``,
-    ``.git``). ``yolo`` still denies ``question`` so headless runs cannot deadlock on a prompt,
-    but otherwise stays unrestricted. Never emits ``ask`` (stdin is closed).
+    ``safe-edit`` gets curated denies (``question``, ``external_directory``, bash cheap cases,
+    ``.env`` / ``.git`` edit+read). ``yolo`` still denies ``question`` so headless runs cannot
+    deadlock on a prompt, but otherwise stays unrestricted. Never emits ``ask`` (stdin is closed).
     """
     if mode is PermissionMode.READ_ONLY:
         return None
@@ -82,18 +104,16 @@ def permission_config_for(mode: PermissionMode) -> dict[str, Any] | None:
                 "question": "deny",
             },
         }
-    # SAFE_EDIT
+    # SAFE_EDIT — catch-all allow first; specific denies later (last matching rule wins).
+    bash: dict[str, str] = {"*": "allow"}
+    bash.update(SAFE_EDIT_BASH_DENIES)
     return {
         "$schema": "https://opencode.ai/config.json",
         "permission": {
             "*": "allow",
             "question": "deny",
             "external_directory": "deny",
-            "bash": {
-                "*": "allow",
-                "rm": "deny",
-                "rm *": "deny",
-            },
+            "bash": bash,
             "edit": {
                 "*": "allow",
                 "*.env": "deny",
@@ -123,6 +143,7 @@ class OpenCodeBackend(CodingAgentBackend):
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
+        permission_fidelity=PermissionFidelity.ENFORCED_DENIES,
     )
 
     _PERMISSION: dict[PermissionMode, list[str]] = {

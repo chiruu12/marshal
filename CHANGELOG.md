@@ -8,6 +8,16 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **Safe-edit permission fidelity (#40).** Capabilities now declare `permission_fidelity`
+  (`enforced-denies` for Cursor/OpenCode/Codex; `boundary-only` for Command Code/Goose/Antigravity/
+  Claude Code; default `boundary-only` so unknown adapters fail honest). Surfaced on `list_clients`,
+  `marshal backends` (`fidelity=` / JSON), and `doctor` (`permission:<backend>`: ok vs warn). Cursor
+  safe-edit also denies Write to `.cursor/cli.json` (root + nested); OpenCode safe-edit bash denies
+  extend to curated `git config` / redirection / `tee` / `sed` cases into `.env`/`.git`. Docs,
+  `SECURITY.md`, and the orchestrate Skill describe the honesty contract (worktree remains the
+  boundary; neither deny list is a sandbox; Claude `acceptEdits` has no Marshal deny layer).
+
 ### Removed
 - **Marshal Recall extracted from core.** The experimental Cognee-backed memory feature is preserved
   on the `feature/marshal-recall-cognee` branch for future reference.

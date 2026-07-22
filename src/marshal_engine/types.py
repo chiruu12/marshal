@@ -27,6 +27,22 @@ class PermissionMode(str, Enum):
     YOLO = "yolo"             # fully unrestricted; opt-in only
 
 
+class PermissionFidelity(str, Enum):
+    """How much ``safe-edit`` actually enforces beyond worktree isolation.
+
+    Support for the normalized mode (``Capabilities.permission_modes``) and the strength of
+    that mode are separate. ``enforced-denies`` means the backend or Marshal installs a
+    restriction beyond "runs in a worktree" (curated deny overlay, sandbox flag, etc.).
+    ``boundary-only`` means Marshal cannot promise a deny layer — the worktree and explicit
+    integrate remain the dependable boundary. Default is the honest fail-closed value so
+    unknown/dummy adapters never claim enforcement by accident. This is a coarse routing
+    signal, not a sandbox guarantee or a strength ranking between backends.
+    """
+
+    ENFORCED_DENIES = "enforced-denies"
+    BOUNDARY_ONLY = "boundary-only"
+
+
 class RunStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -62,6 +78,9 @@ class Capabilities(BaseModel):
     server_mode: bool = False     # e.g. `opencode serve`
     native_usage: bool = False    # emits tokens/cost in its own output
     permission_modes: frozenset[PermissionMode] = frozenset()
+    # Default boundary-only: unknown/third-party adapters fail honest rather than claiming
+    # a deny layer they did not declare. Built-in backends set this explicitly.
+    permission_fidelity: PermissionFidelity = PermissionFidelity.BOUNDARY_ONLY
 
 
 class TaskSpec(BaseModel):

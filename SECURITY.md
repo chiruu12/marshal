@@ -34,8 +34,17 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
 - **Your main branch is never touched until you explicitly integrate.** Reviewing a diff
   (`collect_run`) is read-only; merging (`integrate`) is a separate, explicit step.
 - **Permission tiers gate what an agent may do.** `read-only` (no edits), `safe-edit` (the default -
-  edits confined to the worktree), and `yolo` (unrestricted, opt-in). `yolo` removes the guardrails
-  by design; only use it when you trust the task prompt and the backend.
+  non-prompting writes inside the worktree), and `yolo` (unrestricted, opt-in). `safe-edit` is
+  **not** uniformly a deny sandbox across backends — see `permission_fidelity` below. `yolo`
+  removes the guardrails by design; only use it when you trust the task prompt and the backend.
+- **`permission_fidelity` tells you what `safe-edit` actually enforces.** Surfaced on
+  `list_clients`, `marshal backends`, and `doctor` (`permission:<backend>`):
+  - `enforced-denies` — Cursor, OpenCode, and Codex: a backend or Marshal restriction beyond the
+    worktree (curated deny overlay or native workspace sandbox). Still not a true process sandbox.
+  - `boundary-only` — Command Code, Goose, Antigravity, and Claude Code: Marshal cannot promise a
+    deny layer; the worktree and explicit `integrate` remain the dependable boundary. Doctor warns
+    (never fails) on `boundary-only`. Claude Code's native `acceptEdits` mode has **no Marshal
+    deny layer** around it.
 - **Every run has a hard timeout and a process-group kill.** A run that exceeds its timeout is
   terminated, and the whole process group is killed so agent grandchildren (subagents, MCP servers,
   tool shells) are not orphaned (`src/marshal_engine/backends/base.py`).
@@ -84,22 +93,27 @@ enable it only when you trust the driver and everything that can reach its promp
 These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces several as warnings.
 
 - **Permission config layer is partial (v0).** Cursor `safe-edit` applies an engine-managed deny
-  list (destructive `rm`, `.env` read/write, `.git` writes) alongside `--force` via a *temporary*
-  merge into the worktree's `.cursor/cli.json`: the file's exact prior state (existence, bytes,
-  mode) is restored before the run returns, so the overlay is visible to the live agent but never
-  to run status, diffs, commits, or integration. An existing malformed/unreadable/non-object/
-  symlink/non-regular `cli.json` (or a symlinked `.cursor/`) fails the run closed (preserved
-  byte-for-byte, agent never launched). Restore re-checks those path constraints before
-  unlink/replace so a mid-run `.cursor/`→symlink swap cannot redirect cleanup outside the
-  worktree; a restoration failure fails the run rather than reporting success with policy
-  residue. These remain curated denies, not a sandbox. OpenCode
-  `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` with `question: deny`
-  plus curated bash/edit/read/`external_directory` denies; `yolo` still gets `question: deny` only
-  (headless: skip-permissions does not cover `question`). **Still deferred:** Command Code
-  (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar), Goose (`safe-edit`/`yolo` both
-  `GOOSE_MODE=auto`), and Antigravity (no PTY wrapper; stdout can be swallowed without a TTY; no
-  distinct safe-edit scoping beyond `trustedWorkspaces`). Worktree isolation remains the hard
-  boundary for those adapters and for everything the curated denies do not cover.
+  list (destructive `rm`, `.env` read/write, `.git` writes, and Write to `.cursor/cli.json` via
+  Cursor's permission grammar) alongside `--force` via a *temporary* merge into the worktree's
+  `.cursor/cli.json`: the file's exact prior state (existence, bytes, mode) is restored before
+  the run returns, so the overlay is visible to the live agent but never to run status, diffs,
+  commits, or integration. An existing malformed/unreadable/non-object/symlink/non-regular
+  `cli.json` (or a symlinked `.cursor/`) fails the run closed (preserved byte-for-byte, agent
+  never launched). Restore re-checks those path constraints before unlink/replace so a mid-run
+  `.cursor/`→symlink swap cannot redirect cleanup outside the worktree; a restoration failure
+  fails the run rather than reporting success with policy residue. The Write deny does **not**
+  stop same-user shell/Python from rewriting the policy file mid-run — exact restore limits
+  persistence only. These remain curated denies, not a sandbox. OpenCode `safe-edit` stamps
+  `OPENCODE_CONFIG_CONTENT` with `question: deny` plus curated bash/edit/read/`external_directory`
+  denies (bash also covers cheap `git config` / redirection / `tee` / `sed` cases into `.env` /
+  `.git`; wrappers and alternate writers can bypass); `yolo` still gets `question: deny` only
+  (headless: skip-permissions does not cover `question`). **`boundary-only` backends:** Command
+  Code (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar), Goose (`safe-edit`/`yolo` both
+  `GOOSE_MODE=auto`), Antigravity (no PTY wrapper; stdout can be swallowed without a TTY; no
+  distinct safe-edit scoping beyond `trustedWorkspaces`), and Claude Code (`acceptEdits` with no
+  Marshal deny layer). Worktree isolation remains the hard boundary for those adapters and for
+  everything the curated denies do not cover. See `permission_fidelity` on `list_clients` /
+  `marshal backends` / `doctor`.
 - **`worktree_setup` / `verify` are config-driven subprocesses** when configured. They run
   argv from `fleet.config.yaml` in each worktree as your user. By default only an allowlisted
   binary basename may run (`uv`, `npm`, `pnpm`, `make`, `cargo`, `go`, `pytest`, `python`, …);

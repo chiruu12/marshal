@@ -13,7 +13,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
-from marshal_engine.backends.opencode import OpenCodeBackend, permission_config_for
+from marshal_engine.backends.opencode import (
+    SAFE_EDIT_BASH_DENIES,
+    OpenCodeBackend,
+    permission_config_for,
+)
 
 
 @pytest.fixture
@@ -46,10 +50,17 @@ def test_permission_config_safe_edit_denies_question_and_curated() -> None:
     assert perms["question"] == "deny"
     assert perms["*"] == "allow"
     assert perms["external_directory"] == "deny"
-    assert perms["bash"]["rm"] == "deny"
-    assert perms["bash"]["rm *"] == "deny"
+    bash = perms["bash"]
+    # Catch-all allow first; curated denies later (OpenCode last-match-wins).
+    assert list(bash.keys())[0] == "*"
+    assert bash["*"] == "allow"
+    for pattern, action in SAFE_EDIT_BASH_DENIES:
+        assert bash[pattern] == action
+    assert list(bash.items())[1:] == list(SAFE_EDIT_BASH_DENIES)
     assert perms["edit"]["*.env"] == "deny"
+    assert perms["edit"][".git/*"] == "deny"
     assert perms["read"]["*.env"] == "deny"
+    assert perms["read"]["*.env.example"] == "allow"
     # never ask - headless stdin is closed
     assert '"ask"' not in json.dumps(cfg)
 
@@ -58,7 +69,19 @@ def test_permission_config_yolo_only_denies_question() -> None:
     cfg = permission_config_for(PermissionMode.YOLO)
     assert cfg is not None
     assert cfg["permission"] == {"*": "allow", "question": "deny"}
+    assert "bash" not in cfg["permission"]  # yolo does not inherit safe-edit bash rules
     assert permission_config_for(PermissionMode.READ_ONLY) is None
+
+
+def test_permission_config_for_safe_edit_is_pure_and_deterministic() -> None:
+    a = permission_config_for(PermissionMode.SAFE_EDIT)
+    b = permission_config_for(PermissionMode.SAFE_EDIT)
+    assert a == b
+    assert a is not b  # fresh dict each call
+    # Mutating the returned config must not poison the next call.
+    assert a is not None
+    a["permission"]["bash"]["rm"] = "allow"
+    assert permission_config_for(PermissionMode.SAFE_EDIT)["permission"]["bash"]["rm"] == "deny"
 
 
 def test_prepare_stamps_opencode_config_content(

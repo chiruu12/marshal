@@ -21,6 +21,7 @@ def test_backends_json(capsys: pytest.CaptureFixture[str]) -> None:
     data = json.loads(out)
     assert isinstance(data, list)
     assert len(data) >= 1
+    fidelity_values = {"enforced-denies", "boundary-only"}
     for item in data:
         assert set(item.keys()) == {
             "name",
@@ -28,11 +29,13 @@ def test_backends_json(capsys: pytest.CaptureFixture[str]) -> None:
             "json_output",
             "native_usage",
             "permission_modes",
+            "permission_fidelity",
         }
         assert isinstance(item["available"], bool)
         assert isinstance(item["json_output"], bool)
         assert isinstance(item["native_usage"], bool)
         assert isinstance(item["permission_modes"], list)
+        assert item["permission_fidelity"] in fidelity_values
 
 
 def test_backends_human(capsys: pytest.CaptureFixture[str]) -> None:
@@ -41,6 +44,7 @@ def test_backends_human(capsys: pytest.CaptureFixture[str]) -> None:
     out, _ = capsys.readouterr()
     assert "available=" in out
     assert "json=" in out
+    assert "fidelity=" in out
 
 
 def test_usage_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

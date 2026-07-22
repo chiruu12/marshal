@@ -10,6 +10,7 @@ from .backends.base import CodingAgentBackend
 from .types import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -24,6 +25,7 @@ __all__ = [
     "CodingAgentBackend",
     "AgentResult",
     "Capabilities",
+    "PermissionFidelity",
     "PermissionMode",
     "RunOpts",
     "RunStatus",

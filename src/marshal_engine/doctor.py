@@ -33,6 +33,7 @@ from .config import (
     setup_command_refusal,
 )
 from .registry import default_backends, make_backend
+from .types import PermissionFidelity
 
 OK = "ok"
 WARN = "warn"
@@ -131,6 +132,37 @@ def _git_repo_check(repo: Path) -> Check:
     return Check("repo", OK, f"{repo} (branch {branch})")
 
 
+def _permission_fidelity_check(name: str, backend: CodingAgentBackend) -> Check:
+    """Static adapter metadata: what ``safe-edit`` actually enforces for this backend.
+
+    Independent of CLI availability/auth — fidelity is declared on the adapter, so the check
+    still appears when the binary is missing. ``boundary-only`` warns; it never fails a doctor
+    run (worktree isolation remains the dependable boundary either way).
+    """
+    fidelity = backend.capabilities.permission_fidelity
+    if fidelity is PermissionFidelity.ENFORCED_DENIES:
+        return Check(
+            f"permission:{name}",
+            OK,
+            (
+                f"safe-edit fidelity={fidelity.value}: backend/Marshal installs a restriction "
+                "beyond the worktree; the worktree remains the isolation boundary"
+            ),
+        )
+    return Check(
+        f"permission:{name}",
+        WARN,
+        (
+            f"safe-edit fidelity={fidelity.value}: no Marshal-enforced deny layer; "
+            "the worktree and explicit integrate are the dependable boundary"
+        ),
+        (
+            "prefer an enforced-denies backend (cursor/opencode/codex) for sensitive work, "
+            "or treat this client as worktree-isolated only"
+        ),
+    )
+
+
 def run_checks(
     repo: Path,
     config_path: Path,
@@ -197,6 +229,8 @@ def run_checks(
             except ValueError:
                 checks.append(Check(f"backend:{name}", FAIL, "unknown backend name", hint))
                 continue
+        # Fidelity is static adapter metadata — emit even when the CLI is missing/unauthed.
+        checks.append(_permission_fidelity_check(name, backend))
         if not backend.check_available():
             checks.append(Check(f"backend:{name}", FAIL, "CLI not on PATH / not runnable", hint))
             continue
