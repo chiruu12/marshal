@@ -1114,6 +1114,7 @@ def test_mcp_list_clients_reflects_config_edit(tmp_path: Path) -> None:
     (repo / "fleet.config.yaml").write_text(_ECHO_CLIENT_YAML)
     out = _call(app, "list_clients")
     assert [c["name"] for c in out["clients"]] == ["worker"]
+    assert out["clients"][0]["permission_fidelity"] == "boundary-only"
 
 
 def test_cli_workspace_add_and_list(
@@ -1147,6 +1148,9 @@ def _two_ws_app(tmp_path: Path) -> tuple[object, WorkspaceRegistry, Path, Path]:
     for r in (repo_a, repo_b):
         r.mkdir()
         _init_repo(r)
+        # On-disk config so doctor (which reloads from config_path) sees the same clients
+        # as the prebuilt in-memory FleetConfig.
+        (r / "fleet.config.yaml").write_text(_ECHO_CLIENT_YAML)
     defs = [
         WorkspaceDef("default", repo_a.resolve(), repo_a / "fleet.config.yaml"),
         WorkspaceDef("beta", repo_b.resolve(), repo_b / "fleet.config.yaml"),
@@ -1171,9 +1175,14 @@ def test_mcp_round_trip_run_query_cancel(tmp_path: Path) -> None:
 
     lc = _call(app, "list_clients", {"workspace": "beta"})
     assert lc["workspace"] == "beta" and [c["name"] for c in lc["clients"]] == ["worker"]
+    assert lc["clients"][0]["permission_fidelity"] == "boundary-only"
 
     doc = _call(app, "doctor", {"workspace": "beta"})
     assert doc["workspace"] == "beta" and isinstance(doc["checks"], list)
+    perm_checks = [c for c in doc["checks"] if c["name"] == "permission:echo"]
+    assert len(perm_checks) == 1
+    assert perm_checks[0]["status"] == "warn"
+    assert "boundary-only" in perm_checks[0]["detail"]
 
     rec = _call(app, "run_agent", {"client": "worker", "goal": "x", "task_id": "t1", "workspace": "beta"})
     assert rec["workspace"] == "beta" and rec["status"] == "succeeded"

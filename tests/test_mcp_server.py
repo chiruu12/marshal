@@ -118,8 +118,15 @@ def test_tools_are_async_and_round_trip_via_call_tool(
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
-    result = asyncio.run(app.call_tool("list_clients", {}))
-    assert result is not None
+    _content, structured = asyncio.run(app.call_tool("list_clients", {}))
+    payload = structured.get("result", structured) if isinstance(structured, dict) else structured
+    assert isinstance(payload, dict)
+    assert "clients" in payload
+    # When cursor-agent is present locally the reviewer client appears with fidelity;
+    # when absent, clients is empty (graceful skip). Either way the field shape is stable.
+    for client in payload["clients"]:
+        assert "permission_fidelity" in client
+        assert client["permission_fidelity"] in {"enforced-denies", "boundary-only"}
 
 
 def test_list_models_round_trips_via_call_tool(

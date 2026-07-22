@@ -141,8 +141,19 @@ clients:
 | Tier | Meaning |
 |------|---------|
 | `read-only` | Plan/inspect only - no edits. |
-| `safe-edit` | Edit and run **inside the worktree**, no prompts. The default. Cursor and OpenCode also get an engine-managed deny / `question: deny` config layer (see `docs/design.md` §5). |
+| `safe-edit` | Edit and run **inside the worktree**, no prompts. The default. What that mode actually enforces varies by backend — see `permission_fidelity` below and `docs/design.md` §5. |
 | `yolo` | Fully unrestricted (OpenCode still denies `question` so headless cannot deadlock). Opt-in only. |
+
+**`permission_fidelity`** (on each backend / client listing) is a coarse honesty signal:
+
+| Value | Meaning | Backends |
+|-------|---------|----------|
+| `enforced-denies` | safe-edit installs a restriction beyond the worktree (curated denies or native workspace sandbox). Not a true sandbox. | Cursor, OpenCode, Codex |
+| `boundary-only` | No Marshal deny layer; treat the worktree + explicit integrate as the boundary. | Command Code, Goose, Antigravity, Claude Code |
+
+`marshal backends` prints `fidelity=…` (and JSON `permission_fidelity`); `list_clients` includes the
+field per client; `marshal doctor` emits `permission:<backend>` (`ok` for enforced-denies, `warn`
+for boundary-only). Prefer `enforced-denies` clients for sensitive work.
 
 Headless agents have no stdin, so Marshal never uses a prompting mode (it would deadlock).
 
@@ -214,7 +225,7 @@ the default workspace.
 | `list_workspaces()` | List the repos this server can target (name, path, configured, client_count). |
 | `add_workspace(name, path, scaffold?)` | Register a repo in the central registry; usable immediately (no reconnect). |
 | `doctor()` | Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth); read-only. Run it before spawning. |
-| `list_clients` | List configured clients (name, backend, model, permission) plus `driver_context`. |
+| `list_clients` | List configured clients (name, backend, model, permission, permission_fidelity) plus `driver_context`. |
 | `list_models` | List the optional `models:` catalog (`id`, `backends`, `cost`, `quota_type`, `notes`) plus `driver_context`. |
 | `run_agent(client?, goal, task_id?, context_files?, base_branch?, model?, backend?, duration?)` | Run a task on a client's backend in an isolated worktree; returns the run record. Omit `client` for an ad-hoc spawn by `backend` (+ optional `model`). `duration` is a preset name or positive seconds. `base_branch` bases the worktree on a branch other than HEAD (e.g. after `commit_run`). |
 | `run_many(jobs, max_concurrency?)` | Run several `{client?, goal, task_id?, context_files?, workspace?, …}` jobs in parallel, each in its own worktree; per-job `workspace` allows mixed-repo batches under one concurrency cap. Returns all records (each tagged). |
@@ -236,8 +247,8 @@ the default workspace.
 ## Use it as a CLI
 
 ```bash
-marshal doctor             # preflight: check the setup is ready to run agents
-marshal backends           # list backends and availability
+marshal doctor             # preflight: toolchain, auth, and safe-edit permission_fidelity
+marshal backends           # list backends, availability, and permission_fidelity
 marshal models             # list the optional `models:` catalog from fleet.config.yaml
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
 marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once
@@ -427,13 +438,13 @@ driver's playbook for authoring and running them; starter templates live in `exa
 
 | Backend | Edits | Usage in output | Notes |
 |---------|-------|-----------------|-------|
-| OpenCode | yes | yes (tokens + cost) | Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies). |
-| Cursor | yes | no | Tokens/cost only via Team/Enterprise Admin API. `safe-edit` temporarily merges an engine-managed deny list into the worktree's `.cursor/cli.json` alongside `--force`; the file's exact prior state is restored before the run returns, so the overlay never shows up in diffs, commits, or integration. A pre-existing malformed `cli.json` fails the run (preserved untouched). |
-| Codex | yes | best-effort | `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
-| Command Code | yes | no | Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
-| Antigravity | yes | no | Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). PTY wrapper still TODO. |
-| Claude Code | yes | yes (tokens + cost) | `acceptEdits` for safe-edit; cost is native (no estimation). |
-| Goose | yes | best-effort | Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Doctor probes auth via `goose info --check` (fails closed if not configured / not logged in). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
+| OpenCode | yes | yes (tokens + cost) | `permission_fidelity=enforced-denies`. Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies). |
+| Cursor | yes | no | `permission_fidelity=enforced-denies`. Tokens/cost only via Team/Enterprise Admin API. `safe-edit` temporarily merges an engine-managed deny list into the worktree's `.cursor/cli.json` alongside `--force` (includes Write denies for the policy file itself); the file's exact prior state is restored before the run returns, so the overlay never shows up in diffs, commits, or integration. A pre-existing malformed `cli.json` fails the run (preserved untouched). |
+| Codex | yes | best-effort | `permission_fidelity=enforced-denies`. `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
+| Command Code | yes | no | `permission_fidelity=boundary-only`. Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
+| Antigravity | yes | no | `permission_fidelity=boundary-only`. Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). PTY wrapper still TODO. |
+| Claude Code | yes | yes (tokens + cost) | `permission_fidelity=boundary-only`. Native `acceptEdits` for safe-edit with **no Marshal deny layer**; cost is native (no estimation). |
+| Goose | yes | best-effort | `permission_fidelity=boundary-only`. Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Doctor probes auth via `goose info --check` (fails closed if not configured / not logged in). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them. |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.

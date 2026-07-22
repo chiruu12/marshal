@@ -30,6 +30,7 @@ from pathlib import Path
 from ..types import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -60,6 +61,7 @@ class CommandCodeBackend(CodingAgentBackend):
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
+        permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
     )
 
     # Headless `-p` auto-accept still BLOCKS the write/shell tools (the confirmation has no TTY to

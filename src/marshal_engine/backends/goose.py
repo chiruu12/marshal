@@ -38,6 +38,7 @@ from typing import Any
 from ..types import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -67,6 +68,7 @@ class GooseBackend(CodingAgentBackend):
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
+        permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
     )
 
     # Permission is env-driven (GOOSE_MODE); argv stays flag-free for these tiers.

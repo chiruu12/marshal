@@ -32,6 +32,7 @@ from typing import Any
 from ..types import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -54,6 +55,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
+        permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
     )
 
     # Marshal's three tiers -> Claude Code's non-prompting permission modes. `default`/`auto`

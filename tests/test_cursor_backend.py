@@ -68,10 +68,15 @@ def test_prepare_safe_edit_writes_deny_list(backend: CursorBackend, tmp_path: Pa
     deny = data["permissions"]["deny"]
     for rule in SAFE_EDIT_DENY:
         assert rule in deny
-    # curated minimum from design.md / issue #17
+    # curated minimum from design.md / issue #17 + #40 policy-file Write denies
     assert "Shell(rm)" in deny
     assert "Write(**/.env)" in deny
     assert "Write(**/.git/**)" in deny
+    assert "Write(.cursor/cli.json)" in deny
+    assert "Write(**/.cursor/cli.json)" in deny
+    # Reads of the policy file stay allowed (reading does not disable it).
+    assert "Read(.cursor/cli.json)" not in deny
+    assert "Read(**/.cursor/cli.json)" not in deny
 
 
 def test_prepare_safe_edit_merges_existing_cli_json(
@@ -112,6 +117,12 @@ def test_prepare_yolo_and_readonly_skip_cli_json(
     backend.prepare(_opts(cwd=wt, permission=PermissionMode.YOLO))
     backend.prepare(_opts(cwd=wt, permission=PermissionMode.READ_ONLY))
     assert not (wt / ".cursor" / "cli.json").exists()
+
+
+def test_safe_edit_deny_covers_policy_file_write() -> None:
+    # Focused #40 assertion: the curated list names both root and nested policy paths.
+    assert "Write(.cursor/cli.json)" in SAFE_EDIT_DENY
+    assert "Write(**/.cursor/cli.json)" in SAFE_EDIT_DENY
 
 
 def test_prepare_fails_closed_on_malformed_cli_json(

@@ -234,8 +234,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     async def list_clients(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """List configured backend clients (name, backend, model, permission) plus the fleet's
-        driver-facing context, for the chosen workspace. Returns {clients, driver_context, workspace}."""
+        """List configured backend clients (name, backend, model, permission, permission_fidelity)
+        plus the fleet's driver-facing context, for the chosen workspace. Returns
+        {clients, driver_context, workspace}."""
         return await ws_call(workspace, lambda svc: svc.list_clients())
 
     @app.tool()
@@ -251,9 +252,11 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     async def doctor(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """Preflight the SELECTED workspace: toolchain, repo, config, and each configured backend's
-        CLI availability + auth. Read-only - run it before spawning to catch a missing/unauthenticated
-        backend up front. Returns per-check results + a fails/warns roll-up + the workspace."""
+        """Preflight the SELECTED workspace: toolchain, repo, config, each configured backend's
+        CLI availability + auth, and static safe-edit permission_fidelity (ok for enforced-denies,
+        warn for boundary-only). Read-only - run it before spawning to catch a missing/
+        unauthenticated backend up front. Returns per-check results + a fails/warns roll-up +
+        the workspace."""
         return await ws_call(workspace, lambda svc: svc.doctor())
 
     @app.tool()

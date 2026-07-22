@@ -42,6 +42,7 @@ from typing import Any, NamedTuple
 from ..types import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -51,13 +52,19 @@ from ..types import (
 )
 from .base import CodingAgentBackend
 
-#: Curated deny tokens for ``safe-edit`` (deny beats allow). Destructive shell, secrets, and
-#: ``.git`` writes - the worktree remains the isolation boundary for everything else.
+#: Curated deny tokens for ``safe-edit`` (deny beats allow). Destructive shell, secrets,
+#: ``.git`` writes, and Write to the policy file itself via Cursor's permission grammar.
+#: Reads of ``.cursor/cli.json`` stay allowed (reading does not disable the policy). These
+#: rules are curated, not a sandbox: they do not stop arbitrary same-user shell/Python from
+#: rewriting the file mid-run. The #37 snapshot/restore transaction still prevents persistence
+#: after the run; the worktree remains the isolation boundary for everything else.
 SAFE_EDIT_DENY: tuple[str, ...] = (
     "Shell(rm)",
     "Write(**/.env)",
     "Write(**/.env.*)",
     "Write(**/.git/**)",
+    "Write(.cursor/cli.json)",
+    "Write(**/.cursor/cli.json)",
     "Read(**/.env)",
     "Read(**/.env.*)",
 )
@@ -75,6 +82,7 @@ class CursorBackend(CodingAgentBackend):
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
+        permission_fidelity=PermissionFidelity.ENFORCED_DENIES,
     )
 
     _PERMISSION: dict[PermissionMode, list[str]] = {
@@ -106,10 +114,10 @@ class CursorBackend(CodingAgentBackend):
         call ``prepare()`` (which installs the deny overlay) and spawn the agent, then restore
         the snapshot before returning - so the overlay applies to the live process but Fleet
         never observes it as agent work (EMPTY classification, verify gate, collect, commit,
-        integrate all see the original tree). Restoration is exact: an agent edit to the
-        config file during the run is discarded with the overlay (defending the deny file
-        against a hostile agent is issue #40). A restoration failure fails the run - never
-        return success with Marshal's policy residue still in the worktree.
+        integrate all see the original tree). Restoration is exact: an agent Write-tool edit to
+        the config during the run is denied by ``SAFE_EDIT_DENY`` and any residual mid-run rewrite
+        (e.g. via shell) is discarded with the overlay on restore. A restoration failure fails
+        the run - never return success with Marshal's policy residue still in the worktree.
         """
         if opts.permission is not PermissionMode.SAFE_EDIT:
             return super().run(task, opts)

@@ -7,13 +7,19 @@ from pathlib import Path
 
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.doctor import FAIL, OK, WARN, run_checks, summarize
-from marshal_engine.types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine.types import (
+    AgentResult,
+    Capabilities,
+    PermissionFidelity,
+    PermissionMode,
+    RunOpts,
+    RunStatus,
+    TaskSpec,
+)
 
 
 class _FakeBackend(CodingAgentBackend):
     """Backend whose availability is fixed; only `check_available` matters to the doctor."""
-
-    capabilities = Capabilities()
 
     def __init__(
         self,
@@ -22,9 +28,11 @@ class _FakeBackend(CodingAgentBackend):
         available: bool,
         account: dict[str, str] | None = None,
         verifies_auth: bool = False,
+        permission_fidelity: PermissionFidelity = PermissionFidelity.BOUNDARY_ONLY,
     ) -> None:
         self.name = name
         self.binary = name
+        self.capabilities = Capabilities(permission_fidelity=permission_fidelity)
         self._available = available
         self._account = account
         self._verifies_auth = verifies_auth
@@ -314,3 +322,78 @@ def test_only_referenced_backends_are_probed(tmp_path: Path) -> None:
     )
     assert "backend:opencode" in _names(checks)
     assert "backend:cursor" not in _names(checks)
+    assert "permission:opencode" in _names(checks)
+    assert "permission:cursor" not in _names(checks)
+
+
+def test_permission_fidelity_enforced_denies_is_ok(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    checks = run_checks(
+        repo,
+        cfg,
+        backends={
+            "opencode": _FakeBackend(
+                "opencode",
+                available=True,
+                permission_fidelity=PermissionFidelity.ENFORCED_DENIES,
+            )
+        },
+    )
+    perm = _by_name(checks, "permission:opencode")
+    assert perm.status == OK
+    assert "enforced-denies" in perm.detail
+    assert "worktree" in perm.detail
+
+
+def test_permission_fidelity_boundary_only_warns(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    checks = run_checks(
+        repo,
+        cfg,
+        backends={
+            "opencode": _FakeBackend(
+                "opencode",
+                available=True,
+                permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
+            )
+        },
+    )
+    perm = _by_name(checks, "permission:opencode")
+    assert perm.status == WARN
+    assert "boundary-only" in perm.detail
+    assert "worktree" in perm.detail
+    assert perm.fix  # actionable guidance
+    fails, _ = summarize(checks)
+    assert fails == 0  # warning, never a failure
+
+
+def test_permission_fidelity_present_when_cli_unavailable(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    checks = run_checks(
+        repo,
+        cfg,
+        backends={
+            "opencode": _FakeBackend(
+                "opencode",
+                available=False,
+                permission_fidelity=PermissionFidelity.ENFORCED_DENIES,
+            )
+        },
+    )
+    assert _by_name(checks, "backend:opencode").status == FAIL
+    perm = _by_name(checks, "permission:opencode")
+    assert perm.status == OK
+    assert "enforced-denies" in perm.detail
+
+
+def test_unknown_backend_has_no_fidelity_check(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(
+        tmp_path / "fleet.config.yaml", "clients:\n  x:\n    backend: no-such-backend\n"
+    )
+    checks = run_checks(repo, cfg, backends={})
+    assert _by_name(checks, "backend:no-such-backend").detail == "unknown backend name"
+    assert "permission:no-such-backend" not in _names(checks)

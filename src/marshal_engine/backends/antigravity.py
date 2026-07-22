@@ -40,6 +40,7 @@ from pathlib import Path
 from ..types import (
     AgentResult,
     Capabilities,
+    PermissionFidelity,
     PermissionMode,
     RunOpts,
     RunStatus,
@@ -68,6 +69,7 @@ class AntigravityBackend(CodingAgentBackend):
         server_mode=False,
         native_usage=False,  # no tokens/cost available headless
         permission_modes=frozenset({PermissionMode.SAFE_EDIT, PermissionMode.YOLO}),
+        permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
     )
 
     # safe-edit and yolo both map to skip-permissions today: the default preset prompts (which
