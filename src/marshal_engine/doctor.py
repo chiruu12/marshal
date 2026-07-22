@@ -284,6 +284,10 @@ def run_checks(
         ]
         if config.allow_unsafe_commands:
             detail = f"{joined} run as your user (allow_unsafe_commands: true — arbitrary argv)"
+            if config.verify:
+                detail += (
+                    "; verify runs after the agent and may execute agent-modified content"
+                )
             hint = "treat fleet.config.yaml like code you execute; only point it at trusted repos"
         elif blocked:
             detail = (
@@ -294,12 +298,29 @@ def run_checks(
                 "allowlist includes uv/npm/pnpm/make/cargo/go/pytest/python/…; "
                 "shells (sh/bash) always need the opt-in — see docs/config.md"
             )
+            if config.verify:
+                hint += (
+                    "; verify runs after the agent and may execute agent-modified project files"
+                )
         else:
-            detail = (
-                f"{joined} run allowlisted binaries as your user "
-                "(allowlist is not a sandbox — review still)"
-            )
-            hint = "treat fleet.config.yaml like code you execute; only point it at trusted repos"
+            if config.verify:
+                detail = (
+                    f"{joined} run allowlisted binaries as your user "
+                    "(allowlist is not a sandbox — verify runs after the agent and may "
+                    "execute agent-modified project files)"
+                )
+                hint = (
+                    "treat fleet.config.yaml like code you execute; only point it at trusted "
+                    "repos; review collect_run / CI before integrate"
+                )
+            else:
+                detail = (
+                    f"{joined} run allowlisted binaries as your user "
+                    "(allowlist is not a sandbox — review still)"
+                )
+                hint = (
+                    "treat fleet.config.yaml like code you execute; only point it at trusted repos"
+                )
         checks.append(Check("unsafe-commands", WARN, detail, hint))
     if config.budgets:
         enforced = sum(1 for b in config.budgets if b.enforce)
@@ -316,8 +337,10 @@ def run_checks(
                 "integrate-hooks",
                 WARN,
                 "integrate_run_hooks: true — commit_run / integrate run git hooks "
-                "(prompting hooks can deadlock headless merges)",
-                "use only non-interactive hooks; keep verify: / CI as a backup gate",
+                "(prompting hooks can deadlock headless merges; hooks may be "
+                "agent-modified / repo-controlled scripts)",
+                "use only non-interactive hooks with trusted provenance; "
+                "keep verify: / CI as a backup gate",
             )
         )
     else:
@@ -327,7 +350,8 @@ def run_checks(
                 WARN,
                 "commit_run / integrate use git --no-verify (hooks skipped for headless reliability)",
                 "set integrate_run_hooks: true only for non-interactive hooks; "
-                "else review diffs and rely on verify: / CI",
+                "default --no-verify also avoids executing possibly agent-modified hook scripts; "
+                "review diffs and rely on verify: / CI",
             )
         )
 

@@ -88,13 +88,15 @@ clients:
   replies are never gated. A non-zero exit marks the run `verify_failed` instead of `succeeded`; the
   worktree and diff are kept for review, and the command's output tail lands on the run record
   (`verify_output`). Same string-or-argv shape, env hygiene, and allowlist rules as `worktree_setup`.
+  Executes worktree content the agent may have modified — see `SECURITY.md`.
 - **`allow_unsafe_commands`** (optional, top-level, default `false`): opt-in so `worktree_setup` /
   `verify` may use a non-allowlisted binary (including `sh -c …`). Without it, those commands are
   refused at run time. Not a sandbox for allowlisted tools either — see `SECURITY.md`.
 - **`integrate_run_hooks`** (optional, top-level, default `false`): when `false`, `commit_run` /
   `integrate` use `git --no-verify` so prompting hooks cannot deadlock a headless merge. Set
   `true` only for known non-interactive hooks; prompting hooks can still hang until the git
-  timeout. Prefer `verify:` / CI when unsure — see `SECURITY.md`.
+  timeout. Opted-in hooks may be scripts the agent modified — see `SECURITY.md`. Prefer
+  `verify:` / CI when unsure.
 - **`context`** (optional, top-level): fleet-wide layered context strings.
   - `worker` — prepended to every worker agent's goal (shared operating assumptions).
   - `driver` — surfaced back to the driver via `list_clients` / `list_models` as `driver_context`.

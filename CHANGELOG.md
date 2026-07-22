@@ -8,6 +8,13 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Security
+- **Document post-agent verify / integrate_run_hooks exec hazard (#42).** `SECURITY.md`,
+  design/config/usage, and `marshal doctor` warnings now state that `verify` and opted-in
+  `integrate_run_hooks` may execute agent-modified worktree content/hooks under the operator
+  identity (allowlist ≠ sandbox; `worktree_setup` remains pre-agent). Defaults and runtime
+  behavior unchanged.
+
 ### Added
 - **Safe-edit permission fidelity (#40).** Capabilities now declare `permission_fidelity`
   (`enforced-denies` for Cursor/OpenCode/Codex; `boundary-only` for Command Code/Goose/Antigravity/
