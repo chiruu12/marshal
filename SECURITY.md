@@ -118,12 +118,22 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   argv from `fleet.config.yaml` in each worktree as your user. By default only an allowlisted
   binary basename may run (`uv`, `npm`, `pnpm`, `make`, `cargo`, `go`, `pytest`, `python`, …);
   shells (`sh`/`bash`) and anything else require `allow_unsafe_commands: true`. The allowlist
-  is **not** a sandbox (allowlisted tools can still execute arbitrary scripts/code). Treat the
-  config like executable code; only use trusted configs. See `docs/config.md`.
+  is **not** a sandbox (allowlisted tools can still execute arbitrary scripts/code). **Timing
+  matters:** `worktree_setup` runs **before** the agent (base checkout + operator config).
+  `verify` runs **after** the agent may have modified the worktree, so allowlisted runners
+  (`make`, `npm`, `pytest`, `uv`, `python`, …) execute project content the agent could have
+  authored or changed (`Makefile`, `package.json` scripts, tests, `conftest.py`, package code)
+  under your identity. Use `verify:` when you trust the workspace config **and** treat agent
+  tasks as code you might run yourself; prefer narrow allowlisted runners; still review
+  `collect_run` / CI before integrate. Treat the config like executable code; only use trusted
+  configs. See `docs/config.md`.
 - **`commit_run` / `integrate` default to `git --no-verify`.** Hooks are skipped so a prompting
-  pre-commit cannot deadlock a headless merge. Set `integrate_run_hooks: true` only when hooks are
-  known non-interactive; prompting hooks can still hang until the git timeout. Gate with
-  `verify:`, review diffs, and CI regardless.
+  pre-commit cannot deadlock a headless merge, and so Marshal does not execute
+  repo-/worktree-controlled hook scripts the agent may have changed. Set
+  `integrate_run_hooks: true` only when hooks are known **non-interactive** *and* you trust
+  their provenance for your threat model (agent-writable hook paths / husky / lefthook / etc.);
+  prompting hooks can still hang until the git timeout. Prefer `verify:` + human/CI review over
+  hooks for gating; review diffs and CI regardless.
 - **Budgets default to soft-warn.** Caps never block spawns unless you set `enforce: true` on a
   budget entry. Enforced budgets also serialize matching in-flight spawns (one at a time per
   budget) so concurrent fan-out cannot TOCTOU past the ledger snapshot before spend is recorded.

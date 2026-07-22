@@ -50,7 +50,7 @@ Fleet-wide layered context strings.
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `succeeded` and changed files. Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. Same trust model and allowlist rules as `worktree_setup`. | `verify: uv run pytest -q` |
+| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `succeeded` and changed files (post-agent). Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. Same allowlist rules as `worktree_setup`, but timing differs: allowlisted runners execute **agent-modified** project content (`Makefile`, npm scripts, tests, package code) under your identity — allowlist ≠ sandbox. Acceptable when you trust the config and treat agent tasks as code you might run yourself; still review `collect_run` / CI before integrate. See `SECURITY.md`. | `verify: uv run pytest -q` |
 
 ### `allow_unsafe_commands`
 
@@ -62,7 +62,7 @@ Fleet-wide layered context strings.
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| bool \| omitted | `false` | When `false`, `commit_run` / `integrate` pass `git --no-verify` so prompting pre-commit/pre-merge hooks cannot deadlock a headless driver. Set `true` only when hooks are known **non-interactive** (format/lint that never prompts). Prompting hooks can hang until the git timeout (`GIT_TERMINAL_PROMPT=0` + closed stdin + timeout still apply). Prefer `verify:` / CI when unsure. | `integrate_run_hooks: true` |
+| bool \| omitted | `false` | When `false`, `commit_run` / `integrate` pass `git --no-verify` so prompting pre-commit/pre-merge hooks cannot deadlock a headless driver, and so Marshal does not execute possibly **agent-modified** / repo-controlled hook scripts. Set `true` only when hooks are known **non-interactive** *and* you trust their provenance for your threat model. Prompting hooks can hang until the git timeout (`GIT_TERMINAL_PROMPT=0` + closed stdin + timeout still apply). Prefer `verify:` + human/CI review over hooks when unsure. See `SECURITY.md`. | `integrate_run_hooks: true` |
 
 ### `retries`
 

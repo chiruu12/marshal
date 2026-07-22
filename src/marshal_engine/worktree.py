@@ -68,11 +68,13 @@ class WorktreeManager:
         self.setup_timeout_s = setup_timeout_s
         # Optional gate command run in the worktree after a run that would otherwise succeed (e.g.
         # the repo's full test suite). None = skip. See verify() - a failure never tears down.
+        # Post-agent: cwd content may be agent-authored (allowlist is not a sandbox).
         self.verify_cmd = verify_cmd
         # When false, setup/verify refuse non-allowlisted basenames (see config.setup_command_refusal).
         self.allow_unsafe_commands = allow_unsafe_commands
         # When false (default), commit/merge pass --no-verify so prompting hooks cannot deadlock
-        # headless integrate. True = run hooks; only safe when hooks are non-interactive.
+        # headless integrate and so agent-touched hook scripts are not executed. True = run hooks;
+        # only for known non-interactive hooks with trusted provenance.
         self.integrate_run_hooks = integrate_run_hooks
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -165,7 +167,8 @@ class WorktreeManager:
         The post-run counterpart of ``setup()``: same headless guards (VIRTUAL_ENV scrubbed, stdin
         closed, hard timeout - reusing ``setup_timeout_s``), but it NEVER raises and NEVER tears
         the worktree down - a failed gate still holds reviewable work, and the diff must survive
-        for the driver to inspect. ``(True, "")`` when no command is configured.
+        for the driver to inspect. Cwd content may be agent-authored (allowlist ≠ sandbox).
+        ``(True, "")`` when no command is configured.
         """
         if not self.verify_cmd:
             return True, ""
@@ -245,8 +248,9 @@ class WorktreeManager:
 
         Agents leave their work uncommitted; integrating it means committing it first. Returns
         the new commit sha, or None if the worktree was clean (nothing to commit). By default
-        hooks are skipped (`--no-verify`) so a prompting hook cannot deadlock a headless run;
-        set ``integrate_run_hooks=True`` to run them (non-interactive hooks only).
+        hooks are skipped (`--no-verify`) so a prompting hook cannot deadlock a headless run and
+        so possibly agent-modified hook scripts are not executed; set
+        ``integrate_run_hooks=True`` only for non-interactive hooks with trusted provenance.
         """
         add = self._git("add", "-A", cwd=wt.path)
         if add.returncode != 0:

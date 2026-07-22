@@ -251,6 +251,18 @@ breaking the repo gate). A non-zero exit/timeout demotes the run to `verify_fail
 and diff are KEPT for review (unlike a setup failure, verify never tears down), and the command's
 output tail lands on the run record (`verify_passed` / `verify_output`). Runs with no gate
 configured, no file changes, or a non-success outcome are untouched (`verify_passed=None`).
+Trust model: verify is **post-agent** host execution of worktree content under the operator
+identity — the basename allowlist is **not** a sandbox, so allowlisted tools still load
+agent-editable project files (tests, Makefiles, npm scripts, etc.). Acceptable when you trust
+the config and treat the agent's tree as code you might run yourself; still review
+`collect_run` / CI before integrate. Contrast `worktree_setup`, which runs **pre-agent** on the
+base checkout. See `SECURITY.md`.
+
+**Integrate hooks.** `integrate_run_hooks` defaults to `false` (`git --no-verify` on
+`commit_run` / `integrate`) so prompting hooks cannot deadlock headless merges and so Marshal
+does not run possibly agent-touched hook scripts. When `true`, hooks may execute
+repo-/worktree-controlled scripts the agent could have changed — opt in only for known
+non-interactive hooks with trusted provenance. Depth lives in `SECURITY.md` / `docs/config.md`.
 
 **Graceful backend skip.** `MarshalService.__init__` probes each configured backend's CLI at
 startup; a client whose backend is unavailable is **skipped** (stderr warning, recorded on

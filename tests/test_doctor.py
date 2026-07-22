@@ -98,8 +98,11 @@ def test_happy_path_has_no_failures(tmp_path: Path, monkeypatch) -> None:
     # secret_ref is never injected, so an unset env var is a warning, not a failure.
     assert _by_name(checks, "secret:impl").status == WARN
     # Hygiene advisories are warnings, never failures.
-    assert _by_name(checks, "integrate-hooks").status == WARN
-    assert "integrate_run_hooks" in (_by_name(checks, "integrate-hooks").fix or "")
+    hooks = _by_name(checks, "integrate-hooks")
+    assert hooks.status == WARN
+    assert "integrate_run_hooks" in (hooks.fix or "")
+    assert "--no-verify" in hooks.detail
+    assert "agent-modified" in (hooks.fix or "")
     fails, _ = summarize(checks)
     assert fails == 0
 
@@ -118,7 +121,9 @@ integrate_run_hooks: true
     hooks = _by_name(checks, "integrate-hooks")
     assert hooks.status == WARN
     assert "integrate_run_hooks: true" in hooks.detail
+    assert "agent-modified" in hooks.detail
     assert "non-interactive" in (hooks.fix or "")
+    assert "deadlock" in hooks.detail or "prompting" in hooks.detail
 
 
 def test_doctor_warns_on_unsafe_commands_and_advisory_budgets(tmp_path: Path) -> None:
@@ -140,10 +145,33 @@ budgets:
     assert unsafe.status == WARN
     assert "worktree_setup" in unsafe.detail
     assert "allowlisted" in unsafe.detail
+    assert "after the agent" in unsafe.detail
+    assert "agent-modified" in unsafe.detail
     assert _by_name(checks, "budgets").status == WARN
     assert "advisory" in _by_name(checks, "budgets").detail
     fails, _ = summarize(checks)
     assert fails == 0
+
+
+def test_doctor_setup_only_does_not_claim_post_agent_verify(tmp_path: Path) -> None:
+    """worktree_setup is pre-agent; doctor must not attribute verify's timing hazard to it."""
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+worktree_setup: uv sync
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    unsafe = _by_name(checks, "unsafe-commands")
+    assert unsafe.status == WARN
+    assert "worktree_setup" in unsafe.detail
+    assert "verify" not in unsafe.detail
+    assert "after the agent" not in unsafe.detail
+    assert "agent-modified" not in unsafe.detail
+    assert "agent-modified" not in (unsafe.fix or "")
 
 
 def test_doctor_warns_when_setup_needs_opt_in(tmp_path: Path) -> None:
@@ -179,6 +207,29 @@ allow_unsafe_commands: true
     assert unsafe.status == WARN
     assert "allow_unsafe_commands: true" in unsafe.detail
     assert "arbitrary argv" in unsafe.detail
+    assert "review collect_run" not in (unsafe.fix or "")
+
+
+def test_doctor_allow_unsafe_plus_verify_hint_matches_allowlisted_verify(tmp_path: Path) -> None:
+    """Arbitrary argv + post-agent verify must carry at least the allowlisted+verify integrate hint."""
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+worktree_setup: sh -c "uv sync"
+verify: sh -c "uv run pytest -q"
+allow_unsafe_commands: true
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    unsafe = _by_name(checks, "unsafe-commands")
+    assert unsafe.status == WARN
+    assert "after the agent" in unsafe.detail
+    assert "agent-modified" in unsafe.detail
+    assert "review collect_run" in (unsafe.fix or "")
+    assert "CI before integrate" in (unsafe.fix or "")
 
 
 def test_missing_backend_cli_fails(tmp_path: Path) -> None:
