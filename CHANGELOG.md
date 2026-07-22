@@ -23,6 +23,10 @@ versions may include breaking API changes until 1.0.
   on the `feature/marshal-recall-cognee` branch for future reference.
 
 ### Fixed
+- **Goose `cost: 0` no longer claims `source=native` (#41).** Stream-json / bulk JSON usage is
+  stamped native only when reported cost is positive (OpenCode parity). Zero or missing cost keeps
+  tokens as `unavailable` so Fleet can estimate instead of locking a fake free run via the native
+  short-circuit.
 - **MCP workspace registration fails closed by default (#39).** The `add_workspace` MCP tool now
   refuses every call - before any path validation, registry write, or scaffolding - unless the
   server was started with `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` (exact value, captured once

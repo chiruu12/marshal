@@ -24,7 +24,9 @@ Notes:
   * For Cursor-backed Goose, authenticate with ``cursor-agent login`` (Goose shells out to it).
   * ``account_info()`` runs ``goose info -v --check`` so doctor fails closed when the binary is
     present but provider auth/configure is missing (parity with Cursor's ``verifies_auth``).
-  * Token/cost fields are often null depending on provider; usage is native when present.
+  * Token/cost fields are often null depending on provider. Positive reported cost is stamped
+    ``source=native``; ``cost: 0`` / tokens-only stay ``unavailable`` so Fleet can estimate
+    (OpenCode parity — a zero cost usually means "unpriced", not "free").
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ class GooseBackend(CodingAgentBackend):
         stream_json=True,
         sessions=False,  # Marshal runs are one-shot with --no-session
         server_mode=False,
-        native_usage=True,  # when the provider reports tokens/cost in stream/json output
+        native_usage=True,  # positive cost when the provider reports it; tokens alone stay unavailable
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
@@ -207,7 +209,11 @@ class GooseBackend(CodingAgentBackend):
             # Provider/config failures often land as plain text on stdout (no JSON events).
             error_msg = _plain_failure_from_streams(raw_stdout, raw_stderr)
 
-        if found_usage:
+        # NATIVE only when the provider reported a POSITIVE cost. A reported $0 alongside consumed
+        # tokens means the model is unpriced (common for Goose providers / cursor-agent) — NOT a
+        # free run — so it stays UNAVAILABLE rather than claiming a fake $0 that Fleet would lock
+        # via the native short-circuit. Tokens without any cost field also stay UNAVAILABLE.
+        if usage.cost_usd > 0:
             usage.source = UsageSource.NATIVE
 
         ok = exit_code == 0 and error_msg is None
@@ -334,7 +340,12 @@ def _content_texts(content: object) -> list[str]:
 
 
 def _apply_token_fields(usage: UsageRecord, payload: dict[str, Any]) -> bool:
-    """Pull token/cost fields from a complete event or metadata blob. Returns True if any set."""
+    """Pull token/cost fields from a complete event or metadata blob. Returns True if any set.
+
+    Cost contributes only when positive (and not a bool — ``True`` is an ``int`` subclass).
+    Zero/negative/absent cost is ignored as a usage-found signal so ``cost: 0`` alone does not
+    attach a ledger row claiming a free run.
+    """
     found = False
     inp = payload.get("input_tokens")
     out = payload.get("output_tokens")
@@ -351,7 +362,12 @@ def _apply_token_fields(usage: UsageRecord, payload: dict[str, Any]) -> bool:
             usage.output_tokens += total
             found = True
     cost = payload.get("cost")
-    if isinstance(cost, (int, float)):
+    # Positive cost only — exclude bool (True/False are int subclasses) so cost: true ≠ $1 native.
+    if (
+        isinstance(cost, (int, float))
+        and not isinstance(cost, bool)
+        and float(cost) > 0
+    ):
         usage.cost_usd += float(cost)
         found = True
     return found
