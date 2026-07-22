@@ -363,7 +363,7 @@ Keep V1 focused - the #1 risk is becoming "yet another agent framework."
 
 ### Backends in scope (built)
 
-Six adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
+Adapters derive from `CodingAgentBackend`, each with pure `build_invocation`/`map_permission`
 and contract tests:
 
 | Backend | Headless invocation | read-only / safe-edit / yolo | Usage in output |
@@ -374,6 +374,7 @@ and contract tests:
 | Command Code | `command-code -p` (text only) | `--permission-mode plan` / `--yolo` / `--yolo` | none (hosted account → `unavailable`) |
 | Antigravity | `agy -p` (text only) | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
 | Claude Code | `claude -p --output-format json` | `--permission-mode plan` / `acceptEdits` / `bypassPermissions` | cost+tokens in JSON (native) |
+| Goose | `goose run --output-format stream-json` | `GOOSE_MODE=chat` / `GOOSE_MODE=auto` / `GOOSE_MODE=auto` | stream-json cost native **only when positive**; `cost: 0` / tokens-only → `unavailable` (estimate path may apply; OpenCode parity) |
 
 Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth, needs a PTY
 wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
 from marshal_engine.backends.goose import GooseBackend, _parse_info_check, _split_provider_model
 
 
@@ -136,9 +136,11 @@ def test_parse_output_stream_json_success(backend: GooseBackend) -> None:
     assert res.usage.input_tokens == 100
     assert res.usage.output_tokens == 50
     assert abs(res.usage.cost_usd - 0.005) < 1e-6
+    assert res.usage.source is UsageSource.NATIVE  # positive cost is authoritative
 
 
 def test_parse_output_stream_json_delta_chunks(backend: GooseBackend) -> None:
+    # Tokens without a cost field must stay UNAVAILABLE — not native $0 (blocks estimation).
     out = "\n".join(
         [
             '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"p"}]}}',
@@ -152,6 +154,59 @@ def test_parse_output_stream_json_delta_chunks(backend: GooseBackend) -> None:
     assert res.usage is not None
     assert res.usage.input_tokens == 8
     assert res.usage.output_tokens == 2
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
+def test_parse_output_cost_zero_only_unavailable(backend: GooseBackend) -> None:
+    # cost: 0 alone is not meaningful usage — must not attach a native $0 ledger row.
+    for cost in (0, 0.0):
+        out = f'{{"type":"complete","cost":{cost}}}'
+        res = backend.parse_output(out, "", 0)
+        assert res.status is RunStatus.SUCCEEDED
+        assert res.usage is None
+
+
+def test_parse_output_cost_zero_with_tokens_unavailable(backend: GooseBackend) -> None:
+    # Tokens without a positive cost mean the provider is unpriced (e.g. cursor-agent). Must NOT
+    # be reported as NATIVE $0; that would claim a free run and short-circuit Fleet estimation.
+    out = (
+        '{"type":"complete","input_tokens":100,"output_tokens":10,"cost":0}'
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.usage is not None
+    assert res.usage.input_tokens == 100
+    assert res.usage.output_tokens == 10
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source is UsageSource.UNAVAILABLE  # $0 cost -> still unknown, not "free"
+
+
+def test_parse_output_bulk_json_cost_zero_with_tokens_unavailable(
+    backend: GooseBackend,
+) -> None:
+    # Bulk ``--output-format json`` metadata path must use the same honesty rule.
+    out = (
+        '{"messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}],'
+        '"metadata":{"cost":0,"input_tokens":40,"output_tokens":5,"status":"completed"}}'
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.text == "ok"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 40
+    assert res.usage.output_tokens == 5
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
+def test_parse_output_cost_true_ignored(backend: GooseBackend) -> None:
+    # bool is an int subclass; cost: true must not become native $1.0.
+    out = '{"type":"complete","cost":true,"input_tokens":1,"output_tokens":1}'
+    res = backend.parse_output(out, "", 0)
+    assert res.usage is not None
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source is UsageSource.UNAVAILABLE
 
 
 def test_parse_output_bulk_json_success(backend: GooseBackend) -> None:
@@ -165,6 +220,7 @@ def test_parse_output_bulk_json_success(backend: GooseBackend) -> None:
     assert res.text == "pong"
     assert res.usage is not None
     assert res.usage.output_tokens == 12
+    assert res.usage.source is UsageSource.UNAVAILABLE
 
 
 def test_parse_output_error_event(backend: GooseBackend) -> None:
