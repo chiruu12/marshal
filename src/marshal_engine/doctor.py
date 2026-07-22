@@ -288,7 +288,14 @@ def run_checks(
                 detail += (
                     "; verify runs after the agent and may execute agent-modified content"
                 )
-            hint = "treat fleet.config.yaml like code you execute; only point it at trusted repos"
+                hint = (
+                    "treat fleet.config.yaml like code you execute; only point it at trusted "
+                    "repos; review collect_run / CI before integrate"
+                )
+            else:
+                hint = (
+                    "treat fleet.config.yaml like code you execute; only point it at trusted repos"
+                )
         elif blocked:
             detail = (
                 f"{joined} use non-allowlisted binary; runs refuse until "

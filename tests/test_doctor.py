@@ -207,6 +207,29 @@ allow_unsafe_commands: true
     assert unsafe.status == WARN
     assert "allow_unsafe_commands: true" in unsafe.detail
     assert "arbitrary argv" in unsafe.detail
+    assert "review collect_run" not in (unsafe.fix or "")
+
+
+def test_doctor_allow_unsafe_plus_verify_hint_matches_allowlisted_verify(tmp_path: Path) -> None:
+    """Arbitrary argv + post-agent verify must carry at least the allowlisted+verify integrate hint."""
+    repo = _git_repo(tmp_path / "repo")
+    body = """
+clients:
+  impl:
+    backend: opencode
+    model: opencode-go/glm-5.2
+worktree_setup: sh -c "uv sync"
+verify: sh -c "uv run pytest -q"
+allow_unsafe_commands: true
+"""
+    cfg = _write_config(tmp_path / "fleet.config.yaml", body)
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    unsafe = _by_name(checks, "unsafe-commands")
+    assert unsafe.status == WARN
+    assert "after the agent" in unsafe.detail
+    assert "agent-modified" in unsafe.detail
+    assert "review collect_run" in (unsafe.fix or "")
+    assert "CI before integrate" in (unsafe.fix or "")
 
 
 def test_missing_backend_cli_fails(tmp_path: Path) -> None:
