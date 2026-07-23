@@ -298,7 +298,7 @@ def run_checks(
                 )
         elif blocked:
             detail = (
-                f"{joined} use non-allowlisted binary; runs refuse until "
+                f"{joined} use non-allowlisted binary; refused until "
                 "allow_unsafe_commands: true (or switch to an allowlisted basename)"
             )
             hint = (

@@ -491,6 +491,11 @@ def test_default_fleet_does_not_retry(repo: Path) -> None:
     assert rec.attempts == 1
 
 
+def test_fleet_refuses_non_allowlisted_setup_at_construction(repo: Path) -> None:
+    with pytest.raises(WorktreeError, match="allowlist|allow_unsafe_commands"):
+        Fleet(repo, {"writer": _Writer()}, worktree_setup=["curl", "https://example.invalid"])
+
+
 def test_worktree_setup_runs_outside_the_create_lock(repo: Path) -> None:
     # The perf fix: only `git worktree add` is serialized; worktree provisioning (setup) runs
     # OUTSIDE the create lock so a fan-out provisions in parallel. Prove it by checking the lock is

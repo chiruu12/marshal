@@ -120,11 +120,34 @@ def test_setup_missing_binary_raises(repo: Path) -> None:
 
 
 def test_setup_refuses_non_allowlisted_without_opt_in(repo: Path) -> None:
-    m = WorktreeManager(repo, setup_cmd=["curl", "https://example.invalid"])
-    wt = m.create("refuse_setup")
+    # Static allowlist refusal fails at construction — never creates a worktree/branch.
+    with pytest.raises(WorktreeError, match="allowlist|allow_unsafe_commands"):
+        WorktreeManager(repo, setup_cmd=["curl", "https://example.invalid"])
+    assert not (WorktreeManager(repo).base_dir / "refuse_setup").exists()
+    listed = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "refuse_setup" not in listed
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/refuse_setup"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert branches.strip() == ""
+
+
+def test_setup_runtime_backstop_still_refuses_mutated_cmd(repo: Path) -> None:
+    # Defense in depth: setup() still refuses if setup_cmd is mutated after a clean __init__.
+    m = WorktreeManager(repo)
+    m.setup_cmd = ["curl", "https://example.invalid"]
+    wt = m.create("refuse_runtime")
     with pytest.raises(WorktreeError, match="allowlist|allow_unsafe_commands"):
         m.setup(wt)
-    assert not (m.base_dir / "refuse_setup").exists()
+    assert not (m.base_dir / "refuse_runtime").exists()
 
 
 def test_setup_allows_shell_with_opt_in(repo: Path) -> None:
@@ -198,7 +221,14 @@ def test_verify_missing_binary_reports_not_raises(repo: Path) -> None:
 
 
 def test_verify_refuses_non_allowlisted_without_opt_in(repo: Path) -> None:
-    m = WorktreeManager(repo, verify_cmd=["sh", "-c", "exit 0"])
+    # Same construction gate as setup — refused verify never reaches create/verify.
+    with pytest.raises(WorktreeError, match="allowlist|allow_unsafe_commands"):
+        WorktreeManager(repo, verify_cmd=["sh", "-c", "exit 0"])
+
+
+def test_verify_runtime_backstop_still_refuses_mutated_cmd(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    m.verify_cmd = ["sh", "-c", "exit 0"]
     wt = m.create("verify_refuse")
     ok, output = m.verify(wt)
     assert ok is False

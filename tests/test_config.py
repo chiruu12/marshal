@@ -191,6 +191,40 @@ def test_setup_command_refusal_allowlist_and_opt_in() -> None:
     assert setup_command_refusal(["curl", "x"], allow_unsafe=True) is None
 
 
+def test_load_rejects_non_allowlisted_worktree_setup(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text('worktree_setup: sh -c "uv sync"\n' + _YAML)
+    with pytest.raises(ConfigError, match="worktree_setup.*allowlist|allow_unsafe_commands"):
+        load_config(p)
+
+
+def test_load_rejects_non_allowlisted_verify(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text('verify: curl https://example.invalid\n' + _YAML)
+    with pytest.raises(ConfigError, match="verify.*allowlist|allow_unsafe_commands"):
+        load_config(p)
+
+
+def test_load_allows_non_allowlisted_with_opt_in(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        'worktree_setup: sh -c "uv sync"\n'
+        "allow_unsafe_commands: true\n" + _YAML
+    )
+    cfg = load_config(p)
+    assert cfg.worktree_setup == ["sh", "-c", "uv sync"]
+    assert cfg.allow_unsafe_commands is True
+
+
+def test_load_allows_allowlisted_setup_without_opt_in(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("worktree_setup: uv sync\nverify: uv run pytest -q\n" + _YAML)
+    cfg = load_config(p)
+    assert cfg.worktree_setup == ["uv", "sync"]
+    assert cfg.verify == ["uv", "run", "pytest", "-q"]
+    assert cfg.allow_unsafe_commands is False
+
+
 def test_verify_wrong_type_raises(tmp_path: Path) -> None:
     p = tmp_path / "fleet.config.yaml"
     p.write_text("verify: 42\n" + _YAML)

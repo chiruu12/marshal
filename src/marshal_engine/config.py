@@ -238,12 +238,22 @@ def load_config(path: Path | str) -> FleetConfig:
         worker=str(ctx_raw["worker"]) if ctx_raw.get("worker") else None,
         driver=str(ctx_raw["driver"]) if ctx_raw.get("driver") else None,
     )
+    worktree_setup = _parse_setup(raw.get("worktree_setup"))
+    verify = _parse_setup(raw.get("verify"), field="verify")
+    allow_unsafe_commands = _parse_allow_unsafe_commands(raw.get("allow_unsafe_commands"))
+    # Fail closed on static allowlist refusal before any caller builds a Fleet / worktree.
+    # Runtime setup()/verify() keep the same check as a backstop.
+    reject_disallowed_setup_commands(
+        worktree_setup=worktree_setup,
+        verify=verify,
+        allow_unsafe_commands=allow_unsafe_commands,
+    )
     return FleetConfig(
         clients=clients,
         context=context,
-        worktree_setup=_parse_setup(raw.get("worktree_setup")),
-        verify=_parse_setup(raw.get("verify"), field="verify"),
-        allow_unsafe_commands=_parse_allow_unsafe_commands(raw.get("allow_unsafe_commands")),
+        worktree_setup=worktree_setup,
+        verify=verify,
+        allow_unsafe_commands=allow_unsafe_commands,
         integrate_run_hooks=_parse_integrate_run_hooks(raw.get("integrate_run_hooks")),
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
@@ -284,6 +294,26 @@ def setup_command_refusal(argv: list[str], *, allow_unsafe: bool) -> str | None:
         f"binary {name!r} is not on the worktree_setup/verify allowlist; "
         "set allow_unsafe_commands: true to run it (shells and arbitrary argv always need this)"
     )
+
+
+def reject_disallowed_setup_commands(
+    *,
+    worktree_setup: list[str] | None,
+    verify: list[str] | None,
+    allow_unsafe_commands: bool,
+) -> None:
+    """Raise ``ConfigError`` when a configured setup/verify command fails the allowlist.
+
+    Called from ``load_config`` so CLI / doctor / MCP / hot-reload never accept a static
+    misconfiguration that would otherwise create-then-teardown worktrees. Does not change
+    allowlist membership or ``allow_unsafe_commands`` semantics.
+    """
+    for field, cmd in (("worktree_setup", worktree_setup), ("verify", verify)):
+        if not cmd:
+            continue
+        reason = setup_command_refusal(cmd, allow_unsafe=allow_unsafe_commands)
+        if reason:
+            raise ConfigError(f"{field}: {reason}")
 
 
 def _parse_allow_unsafe_commands(value: Any) -> bool:

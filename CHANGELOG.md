@@ -9,6 +9,11 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
+  `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
+  `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.
+  Runtime `setup()` / `verify()` checks remain as a backstop. Doctor surfaces the error as a
+  `config` FAIL.
 - **Cursor doctor no longer false-greens when logged out (#43).** Auth is gated on
   `cursor-agent status --format json` (`isAuthenticated === true`); `about` only enriches
   plan/model after auth. Bare logged-out `about` (`model: "Auto"`, null tier/email) is no longer

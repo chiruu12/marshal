@@ -63,7 +63,7 @@ class WorktreeManager:
         self.branch_prefix = branch_prefix
         self.git_timeout_s = git_timeout_s
         # Optional command run in each fresh worktree right after `git worktree add` (e.g. provision a
-        # venv). None = skip. See _run_setup for why a failure tears the worktree down and raises.
+        # venv). None = skip. See setup() for why a failure tears the worktree down and raises.
         self.setup_cmd = setup_cmd
         self.setup_timeout_s = setup_timeout_s
         # Optional gate command run in the worktree after a run that would otherwise succeed (e.g.
@@ -76,6 +76,14 @@ class WorktreeManager:
         # headless integrate and so agent-touched hook scripts are not executed. True = run hooks;
         # only for known non-interactive hooks with trusted provenance.
         self.integrate_run_hooks = integrate_run_hooks
+        # Fail closed at construction so a refused setup/verify never reaches `git worktree add`
+        # (load_config already rejects the same static error for YAML). Runtime checks remain.
+        for label, cmd in (("setup_cmd", setup_cmd), ("verify_cmd", verify_cmd)):
+            if not cmd:
+                continue
+            refused = setup_command_refusal(cmd, allow_unsafe=allow_unsafe_commands)
+            if refused:
+                raise WorktreeError(f"{label}: {refused}")
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         # These git calls run on the driver's checkout (commit/merge/status), so they get the same

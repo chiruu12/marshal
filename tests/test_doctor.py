@@ -174,7 +174,8 @@ worktree_setup: uv sync
     assert "agent-modified" not in (unsafe.fix or "")
 
 
-def test_doctor_warns_when_setup_needs_opt_in(tmp_path: Path) -> None:
+def test_doctor_fails_when_setup_needs_opt_in(tmp_path: Path) -> None:
+    """Non-allowlisted worktree_setup without opt-in is a config FAIL (load-time refusal)."""
     repo = _git_repo(tmp_path / "repo")
     body = """
 clients:
@@ -185,10 +186,12 @@ worktree_setup: sh -c "uv sync"
 """
     cfg = _write_config(tmp_path / "fleet.config.yaml", body)
     checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
-    unsafe = _by_name(checks, "unsafe-commands")
-    assert unsafe.status == WARN
-    assert "non-allowlisted" in unsafe.detail
-    assert "allow_unsafe_commands" in unsafe.detail
+    config = _by_name(checks, "config")
+    assert config.status == FAIL
+    assert "allowlist" in config.detail or "allow_unsafe_commands" in config.detail
+    # Config never loaded — hygiene advisories and backend checks are skipped.
+    assert "unsafe-commands" not in _names(checks)
+    assert not any(n.startswith("backend:") for n in _names(checks))
 
 
 def test_doctor_warns_when_allow_unsafe_opted_in(tmp_path: Path) -> None:
