@@ -313,15 +313,15 @@ preserved (the test that pins it still passes); the response adds `by_backend_mo
 `window`, and the `since` timestamp used to filter.
 
 Add `--config fleet.config.yaml` to also surface any `budgets:` declared there. The human output
-gets a `budgets` table with columns `scope · window · spent · limit · remaining` (aligned via
-`_align_rows`); the JSON output adds a `budgets` list (including `enforce`). No `budgets:`
-configured = no `budgets` section / key (the "no behavior change" contract for users who don't opt
-in). Default is soft-warn (stderr when a cap is met; the run proceeds); `enforce: true` refuses
-matching over-cap spawns and serializes matching in-flight spawns (see [`config.md`](config.md)).
-Budgets are only meaningful for backends that report cost — subscription / unknown-cost backends
-report `$0` / `unavailable`, so a $ cap on them never triggers and reads `$0.00` spent (no fake
-percentage, no fabricated "remaining"). The CLI is single-repo by nature; MCP `usage` is likewise
-always one workspace (no cross-workspace spend merge).
+gets a `budgets` table with columns `scope · window · spent · limit · remaining · mode`
+(`mode` is `enforce` or `soft-warn`; aligned via `_align_rows`); the JSON output adds a `budgets`
+list (including `enforce`). No `budgets:` configured = no `budgets` section / key (the "no behavior
+change" contract for users who don't opt in). Default is soft-warn (stderr when a cap is met; the
+run proceeds); `enforce: true` refuses matching over-cap spawns and serializes matching in-flight
+spawns (see [`config.md`](config.md)). Budgets are only meaningful for backends that report cost —
+subscription / unknown-cost backends report `$0` / `unavailable`, so a $ cap on them never triggers
+and reads `$0.00` spent (no fake percentage, no fabricated "remaining"). The CLI is single-repo by
+nature; MCP `usage` is likewise always one workspace (no cross-workspace spend merge).
 
 ### `marshal logs`
 
