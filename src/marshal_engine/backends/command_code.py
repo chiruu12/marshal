@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
+import shutil
+import subprocess
 
 from ..types import (
     AgentResult,
@@ -76,26 +77,27 @@ class CommandCodeBackend(CodingAgentBackend):
     # --- hooks ---------------------------------------------------------------------------
 
     def account_info(self) -> dict[str, str] | None:
-        """Provider + default model from `~/.commandcode/config.json` (no network, never raises).
+        """Auth via ``command-code status --json`` (config.json alone is **not** an auth probe).
 
-        Honest account context for `marshal doctor` - the hosted provider and the user's default
-        model - not a usage record. Returns None if the file is missing or unparseable.
+        Require ``authenticated`` strictly ``True``. Surfaces provider/model when present.
+        Never raises.
         """
-        cfg = Path.home() / ".commandcode" / "config.json"
+        if shutil.which(self.binary) is None:
+            return None
         try:
-            data = json.loads(cfg.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            proc = subprocess.run(
+                [self.binary, "status", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
             return None
-        if not isinstance(data, dict):
-            return None
-        info: dict[str, str] = {}
-        provider = data.get("provider")
-        model = data.get("model")
-        if isinstance(provider, str) and provider:
-            info["plan"] = provider
-        if isinstance(model, str) and model:
-            info["model"] = model
-        return info or None
+        return _parse_status_json(proc.stdout or "")
+
+    def verifies_auth(self) -> bool:
+        # ``command-code status`` is authenticated-only; config.json presence ≠ logged in.
+        return True
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [
@@ -137,3 +139,27 @@ class CommandCodeBackend(CodingAgentBackend):
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _parse_status_json(raw: str) -> dict[str, str] | None:
+    """Parse ``command-code status --json``. None unless ``authenticated`` is strictly ``True``."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or obj.get("authenticated") is not True:
+        return None
+    info: dict[str, str] = {}
+    provider = obj.get("provider")
+    model = obj.get("model")
+    user = obj.get("user")
+    if isinstance(provider, str) and provider:
+        info["plan"] = provider
+    elif isinstance(user, str) and user:
+        info["plan"] = user
+    if isinstance(model, str) and model:
+        info["model"] = model
+    return info or {"plan": "logged-in"}

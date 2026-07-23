@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
-from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend, _parse_about
+from marshal_engine.backends.cursor import (
+    SAFE_EDIT_DENY,
+    CursorBackend,
+    _parse_about,
+    _status_authenticated,
+)
 
 
 @pytest.fixture
@@ -431,3 +436,138 @@ def test_parse_about_empty_or_unusable() -> None:
     assert _parse_about("") is None
     assert _parse_about("   ") is None
     assert _parse_about('{"cliVersion":"x"}') is None  # JSON but no plan/model fields
+
+
+def test_parse_about_logged_out_model_auto_is_not_auth() -> None:
+    # Live logged-out `about --format json` shape (exit 0) must not look authenticated.
+    raw = (
+        '{"cliVersion":"2026.07.16-899851b","model":"Auto","subscriptionTier":null,'
+        '"osPlatform":"darwin","userEmail":null}'
+    )
+    assert _parse_about(raw) is None
+    assert _parse_about('{"model":"Auto"}') is None
+    assert _parse_about("Model: Auto\n") is None  # text path requires a tier line
+
+
+def test_status_authenticated() -> None:
+    assert (
+        _status_authenticated(
+            '{"status":"authenticated","isAuthenticated":true,"message":"Logged in"}'
+        )
+        is True
+    )
+    assert (
+        _status_authenticated(
+            '{"status":"unauthenticated","isAuthenticated":false,"message":"Not logged in"}'
+        )
+        is False
+    )
+    assert _status_authenticated('{"isAuthenticated":"true"}') is False  # wrong type
+    assert _status_authenticated("") is False
+    assert _status_authenticated("not json") is False
+
+
+def test_verifies_auth_true(backend: CursorBackend) -> None:
+    assert backend.verifies_auth() is True
+
+
+def test_account_info_none_when_status_unauthenticated(
+    backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = (
+            '{"status":"unauthenticated","isAuthenticated":false,'
+            '"message":"Not logged in"}'
+        )
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.cursor.shutil.which", lambda _b: "/usr/bin/cursor-agent"
+    )
+    monkeypatch.setattr("marshal_engine.backends.cursor.subprocess.run", _run)
+    assert backend.account_info() is None
+    assert calls and calls[0][:3] == ["cursor-agent", "status", "--format"]
+    assert len(calls) == 1  # must not call about when unauthenticated
+
+
+def test_account_info_success_when_authenticated(
+    backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Status:
+        returncode = 0
+        stdout = '{"status":"authenticated","isAuthenticated":true}'
+        stderr = ""
+
+    class _About:
+        returncode = 0
+        stdout = (
+            '{"model":"Composer 2.5","subscriptionTier":"Ultra","userEmail":"a@b.c"}'
+        )
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> object:
+        calls.append(list(argv))
+        if "status" in argv:
+            return _Status()
+        return _About()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.cursor.shutil.which", lambda _b: "/usr/bin/cursor-agent"
+    )
+    monkeypatch.setattr("marshal_engine.backends.cursor.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "Ultra", "model": "Composer 2.5"}
+    assert [c[1] for c in calls] == ["status", "about"]
+
+
+def test_account_info_logged_in_when_about_fails_after_auth(
+    backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Status:
+        returncode = 0
+        stdout = '{"isAuthenticated":true}'
+        stderr = ""
+
+    class _About:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    def _run(argv: list[str], **_kw: object) -> object:
+        return _Status() if "status" in argv else _About()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.cursor.shutil.which", lambda _b: "/usr/bin/cursor-agent"
+    )
+    monkeypatch.setattr("marshal_engine.backends.cursor.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "logged-in"}
+
+
+def test_account_info_none_when_binary_missing(
+    backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.cursor.shutil.which", lambda _b: None)
+    assert backend.account_info() is None
+
+
+def test_account_info_none_on_status_timeout(
+    backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess as sp
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.cursor.shutil.which", lambda _b: "/usr/bin/cursor-agent"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.cursor.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(sp.TimeoutExpired(cmd=a[0], timeout=15)),
+    )
+    assert backend.account_info() is None

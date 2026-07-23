@@ -130,43 +130,94 @@ def test_check_available_true_when_version_succeeds(
     assert backend.check_available() is True
 
 
-# --- account_info (reads ~/.commandcode/config.json; HOME is redirected) ---------------------
+# --- account_info / verifies_auth (command-code status --json) -----------------------------
 
 
-def test_account_info_reads_provider_and_model(
+def test_verifies_auth_true(backend: CommandCodeBackend) -> None:
+    assert backend.verifies_auth() is True
+
+
+def test_parse_status_json_success() -> None:
+    from marshal_engine.backends.command_code import _parse_status_json
+
+    raw = (
+        '{"authenticated":true,"version":"0.52.5","user":"chiruu12",'
+        '"provider":"command-code","model":"xiaomi/mimo-v2.5-pro"}'
+    )
+    assert _parse_status_json(raw) == {
+        "plan": "command-code",
+        "model": "xiaomi/mimo-v2.5-pro",
+    }
+
+
+def test_parse_status_json_unauthenticated() -> None:
+    from marshal_engine.backends.command_code import _parse_status_json
+
+    assert _parse_status_json('{"authenticated":false}') is None
+    assert _parse_status_json('{"authenticated":"true"}') is None
+    assert _parse_status_json("") is None
+    assert _parse_status_json("not json") is None
+
+
+def test_account_info_success(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = (
+            '{"authenticated":true,"provider":"command-code",'
+            '"model":"zai-org/GLM-5.2","user":"u"}'
+        )
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.command_code.shutil.which",
+        lambda _b: "/usr/bin/command-code",
+    )
+    monkeypatch.setattr("marshal_engine.backends.command_code.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "command-code", "model": "zai-org/GLM-5.2"}
+    assert calls and calls[0][:3] == ["command-code", "status", "--json"]
+
+
+def test_account_info_none_when_unauthenticated(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = '{"authenticated":false}'
+        stderr = ""
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.command_code.shutil.which",
+        lambda _b: "/usr/bin/command-code",
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.command_code.subprocess.run",
+        lambda *a, **k: _Proc(),
+    )
+    assert backend.account_info() is None
+
+
+def test_account_info_none_when_binary_missing(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.command_code.shutil.which", lambda _b: None)
+    assert backend.account_info() is None
+
+
+def test_account_info_ignores_config_json_alone(
     backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # config.json presence is NOT auth — without a status probe success, return None.
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg_dir = tmp_path / ".commandcode"
     cfg_dir.mkdir()
     (cfg_dir / "config.json").write_text('{"provider": "zai", "model": "zai-org/GLM-5.2"}')
-    assert backend.account_info() == {"plan": "zai", "model": "zai-org/GLM-5.2"}
-
-
-def test_account_info_none_when_missing(
-    backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    assert backend.account_info() is None
-
-
-def test_account_info_none_on_bad_json(
-    backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    cfg_dir = tmp_path / ".commandcode"
-    cfg_dir.mkdir()
-    (cfg_dir / "config.json").write_text("not valid json {")
-    assert backend.account_info() is None
-
-
-def test_account_info_none_when_non_dict_or_empty(
-    backend: CommandCodeBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    cfg_dir = tmp_path / ".commandcode"
-    cfg_dir.mkdir()
-    (cfg_dir / "config.json").write_text("[]")  # valid JSON but not a mapping
-    assert backend.account_info() is None
-    (cfg_dir / "config.json").write_text('{"unrelated": "x"}')  # no provider/model -> empty -> None
+    monkeypatch.setattr("marshal_engine.backends.command_code.shutil.which", lambda _b: None)
     assert backend.account_info() is None

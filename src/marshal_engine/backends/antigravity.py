@@ -11,7 +11,10 @@ Honest gaps from research (these shape what we expose):
   * NO reliable structured output yet - `--output-format json` is reported broken, so we parse
     PLAIN TEXT stdout. native_usage = False (no tokens/cost available headless).
   * Auth is OAuth-first; unattended `ANTIGRAVITY_API_KEY` is an unconfirmed upstream request.
-    Expect a one-time OAuth on a persistent runner.
+    Expect a one-time OAuth on a persistent runner. There is no cheap dedicated
+    `auth`/`status`/`whoami` CLI probe (`agy --help` has none), so `verifies_auth()` stays
+    False — doctor reports CLI presence only and must not claim credentials are valid.
+    Prefer an honest path-only gap over a hang-prone "starts language server" probe.
   * `agy` checks for a TTY; without one, stdout can be swallowed while exit code stays 0. A PTY
     wrapper (e.g. `script -q /dev/null`) belongs in the runner layer - TODO. Until then treat an
     empty success as suspect.

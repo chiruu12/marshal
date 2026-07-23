@@ -452,3 +452,100 @@ def test_parse_export_payload_returns_none_on_garbage(
     assert OpenCodeBackend._parse_export_payload("") is None
     assert OpenCodeBackend._parse_export_payload("not even close") is None
     assert OpenCodeBackend._parse_export_payload("{not json") is None
+
+
+# --- account_info / verifies_auth (opencode auth list) --------------------------------------
+
+
+def test_verifies_auth_true(backend: OpenCodeBackend) -> None:
+    assert backend.verifies_auth() is True
+
+
+def test_parse_auth_list_success() -> None:
+    from marshal_engine.backends.opencode import _parse_auth_list
+
+    raw = (
+        "Credentials ~/.local/share/opencode/auth.json\n"
+        "◇ Anthropic (api)\n"
+        "◇ OpenAI (api)\n"
+        "4 credentials\n"
+    )
+    assert _parse_auth_list(raw) == {"plan": "credentials"}
+    env_only = "Environment\n◇ Google (GOOGLE_API_KEY)\n2 environment variables\n"
+    assert _parse_auth_list(env_only) == {"plan": "env"}
+    # ANSI-coloured outro still parses
+    ansi = "\x1b[91m\x1b[1m1 credentials\x1b[0m\n"
+    assert _parse_auth_list(ansi) == {"plan": "credentials"}
+
+
+def test_parse_auth_list_empty() -> None:
+    from marshal_engine.backends.opencode import _parse_auth_list
+
+    assert _parse_auth_list("0 credentials\n") is None
+    assert _parse_auth_list("") is None
+    assert _parse_auth_list("no summary line") is None
+
+
+def test_account_info_success(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "◇ Anthropic (api)\n1 credentials\n"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.opencode.shutil.which", lambda _b: "/usr/bin/opencode"
+    )
+    monkeypatch.setattr("marshal_engine.backends.opencode.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "credentials"}
+    assert calls and calls[0][:3] == ["opencode", "auth", "list"]
+
+
+def test_account_info_none_when_zero_credentials(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "0 credentials\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.opencode.shutil.which", lambda _b: "/usr/bin/opencode"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.opencode.subprocess.run",
+        lambda *a, **k: _Proc(),
+    )
+    assert backend.account_info() is None
+
+
+def test_account_info_none_on_nonzero_exit(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "Error: Unexpected error"
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.opencode.shutil.which", lambda _b: "/usr/bin/opencode"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.opencode.subprocess.run",
+        lambda *a, **k: _Proc(),
+    )
+    assert backend.account_info() is None
+
+
+def test_account_info_none_when_binary_missing(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.opencode.shutil.which", lambda _b: None)
+    assert backend.account_info() is None

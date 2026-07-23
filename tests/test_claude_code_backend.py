@@ -122,3 +122,76 @@ def test_parse_output_unparseable_is_failure(backend: ClaudeCodeBackend) -> None
     res = backend.parse_output("not json at all", "auth error on stderr", 1)
     assert res.status is RunStatus.FAILED
     assert res.exit_code == 1
+
+
+# --- account_info / verifies_auth (claude auth status) --------------------------------------
+
+
+def test_verifies_auth_true(backend: ClaudeCodeBackend) -> None:
+    assert backend.verifies_auth() is True
+
+
+def test_parse_auth_status_success() -> None:
+    from marshal_engine.backends.claude_code import _parse_auth_status
+
+    raw = (
+        '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max",'
+        '"email":"a@b.c"}'
+    )
+    assert _parse_auth_status(raw) == {"plan": "max"}
+
+
+def test_parse_auth_status_logged_out() -> None:
+    from marshal_engine.backends.claude_code import _parse_auth_status
+
+    assert _parse_auth_status('{"loggedIn":false}') is None
+    assert _parse_auth_status('{"loggedIn":"true"}') is None
+    assert _parse_auth_status("") is None
+    assert _parse_auth_status("not json") is None
+
+
+def test_account_info_success(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = '{"loggedIn":true,"subscriptionType":"pro"}'
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.claude_code.shutil.which", lambda _b: "/usr/bin/claude"
+    )
+    monkeypatch.setattr("marshal_engine.backends.claude_code.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "pro"}
+    assert calls and calls[0][:3] == ["claude", "auth", "status"]
+
+
+def test_account_info_none_when_logged_out(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = '{"loggedIn":false}'
+        stderr = ""
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.claude_code.shutil.which", lambda _b: "/usr/bin/claude"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.claude_code.subprocess.run",
+        lambda *a, **k: _Proc(),
+    )
+    assert backend.account_info() is None
+
+
+def test_account_info_none_when_binary_missing(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.claude_code.shutil.which", lambda _b: None)
+    assert backend.account_info() is None
