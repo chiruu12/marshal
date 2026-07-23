@@ -110,13 +110,14 @@ clients:
   `medium`=1200s, `large`=6000s, `long`=24000s) or a positive integer of seconds. The override
   replaces the resolved `timeout_s` on the `RunRequest` for that one call; validation happens up
   front so a typo fails fast before any worktree is created. See also [`config.md`](config.md).
-- **`budgets`** (optional, top-level): advisory $ caps per scope (a backend, a client, or the
-  whole fleet) and time window (`session` | `week` | `month`). **Soft-warn only — a cap never
-  blocks a run.** When a scope's windowed spend meets or exceeds its cap, Marshal prints a stderr
-  warning at the start of the next run on that scope. Set at most one of `backend` / `client` per
-  entry (omit both for a global cap); `limit_usd` must be positive; the scope's `cost_usd` comes
-  from the usage ledger, so subscription / unknown-cost backends (which report `$0`) never
-  trigger a $ cap and show `$0.00` spent (no fake percentage, no fabricated "remaining").
+- **`budgets`** (optional, top-level): $ caps per scope (a backend, a client, or the whole fleet)
+  and time window (`session` | `week` | `month`). Default is **soft-warn** (stderr when a scope's
+  windowed spend meets/exceeds the cap; the run proceeds). Set `enforce: true` to refuse matching
+  over-cap spawns (`BudgetExceeded`) and serialize matching in-flight spawns. Set at most one of
+  `backend` / `client` per entry (omit both for a global cap); `limit_usd` must be positive; the
+  scope's `cost_usd` comes from the usage ledger, so subscription / unknown-cost backends (which
+  report `$0` / `unavailable`) never trigger a $ cap and show `$0.00` spent (no fake percentage,
+  no fabricated "remaining"). See [`config.md`](config.md) for the full census.
 
   ```yaml
   budgets:
@@ -128,11 +129,12 @@ clients:
       limit_usd: 1.00
     - window: month            # global: no backend / client
       limit_usd: 25.00
+      enforce: true            # optional hard refuse
   ```
 
   The MCP `usage` tool's response (and `marshal usage --config fleet.config.yaml --json`) includes
-  a `budgets` list with `scope / window / spent_usd / limit_usd / remaining_usd` per budget, so
-  the driver can see how much room is left alongside the spend.
+  a `budgets` list with `scope / window / spent_usd / limit_usd / remaining_usd / enforce` per
+  budget, so the driver can see how much room is left alongside the spend.
 - **Missing backend CLI → the client is skipped, not fatal.** At startup Marshal probes each
   configured backend's CLI; a client whose CLI is unavailable is **skipped** with a stderr warning
   (and listed under `skipped_clients`) so the rest of the fleet still runs - a missing CLI never fails
@@ -195,7 +197,8 @@ deleting a workspace's `fleet.config.yaml` is picked up on the next tool call. A
 workspace's budget continuity: the enforce-budget in-flight guard and the `session` window clock
 survive the rebuild (limits themselves come from the newly loaded config), so an unrelated edit
 mid-run does not admit a second spawn past an `enforce: true` cap or reset session spend accounting
-(see `docs/config.md` for the residual when an enforce budget's own definition changes). With no
+(see `docs/config.md` for the residual when an enforce budget's own definition changes). Spend and
+budget evaluation stay on each repo's own ledger — there is no cross-workspace rollup. With no
 file and no `MARSHAL_WORKSPACES`, it's the single-repo server it always was.
 
 Example Claude Code MCP entry. A bare `uv sync` does not put a `marshal` command on your PATH, so
@@ -309,14 +312,16 @@ timestamp. With `--json` the existing `totals / by_backend / by_client / by_mode
 preserved (the test that pins it still passes); the response adds `by_backend_model`, the resolved
 `window`, and the `since` timestamp used to filter.
 
-Add `--config fleet.config.yaml` to also surface any advisory `budgets:` declared there. The
-human output gets a `budgets` table with columns `scope · window · spent · limit · remaining`
-(aligned via `_align_rows`); the JSON output adds a `budgets` list. No `budgets:` configured =
-no `budgets` section / key (the "no behavior change" contract for users who don't opt in).
-**Budgets are advisory only**: a cap that has been met never blocks a run, just prints a stderr
-warning at the start of the next run on that scope. Budgets are also only meaningful for
-backends that report cost - subscription / unknown-cost backends report `$0`, so a $ cap on them
-never triggers and reads `$0.00` spent (no fake percentage, no fabricated "remaining").
+Add `--config fleet.config.yaml` to also surface any `budgets:` declared there. The human output
+gets a `budgets` table with columns `scope · window · spent · limit · remaining` (aligned via
+`_align_rows`); the JSON output adds a `budgets` list (including `enforce`). No `budgets:`
+configured = no `budgets` section / key (the "no behavior change" contract for users who don't opt
+in). Default is soft-warn (stderr when a cap is met; the run proceeds); `enforce: true` refuses
+matching over-cap spawns and serializes matching in-flight spawns (see [`config.md`](config.md)).
+Budgets are only meaningful for backends that report cost — subscription / unknown-cost backends
+report `$0` / `unavailable`, so a $ cap on them never triggers and reads `$0.00` spent (no fake
+percentage, no fabricated "remaining"). The CLI is single-repo by nature; MCP `usage` is likewise
+always one workspace (no cross-workspace spend merge).
 
 ### `marshal logs`
 
