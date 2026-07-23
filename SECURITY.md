@@ -142,3 +142,6 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
 - **Budgets default to soft-warn.** Caps never block spawns unless you set `enforce: true` on a
   budget entry. Enforced budgets also serialize matching in-flight spawns (one at a time per
   budget) so concurrent fan-out cannot TOCTOU past the ledger snapshot before spend is recorded.
+  Budgets are **not** a cross-workspace control: registering multiple workspaces does not create a
+  fleet-wide dollar gate. Operators who need org-wide spend limits must set `enforce` (and use
+  backends that report meaningful cost) **per workspace**, or enforce outside Marshal.

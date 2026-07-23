@@ -8,6 +8,14 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Documentation
+- **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
+  multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
+  session clocks stay per-workspace (no registry spend/budget merge; intentional non-goal). Rewrite
+  design.md §6 for soft-warn default vs `enforce: true` (fail-closed lookups, gate serialization)
+  and `$0`/`unavailable` cost-coverage caveats; sync mcp-tools / SECURITY / usage / MCP `usage`
+  docstring drift that still claimed budgets never block.
+
 ### Fixed
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and

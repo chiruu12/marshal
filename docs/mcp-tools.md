@@ -121,7 +121,8 @@ Run several jobs in parallel, each in its own worktree. Jobs may target **differ
 workspaces** via an optional per-job `workspace`; the call-level `workspace` is the default for jobs
 that omit it. Mixed batches share one `max_concurrency` cap (and the process-wide `run_gate` when
 multi-repo is active). Each workspace keeps its own config, worktrees, and usage ledger — there is
-no cross-workspace ledger merge.
+no cross-workspace ledger merge. Budgets, `EnforceBudgetGate`, and session clocks are also
+**per-workspace**; concurrency is the only shared limiter.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -234,7 +235,8 @@ Read-only diff collection; nothing is merged.
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Scope to one workspace; omit to list **all** workspaces. |
 
-**Returns:** `list[RunRecord + workspace]`.
+**Returns:** `list[RunRecord + workspace]`. Omitting `workspace` aggregates run *records* across
+workspaces for visibility; it is **not** a merged usage/budget view (see `usage`).
 
 ### `cancel_run`
 
@@ -330,7 +332,9 @@ Derive a strategy comparison for a past benchmark `task_id` from the ledger (rea
 
 ### `usage`
 
-Per-provider usage summary for one workspace.
+Per-provider usage summary for **one workspace only** — there is no aggregate / multi-workspace
+mode. Budgets in the payload come from that workspace's `fleet.config.yaml` alone. Contrast with
+`status`, which may list run *records* across workspaces; that list is **not** a spend rollup.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -348,7 +352,7 @@ Per-provider usage summary for one workspace.
 | `by_client` | dict | Per-client buckets. |
 | `by_model` | dict | Per-model buckets. |
 | `by_backend_model` | dict | Keys like `opencode/<model>`. |
-| `budgets` | list \| omitted | Present when `fleet.config.yaml` declares `budgets:`: `[{ scope, window, spent_usd, limit_usd, remaining_usd, enforce }]`. |
+| `budgets` | list \| omitted | Present when that workspace's `fleet.config.yaml` declares `budgets:`: `[{ scope, window, spent_usd, limit_usd, remaining_usd, enforce }]`. Soft-warn by default; `enforce: true` refuses over-cap spawns on **that** workspace. |
 | `workspace` | string | |
 
 Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost_estimated, input_tokens, output_tokens, cache_read_tokens, cost_per_run, cost_per_succeeded }`.

@@ -199,21 +199,30 @@ Apply a local `(backend, model) → price` table for backends that report tokens
 **Tag every record `source`** so estimated/scraped costs are auditable and never presented as ground truth.
 Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via `--window day|week|month|all` (CLI) or `window session|week|month|all` (MCP). The MCP `usage` tool's `window` (`session` / `week` / `month` / `all`) maps to a `since`; the Fleet stamps its `session_start` at process start, so a driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
 
-**Advisory budgets (soft-warn, never block).** An optional top-level `budgets:` list in
+**Budgets (soft-warn default; optional hard refuse).** An optional top-level `budgets:` list in
 `fleet.config.yaml` declares $ caps per scope (a `backend:`, a `client:`, or the whole fleet when
 neither is set) per time window (`session` / `week` / `month`). `Fleet._start` is the FIRST
-statement of the run path, so the check runs before the worktree is provisioned. A scope whose
-windowed spend meets/exceeds its cap prints a stderr warning like
-`[marshal] budget: client:implementer spent $5.40 >= cap $5.00 (week)`; the run proceeds
-unaffected. The check is wrapped in a defensive `try/except` so a budget-lookup failure (corrupt
-ledger, IO error) silently degrades to "no warning" - a budget is never allowed to break a run.
-**Honesty:** a budget's "spend" comes from the ledger's `cost_usd`, which is real only for
-meterable backends (`native` / `admin-api` / `estimated`); subscription / unknown-cost backends
-report `$0`, so a $ cap on them simply never triggers and shows `$0.00` spent - we do NOT
-fabricate a percentage or "remaining" from a missing cost. The MCP `usage` tool (and
-`marshal usage --config fleet.config.yaml --json`) returns a `budgets` list with
-`scope / window / spent_usd / limit_usd / remaining_usd` (remaining floored at 0) per budget, so
-the driver can see remaining alongside spend.
+statement of the run path, so the check runs before the worktree is provisioned. Default
+`enforce: false`: a scope whose windowed spend meets/exceeds its cap prints a stderr warning like
+`[marshal] budget: client:implementer spent $5.40 >= cap $5.00 (week)` and the run proceeds;
+advisory lookup failures (corrupt ledger, IO error) degrade silently to "no warning". With
+`enforce: true`: raise `BudgetExceeded` before worktree create; enforced lookup failures fail
+closed; `EnforceBudgetGate` admits at most one in-flight matching spawn per enforce budget (see
+`budgets.py`; knob census in [`config.md`](config.md)).
+**Per-workspace only (intentional non-goal).** Budgets and usage ledgers are scoped to one repo's
+`.marshal` + that workspace's `fleet.config.yaml`. A multi-workspace MCP server does **not** merge
+ledgers or evaluate a cap across workspaces. The shared control plane is concurrency only
+(`run_many` pool + optional process-wide `run_gate`). Registry-level aggregate spend /
+cross-workspace enforce is out of scope for Marshal; org-wide policy belongs to a future product
+layer (Chauffeur) if needed.
+**Honesty / cost coverage.** A budget's "spend" comes from the ledger's `cost_usd`, which is real
+only for meterable backends (`native` / `admin-api` / `estimated`); subscription / unknown-cost
+backends that record `$0` or `unavailable` never trip a dollar cap — see the live matrix in
+[`usage.md`](usage.md) (Backend notes) rather than treating `enforce: true` as a universal
+kill-switch. We do NOT fabricate a percentage or "remaining" from a missing cost. The MCP `usage`
+tool (and `marshal usage --config fleet.config.yaml --json`) returns a `budgets` list with
+`scope / window / spent_usd / limit_usd / remaining_usd / enforce` (remaining floored at 0) per
+budget, so the driver can see remaining alongside spend.
 
 ---
 

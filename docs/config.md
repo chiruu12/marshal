@@ -84,10 +84,12 @@ Optional catalog the driver reads via `list_models` / `marshal models`. Pure met
 
 ### `budgets[]`
 
-Optional dollar caps. Checked at run start **before** worktree creation. Default is **soft-warn**
-(stderr only). Set `enforce: true` to refuse matching spawns when the windowed spend already meets
-the cap (`BudgetExceeded`). Subscription / unknown-cost backends report `$0`, so a budget on them
-never triggers.
+Optional dollar caps **per workspace** (that repo's `fleet.config.yaml` + `.marshal` ledger — no
+cross-workspace merge; see [`design.md`](design.md) §6 and [`mcp-tools.md`](mcp-tools.md)).
+Checked at run start **before** worktree creation. Default is **soft-warn** (stderr only). Set
+`enforce: true` to refuse matching spawns when the windowed spend already meets the cap
+(`BudgetExceeded`). Subscription / unknown-cost backends report `$0`, so a budget on them never
+triggers.
 
 `enforce: true` also admits **at most one in-flight matching spawn** per budget (scope + window +
 limit). Parallel `run_many` / concurrent `spawn` would otherwise all pass the same pre-run ledger

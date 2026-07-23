@@ -539,9 +539,10 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Per-provider usage summary (totals + by backend/client/model, plus a per-backend/model
         breakdown and token totals) for one workspace. Time-windowed via `window`; default is the
-        full ledger. `by_backend_model` is keyed like 'opencode/<model-a>'. When the workspace's
-        fleet config declares advisory `budgets:`, a `budgets` list is included with per-budget
-        scope / window / windowed spend / limit / remaining (advisory only - never blocks a run)."""
+        full ledger. `by_backend_model` is keyed like 'opencode/<model-a>'. When the target
+        workspace's fleet config declares `budgets:`, a `budgets` list is included with per-budget
+        scope / window / windowed spend / limit / remaining / enforce (soft-warn by default;
+        `enforce: true` may refuse subsequent matching spawns on that workspace)."""
         svc = await offload(registry.get, workspace)
         now = datetime.now(timezone.utc)
         since = _window_since(svc.session_start, now, window)
