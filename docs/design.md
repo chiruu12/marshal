@@ -258,6 +258,9 @@ worktree's own `.venv` wins - otherwise an agent's `uv run pytest` silently reso
 install and tests stale code. A fresh worktree has no `.venv` (it's gitignored), so the optional
 top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) provisions one right
 after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
+Non-allowlisted setup/verify basenames (without `allow_unsafe_commands`) are refused at config
+load / `WorktreeManager` construction — never create-then-teardown — with the same check kept
+as a runtime backstop in `setup()` / `verify()`.
 
 **Verify gate.** The optional top-level `verify` command (e.g. `uv run pytest -q`) is
 `worktree_setup`'s post-run counterpart: it runs in the worktree after a run that would otherwise
