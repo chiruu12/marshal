@@ -476,12 +476,16 @@ def test_parse_auth_list_success() -> None:
     # ANSI-coloured outro still parses
     ansi = "\x1b[91m\x1b[1m1 credentials\x1b[0m\n"
     assert _parse_auth_list(ansi) == {"plan": "credentials"}
+    # Grammatically-correct singular must not false-FAIL a one-credential account.
+    assert _parse_auth_list("1 credential\n") == {"plan": "credentials"}
+    assert _parse_auth_list("1 environment variable\n") == {"plan": "env"}
 
 
 def test_parse_auth_list_empty() -> None:
     from marshal_engine.backends.opencode import _parse_auth_list
 
     assert _parse_auth_list("0 credentials\n") is None
+    assert _parse_auth_list("0 credential\n") is None
     assert _parse_auth_list("") is None
     assert _parse_auth_list("no summary line") is None
 

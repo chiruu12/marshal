@@ -153,8 +153,10 @@ class CodexBackend(CodingAgentBackend):
 
 
 def _parse_login_status(raw: str, *, exit_ok: bool) -> dict[str, str] | None:
-    """Authed only on exit 0 without a \"Not logged in\" message. Pure."""
+    """Authed only on exit 0, non-empty output, without a \"Not logged in\" message. Pure."""
     if not exit_ok:
+        return None
+    if not (raw or "").strip():
         return None
     if "not logged in" in (raw or "").lower():
         return None

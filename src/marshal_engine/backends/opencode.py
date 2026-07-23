@@ -71,7 +71,7 @@ _EXPORT_TIMEOUT_S = 15.0
 _OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-_CREDENTIALS_COUNT = re.compile(r"(\d+)\s+credentials\b", re.IGNORECASE)
+_CREDENTIALS_COUNT = re.compile(r"(\d+)\s+credentials?\b", re.IGNORECASE)
 _ENV_AUTH_COUNT = re.compile(r"(\d+)\s+environment\s+variables?\b", re.IGNORECASE)
 
 #: Ordered bash deny patterns for ``safe-edit`` (inserted after ``"*": "allow"`` so last-match

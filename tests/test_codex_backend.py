@@ -120,6 +120,9 @@ def test_parse_login_status() -> None:
     assert _parse_login_status("Not logged in\n", exit_ok=False) is None
     assert _parse_login_status("Not logged in\n", exit_ok=True) is None
     assert _parse_login_status("", exit_ok=False) is None
+    # Exit 0 with empty/blank output is unknown — fail closed, not silent green.
+    assert _parse_login_status("", exit_ok=True) is None
+    assert _parse_login_status("  \n", exit_ok=True) is None
 
 
 def test_account_info_success(
