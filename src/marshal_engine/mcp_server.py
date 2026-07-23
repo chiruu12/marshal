@@ -64,7 +64,10 @@ _DESC_DURATION = (
     "long=24000s) or a positive integer of seconds. When set, it overrides the resolved timeout."
 )
 _DESC_GOAL = "Natural-language task for the worker agent."
-_DESC_TASK_ID = "Optional grouping id; runs sharing a task_id can be compared head-to-head by report()."
+_DESC_TASK_ID = (
+    "Optional grouping id; runs sharing a task_id can be compared head-to-head by report(). "
+    "Must be a safe path segment ([A-Za-z0-9._-], no leading '.'/'-'); see SECURITY.md."
+)
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt)."
 _DESC_BASE_BRANCH = (
     "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "

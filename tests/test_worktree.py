@@ -65,31 +65,125 @@ def test_setup_is_noop_without_setup_cmd(repo: Path) -> None:
         "ok/../../escape",
         "/absolute/path",
         "with spaces/../../escape",
+        "foo/bar",
+        r"foo\bar",
+        "",
+        ".",
+        "..",
+        ".hidden",
+        "-leading-dash",
+        "with spaces",
+        "café",
+        "a\nb",
+        "a" * 129,
     ],
 )
 def test_create_rejects_path_traversal_in_task_id(repo: Path, bad_id: str) -> None:
-    # The MCP surface (and workflows) accept an arbitrary `task_id` from the driver / spec. A
-    # `..` segment, an absolute path, or a slash that escapes the base dir must NOT be allowed
-    # to write the worktree anywhere on disk - that would be a real path-traversal hole.
+    # Driver / MCP / workflow `task_id` values must never escape `.marshal/worktrees/`. Rejection
+    # is Marshal-owned (charset + containment) *before* any git op — not git ref-format accident.
     m = WorktreeManager(repo)
     base_resolved = m.base_dir.resolve()
-    with pytest.raises(WorktreeError):
+    calls: list[tuple] = []
+    real_git = m._git
+
+    def spy_git(*args: str, **kwargs: object) -> object:
+        calls.append(args)
+        return real_git(*args, **kwargs)
+
+    m._git = spy_git  # type: ignore[method-assign]
+    with pytest.raises(WorktreeError, match="unsafe worktree id|outside base dir"):
         m.create(bad_id)
-    # nothing landed outside the base dir
-    assert (base_resolved.parent).exists()  # the parent dir was never the target
+    assert calls == [], "git must not run for a rejected id"
+    # Fail-closed before mkdir: base_dir must not appear for a rejected id.
+    assert not m.base_dir.exists()
     # the escape target, if it would have been a child of the parent, must not exist either
-    for candidate in (base_resolved.parent / "escape", base_resolved.parent / "evil"):
+    for candidate in (base_resolved.parent / "escape", base_resolved.parent / "evil", repo / "escape"):
         assert not candidate.exists()
+
+
+def test_create_rejects_absolute_path_join_escape(repo: Path, tmp_path: Path) -> None:
+    # On POSIX, `base_dir / "/abs"` discards base_dir — prove we refuse before git.
+    m = WorktreeManager(repo)
+    abs_id = str(tmp_path / "outside_wt")
+    with pytest.raises(WorktreeError, match="unsafe"):
+        m.create(abs_id)
+    assert not Path(abs_id).exists()
+
+
+@pytest.mark.parametrize(
+    "good_id",
+    ["normal", "a.b-c_d", "abc123.phase", "review.candidate", "x" * 128],
+)
+def test_create_accepts_safe_ids(repo: Path, good_id: str) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create(good_id)
+    assert wt.path.exists()
+    assert wt.path.resolve().is_relative_to(m.base_dir.resolve())
+    assert wt.task_id == good_id
+
+
+def test_create_refuses_symlink_escape_under_valid_id(repo: Path) -> None:
+    # A pre-seeded symlink named with a *valid* id that points outside base_dir must not create.
+    m = WorktreeManager(repo)
+    m.base_dir.mkdir(parents=True, exist_ok=True)
+    outside = repo / "outside_target"
+    outside.mkdir()
+    link = m.base_dir / "escape"
+    link.symlink_to(outside)
+    calls: list[tuple] = []
+
+    def boom(*_a: object, **_k: object) -> None:
+        calls.append(())
+        raise AssertionError("git must not run")
+
+    m._git = boom  # type: ignore[method-assign]
+    with pytest.raises(WorktreeError, match="outside base dir"):
+        m.create("escape")
+    assert calls == []
+    assert list(outside.iterdir()) == []
 
 
 def test_create_accepts_normal_ids_after_a_traversal_attempt(repo: Path) -> None:
     # A rejected traversal attempt must leave no orphan state - the manager is reusable.
     m = WorktreeManager(repo)
-    with pytest.raises(WorktreeError):
+    with pytest.raises(WorktreeError, match="unsafe"):
         m.create("../escape")
     wt = m.create("normal-after")
     assert wt.path.exists()
     assert wt.branch == "marshal/normal-after"
+
+
+def test_remove_refuses_path_outside_base_dir(repo: Path) -> None:
+    from marshal_engine.worktree import Worktree
+
+    m = WorktreeManager(repo)
+    outside = repo / "not_a_worktree"
+    outside.mkdir()
+    marker = outside / "keep_me"
+    marker.write_text("safe\n")
+    poisoned = Worktree(task_id="x", path=outside, branch="marshal/x")
+    with pytest.raises(WorktreeError, match="outside base dir"):
+        m.remove(poisoned)
+    assert marker.exists()
+
+
+def test_discard_refuses_path_outside_base_dir(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    outside = repo / "not_a_worktree"
+    outside.mkdir()
+    marker = outside / "keep_me"
+    marker.write_text("safe\n")
+    with pytest.raises(WorktreeError, match="outside base dir"):
+        m.discard(outside, "marshal/x")
+    assert marker.exists()
+
+
+def test_validate_worktree_id_happy_and_task_cap() -> None:
+    from marshal_engine.worktree import MAX_TASK_ID_LEN, validate_worktree_id
+
+    assert validate_worktree_id("a.b-c_d") == "a.b-c_d"
+    with pytest.raises(WorktreeError, match="max length"):
+        validate_worktree_id("a" * (MAX_TASK_ID_LEN + 1), max_len=MAX_TASK_ID_LEN)
 
 
 def test_setup_failure_tears_down_and_raises(repo: Path) -> None:

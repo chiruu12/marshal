@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .backends.base import CodingAgentBackend
 from .config import (
@@ -222,12 +222,17 @@ class MarshalService:
         # `duration` is a per-spawn timeout override: a preset name (short/medium/large/long) or a
         # positive int of seconds. When set, it OVERRIDES the resolved timeout_s on the RunRequest.
         # Validated up front so a typo fails fast before any worktree is created.
-        task = TaskSpec(
-            id=task_id or uuid.uuid4().hex[:8],
-            goal=self._compose_goal(goal),
-            context_files=context_files or [],
-            base_branch=base_branch,
-        )
+        # `task_id` is fail-closed (charset + length) via TaskSpec; map ValidationError → ValueError
+        # so CLI/MCP surfaces match other driver-input errors (not a pydantic traceback).
+        try:
+            task = TaskSpec(
+                id=task_id or uuid.uuid4().hex[:8],
+                goal=self._compose_goal(goal),
+                context_files=context_files or [],
+                base_branch=base_branch,
+            )
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
         timeout_override = resolve_duration(duration) if duration is not None else None
         if client_name:
             client = self._clients.get(client_name)

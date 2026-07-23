@@ -28,6 +28,11 @@ versions may include breaking API changes until 1.0.
   Cursor `--approve-mcps` remains a parked residual (MCP hang hazard, separate from auth).
 
 ### Security
+- **Explicit worktree / task_id validation (#46).** Driver-supplied `task_id` and worktree
+  directory names are fail-closed (charset `[A-Za-z0-9._-]`, no leading `.`/`-`, length caps)
+  with `path.resolve().is_relative_to(base_dir)` containment in `create` / `remove` / `discard`.
+  Hostile ids raise before any `git worktree` op — no longer relying on git ref-format accident.
+  Normative detail: `SECURITY.md`.
 - **Document post-agent verify / integrate_run_hooks exec hazard (#42).** `SECURITY.md`,
   design/config/usage, and `marshal doctor` warnings now state that `verify` and opted-in
   `integrate_run_hooks` may execute agent-modified worktree content/hooks under the operator

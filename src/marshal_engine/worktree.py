@@ -8,6 +8,7 @@ safety boundary of the whole system - keep it boring and reliable.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +27,47 @@ class WorktreeError(RuntimeError):
 # Cap on the verify-command output kept on a run record (chars, from the END - failures print
 # last). The full stdout/stderr of the agent itself is persisted separately by the run-log store.
 _VERIFY_OUTPUT_CAP = 4000
+
+# Fail-closed id rules for worktree directory names / run ids / driver task_ids.
+# Charset keeps workflow `hex.label` and backend-shaped segments (`command-code`) valid;
+# leading `.`/`-`, separators, unicode, and over-length ids are rejected (never rewritten).
+# task_id (grouping key) is capped tighter so composed run_id `task.backend.<uuid8>` fits
+# under MAX_WORKTREE_ID_LEN (backends today ≤ ~12 chars).
+MAX_WORKTREE_ID_LEN = 128
+MAX_TASK_ID_LEN = 64
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def validate_worktree_id(task_id: str, *, max_len: int = MAX_WORKTREE_ID_LEN) -> str:
+    """Return `task_id` if it is a safe flat path segment; raise ``WorktreeError`` otherwise.
+
+    Allowed: ``[A-Za-z0-9._-]``, must start with alphanumeric, length 1..``max_len``.
+    Rejects empty / ``.`` / ``..`` / leading ``.`` or ``-`` / slashes / spaces / unicode.
+    Fail closed — never sanitize-rewrites the input.
+    """
+    if not task_id:
+        raise WorktreeError("unsafe worktree id: empty")
+    if len(task_id) > max_len:
+        raise WorktreeError(
+            f"unsafe worktree id: {task_id!r} exceeds max length {max_len}"
+        )
+    if task_id in (".", "..") or not _SAFE_ID_RE.fullmatch(task_id):
+        raise WorktreeError(
+            f"unsafe worktree id: {task_id!r} "
+            f"(must match {_SAFE_ID_RE.pattern}, no leading '.' or '-')"
+        )
+    return task_id
+
+
+def _ensure_under_base(path: Path, base_dir: Path) -> Path:
+    """Resolve `path` and require it stays under `base_dir` (symlink-aware)."""
+    resolved = path.resolve()
+    base = base_dir.resolve()
+    if not resolved.is_relative_to(base):
+        raise WorktreeError(
+            f"worktree path {str(resolved)!r} is outside base dir {str(base)!r}"
+        )
+    return resolved
 
 
 class Worktree(BaseModel):
@@ -113,9 +155,14 @@ class WorktreeManager:
         ``setup(wt)`` afterwards. The fleet serializes only this git op (it's milliseconds) and runs
         ``setup()`` OUTSIDE that lock, so a parallel fan-out provisions worktrees concurrently
         instead of one-at-a-time behind the lock.
+
+        ``task_id`` is validated (charset + length) and the resolved path is required to stay under
+        ``base_dir`` *before* any git op — Marshal-owned, not git-accidental.
         """
+        task_id = validate_worktree_id(task_id)
         branch = f"{self.branch_prefix}/{task_id}"
         path = self.base_dir / task_id
+        _ensure_under_base(path, self.base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         proc = self._git("worktree", "add", "-b", branch, str(path), base_branch or "HEAD")
         if proc.returncode != 0:
@@ -388,6 +435,7 @@ class WorktreeManager:
         return worktrees
 
     def remove(self, wt: Worktree, delete_branch: bool = True) -> None:
+        _ensure_under_base(wt.path, self.base_dir)
         proc = self._git("worktree", "remove", "--force", str(wt.path))
         if proc.returncode != 0:
             raise WorktreeError(f"worktree remove failed for {wt.task_id!r}: {proc.stderr.strip()}")
@@ -408,8 +456,12 @@ class WorktreeManager:
         present dir we fall back to a best-effort `rmtree`. Then `prune` the admin files and delete
         the branch (failures ignored - already gone, or checked out in a live worktree). The
         immutable usage ledger and the run-state record are NOT touched here.
+
+        Paths outside ``base_dir`` are refused before any remove/rmtree (poisoned state must not
+        delete host directories).
         """
         p = Path(path)
+        _ensure_under_base(p, self.base_dir)
         if p.exists():
             rm = self._git("worktree", "remove", "--force", str(p))
             if rm.returncode != 0 and p.exists():
