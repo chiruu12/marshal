@@ -114,6 +114,26 @@ def test_prepare_safe_edit_merges_existing_cli_json(
         assert rule in deny
 
 
+def test_prepare_safe_edit_writes_required_allow_array(
+    backend: CursorBackend, tmp_path: Path
+) -> None:
+    # Recent Cursor CLIs schema-validate cli.json and require permissions.allow as an array;
+    # a deny-only document fails validation and the agent never launches (observed 2026-07-23:
+    # a whole 7-run fleet died in ~550ms each). Missing allow must materialize as [].
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    data = json.loads((wt / ".cursor" / "cli.json").read_text(encoding="utf-8"))
+    assert data["permissions"]["allow"] == []
+    # And a non-list allow (schema-invalid anyway) is coerced rather than passed through.
+    (wt / ".cursor" / "cli.json").write_text(
+        json.dumps({"permissions": {"allow": "Shell(git)", "deny": []}}), encoding="utf-8"
+    )
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    data = json.loads((wt / ".cursor" / "cli.json").read_text(encoding="utf-8"))
+    assert data["permissions"]["allow"] == []
+
+
 def test_prepare_yolo_and_readonly_skip_cli_json(
     backend: CursorBackend, tmp_path: Path
 ) -> None:
