@@ -60,10 +60,14 @@ def validate_worktree_id(task_id: str, *, max_len: int = MAX_WORKTREE_ID_LEN) ->
 
 
 def _ensure_under_base(path: Path, base_dir: Path) -> Path:
-    """Resolve `path` and require it stays under `base_dir` (symlink-aware)."""
+    """Resolve `path` and require a strict descendant of `base_dir` (symlink-aware).
+
+    Equality with ``base_dir`` is refused: ``discard(base_dir)`` must not rmtree the shared
+    worktrees root (and every sibling worktree under it).
+    """
     resolved = path.resolve()
     base = base_dir.resolve()
-    if not resolved.is_relative_to(base):
+    if resolved == base or not resolved.is_relative_to(base):
         raise WorktreeError(
             f"worktree path {str(resolved)!r} is outside base dir {str(base)!r}"
         )

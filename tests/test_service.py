@@ -263,7 +263,7 @@ def test_run_agent_unknown_client(repo: Path) -> None:
         svc.run_agent("nope", "x")
 
 
-@pytest.mark.parametrize("bad_id", ["../x", "foo/bar", ".hidden", "a" * 65])
+@pytest.mark.parametrize("bad_id", ["", "../x", "foo/bar", ".hidden", "a" * 65, "café", "a\x00b"])
 def test_run_agent_rejects_unsafe_task_id_before_worktree(repo: Path, bad_id: str) -> None:
     svc = _svc(repo)
     with pytest.raises(ValueError, match="unsafe"):
@@ -277,9 +277,28 @@ def test_spawn_rejects_unsafe_task_id(repo: Path) -> None:
         svc.spawn("worker", "x", task_id="../escape")
 
 
+def test_run_agent_rejects_explicit_empty_task_id(repo: Path) -> None:
+    # Truthiness fallback (`task_id or uuid`) would silently replace "" — must fail closed.
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="unsafe"):
+        svc.run_agent("worker", "x", task_id="")
+    assert not any((svc.fleet.worktrees.base_dir).glob("*")) if svc.fleet.worktrees.base_dir.exists() else True
+
+
+def test_benchmark_rejects_explicit_empty_task_id(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="unsafe"):
+        svc.benchmark("x", ["worker"], task_id="")
+
+
 def test_task_spec_rejects_unsafe_id() -> None:
     with pytest.raises(Exception, match="unsafe"):
         TaskSpec(id="../x", goal="g")
+
+
+def test_task_spec_accepts_workflow_and_backend_shaped_ids() -> None:
+    for tid in ("deadbeef.first", "review.candidate", "a.b-c_d", "command-code"):
+        assert TaskSpec(id=tid, goal="g").id == tid
 
 
 def test_session_start_is_a_utc_datetime(repo: Path) -> None:

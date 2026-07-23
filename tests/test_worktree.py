@@ -75,6 +75,7 @@ def test_setup_is_noop_without_setup_cmd(repo: Path) -> None:
         "with spaces",
         "café",
         "a\nb",
+        "a\x00b",
         "a" * 129,
     ],
 )
@@ -112,7 +113,7 @@ def test_create_rejects_absolute_path_join_escape(repo: Path, tmp_path: Path) ->
 
 @pytest.mark.parametrize(
     "good_id",
-    ["normal", "a.b-c_d", "abc123.phase", "review.candidate", "x" * 128],
+    ["normal", "a.b-c_d", "abc123.phase", "review.candidate", "command-code", "x" * 128],
 )
 def test_create_accepts_safe_ids(repo: Path, good_id: str) -> None:
     m = WorktreeManager(repo)
@@ -176,6 +177,32 @@ def test_discard_refuses_path_outside_base_dir(repo: Path) -> None:
     with pytest.raises(WorktreeError, match="outside base dir"):
         m.discard(outside, "marshal/x")
     assert marker.exists()
+
+
+def test_discard_refuses_base_dir_itself(repo: Path) -> None:
+    # Equality with base_dir must not count as "under" — otherwise discard's rmtree fallback
+    # would wipe the shared worktrees root and every sibling run.
+    m = WorktreeManager(repo)
+    m.base_dir.mkdir(parents=True)
+    sibling = m.base_dir / "keep"
+    sibling.mkdir()
+    (sibling / "marker").write_text("alive\n")
+    with pytest.raises(WorktreeError, match="outside base dir"):
+        m.discard(m.base_dir, None)
+    assert (sibling / "marker").exists()
+    with pytest.raises(WorktreeError, match="outside base dir"):
+        m.discard(m.base_dir / ".", None)
+    assert (sibling / "marker").exists()
+
+
+def test_remove_refuses_base_dir_itself(repo: Path) -> None:
+    from marshal_engine.worktree import Worktree
+
+    m = WorktreeManager(repo)
+    m.base_dir.mkdir(parents=True)
+    poisoned = Worktree(task_id="x", path=m.base_dir, branch="marshal/x")
+    with pytest.raises(WorktreeError, match="outside base dir"):
+        m.remove(poisoned)
 
 
 def test_validate_worktree_id_happy_and_task_cap() -> None:
