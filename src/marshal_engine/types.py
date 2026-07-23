@@ -12,7 +12,7 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class PermissionMode(str, Enum):
@@ -92,6 +92,17 @@ class TaskSpec(BaseModel):
                                            # policy maps role -> backend. Engine stays mechanism.
     context_files: list[str] = []          # minimal files the worker should see
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
+
+    @field_validator("id")
+    @classmethod
+    def _id_must_be_safe_path_segment(cls, v: str) -> str:
+        # Lazy import: worktree → config → types; keep the charset helper in one place.
+        from .worktree import MAX_TASK_ID_LEN, WorktreeError, validate_worktree_id
+
+        try:
+            return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
+        except WorktreeError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class RunOpts(BaseModel):

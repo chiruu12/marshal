@@ -356,7 +356,8 @@ Each run lands in its own git worktree under `.marshal/worktrees/`, with state i
 `.marshal/runs/<run_id>.json` (one file per run), usage in `.marshal/usage/`, and the **full raw
 stdout/stderr** in `.marshal/logs/<run_id>.log` (so a driver can `marshal logs <run_id>` to
 inspect what the agent actually did — esp. on a failure, where the 16KB-truncated `text` on the
-run record is rarely enough).
+run record is rarely enough). Optional `task_id` values (and the derived run directory name)
+must be safe path segments — see the worktree isolation bullet in [`SECURITY.md`](../SECURITY.md).
 
 ## Collect and integrate a run
 

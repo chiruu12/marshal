@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .backends.base import CodingAgentBackend
 from .config import (
@@ -222,12 +222,19 @@ class MarshalService:
         # `duration` is a per-spawn timeout override: a preset name (short/medium/large/long) or a
         # positive int of seconds. When set, it OVERRIDES the resolved timeout_s on the RunRequest.
         # Validated up front so a typo fails fast before any worktree is created.
-        task = TaskSpec(
-            id=task_id or uuid.uuid4().hex[:8],
-            goal=self._compose_goal(goal),
-            context_files=context_files or [],
-            base_branch=base_branch,
-        )
+        # `task_id` is fail-closed (charset + length) via TaskSpec; map ValidationError → ValueError
+        # so CLI/MCP surfaces match other driver-input errors (not a pydantic traceback).
+        # Use `is not None` (not truthiness): an explicit empty string must hit the validator,
+        # not silently become a generated id.
+        try:
+            task = TaskSpec(
+                id=task_id if task_id is not None else uuid.uuid4().hex[:8],
+                goal=self._compose_goal(goal),
+                context_files=context_files or [],
+                base_branch=base_branch,
+            )
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
         timeout_override = resolve_duration(duration) if duration is not None else None
         if client_name:
             client = self._clients.get(client_name)
@@ -462,7 +469,8 @@ class MarshalService:
         All runs share one task_id (the grouping key); the comparison is derived on read by
         `report`, so it stays an honest query over the ledger rather than a stored verdict.
         """
-        bench_id = task_id or uuid.uuid4().hex[:8]
+        # `is not None`: explicit "" must fail closed via TaskSpec, not become a generated id.
+        bench_id = task_id if task_id is not None else uuid.uuid4().hex[:8]
         jobs = [{"client": c, "goal": goal, "task_id": bench_id} for c in clients]
         self.run_many(jobs, max_concurrency=max_concurrency)
         return self.report(bench_id, goal=goal)

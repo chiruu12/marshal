@@ -327,7 +327,7 @@ the engine only sequences. Discover/validate with `marshal workflows`; run via `
 7. **Cursor wants a TTY** → run under pseudo-tty (`script -q /dev/null`) or `--print`, stdin from `/dev/null`, **clean shell** (a heavy `.zshrc` causes completion-detection hangs).
 8. **Cursor concurrent launches:** stagger ~100ms + use worktrees (file-lock race, fixed but stagger anyway).
 9. **Cursor workspace trust:** `--trust` / pre-seed trusted config - esp. required for MCP in headless.
-10. **Worktree lifecycle:** spec creation, naming, owner-tracking, orphan detection, `git worktree prune` on crash. Track which run owns which worktree in the usage log.
+10. **Worktree lifecycle:** spec creation, naming, owner-tracking, orphan detection, `git worktree prune` on crash. Track which run owns which worktree in the usage log. **Id validation is Marshal-owned** (charset + length + `is_relative_to(base_dir)` containment on create/remove/discard) — not git-accidental; see `SECURITY.md`.
 11. **Concurrency caps:** each CLI is 150-400 MB RAM → cap parallel runs per fleet and per client or a fan-out OOMs the host.
 12. **Secrets by reference** (`env:VAR`/file), validate presence at load, fail fast with a clear message. Never inline.
 13. **Durable per-run logs are best-effort.** `RunLogStore.write` is atomic (unique temp + `os.replace`, same idiom as `FleetState`), so a torn read never sees partial content; but a *write failure* (disk full, permission) must never break a finished run — `Fleet._execute` wraps the write in `try/except` and stderr-logs the cause. A run that predates log storage simply has no file (the CLI returns non-zero, the MCP tool returns `log=null`).

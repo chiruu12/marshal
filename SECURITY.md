@@ -31,6 +31,11 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
 
 - **Worktree isolation is the safety boundary.** Each run executes inside its own isolated git
   worktree under `.marshal/worktrees/`. The agent edits files there, not in your working tree.
+  Driver-supplied `task_id` / run directory names are validated before any `git worktree` op:
+  charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`), length-capped, and
+  the resolved path must be a strict descendant of `.marshal/worktrees/` (`is_relative_to`,
+  equality with the base dir refused so cleanup cannot wipe the shared root). Hostile ids fail
+  closed with a clear error — they are never sanitize-rewritten.
 - **Your main branch is never touched until you explicitly integrate.** Reviewing a diff
   (`collect_run`) is read-only; merging (`integrate`) is a separate, explicit step.
 - **Permission tiers gate what an agent may do.** `read-only` (no edits), `safe-edit` (the default -
