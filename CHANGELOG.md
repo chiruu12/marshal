@@ -8,6 +8,20 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **Cursor doctor no longer false-greens when logged out (#43).** Auth is gated on
+  `cursor-agent status --format json` (`isAuthenticated === true`); `about` only enriches
+  plan/model after auth. Bare logged-out `about` (`model: "Auto"`, null tier/email) is no longer
+  treated as authenticated.
+
+### Added
+- **Fail-closed doctor auth probes for remaining backends (#43).** Claude Code
+  (`claude auth status`), Command Code (`command-code status --json`; config.json alone is not
+  auth), OpenCode (`opencode auth list`), and Codex (`codex login status`) set `verifies_auth` so
+  present-but-unauthenticated CLIs FAIL in `marshal doctor`. Antigravity stays path-only (no cheap
+  dedicated auth probe; documented). Doctor remains preflight — spawn is not hard-gated. Headless
+  Cursor `--approve-mcps` remains a parked residual (MCP hang hazard, separate from auth).
+
 ### Security
 - **Document post-agent verify / integrate_run_hooks exec hazard (#42).** `SECURITY.md`,
   design/config/usage, and `marshal doctor` warnings now state that `verify` and opted-in

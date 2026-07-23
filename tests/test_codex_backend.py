@@ -102,3 +102,71 @@ def test_parse_output_nonzero_exit_is_failure(backend: CodexBackend) -> None:
     res = backend.parse_output("", "boom on stderr", 2)
     assert res.status is RunStatus.FAILED
     assert res.exit_code == 2
+
+
+# --- account_info / verifies_auth (codex login status) --------------------------------------
+
+
+def test_verifies_auth_true(backend: CodexBackend) -> None:
+    assert backend.verifies_auth() is True
+
+
+def test_parse_login_status() -> None:
+    from marshal_engine.backends.codex import _parse_login_status
+
+    assert _parse_login_status("Logged in as user@example.com\n", exit_ok=True) == {
+        "plan": "logged-in"
+    }
+    assert _parse_login_status("Not logged in\n", exit_ok=False) is None
+    assert _parse_login_status("Not logged in\n", exit_ok=True) is None
+    assert _parse_login_status("", exit_ok=False) is None
+    # Exit 0 with empty/blank output is unknown — fail closed, not silent green.
+    assert _parse_login_status("", exit_ok=True) is None
+    assert _parse_login_status("  \n", exit_ok=True) is None
+
+
+def test_account_info_success(
+    backend: CodexBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "Logged in using ChatGPT\n"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.codex.shutil.which", lambda _b: "/usr/bin/codex"
+    )
+    monkeypatch.setattr("marshal_engine.backends.codex.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "logged-in"}
+    assert calls and calls[0][:3] == ["codex", "login", "status"]
+
+
+def test_account_info_none_when_not_logged_in(
+    backend: CodexBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 1
+        stdout = "Not logged in\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.codex.shutil.which", lambda _b: "/usr/bin/codex"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.codex.subprocess.run",
+        lambda *a, **k: _Proc(),
+    )
+    assert backend.account_info() is None
+
+
+def test_account_info_none_when_binary_missing(
+    backend: CodexBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.codex.shutil.which", lambda _b: None)
+    assert backend.account_info() is None

@@ -153,28 +153,46 @@ class CursorBackend(CodingAgentBackend):
         return result
 
     def account_info(self) -> dict[str, str] | None:
-        """Plan tier + default model from `cursor-agent about`. Cursor exposes no quota/usage API
-        for an individual account, but it does report the subscription tier and current model -
-        honest account context (never a usage record). Returns None on any failure."""
+        """Auth gate via ``cursor-agent status``; plan/model via ``about`` only after auth.
+
+        ``status --format json`` reports ``isAuthenticated`` (exit 0 even when logged out — do
+        not trust the exit code alone). Logged-out ``about`` still returns ``model: "Auto"`` with
+        null tier/email, so ``about`` alone must never green-light doctor. On authenticated
+        status, ``about`` enriches plan/model when available; otherwise a minimal
+        ``{"plan": "logged-in"}`` keeps doctor OK honest. Never raises.
+        """
         if shutil.which(self.binary) is None:
             return None
         try:
-            proc = subprocess.run(
-                [self.binary, "about", "--format", "json"],
+            status_proc = subprocess.run(
+                [self.binary, "status", "--format", "json"],
                 capture_output=True,
                 text=True,
                 timeout=15,
             )
         except (OSError, subprocess.SubprocessError):
             return None
-        if proc.returncode != 0:
+        if not _status_authenticated(status_proc.stdout or ""):
             return None
-        return _parse_about(proc.stdout)
+        # Authenticated: enrich plan/model from about when possible.
+        try:
+            about_proc = subprocess.run(
+                [self.binary, "about", "--format", "json"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {"plan": "logged-in"}
+        if about_proc.returncode == 0:
+            info = _parse_about(about_proc.stdout)
+            if info is not None:
+                return info
+        return {"plan": "logged-in"}
 
     def verifies_auth(self) -> bool:
-        # `cursor-agent about` only returns account info when logged in, so a None from
-        # account_info() (with the binary present) means "not authenticated" - which lets doctor
-        # flag a logged-out CLI instead of green-lighting it on a passing `--version`.
+        # Auth gate is ``cursor-agent status`` / ``isAuthenticated`` (not ``about``). A None from
+        # account_info() with the binary present means not authenticated — doctor must FAIL.
         return True
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
@@ -379,11 +397,30 @@ def _merge_safe_edit_cli_json(path: Path) -> None:
         raise
 
 
+def _status_authenticated(raw: str) -> bool:
+    """True only when ``status --format json`` has ``isAuthenticated`` strictly ``True``.
+
+    Logged-out CLIs still exit 0 with ``isAuthenticated: false`` — never infer auth from exit
+    code alone. Unparseable / missing / wrong-type fields are not authenticated. Pure.
+    """
+    raw = raw.strip()
+    if not raw:
+        return False
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(obj, dict) and obj.get("isAuthenticated") is True
+
+
 def _parse_about(raw: str) -> dict[str, str] | None:
-    """Extract ``{plan, model}`` from ``cursor-agent about`` output.
+    """Extract ``{plan, model}`` from ``cursor-agent about`` for post-auth enrichment.
 
     JSON (``--format json``) is preferred; a text fallback parses the human table so a future
-    default-format change can't silently drop the signal. Pure - unit-tested without a subprocess.
+    default-format change can't silently drop the signal. Requires an auth-adjacent signal
+    (non-empty ``subscriptionTier`` and/or ``userEmail`` in JSON, or a Subscription Tier line
+    in text) — bare ``model: "Auto"`` with null tier/email (the live logged-out shape) must
+    not look like a successful account probe. Pure - unit-tested without a subprocess.
     """
     raw = raw.strip()
     if not raw:
@@ -395,7 +432,13 @@ def _parse_about(raw: str) -> dict[str, str] | None:
         obj = None
     if isinstance(obj, dict):
         tier = obj.get("subscriptionTier")
+        email = obj.get("userEmail")
         model = obj.get("model")
+        has_auth_signal = (isinstance(tier, str) and bool(tier)) or (
+            isinstance(email, str) and bool(email)
+        )
+        if not has_auth_signal:
+            return None
         if isinstance(tier, str) and tier:
             info["plan"] = tier
         if isinstance(model, str) and model:
@@ -412,6 +455,9 @@ def _parse_about(raw: str) -> dict[str, str] | None:
         value = parts[1].strip()
         if value and key in labels:
             info[labels[key]] = value
+    # Text path: require a plan (tier) so a lone "Model: Auto" line cannot green-light.
+    if "plan" not in info:
+        return None
     return info or None
 
 

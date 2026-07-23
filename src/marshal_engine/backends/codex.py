@@ -18,10 +18,16 @@ provider, which emitted `thread.started`, `item.completed` (agent_message), and 
 with a `usage` object; the parser below extracts text and tokens correctly.
 The shared runner closes stdin, so Codex's "reading from stdin" path hits EOF immediately
 rather than blocking.
+
+Doctor auth: ``codex login status`` — exit 0 and no "Not logged in" → authenticated. Env-only
+auth (e.g. ``OPENAI_API_KEY`` / ``CODEX_API_KEY`` without a cached OAuth login) is respected
+only when the CLI status itself reports authenticated; otherwise doctor FAILs honestly.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from typing import Any
 
 from ..types import (
@@ -60,6 +66,30 @@ class CodexBackend(CodingAgentBackend):
     }
 
     # --- hooks ---------------------------------------------------------------------------
+
+    def account_info(self) -> dict[str, str] | None:
+        """Auth via ``codex login status`` (exit 0 and not \"Not logged in\").
+
+        Env-key / config-provider auth is only treated as authenticated when this CLI probe
+        itself reports success — do not invent green from ``OPENAI_API_KEY`` alone. Never raises.
+        """
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "login", "status"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        blob = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        return _parse_login_status(blob, exit_ok=proc.returncode == 0)
+
+    def verifies_auth(self) -> bool:
+        # ``codex login status`` is the authenticated-only probe for doctor.
+        return True
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "exec", "--json", "--color", "never", "--skip-git-repo-check"]
@@ -120,6 +150,17 @@ class CodexBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+def _parse_login_status(raw: str, *, exit_ok: bool) -> dict[str, str] | None:
+    """Authed only on exit 0, non-empty output, without a \"Not logged in\" message. Pure."""
+    if not exit_ok:
+        return None
+    if not (raw or "").strip():
+        return None
+    if "not logged in" in (raw or "").lower():
+        return None
+    return {"plan": "logged-in"}
 
 
 def _extract_text(ev: dict[str, Any]) -> str | None:

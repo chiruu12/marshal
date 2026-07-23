@@ -64,7 +64,7 @@ class CodingAgentBackend(ABC):
 
     # four abstract hooks every backend implements:
     @abstractmethod
-    def check_available(self) -> bool: ...           # which-binary + auth probe + version assert
+    def check_available(self) -> bool: ...           # presence only (which-binary + --version)
 
     @abstractmethod
     def build_invocation(self, task, opts) -> list[str]: ...   # (task, perms, model, session, cwd) -> argv
@@ -80,13 +80,28 @@ class CodingAgentBackend(ABC):
     def extract_usage(self, result) -> UsageRecord | None: ...   # default: result.usage; override to fetch/estimate
     def prepare(self, opts) -> None: ...                         # default no-op; per-run setup before spawn
     def account_info(self) -> dict[str, str] | None: ...         # default None; cheap account metadata (plan tier)
+    def verifies_auth(self) -> bool: ...                         # True → doctor FAILs when account_info is None
 
     # run() lives on the base: build_invocation -> spawn in worktree (timeout!) -> capture -> parse_output
 ```
 
 Rules: code against **capability flags**, not assumptions. Persist `session_id` yourself.
 Add a **version probe** in `check_available` + **contract tests per backend** (their flags/JSON drift fast).
+`check_available` is presence-only; backends with a cheap authenticated probe override `account_info`
++ `verifies_auth` so `marshal doctor` can distinguish installed from logged-in (preflight only —
+spawn is not hard-gated on doctor auth FAIL).
 
+**Doctor auth probes (fail closed when `verifies_auth`):**
+
+| Backend | Probe | Notes |
+|---|---|---|
+| Cursor | `cursor-agent status --format json` → `isAuthenticated === true`; enrich via `about` after | Do **not** trust exit code or bare `about`/`model: Auto` (logged-out about still exits 0). Headless argv still omits `--approve-mcps` (parked residual — MCP hang hazard, separate from auth). |
+| Goose | `goose info -v --check` | Working reference. |
+| Claude Code | `claude auth status` → `loggedIn === true` | Maps `subscriptionType` → plan. |
+| Command Code | `command-code status --json` → `authenticated === true` | Config file alone is **not** auth. |
+| OpenCode | `opencode auth list` → ≥1 credential or env-auth line | Coarse multi-provider (any usable credential). |
+| Codex | `codex login status` (exit 0, not "Not logged in") | Env-key auth only if the CLI status itself reports authenticated. |
+| Antigravity | *(none)* | No cheap dedicated auth/status/whoami in `agy --help`; `verifies_auth` stays False (path-only). |
 ---
 
 ## 3. Per-backend cheat sheet (all implemented backends)
@@ -388,7 +403,8 @@ and contract tests:
 | Claude Code | `claude -p --output-format json` | `--permission-mode plan` / `acceptEdits` / `bypassPermissions` | cost+tokens in JSON (native) |
 | Goose | `goose run --output-format stream-json` | `GOOSE_MODE=chat` / `GOOSE_MODE=auto` / `GOOSE_MODE=auto` | stream-json cost native **only when positive**; `cost: 0` / tokens-only → `unavailable` (estimate path may apply; OpenCode parity) |
 
-Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth, needs a PTY
+Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth with **no
+cheap dedicated auth/status probe** (doctor is path-only; `verifies_auth=False`), needs a PTY
 wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo
 exposed. Codex account is usage-limited until ~Jul 18 2026, so its success-path JSON parsing is
 verified for the failure path only (live success run pending).

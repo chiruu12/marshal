@@ -330,10 +330,13 @@ log storage has no file (the CLI returns non-zero and the MCP tool returns `log=
 case).
 
 `marshal doctor` also reports a backend's plan tier where the CLI exposes it (e.g. a `plan:cursor`
-line with the subscription tier + current model, or `plan:goose` with the configured provider +
-model after `goose info --check` succeeds). Goose now fails closed when the binary is present but
-provider auth/configure is missing — same posture as Cursor's authenticated `about` probe. For
-every config key see [`config.md`](config.md).
+line with the subscription tier + current model after `cursor-agent status` reports authenticated,
+or `plan:goose` with the configured provider + model after `goose info --check` succeeds). Doctor
+**fails closed** when a `verifies_auth` backend is present but unauthenticated: Cursor
+(`status`/`isAuthenticated` — not bare `about`/`model: Auto`), Goose, Claude Code, Command Code
+(`status --json`, not config.json alone), OpenCode (`auth list`), and Codex (`login status`).
+Antigravity stays path-only (no cheap auth probe). Doctor is preflight only — it does not hard-block
+spawn. For every config key see [`config.md`](config.md).
 
 ## Use it as a library
 
@@ -440,12 +443,12 @@ driver's playbook for authoring and running them; starter templates live in `exa
 
 | Backend | Edits | Usage in output | Notes |
 |---------|-------|-----------------|-------|
-| OpenCode | yes | yes (tokens + cost) | `permission_fidelity=enforced-denies`. Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies). |
-| Cursor | yes | no | `permission_fidelity=enforced-denies`. Tokens/cost only via Team/Enterprise Admin API. `safe-edit` temporarily merges an engine-managed deny list into the worktree's `.cursor/cli.json` alongside `--force` (includes Write denies for the policy file itself); the file's exact prior state is restored before the run returns, so the overlay never shows up in diffs, commits, or integration. A pre-existing malformed `cli.json` fails the run (preserved untouched). |
-| Codex | yes | best-effort | `permission_fidelity=enforced-denies`. `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
-| Command Code | yes | no | `permission_fidelity=boundary-only`. Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
-| Antigravity | yes | no | `permission_fidelity=boundary-only`. Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). PTY wrapper still TODO. |
-| Claude Code | yes | yes (tokens + cost) | `permission_fidelity=boundary-only`. Native `acceptEdits` for safe-edit with **no Marshal deny layer**; cost is native (no estimation). |
+| OpenCode | yes | yes (tokens + cost) | `permission_fidelity=enforced-denies`. Force `opencode-go/*` for the Go sub; via EastRouter (`eastrouter/<id>`) the CLI can't price a custom provider, so cost is `unavailable`. Doctor auth via `opencode auth list` (any credential/env). `safe-edit` stamps `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies). |
+| Cursor | yes | no | `permission_fidelity=enforced-denies`. Tokens/cost only via Team/Enterprise Admin API. Doctor auth via `cursor-agent status` (`isAuthenticated`); `about` only enriches plan/model after auth. `safe-edit` temporarily merges an engine-managed deny list into the worktree's `.cursor/cli.json` alongside `--force` (includes Write denies for the policy file itself); the file's exact prior state is restored before the run returns, so the overlay never shows up in diffs, commits, or integration. A pre-existing malformed `cli.json` fails the run (preserved untouched). |
+| Codex | yes | best-effort | `permission_fidelity=enforced-denies`. Doctor auth via `codex login status`. `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else estimated/unavailable. |
+| Command Code | yes | no | `permission_fidelity=boundary-only`. Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). Doctor auth via `command-code status --json` (config.json alone is not auth). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
+| Antigravity | yes | no | `permission_fidelity=boundary-only`. Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). Doctor is path-only (no cheap auth/status probe). PTY wrapper still TODO. |
+| Claude Code | yes | yes (tokens + cost) | `permission_fidelity=boundary-only`. Native `acceptEdits` for safe-edit with **no Marshal deny layer**; cost is native (no estimation). Doctor auth via `claude auth status`. |
 | Goose | yes | best-effort | `permission_fidelity=boundary-only`. Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Doctor probes auth via `goose info --check` (fails closed if not configured / not logged in). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them; cost is `native` only when positive — `cost: 0` / tokens-only stay `unavailable` (may be estimated). |
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)

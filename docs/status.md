@@ -109,12 +109,17 @@ and poll `status`/`get_run`; the run is recorded RUNNING at once and survives th
 phases the engine runs by sequencing the existing safe primitives (no new execution path; integrate
 gated off by default); surfaced as `list_workflows`/`run_workflow` (MCP), `marshal workflows` (CLI),
 and the `marshal-workflow` Skill.
-**Cursor plan tier in `doctor`** - surfaces the authenticated CLI's subscription tier + current
-model (an honest account fact; individual accounts expose no usage/quota API, so no percentage is
-fabricated).
+**Cursor plan tier in `doctor`** - auth gate is `cursor-agent status --format json`
+(`isAuthenticated`); `about` only enriches subscription tier + current model after auth (logged-out
+`about` with bare `model: Auto` no longer false-greens). Individual accounts expose no usage/quota
+API, so no percentage is fabricated.
 **Goose auth probe in `doctor`** - `goose info -v --check` verifies provider configure/auth
 (including Cursor-backed `cursor-agent` login); a present-but-unauthenticated Goose CLI is a FAIL,
 not a green `available`.
+**Doctor auth probes (#43)** - Claude Code (`claude auth status`), Command Code
+(`command-code status --json`), OpenCode (`opencode auth list`), and Codex (`codex login status`)
+also fail closed when present but unauthenticated. Antigravity remains path-only (no cheap
+dedicated auth probe). Doctor stays preflight — it does not hard-block spawn.
 **Claude Code backend** (`backends/claude_code.py`) - `claude -p --output-format json` with
 `acceptEdits` for safe-edit; it reports `total_cost_usd` + tokens, so usage is `native` (honest
 cost, no estimation). Live-verified end-to-end (2026-06-26): edits land in the worktree and the
@@ -124,8 +129,8 @@ worktree in agy's `trustedWorkspaces` before launch, so headless edits land in t
 of the scratch dir (live-verified 2026-06-27). This closes the prior known limitation.
 **Command Code backend** (`backends/command_code.py`) - `command-code -p` (a hosted coding agent on
 its own account) with `plan` for read-only and `--yolo` for safe-edit (headless `auto-accept`
-blocks writes); `doctor` surfaces its
-provider + default model. `-p` prints plain text with no token/cost accounting, so usage is
+blocks writes); `doctor` probes auth via `command-code status --json` (not config.json alone).
+`-p` prints plain text with no token/cost accounting, so usage is
 `unavailable` (a hosted account's spend lives in its own dashboard, never a fabricated $0).
 Live-verified headless (model `zai-org/GLM-5.2`).
 **EastRouter real-cost reader** (`eastrouter.py`) - a client with `usage_api: eastrouter` has its

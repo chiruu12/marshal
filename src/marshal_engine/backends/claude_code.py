@@ -27,6 +27,8 @@ The pure hooks (`build_invocation`/`map_permission`/`parse_output`) are contract
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from typing import Any
 
 from ..types import (
@@ -67,6 +69,28 @@ class ClaudeCodeBackend(CodingAgentBackend):
     }
 
     # --- hooks ---------------------------------------------------------------------------
+
+    def account_info(self) -> dict[str, str] | None:
+        """Auth via ``claude auth status`` (default ``--json``); map ``subscriptionType`` → plan.
+
+        Fail closed when ``loggedIn`` is not strictly ``True``. Never raises.
+        """
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "auth", "status"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return _parse_auth_status(proc.stdout or "")
+
+    def verifies_auth(self) -> bool:
+        # ``claude auth status`` reports ``loggedIn``; None with binary present → not authenticated.
+        return True
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "json"]
@@ -110,6 +134,27 @@ class ClaudeCodeBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+def _parse_auth_status(raw: str) -> dict[str, str] | None:
+    """Parse ``claude auth status`` JSON. None unless ``loggedIn`` is strictly ``True``."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or obj.get("loggedIn") is not True:
+        return None
+    info: dict[str, str] = {}
+    sub = obj.get("subscriptionType")
+    if isinstance(sub, str) and sub:
+        info["plan"] = sub
+    email = obj.get("email")
+    if isinstance(email, str) and email and "plan" not in info:
+        info["plan"] = "logged-in"
+    return info or {"plan": "logged-in"}
 
 
 def _parse_result(raw: str) -> dict[str, Any] | None:

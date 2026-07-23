@@ -201,3 +201,9 @@ def test_trust_workspace_no_temp_leftover_after_concurrent_prepares(
     # The final settings.json has all 8 worktrees trusted.
     data = json.loads((tmp_path / "settings.json").read_text())
     assert len(data["trustedWorkspaces"]) == 8
+
+
+def test_verifies_auth_false_documented_gap(backend: AntigravityBackend) -> None:
+    # No cheap dedicated auth/status/whoami probe on `agy`; doctor stays path-only.
+    assert backend.verifies_auth() is False
+    assert backend.account_info() is None

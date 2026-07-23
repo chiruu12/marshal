@@ -23,6 +23,10 @@ Known live-stream gaps (mitigated by the export-reconciliation step below):
     authoritative `info.tokens`/`info.cost` and the full `messages[].parts[].text` to OVERRIDE
     whatever the live stream gave us. If the export fails (no binary, old CLI without
     `export`, corrupt session), the live stream stands - never crash a run over recovery.
+  * Doctor auth: `opencode auth list` — any stored credential or active provider env var counts
+    as authenticated (coarse multi-provider check; does not require the configured client's
+    specific provider). Zero credentials + zero env auth → None / doctor FAIL via
+    `verifies_auth`.
 
 Other notes:
   * `opencode serve` (HTTP, 127.0.0.1:4096) is a faster warm-server path - added later
@@ -38,6 +42,7 @@ Other notes:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -64,6 +69,10 @@ _EXPORT_TIMEOUT_S = 15.0
 
 #: Env var OpenCode reads as an inline JSON config override (high precedence; no worktree dirty).
 _OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_CREDENTIALS_COUNT = re.compile(r"(\d+)\s+credentials?\b", re.IGNORECASE)
+_ENV_AUTH_COUNT = re.compile(r"(\d+)\s+environment\s+variables?\b", re.IGNORECASE)
 
 #: Ordered bash deny patterns for ``safe-edit`` (inserted after ``"*": "allow"`` so last-match
 #: wins). OpenCode's documented grammar is simple wildcards only (``*`` / ``?``); no regex,
@@ -153,6 +162,33 @@ class OpenCodeBackend(CodingAgentBackend):
     }
 
     # --- hooks ---------------------------------------------------------------------------
+
+    def account_info(self) -> dict[str, str] | None:
+        """Auth via ``opencode auth list`` — any credential or provider env counts as authed.
+
+        Coarse multi-provider check (YAGNI: does not match a client's specific provider).
+        Zero credentials and zero env-auth lines, non-zero exit, timeout, or unparseable
+        output → None. Never raises.
+        """
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "auth", "list"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        blob = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        return _parse_auth_list(blob)
+
+    def verifies_auth(self) -> bool:
+        # ``opencode auth list`` with ≥1 credential/env auth is the doctor auth signal.
+        return True
 
     def prepare(self, opts: RunOpts) -> None:
         """Stamp ``OPENCODE_CONFIG_CONTENT`` with the permission snippet for this tier.
@@ -360,3 +396,19 @@ class OpenCodeBackend(CodingAgentBackend):
         if final_text is None and usage is None:
             return None
         return {"text": final_text, "usage": usage}
+
+
+def _parse_auth_list(raw: str) -> dict[str, str] | None:
+    """Parse ``opencode auth list`` text. Authed when ≥1 credential or ≥1 env-auth line.
+
+    Strips ANSI. Looks for summary lines like ``4 credentials`` / ``2 environment variables``.
+    Zero of both → None. Pure.
+    """
+    text = _ANSI.sub("", raw or "")
+    cred_m = _CREDENTIALS_COUNT.search(text)
+    env_m = _ENV_AUTH_COUNT.search(text)
+    n_cred = int(cred_m.group(1)) if cred_m else 0
+    n_env = int(env_m.group(1)) if env_m else 0
+    if n_cred < 1 and n_env < 1:
+        return None
+    return {"plan": "credentials" if n_cred >= 1 else "env"}
