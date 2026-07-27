@@ -514,13 +514,17 @@ class TeamRunner:
                 )
             try:
                 cr = self.service.collect_run(run_id)
-            except (ValueError, WorktreeError) as exc:
+            except (ValueError, WorktreeError, OSError) as exc:
                 # The status check and this collection are separate reads; a concurrent `clean`
                 # can remove the worktree in between. Nothing can lock against that (clean is an
                 # external caller), so translate the raw failure into something a driver can act
-                # on rather than letting it cross the MCP boundary. BOTH failure shapes matter:
-                # `ValueError` when the path is already gone at resolution, and `WorktreeError`
-                # when it disappears *after* resolution and the git call itself fails.
+                # on rather than letting it cross the MCP boundary. THREE failure shapes matter,
+                # and each is a different point in the race:
+                #   ValueError      - the path was already gone when the worktree was resolved
+                #   WorktreeError   - it vanished after resolution and the git call itself failed
+                #   OSError         - it vanished before the git process even started, so spawning
+                #                     with a deleted cwd raises FileNotFoundError from subprocess
+                # Catching only the first two still let a raw FileNotFoundError escape.
                 raise ConfigError(
                     f"run {run_id} is no longer reviewable: {exc}. Its worktree was removed "
                     "(most likely by `clean`) after the run finished - collect the diff before "
