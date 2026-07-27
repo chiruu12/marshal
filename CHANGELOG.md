@@ -61,6 +61,10 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **`cancel_run` verifies pid identity before signalling.** SIGTERM is sent only when the recorded
+  `pid` + `pid_start_time` pair positively matches the live process; identity mismatch or
+  unverifiable identity skips the signal (fail closed — unlike reaping) but still marks the run
+  `cancelled` with an explanatory `error` and clears `pid`.
 - **Reap orphaned RUNNING runs at Fleet startup.** A persisted `running`/`queued` record left when
   the supervising MCP server or CLI process died is terminal-stamped `failed` (outcome unknown),
   its `pid` cleared, and `error` records the reap — so `cancel_run` can never `killpg` a reused OS

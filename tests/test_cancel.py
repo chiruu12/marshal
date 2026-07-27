@@ -43,6 +43,10 @@ def test_cancel_running_with_pid_kills_and_marks_cancelled(
         killed.append((pgid, sig))
 
     monkeypatch.setattr(os, "killpg", _fake_killpg)
+    monkeypatch.setattr(
+        "marshal_engine.fleet._pid_start_time", lambda pid: "Mon Jan  1 00:00:00 2026"
+    )
+    monkeypatch.setattr("marshal_engine.fleet._pid_alive", lambda pid: True)
 
     fleet = Fleet(tmp_path, {})
     fleet.state.add(
@@ -53,6 +57,7 @@ def test_cancel_running_with_pid_kills_and_marks_cancelled(
             status="running",
             started_at="2026-01-01T00:00:00Z",
             pid=12345,
+            pid_start_time="Mon Jan  1 00:00:00 2026",
         )
     )
     rec = fleet.cancel_run("t.x.a2")
@@ -111,6 +116,10 @@ def test_cancel_running_race_natural_finish_no_overwrite(
         pass  # pretend we killed it
 
     monkeypatch.setattr(os, "killpg", _fake_killpg)
+    monkeypatch.setattr(
+        "marshal_engine.fleet._pid_start_time", lambda pid: "Mon Jan  1 00:00:00 2026"
+    )
+    monkeypatch.setattr("marshal_engine.fleet._pid_alive", lambda pid: True)
 
     running = RunRecord(
         run_id="t.x.a5",
@@ -119,6 +128,7 @@ def test_cancel_running_race_natural_finish_no_overwrite(
         status="running",
         started_at="2026-01-01T00:00:00Z",
         pid=12345,
+        pid_start_time="Mon Jan  1 00:00:00 2026",
     )
     finished = RunRecord(
         run_id="t.x.a5",
