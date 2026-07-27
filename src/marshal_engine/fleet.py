@@ -142,16 +142,17 @@ def _another_fleet_active(lock_path: Path) -> bool:
     return _pid_alive(pid)
 
 
-def _reap_orphaned_runs(state: FleetState, *, lock_path: Path) -> None:
+def _reap_orphaned_runs(state: FleetState) -> None:
     """Terminal-stamp persisted ``running``/``queued`` runs left by a prior Fleet instance.
 
+    Callers MUST have established that no other live Fleet supervises this repo (see the
+    ``fleet.lock`` check in ``Fleet.__init__``) - this function does not re-check.
+
     A new Fleet's in-process pool starts empty, so any non-terminal record on disk is orphaned
-    unless another live Fleet supervises it (``fleet.lock`` pid probe) or the agent subprocess is
-    still running (per-record ``pid`` probe). Reaping clears ``pid`` so a later ``cancel_run`` can
-    never ``killpg`` a reused pid. Corrupt records are skipped with a stderr warning.
+    unless the agent subprocess is still running (per-record ``pid`` probe) or another Fleet in
+    THIS process still owns it (config hot-reload). Reaping clears ``pid`` so a later
+    ``cancel_run`` can never ``killpg`` a reused pid. Corrupt records are skipped with a warning.
     """
-    if _another_fleet_active(lock_path):
-        return
     if not state.dir.exists():
         return
     for path in sorted(state.dir.glob("*.json")):
@@ -437,9 +438,17 @@ class Fleet:
         self.session_start: datetime = (
             session_start if session_start is not None else datetime.now(timezone.utc)
         )
+        # Reap orphans + claim supervision ONLY when no other live Fleet holds the lock. Claiming
+        # unconditionally would destroy the very protection the check just relied on: a short-lived
+        # CLI run alongside a live MCP server would skip reaping (correct) but then overwrite the
+        # lock with its own pid and exit, leaving a dead holder. The next CLI would then see "no
+        # live supervisor" and reap the SERVER's runs - and a run recorded RUNNING before its pid is
+        # stamped has no pid to protect it, so a live run would be marked failed with its pid
+        # cleared, i.e. silently unkillable.
         lock_path = base / "fleet.lock"
-        _reap_orphaned_runs(self.state, lock_path=lock_path)
-        _claim_fleet_lock(lock_path)
+        if not _another_fleet_active(lock_path):
+            _reap_orphaned_runs(self.state)
+            _claim_fleet_lock(lock_path)
 
     def run(
         self,

@@ -1772,6 +1772,40 @@ def test_startup_skips_running_record_when_agent_pid_still_alive(repo: Path) -> 
         proc.wait()
 
 
+def test_startup_does_not_steal_the_lock_from_a_live_fleet(repo: Path) -> None:
+    """REGRESSION: claiming the lock unconditionally destroyed the protection it just relied on.
+
+    A short-lived CLI Fleet alongside a live MCP server correctly skipped reaping, then overwrote
+    `fleet.lock` with its own pid and exited - leaving a DEAD holder. The next Fleet then saw "no
+    live supervisor" and reaped the server's runs; a run recorded RUNNING before its pid is stamped
+    has no pid to protect it, so a live run got marked failed with its pid cleared (unkillable).
+    """
+    import json
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock_path = repo / ".marshal" / "fleet.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({"pid": holder.pid}), encoding="utf-8")
+
+        Fleet(repo, {"writer": _Writer()})  # a second Fleet while the first is alive
+
+        still_held = json.loads(lock_path.read_text(encoding="utf-8"))
+        assert still_held["pid"] == holder.pid, "the live supervisor's lock was stolen"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_startup_claims_the_lock_when_no_live_fleet_holds_it(repo: Path) -> None:
+    import json
+    import os as _os
+
+    lock_path = repo / ".marshal" / "fleet.lock"
+    Fleet(repo, {"writer": _Writer()})
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == _os.getpid()
+
+
 def test_startup_skips_reap_when_another_fleet_lock_holder_is_alive(repo: Path) -> None:
     import json
 
