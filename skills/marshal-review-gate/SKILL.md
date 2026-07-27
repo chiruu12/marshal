@@ -11,6 +11,13 @@ description: >
 
 # Gating a merge behind reviewer consensus
 
+> **Prefer a declared team when one exists.** `run_team` (see `marshal-adversarial-review`) does
+> step 2 below as one call: it fans the reviewers out in isolation, refuses any reviewer that is not
+> read-only, and returns one report per reviewer plus a unified one. It deliberately does **not**
+> apply the truth table in step 4 — you read the reports and decide, which is what the sealed
+> `REVIEW:` line here is a cruder approximation of. Use the hand-rolled loop when you need a one-off
+> panel no team file declares, or want to vary the rubric per run.
+
 You already have a worker run that **succeeded** and a diff you could merge. `succeeded` means the
 process exited cleanly (plus the workspace's config-level `verify:` gate, if one is set - that
 mechanical gate runs before this review gate ever sees the run), not that the code is correct - so

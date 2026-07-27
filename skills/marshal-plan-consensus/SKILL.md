@@ -11,6 +11,11 @@ description: >
 
 # Reaching a consensus plan before you build
 
+> **Related:** this skill *produces* a plan. To have one **judged** by a declared panel before you
+> commit to it, `run_team(name, target="plan", text=...)` - see `marshal-adversarial-review`. Use
+> that when the question is "is this plan sound?"; use the loop below when the question is still
+> "what should the plan even be?"
+
 When *what to do* is clear you just decompose and delegate (`marshal-orchestrate`). When *how to do
 it* is contested - several plausible designs, fuzzy scope, an expensive-to-undo direction - you first
 turn the question into an **evidenced plan** that survived independent scrutiny. The loop is **frame

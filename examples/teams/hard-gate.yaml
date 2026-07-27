@@ -1,0 +1,39 @@
+# A three-lens gate for a high-stakes diff: run it before you integrate a risky change.
+#
+# Copy to <repo>/teams/hard-gate.yaml and point each role at a client YOU have configured
+# read-only in fleet.config.yaml. Route each lens to the model that is actually good at it -
+# heterogeneous reviewers catch what one model's blind spot hides, and the usage ledger then
+# carries a real per-provider breakdown of what the review cost. No verdict is computed: you get
+# three reports plus a unified one, and the merge call stays yours.
+#
+#   run_team("hard-gate", target="run", run_id="<candidate>")
+
+description: Three biased lenses on one candidate diff; you read their reports and decide.
+target: run
+
+roles:
+  - name: architect
+    client: claude-readonly
+    rubric: |
+      You judge whether the change honors this project's stated rules and scope, and nothing else.
+      Prefer deletion to addition. A change that adds a field, config key, or parameter with no
+      consumer wired in the same diff violates the YAGNI gate - flag it as blocking.
+      Call something blocking ONLY by citing a rule clause, a file that contradicts the change, or a concrete
+      layering violation. Never call "architectural smell" blocking with no citation.
+
+  - name: tests
+    client: cursor-readonly
+    rubric: |
+      You judge test coverage of the CHANGED lines, and nothing else.
+      Ask: does a test actually fail if this change is reverted? Look for skipped tests, loosened
+      assertions, mock-only pseudo-coverage, and behaviour changes with no matching test.
+      Name the specific uncovered branch or the weakened assertion.
+
+  - name: correctness
+    client: codex-readonly
+    rubric: |
+      You hunt for defects in the changed code, and nothing else.
+      Trace edge cases: empty inputs, None, concurrent access, partial failure, error paths that
+      swallow exceptions, off-by-one, resource cleanup on the exception path.
+      Describe each defect as a concrete failure case - the inputs and the wrong result. A defect
+      you cannot state as "given X, this produces Y, which is wrong" is a note, not a blocker.

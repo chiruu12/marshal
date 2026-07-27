@@ -25,7 +25,9 @@ It plugs into your driver two ways:
   a fleet: `marshal-orchestrate` (decompose → spawn → monitor → collect → integrate),
   `marshal-benchmark` (compare routing strategies on a real task), `marshal-workflow` (author
   and run a declarative recipe), `marshal-review-gate` (gate a merge behind independent reviewer
-  consensus), and `marshal-plan-consensus` (converge on an approach before building).
+  consensus), `marshal-plan-consensus` (converge on an approach before building), and
+  `marshal-adversarial-review` (run a declared panel of independent read-only reviewers over a
+  diff, plan, commit range, or repo audit, and act on its report).
 
 > **Alpha (0.0.1) · pre-1.0, APIs may change.** The engine, CLI, and MCP server work end to
 > end: parallel fan-out (`run_many`), non-blocking `spawn` + `cancel_run`, merge-back (`collect_run` +
