@@ -296,7 +296,8 @@ Merge a run's worktree branch into the workspace's current branch. Review with `
 | `changed_files` | list[string] | |
 | `conflicts` | list[string] | |
 | `commit` | string \| null | Merge commit hash. |
-| `message` | string | Detail on failure. |
+| `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. |
+| `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
 
 ### `clean`
 
@@ -374,6 +375,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `model` | string \| null | Model used. |
 | `worktree` | string \| null | Worktree path. |
 | `branch` | string \| null | Worktree branch. |
+| `base_branch` | string \| null | Branch the worktree was cut from at spawn time. |
 | `cost_usd` | float | Recorded cost. |
 | `input_tokens` | int | |
 | `output_tokens` | int | |

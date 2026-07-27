@@ -17,6 +17,9 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **`integrate` warns on base-branch drift.** `RunRecord` now persists the branch a run was
+  spawned from; `integrate` sets `base_branch_drift` and names both branches in `message` when the
+  merge target differs (the merge still proceeds).
 - **`collect_run` surfaces agent self-commits.** Committed work on the run branch (since the
   merge-base with the current branch) is returned in `committed_changed_files`, `committed_diff`,
   and `commit_count`; uncommitted work stays in `changed_files` / `diff`. Fixes the review blind

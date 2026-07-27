@@ -120,6 +120,10 @@ Handle the outcome:
   target (commit/stash your edits, check out a branch) and retry - the work is safe on its branch.
 - `empty` - nothing to integrate.
 - `error` - a git operation failed in a way that needs a human (read `message`); do not blindly retry.
+- `base_branch_drift` (on `merged`) - the run was spawned from a different branch than the one you
+  currently have checked out (`message` names both). The merge **still landed**; this is a warning,
+  not a block. Integrating into a different branch is sometimes deliberate — read the branches and
+  decide whether the result is what you intended.
 
 Integrate **one run at a time**, reviewing each. Worktree isolation means main is never touched until
 this step.

@@ -31,6 +31,7 @@ class RunRecord(BaseModel):
     model: str | None = None
     worktree: str | None = None
     branch: str | None = None
+    base_branch: str | None = None  # branch the worktree was cut from (None = pre-drift records)
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0

@@ -152,6 +152,18 @@ class WorktreeManager:
                 f"git {' '.join(args)!r} timed out after {self.git_timeout_s}s"
             ) from exc
 
+    def resolve_base_branch(self, base_branch: str | None) -> str:
+        """The ref recorded for a run: caller's branch name, or HEAD resolved when omitted."""
+        if base_branch is not None:
+            return base_branch
+        proc = self._git("rev-parse", "--abbrev-ref", "HEAD")
+        if proc.returncode != 0:
+            raise WorktreeError(f"could not resolve base branch: {proc.stderr.strip()}")
+        ref = proc.stdout.strip()
+        if ref != "HEAD":
+            return ref
+        return self._git("rev-parse", "HEAD").stdout.strip()
+
     def create(self, task_id: str, base_branch: str | None = None) -> Worktree:
         """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch (git op only).
 

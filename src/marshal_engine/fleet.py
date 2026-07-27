@@ -73,6 +73,13 @@ def _is_terminal(rec: RunRecord) -> bool:
     return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
 
 
+def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool, str]:
+    """Warn when integrate's target differs from the branch the run was spawned from."""
+    if rec is None or rec.base_branch is None or rec.base_branch == target:
+        return False, ""
+    return True, f"warning: run was based on {rec.base_branch!r}, merging into {target!r}"
+
+
 def _in_clean_scope(rec: RunRecord, scope: str) -> bool:
     """Whether `clean(scope=...)` should reclaim this run (a running/queued run never is)."""
     if not _is_terminal(rec):
@@ -151,6 +158,7 @@ class IntegrateResult(BaseModel):
     conflicts: list[str] = []
     commit: str | None = None
     message: str = ""
+    base_branch_drift: bool = False  # True when merge target differs from the run's recorded base
 
 
 class CommitResult(BaseModel):
@@ -424,6 +432,7 @@ class Fleet:
             # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
             # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
             # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
+            resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
             with self._create_lock:
                 wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
             self.worktrees.setup(wt)
@@ -437,6 +446,7 @@ class Fleet:
                     status=RunStatus.RUNNING.value,
                     worktree=str(wt.path),
                     branch=wt.branch,
+                    base_branch=resolved_base,
                     started_at=started,
                 )
             )
@@ -974,6 +984,7 @@ class Fleet:
         self.state.update(run_id, merged_into=target)
         if cleanup:
             self.worktrees.remove(wt)
+        drift, drift_msg = _base_branch_drift_warning(rec, target)
         return IntegrateResult(
             run_id=run_id,
             status="merged",
@@ -981,6 +992,8 @@ class Fleet:
             merged_into=target,
             changed_files=changed,
             commit=commit,
+            base_branch_drift=drift,
+            message=drift_msg,
         )
 
     def _worktree_for(self, run_id: str) -> Worktree:

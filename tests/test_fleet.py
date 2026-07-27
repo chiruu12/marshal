@@ -1050,6 +1050,54 @@ def test_integrate_blocked_on_detached_head(repo: Path) -> None:
     assert "detached" in result.message.lower()
 
 
+def test_run_persists_resolved_base_branch_on_run_record(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    _git(repo, "checkout", "-b", "spawn-base")
+    _git(repo, "checkout", "-")
+    explicit = fleet.run("writer", TaskSpec(id="bb1", goal="x", base_branch="spawn-base"))
+    assert fleet.state.get(explicit.run_id).base_branch == "spawn-base"
+
+    current = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    resolved = fleet.run("writer", TaskSpec(id="bb2", goal="x"))
+    assert fleet.state.get(resolved.run_id).base_branch == current
+
+
+def test_integrate_same_base_branch_has_no_drift_warning(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_rec = fleet.run("writer", TaskSpec(id="nd1", goal="x"))
+    result = fleet.integrate(run_rec.run_id)
+    assert result.status == "merged"
+    assert result.base_branch_drift is False
+    assert result.message == ""
+
+
+def test_integrate_different_branch_reports_base_branch_drift(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    spawn_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    run_rec = fleet.run("writer", TaskSpec(id="dr1", goal="x"))
+    assert fleet.state.get(run_rec.run_id).base_branch == spawn_branch
+
+    _git(repo, "checkout", "-b", "feature/other-pr")
+    result = fleet.integrate(run_rec.run_id)
+    assert result.status == "merged"
+    assert (repo / "out.txt").read_text() == "hi"
+    assert result.base_branch_drift is True
+    assert spawn_branch in result.message
+    assert "feature/other-pr" in result.message
+
+
+def test_integrate_legacy_record_without_base_branch_has_no_drift_warning(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_rec = fleet.run("writer", TaskSpec(id="lg1", goal="x"))
+    fleet.state.update(run_rec.run_id, base_branch=None)
+
+    _git(repo, "checkout", "-b", "feature/unrelated")
+    result = fleet.integrate(run_rec.run_id)
+    assert result.status == "merged"
+    assert result.base_branch_drift is False
+    assert result.message == ""
+
+
 # --- commit_run: freeze a run's work onto its branch so a dependent run can chain off it ---------
 
 def test_commit_run_freezes_work_on_branch(repo: Path) -> None:
