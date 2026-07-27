@@ -270,7 +270,7 @@ def build_role_goal(role: RoleSpec, subject_block: str) -> str:
     return f"# Your lens: {role.name}\n\n{role.rubric.strip()}\n\n{_CONTRACT}\n\n{subject_block}"
 
 
-def build_subject_block(subject: TeamSubject, body: str, *, nonce: str) -> str:
+def build_subject_block(subject: TeamSubject, body: str, *, nonce: str, note: str = "") -> str:
     """Render the reviewed material with a header naming what it is. Pure.
 
     The body is delimited by an unguessable nonce marker rather than a markdown fence: reviewed
@@ -287,6 +287,10 @@ def build_subject_block(subject: TeamSubject, body: str, *, nonce: str) -> str:
         "plan": "# Subject: the plan below (not yet implemented)",
         "audit": "# Subject: the repository as it currently stands",
     }[subject.kind]
+    if note:
+        # Rides in the header so it reaches EVERY reviewer's prompt, not just the report a human
+        # reads afterwards - e.g. "this run did not succeed", which changes how a lens reads it.
+        header = f"{header}\n\n**Note:** {note}"
     if subject.kind == "audit":
         return (
             f"{header}\n\nRead the repository from your working directory and review it against "
@@ -321,10 +325,22 @@ def load_team(path: Path | str) -> TeamSpec:
 
 
 def find_team(name: str, directory: Path | str) -> Path:
-    """Locate ``<directory>/<name>.yaml`` (or ``.yml``). Raises ConfigError if absent."""
+    """Locate ``<directory>/<name>.yaml`` (or ``.yml``). Raises ConfigError if absent or outside.
+
+    Containment is enforced HERE, not only in the caller that handles explicit paths: a bare name
+    is still a path fragment, so ``find_team("../evil", teams_dir)`` would otherwise resolve to a
+    file outside the workspace's ``teams/`` directory and feed its rubric - attacker-authored
+    prompt text - straight into every reviewer's goal.
+    """
     d = Path(directory)
+    base = d.resolve()
     for ext in (".yaml", ".yml"):
         candidate = d / f"{name}{ext}"
+        if not candidate.resolve().is_relative_to(base):
+            raise ConfigError(
+                f"team {name!r} resolves outside {base}; teams must live in the workspace's "
+                "teams/ directory"
+            )
         if candidate.exists():
             return candidate
     raise ConfigError(f"no team {name!r} in {d}; create {d / (name + '.yaml')} (see examples/teams/)")
@@ -456,6 +472,7 @@ class TeamService(Protocol):
     repo_root: Path
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]: ...
+    def get_run(self, run_id: str) -> RunRecord | None: ...
     def collect_run(self, run_id: str) -> CollectResult: ...
     def diff_range(self, base: str, head: str | None = None, *, paths: list[str] | None = None) -> str: ...
     def client_available(self, client_name: str) -> bool: ...
@@ -467,18 +484,41 @@ class TeamRunner:
     def __init__(self, service: TeamService) -> None:
         self.service = service
 
-    def _subject_body(self, subject: TeamSubject) -> tuple[str, str]:
-        """(body, summary) for the subject - read-only resolution of what the panel reviews."""
+    def _subject_body(self, subject: TeamSubject) -> tuple[str, str, str]:
+        """(body, summary, note) for the subject - read-only resolution of what the panel reviews.
+
+        ``note`` is a caveat that must reach the reviewers themselves, not only the report.
+        """
         if subject.kind == "run":
-            cr = self.service.collect_run(str(subject.run_id))
-            return cr.diff, f"run {subject.run_id} ({len(cr.changed_files)} file(s) changed)"
+            run_id = str(subject.run_id)
+            # A run still in flight has a half-written worktree: its diff is whatever the agent
+            # happened to have on disk this instant, so a review of it describes nothing stable.
+            # Refuse outright. A terminal-but-unsuccessful run IS reviewable (post-mortems are
+            # legitimate), but its status rides in the summary - and therefore into every
+            # reviewer's prompt and the unified report - so nobody mistakes it for a candidate.
+            rec = self.service.get_run(run_id)
+            status = rec.status if rec is not None else ""
+            if status in (RunStatus.RUNNING.value, RunStatus.QUEUED.value):
+                raise ConfigError(
+                    f"run {run_id} is still {status}; wait for it to finish before reviewing "
+                    "(an in-flight worktree is a partial snapshot, not a candidate)"
+                )
+            cr = self.service.collect_run(run_id)
+            note = (
+                ""
+                if status == RunStatus.SUCCEEDED.value
+                else f"run status {status or 'unknown'} - this run did NOT succeed; you are "
+                "reviewing an unsuccessful candidate, not finished work"
+            )
+            suffix = "" if not note else f", run status {status or 'unknown'}"
+            return cr.diff, f"run {run_id} ({len(cr.changed_files)} file(s) changed{suffix})", note
         if subject.kind == "range":
             diff = self.service.diff_range(str(subject.base), subject.head, paths=subject.paths)
             scope = f" limited to {', '.join(subject.paths)}" if subject.paths else ""
-            return diff, f"range {subject.base}...{subject.head or 'HEAD'}{scope}"
+            return diff, f"range {subject.base}...{subject.head or 'HEAD'}{scope}", ""
         if subject.kind == "plan":
-            return str(subject.text), "a plan (text supplied by the requesting agent)"
-        return "", f"repository audit ({self.service.repo_root})"
+            return str(subject.text), "a plan (text supplied by the requesting agent)", ""
+        return "", f"repository audit ({self.service.repo_root})", ""
 
     def run(
         self,
@@ -492,7 +532,7 @@ class TeamRunner:
         validate_team(spec, self.service.config)
         validate_subject(spec, subject)
 
-        raw_body, summary = self._subject_body(subject)
+        raw_body, summary, note = self._subject_body(subject)
         # Reviewing nothing wastes a fleet and produces reports that say nothing; an empty diff is
         # a caller mistake, not a review.
         if subject.kind != "audit" and not raw_body.strip():
@@ -500,7 +540,7 @@ class TeamRunner:
                 f"team {spec.name!r}: {summary} is empty - there is nothing to review"
             )
         body, truncated = truncate_subject(raw_body)
-        subject_block = build_subject_block(subject, body, nonce=team_run_id)
+        subject_block = build_subject_block(subject, body, nonce=team_run_id, note=note)
 
         # A role whose backend CLI is missing is recorded as absent rather than silently dropped -
         # a panel that quietly shrank is a different panel than the one that was configured.

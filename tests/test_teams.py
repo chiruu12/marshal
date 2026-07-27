@@ -75,6 +75,7 @@ class StubService:
         run_many_raises: bool = False,
         drop_records: int = 0,
         reverse_records: bool = False,
+        run_status: str = "succeeded",
     ) -> None:
         self.config = config
         self.repo_root = Path("/repo")
@@ -88,6 +89,7 @@ class StubService:
         self.jobs: list[dict[str, Any]] = []
         self.calls: list[str] = []
         self.diff_paths: list[str] = []
+        self.run_status = run_status
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
         self.calls.append("run_many")
@@ -110,6 +112,11 @@ class StubService:
         if self.reverse_records:
             out.reverse()
         return out
+
+    def get_run(self, run_id: str) -> RunRecord | None:
+        return RunRecord(
+            run_id=run_id, task_id="t", backend="opencode", status=self.run_status
+        )
 
     def collect_run(self, run_id: str) -> CollectResult:
         self.calls.append("collect_run")
@@ -352,6 +359,17 @@ def test_find_team_and_listing(tmp_path: Path) -> None:
     assert "broken.yaml" in listing.errors
 
 
+@pytest.mark.parametrize("name", ["../evil", "../../evil", "sub/../../evil"])
+def test_find_team_refuses_a_name_that_escapes_the_directory(tmp_path: Path, name: str) -> None:
+    """REGRESSION: a bare name is still a path fragment. `../evil` loaded a team from outside
+    teams/, feeding attacker-authored rubric text into every reviewer's prompt."""
+    teams = tmp_path / "teams"
+    teams.mkdir()
+    _write(tmp_path, "evil.yaml", _YAML)
+    with pytest.raises(ConfigError, match="outside"):
+        find_team(name, teams)
+
+
 def test_find_team_missing_raises(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="no team 'nope'"):
         find_team("nope", tmp_path)
@@ -515,6 +533,25 @@ def test_runner_passes_the_path_scope_through_to_the_diff() -> None:
     assert svc.diff_paths == ["src/"]
     assert "limited to src/" in result.subject_summary
     assert "limited to src/" in svc.jobs[0]["goal"]
+
+
+@pytest.mark.parametrize("status", ["running", "queued"])
+def test_runner_refuses_to_review_a_run_still_in_flight(status: str) -> None:
+    """An in-flight worktree is a partial snapshot; a review of it describes nothing stable."""
+    svc = StubService(_config("ro-a", "ro-b"), run_status=status)
+    with pytest.raises(ConfigError, match="still " + status):
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert svc.calls == []
+
+
+@pytest.mark.parametrize("status", ["failed", "timed_out", "cancelled", "verify_failed"])
+def test_runner_reviews_an_unsuccessful_run_but_says_so(status: str) -> None:
+    """Post-mortems are legitimate - but the status must reach the reviewers and the report."""
+    svc = StubService(_config("ro-a", "ro-b"), run_status=status)
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert f"run status {status}" in result.subject_summary
+    assert f"run status {status}" in svc.jobs[0]["goal"]
+    assert f"run status {status}" in result.unified_report if result.unified_report else True
 
 
 def test_runner_reviews_a_plan_without_touching_git() -> None:
