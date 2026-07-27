@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -117,7 +118,10 @@ _ORPHAN_REAP_ERROR = (
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when ``pid`` still names a live process (signal 0 probe)."""
+    """True when ``pid`` still names a live process (signal 0 probe).
+
+    Liveness only - it says nothing about WHOSE process it is. See ``_pid_is_still_ours``.
+    """
     try:
         os.kill(pid, 0)
         return True
@@ -126,6 +130,46 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         # Permission denied or other ambiguity: assume alive so we never reap a live run.
         return True
+
+
+def _pid_start_time(pid: int) -> str | None:
+    """The OS-reported start time of ``pid``, or None when it cannot be determined.
+
+    A pid alone is not an identity: the OS reuses pids, so "something is alive at pid 4242" does
+    not mean "our agent is alive". Pairing the pid with its start time makes the identity
+    verifiable. POSIX-only via ``ps``; None on any failure, and callers must treat None as
+    "unverifiable", never as "different".
+    """
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    started = proc.stdout.strip()
+    return started or None
+
+
+def _pid_is_still_ours(rec: RunRecord) -> bool:
+    """Whether ``rec.pid`` still names the agent this run started.
+
+    Fails OPEN (True = "assume it is ours, do not reap") whenever identity cannot be established:
+    no recorded start time (an older record), or the probe is unavailable. That direction is
+    deliberate. Falsely reaping a LIVE run is destructive and silent - the record is stamped
+    failed, its pid cleared so it can never be cancelled, and its real outcome is never recorded
+    because the terminal stamp is guarded on the status still being running. Failing to reap a
+    stale record only leaves it visible as running until someone explicitly calls ``cancel_run``,
+    and only then can a wrong process be signalled.
+    """
+    if rec.pid is None or not _pid_alive(rec.pid):
+        return False
+    if not rec.pid_start_time:
+        return True  # unverifiable (record predates the field) - fail open
+    now = _pid_start_time(rec.pid)
+    if now is None:
+        return True  # probe unavailable (non-POSIX, permission) - fail open
+    return now == rec.pid_start_time
 
 
 def _another_fleet_active(lock_path: Path) -> bool:
@@ -165,8 +209,8 @@ def _reap_orphaned_runs(state: FleetState) -> None:
             continue
         if _inflight_in_this_process(state.dir, rec.run_id):
             continue  # another Fleet in this process still owns the run (config hot-reload)
-        if rec.pid is not None and _pid_alive(rec.pid):
-            continue  # agent still running (e.g. MCP died but the CLI child survived)
+        if _pid_is_still_ours(rec):
+            continue  # our agent is genuinely still running (MCP died, the child survived)
         try:
             state.update_if(
                 rec.run_id,
@@ -180,13 +224,45 @@ def _reap_orphaned_runs(state: FleetState) -> None:
             print(f"[marshal] failed to reap orphaned run {rec.run_id}: {exc}", file=sys.stderr)
 
 
-def _claim_fleet_lock(lock_path: Path) -> None:
-    """Record this process as the active Fleet supervisor for the repo (best-effort)."""
+def _claim_fleet_lock(lock_path: Path) -> bool:
+    """Atomically become this repo's Fleet supervisor. True only if THIS process won the claim.
+
+    A check-then-write pair is not enough: two Fleets starting together both saw "no live holder",
+    both reaped, and both wrote the lock. The loser then exited leaving a dead pid, so the next
+    process reaped again - and a run recorded RUNNING before its pid is stamped has nothing to
+    protect it, so a live run got marked failed with its pid cleared (permanently uncancellable,
+    and its real outcome never recorded because the terminal stamp is guarded on status ==
+    running).
+
+    `O_CREAT | O_EXCL` makes creation the atomic winner-takes-all step. A pre-existing lock is
+    honoured while its holder lives; a dead holder's lock is removed and the create retried, so at
+    most one of two simultaneous takers wins. The lock is never released: a long-lived server keeps
+    it, and a short-lived CLI leaves a dead pid the next process can take over.
+    """
+    payload = json.dumps({"pid": os.getpid()})
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
     except OSError as exc:
-        print(f"[marshal] failed to write fleet lock: {exc}", file=sys.stderr)
+        print(f"[marshal] failed to create fleet lock dir: {exc}", file=sys.stderr)
+        return False
+    for attempt in (1, 2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if attempt == 2 or _another_fleet_active(lock_path):
+                return False  # a live supervisor owns it, or we lost the takeover race
+            try:
+                lock_path.unlink()  # stale holder: clear it and retry the atomic create once
+            except OSError:
+                return False
+            continue
+        except OSError as exc:
+            print(f"[marshal] failed to write fleet lock: {exc}", file=sys.stderr)
+            return False
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        return True
+    return False
 
 
 def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool, str]:
@@ -438,17 +514,11 @@ class Fleet:
         self.session_start: datetime = (
             session_start if session_start is not None else datetime.now(timezone.utc)
         )
-        # Reap orphans + claim supervision ONLY when no other live Fleet holds the lock. Claiming
-        # unconditionally would destroy the very protection the check just relied on: a short-lived
-        # CLI run alongside a live MCP server would skip reaping (correct) but then overwrite the
-        # lock with its own pid and exit, leaving a dead holder. The next CLI would then see "no
-        # live supervisor" and reap the SERVER's runs - and a run recorded RUNNING before its pid is
-        # stamped has no pid to protect it, so a live run would be marked failed with its pid
-        # cleared, i.e. silently unkillable.
-        lock_path = base / "fleet.lock"
-        if not _another_fleet_active(lock_path):
+        # Reap ONLY as the winner of an atomic claim. Checking liveness and then writing was a
+        # TOCTOU: two Fleets could both pass the check and both reap. Winning the claim is the
+        # permission to reconcile.
+        if _claim_fleet_lock(base / "fleet.lock"):
             _reap_orphaned_runs(self.state)
-            _claim_fleet_lock(lock_path)
 
     def run(
         self,
@@ -612,7 +682,9 @@ class Fleet:
         record: RunRecord | None = None
         try:
             def _record_pid(pid: int) -> None:
-                self.state.update(run_id, pid=pid)
+                # Stamp the pid together with its start time: the pair is an identity a later
+                # process can verify, where a bare pid can be silently reused by the OS.
+                self.state.update(run_id, pid=pid, pid_start_time=_pid_start_time(pid))
 
             opts = RunOpts(
                 cwd=wt.path,
@@ -851,8 +923,20 @@ class Fleet:
             return RunStatus.SUCCEEDED  # can't tell -> don't mislabel a success as empty
         return RunStatus.SUCCEEDED if changed else RunStatus.EMPTY
 
-    def _collect_target(self) -> str:
-        """Merge-base reference for committed work on a run branch (matches integrate's target)."""
+    def _collect_target(self, rec: RunRecord | None = None) -> str:
+        """Merge-base reference for a run's committed work.
+
+        The run's OWN recorded base when we have it - NOT whatever is checked out now. Those are
+        different questions: `integrate` merges into the current branch (that is the user's intent
+        at merge time), but a *review* has to be computed against the base the agent actually
+        started from. Using the current branch means a checkout between spawn and collect silently
+        changes the diff: commits inherited from an unrelated branch appear as the agent's work, or
+        the agent's own commits vanish because the new target already contains them.
+
+        Falls back to the current branch for records written before `base_branch` existed.
+        """
+        if rec is not None and rec.base_branch:
+            return rec.base_branch
         try:
             return self.worktrees.current_branch()
         except WorktreeError:
@@ -861,13 +945,14 @@ class Fleet:
     def collect_run(self, run_id: str) -> CollectResult:
         """Surface a run's diff + changed files. Read-only - nothing is merged."""
         wt = self._worktree_for(run_id)
+        rec = self.state.get(run_id)
         changed_files = self.worktrees.changed_files(wt)
         diff = self.worktrees.diff(wt)
         committed_changed_files: list[str] = []
         committed_diff = ""
         commit_count = 0
         if wt.branch:
-            target = self._collect_target()
+            target = self._collect_target(rec)
             commit_count = self.worktrees.unmerged_commit_count(wt.branch, target)
             if commit_count:
                 committed_changed_files = self.worktrees.merged_diff_files(wt.branch, target)

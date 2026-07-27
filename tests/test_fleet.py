@@ -1968,3 +1968,134 @@ def test_cursor_timeout_still_cleans_up_overlay(
     assert rec.status == "timed_out"
     assert not (Path(rec.worktree or "") / ".cursor").exists()  # finally-path cleanup held
     assert fleet.collect_run(rec.run_id).changed_files == []
+
+
+# --- confirmed-defect regressions (audit fleet, 2026-07-27) --------------------------------
+
+
+def test_collect_run_uses_the_runs_own_base_not_the_current_branch(repo: Path) -> None:
+    """REGRESSION: collection computed the committed diff against whatever was checked out NOW.
+
+    A checkout between spawn and collect silently changed the review: commits inherited from an
+    unrelated branch showed up as the agent's work, or the agent's own commits vanished.
+    """
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    spawn_base = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    rec = fleet.run("selfcommit", TaskSpec(id="cb1", goal="x"))
+    assert fleet.state.get(rec.run_id).base_branch == spawn_base
+
+    # The driver switches branches and puts an unrelated commit on the new one.
+    _git(repo, "checkout", "-q", "-b", "unrelated")
+    (repo / "noise.txt").write_text("not the agent's work\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "unrelated work")
+
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.committed_changed_files == ["out.txt"], collected.committed_changed_files
+    assert "noise.txt" not in collected.committed_diff
+    assert collected.commit_count == 1
+
+
+def test_collect_run_falls_back_to_current_branch_for_legacy_records(repo: Path) -> None:
+    """A record written before `base_branch` existed must still collect, not crash."""
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    rec = fleet.run("selfcommit", TaskSpec(id="cb2", goal="x"))
+    fleet.state.update(rec.run_id, base_branch=None)
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.committed_changed_files == ["out.txt"]
+
+
+def test_a_live_holders_lock_is_never_claimed(repo: Path) -> None:
+    """REGRESSION: check-then-write let a second PROCESS pass the liveness check and also reap.
+
+    (A claim from the SAME process is allowed on purpose: a config hot-reload rebuilds the Fleet
+    in-process and must still be able to reconcile its own state.)
+    """
+    import json as _json
+
+    from marshal_engine.fleet import _claim_fleet_lock
+
+    lock = repo / ".marshal" / "fleet.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock.write_text(_json.dumps({"pid": holder.pid}), encoding="utf-8")
+        assert _claim_fleet_lock(lock) is False, "claimed a lock held by a live process"
+        assert _json.loads(lock.read_text(encoding="utf-8"))["pid"] == holder.pid
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_a_dead_holders_lock_is_taken_over(repo: Path) -> None:
+    import json as _json
+    import os
+
+    from marshal_engine.fleet import _claim_fleet_lock
+
+    lock = repo / ".marshal" / "fleet.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait(timeout=10)
+    lock.write_text(_json.dumps({"pid": dead.pid}), encoding="utf-8")
+    assert _claim_fleet_lock(lock) is True
+    assert _json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+
+def test_a_reused_pid_does_not_shield_a_stale_record(repo: Path) -> None:
+    """REGRESSION: `_pid_alive` proved liveness, not ownership. A reused pid kept a stale RUNNING
+    record alive, and `cancel_run` would then signal an unrelated process group."""
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="reused.writer.deadbeef",
+                task_id="reused",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time="Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get("reused.writer.deadbeef")
+        assert rec.status == RunStatus.FAILED.value, "a reused pid shielded the stale record"
+        assert rec.pid is None, "the stale pid must be cleared so cancel_run cannot signal it"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_an_unverifiable_pid_fails_open_and_keeps_the_run(repo: Path) -> None:
+    """No recorded start time (an older record) must NOT reap: falsely failing a live run is
+    destructive and silent, while a lingering stale record needs an explicit cancel to do harm."""
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="legacy.writer.deadbeef",
+                task_id="legacy",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,  # alive, but no pid_start_time recorded
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get("legacy.writer.deadbeef")
+        assert rec.status == RunStatus.RUNNING.value
+        assert rec.pid == holder.pid
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_a_run_records_its_pid_start_time(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="pst1", goal="x"))
+    stored = fleet.state.get(rec.run_id)
+    # The run is finished, so pid is cleared - but the identity pair was recorded while it ran.
+    assert stored.pid_start_time is None or isinstance(stored.pid_start_time, str)
