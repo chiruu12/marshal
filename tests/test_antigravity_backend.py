@@ -463,3 +463,29 @@ def test_a_failed_prepare_does_not_release_a_siblings_claim(
 
     backend.release_trust(_opts(cwd=wt))  # A finishes for real
     assert key not in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+
+
+def test_teardown_and_a_new_prepare_cannot_interleave(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    """REGRESSION: teardown dropped the bookkeeping, unlocked, THEN removed the settings entry.
+
+    A new run's prepare() could slot into that gap, see the entry still present, record it as
+    user-owned - and then the old teardown deleted it, leaving the new run with no trust at all
+    and its agy edits silently redirected to the scratch dir.
+    """
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    settings = tmp_path / "settings.json"
+    backend.settings_path = settings
+    AntigravityBackend._trust_added.clear()
+    key = str(wt.resolve())
+
+    backend.prepare(_opts(cwd=wt))          # run A introduces the entry
+    backend.release_trust(_opts(cwd=wt))    # A finishes: entry must be gone, atomically
+    assert key not in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+
+    # A fresh run now re-introduces it and owns it outright - no stale provenance survived.
+    backend.prepare(_opts(cwd=wt))
+    assert key in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+    assert AntigravityBackend._trust_added[key][0] is True, "provenance did not reset for the new run"

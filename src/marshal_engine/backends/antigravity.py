@@ -199,20 +199,24 @@ class AntigravityBackend(CodingAgentBackend):
             del mine[key]
         else:
             mine[key] -= 1
+        # Drop the claim AND remove the settings entry under ONE lock. Doing the bookkeeping,
+        # unlocking, then removing the entry left a handoff gap: a new run's prepare() could slot
+        # in, see the entry still present, record it as user-owned - and then this teardown deleted
+        # it, leaving that run with no trust at all and its agy edits redirected to the scratch dir.
         with self._settings_lock:
             state = self._trust_added.get(key)
             # No bookkeeping at all means nothing we did introduced this entry, so it is the
             # user's and must stay. Defaulting the other way ("assume we added it") destroys user
             # trust silently and permanently; a stray entry is recoverable, and the
             # Marshal-worktree sweep collects it later.
-            revoke = False
-            if state is not None:
-                state[1] = int(state[1]) - 1  # type: ignore[call-overload]
-                if int(state[1]) <= 0:  # type: ignore[call-overload]
-                    del self._trust_added[key]
-                    revoke = bool(state[0])  # only if WE introduced it
-        if revoke:
-            _untrust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
+            if state is None:
+                return
+            state[1] = int(state[1]) - 1  # type: ignore[call-overload]
+            if int(state[1]) > 0:  # type: ignore[call-overload]
+                return  # a sibling run still needs the entry
+            del self._trust_added[key]
+            if bool(state[0]):  # only if WE introduced it
+                _untrust_workspace_locked(self.settings_path, Path(opts.cwd))
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         if exit_code != 0:
@@ -326,56 +330,61 @@ def _trust_workspace_locked(settings_path: Path, cwd: Path) -> bool:
 
 
 def _untrust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
-    """Best-effort: remove `cwd` from `trustedWorkspaces`. Never raises."""
-    cwd_str = str(cwd.resolve())
+    """Locking wrapper kept for callers that do not already hold ``lock``."""
     with lock:
-        if not settings_path.exists():
-            print(
-                f"[marshal] antigravity: {settings_path} missing during trust cleanup; "
-                "skipping untrust",
-                file=sys.stderr,
-            )
-            return
-        try:
-            raw = settings_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            print(
-                f"[marshal] antigravity: cannot read {settings_path} for trust cleanup ({exc}); "
-                "leaving file untouched",
-                file=sys.stderr,
-            )
-            return
-        try:
-            loaded = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            print(
-                f"[marshal] antigravity: {settings_path} is not valid JSON during trust cleanup "
-                f"({exc}); leaving file untouched",
-                file=sys.stderr,
-            )
-            return
-        if not isinstance(loaded, dict):
-            print(
-                f"[marshal] antigravity: {settings_path} is not a JSON object during trust "
-                "cleanup; leaving file untouched",
-                file=sys.stderr,
-            )
-            return
-        existing = loaded.get("trustedWorkspaces")
-        if not isinstance(existing, list):
-            return
-        trusted = [t for t in existing if isinstance(t, str)]
-        if cwd_str not in trusted:
-            return
-        # Remove ONLY this run's path. No general dead-path sweep here: another entry that is
-        # temporarily unavailable belongs to the user, and dropping it would silently revoke
-        # trust they granted themselves.
-        loaded["trustedWorkspaces"] = [t for t in trusted if t != cwd_str]
-        try:
-            _atomic_write_settings(settings_path, loaded)
-        except OSError as exc:
-            print(
-                f"[marshal] antigravity: failed to write {settings_path} during trust cleanup "
-                f"({exc}); leaving file untouched",
-                file=sys.stderr,
-            )
+        _untrust_workspace_locked(settings_path, cwd)
+
+
+def _untrust_workspace_locked(settings_path: Path, cwd: Path) -> None:
+    """Best-effort: remove `cwd` from `trustedWorkspaces`. Never raises. Caller holds the lock."""
+    cwd_str = str(cwd.resolve())
+    if not settings_path.exists():
+        print(
+            f"[marshal] antigravity: {settings_path} missing during trust cleanup; "
+            "skipping untrust",
+            file=sys.stderr,
+        )
+        return
+    try:
+        raw = settings_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"[marshal] antigravity: cannot read {settings_path} for trust cleanup ({exc}); "
+            "leaving file untouched",
+            file=sys.stderr,
+        )
+        return
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(
+            f"[marshal] antigravity: {settings_path} is not valid JSON during trust cleanup "
+            f"({exc}); leaving file untouched",
+            file=sys.stderr,
+        )
+        return
+    if not isinstance(loaded, dict):
+        print(
+            f"[marshal] antigravity: {settings_path} is not a JSON object during trust "
+            "cleanup; leaving file untouched",
+            file=sys.stderr,
+        )
+        return
+    existing = loaded.get("trustedWorkspaces")
+    if not isinstance(existing, list):
+        return
+    trusted = [t for t in existing if isinstance(t, str)]
+    if cwd_str not in trusted:
+        return
+    # Remove ONLY this run's path. No general dead-path sweep here: another entry that is
+    # temporarily unavailable belongs to the user, and dropping it would silently revoke
+    # trust they granted themselves.
+    loaded["trustedWorkspaces"] = [t for t in trusted if t != cwd_str]
+    try:
+        _atomic_write_settings(settings_path, loaded)
+    except OSError as exc:
+        print(
+            f"[marshal] antigravity: failed to write {settings_path} during trust cleanup "
+            f"({exc}); leaving file untouched",
+            file=sys.stderr,
+        )
