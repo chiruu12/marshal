@@ -119,6 +119,18 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   Marshal deny layer). Worktree isolation remains the hard boundary for those adapters and for
   everything the curated denies do not cover. See `permission_fidelity` on `list_clients` /
   `marshal backends` / `doctor`.
+- **A team file is prompt text delivered to fleet agents.** `<repo>/teams/*.yaml` rubrics are
+  concatenated into every reviewer's goal, so anyone who can write that directory can instruct the
+  fleet. `run_team` refuses a team path outside the workspace's own `teams/` directory, and the
+  reviewed subject (a diff, a plan) is nonce-delimited and labelled as untrusted data so it cannot
+  close its container and impersonate the instructions. Reviewer output is **not** parsed: the
+  engine derives no verdict from it, precisely so reviewed material cannot forge one. Treat
+  `teams/` with the same care as any other executable project config.
+- **Reviewer `read-only` is fail-closed in routing, not always OS-enforced.** `validate_team`
+  refuses a role whose client is not `permission: read-only`, before any spawn — Marshal will not
+  route a reviewer to a writable client. What that mode *enforces* varies: Codex's
+  `--sandbox read-only` is OS-level, while Cursor / Claude Code `plan` mode is cooperative. As
+  everywhere else, the worktree plus explicit integrate is the dependable boundary.
 - **`worktree_setup` / `verify` are config-driven subprocesses** when configured. They run
   argv from `fleet.config.yaml` in each worktree as your user. By default only an allowlisted
   binary basename may run (`uv`, `npm`, `pnpm`, `make`, `cargo`, `go`, `pytest`, `python`, …);
