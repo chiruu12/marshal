@@ -401,3 +401,28 @@ def test_teardown_without_bookkeeping_leaves_the_entry_alone(
     _untrust_if_ours(TaskSpec(id="c", goal="x"), _opts(cwd=wt))
     trusted = json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
     assert str(wt.resolve()) in trusted
+
+
+def test_overlapping_runs_keep_trust_until_the_last_one_finishes(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    """REGRESSION: run A introduced the entry, run B joined; A's teardown revoked it while B's
+    agy process was still live, redirecting B's edits to the scratch dir."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    settings = tmp_path / "settings.json"
+    backend.settings_path = settings
+    AntigravityBackend._trust_added.clear()
+    key = str(wt.resolve())
+
+    backend.prepare(_opts(cwd=wt))  # run A introduces the entry
+    backend.prepare(_opts(cwd=wt))  # run B joins the same path
+    assert key in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+
+    backend.release_trust(_opts(cwd=wt))  # A finishes
+    assert key in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"], (
+        "trust was revoked while a sibling run was still using it"
+    )
+
+    backend.release_trust(_opts(cwd=wt))  # B finishes
+    assert key not in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]

@@ -66,12 +66,16 @@ class AntigravityBackend(CodingAgentBackend):
     binary = "agy"
     # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs).
     _settings_lock = threading.Lock()
-    #: cwd -> how many IN-FLIGHT runs added the trust entry for that path. Teardown revokes only
-    #: what we granted, so a workspace the user had already trusted survives the run. A count, not
-    #: a bool: two concurrent runs can share a cwd, and a bool let the second run's teardown fall
-    #: back to "assume we added it" after the first consumed the key - silently deleting the
-    #: user's own trust entry. Class-level like the lock: one backend instance serves every run.
-    _trust_added: dict[str, int] = {}
+    #: resolved cwd -> ``[marshal_introduced, in_flight_run_count]``.
+    #:
+    #: Two facts, because one is not enough. ``marshal_introduced`` records whether the FIRST
+    #: Marshal run to want this path found it absent - if the user had already trusted it, we must
+    #: never revoke it. ``in_flight_run_count`` counts every Marshal run currently relying on the
+    #: entry, including runs that found it already present *because a sibling Marshal run put it
+    #: there*: revoking on the first teardown would pull trust out from under a still-running agy
+    #: process, silently redirecting its edits to the scratch dir. The entry is removed only when
+    #: the last user finishes AND Marshal introduced it.
+    _trust_added: dict[str, list[object]] = {}
     settings_path = DEFAULT_SETTINGS_PATH
     capabilities = Capabilities(
         json_output=False,  # --output-format json reported broken; text output only
@@ -124,10 +128,15 @@ class AntigravityBackend(CodingAgentBackend):
         unreadable settings file (preserved byte-for-byte).
         """
         added = _trust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
-        if added:
-            key = str(Path(opts.cwd).resolve())
-            with self._settings_lock:
-                self._trust_added[key] = self._trust_added.get(key, 0) + 1
+        key = str(Path(opts.cwd).resolve())
+        with self._settings_lock:
+            state = self._trust_added.get(key)
+            if state is None:
+                # First Marshal run on this path: `added` tells us whose entry it is.
+                self._trust_added[key] = [added, 1]
+            else:
+                # A sibling run already holds it; join as a user without changing provenance.
+                state[1] = int(state[1]) + 1  # type: ignore[call-overload]
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
         """Shared run loop, wrapped in a host-global ``trustedWorkspaces`` transaction.
@@ -140,21 +149,30 @@ class AntigravityBackend(CodingAgentBackend):
         try:
             return super().run(task, opts)
         finally:
-            key = str(Path(opts.cwd).resolve())
-            with self._settings_lock:
-                outstanding = self._trust_added.get(key, 0)
-                # Absent (0) means no in-flight run of ours introduced this entry - so it is the
-                # user's, and we must NOT revoke it. Defaulting the other way ("assume we added
-                # it") destroys user trust silently and permanently; leaving a stray entry is
-                # recoverable and the Marshal-worktree sweep collects it later.
-                revoke = outstanding > 0
-                if revoke:
-                    if outstanding == 1:
-                        del self._trust_added[key]
-                    else:
-                        self._trust_added[key] = outstanding - 1
-            if revoke:
-                _untrust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
+            self.release_trust(opts)
+
+    def release_trust(self, opts: RunOpts) -> None:
+        """Drop this run's claim on the trust entry, revoking it when the last claim goes.
+
+        Split out of ``run()`` so the teardown contract is reachable without spawning a process -
+        overlapping runs cannot be exercised end-to-end in a unit test, and duplicating this logic
+        in a test would mean the test could not catch a change here.
+        """
+        key = str(Path(opts.cwd).resolve())
+        with self._settings_lock:
+            state = self._trust_added.get(key)
+            # No bookkeeping at all means nothing we did introduced this entry, so it is the
+            # user's and must stay. Defaulting the other way ("assume we added it") destroys user
+            # trust silently and permanently; a stray entry is recoverable, and the
+            # Marshal-worktree sweep collects it later.
+            revoke = False
+            if state is not None:
+                state[1] = int(state[1]) - 1  # type: ignore[call-overload]
+                if int(state[1]) <= 0:  # type: ignore[call-overload]
+                    del self._trust_added[key]
+                    revoke = bool(state[0])  # only if WE introduced it
+        if revoke:
+            _untrust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         if exit_code != 0:
