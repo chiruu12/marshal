@@ -2128,6 +2128,125 @@ def test_an_unverifiable_pid_fails_open_and_keeps_the_run(repo: Path) -> None:
         holder.wait(timeout=10)
 
 
+def test_cancel_skips_signal_when_pid_identity_mismatches(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale record whose pid was reused must not killpg an unrelated process group."""
+    import os
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="mismatch.writer.deadbeef",
+                task_id="mismatch",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time="Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
+            ),
+        )
+        rec = fleet.cancel_run("mismatch.writer.deadbeef")
+        assert killed == [], "killpg must not run when pid identity mismatches"
+        assert rec.status == RunStatus.CANCELLED.value
+        assert rec.error and "identity mismatch" in rec.error
+        assert rec.pid is None
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_cancel_signals_a_verified_live_run(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The happy path: a live run whose pid+start_time match is still signalled and cancelled."""
+    import os
+    import signal
+
+    from marshal_engine.fleet import _pid_start_time
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        started = _pid_start_time(holder.pid)
+        if started is None:
+            pytest.skip("ps start-time probe unavailable on this host")
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="verified.writer.deadbeef",
+                task_id="verified",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time=started,
+            ),
+        )
+        rec = fleet.cancel_run("verified.writer.deadbeef")
+        assert killed == [(holder.pid, signal.SIGTERM)]
+        assert rec.status == RunStatus.CANCELLED.value
+        assert rec.ended_at is not None
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_cancel_skips_signal_when_pid_identity_is_unverifiable(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail CLOSED on cancel (unlike reaper): without a verifiable identity, do not killpg.
+
+    Signalling the wrong process is the harm; a stale record left running until explicit cancel
+    is acceptable. The run is still terminal-stamped cancelled with an explanatory error.
+    """
+    import os
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="unverified.writer.deadbeef",
+                task_id="unverified",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,  # alive, but no pid_start_time to verify against
+            ),
+        )
+        rec = fleet.cancel_run("unverified.writer.deadbeef")
+        assert killed == [], "unverifiable identity must not be signalled (fail closed)"
+        assert rec.status == RunStatus.CANCELLED.value
+        assert rec.error and "unverifiable" in rec.error
+        assert rec.pid is None
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
 def test_a_live_run_with_matching_identity_is_never_reaped(repo: Path) -> None:
     """The dangerous direction. Nothing asserted the KEEP path, so a mutation making
     `_pid_is_still_ours` always return False would have stayed green - and that mutation reaps

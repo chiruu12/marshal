@@ -1129,16 +1129,40 @@ class Fleet:
             raise ValueError(f"no such run: {run_id!r}")
         if rec.status != RunStatus.RUNNING.value:
             return rec
+        cancel_error: str | None = None
+        cancel_extra: dict[str, object] = {}
         if rec.pid is not None:
-            try:
-                os.killpg(rec.pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass  # already exited
+            # Reaper's _pid_is_still_ours fails OPEN on unverifiable identity (falsely reaping a
+            # live run is destructive). Cancel's harm is the opposite: killpg on a reused pid signals
+            # the WRONG process group. Signal ONLY when _pid_is_still_ours is True AND identity was
+            # positively verified (recorded start time + live probe both succeeded) - not the
+            # fail-open path. When we skip the signal, still terminal-stamp cancelled and record why.
+            verified_ours = (
+                _pid_is_still_ours(rec)
+                and rec.pid_start_time
+                and _pid_start_time(rec.pid) is not None
+            )
+            if verified_ours:
+                try:
+                    os.killpg(rec.pid, signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    pass  # already exited
+            elif _pid_alive(rec.pid):
+                cancel_extra["pid"] = None
+                if rec.pid_start_time and _pid_start_time(rec.pid) is not None:
+                    cancel_error = "fleet: cancel skipped (pid identity mismatch; not signalling)"
+                else:
+                    cancel_error = (
+                        "fleet: cancel skipped (pid identity unverifiable; not signalling)"
+                    )
+        stamp: dict[str, object] = {"status": "cancelled", "ended_at": _now(), **cancel_extra}
+        if cancel_error:
+            stamp["error"] = cancel_error
         # Stamp cancelled ONLY if the run is still running - update_if does the re-check and the
         # write atomically under the per-run lock, so a run that finished (succeeded/failed) between
         # the kill and now is never overwritten with "cancelled".
         return self.state.update_if(
-            run_id, lambda r: r.status == RunStatus.RUNNING.value, status="cancelled", ended_at=_now()
+            run_id, lambda r: r.status == RunStatus.RUNNING.value, **stamp
         )
 
     def integrate(

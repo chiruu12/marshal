@@ -243,7 +243,10 @@ workspaces for visibility; it is **not** a merged usage/budget view (see `usage`
 
 ### `cancel_run`
 
-SIGTERM the agent process group.
+SIGTERM the agent process group when the recorded `pid` + `pid_start_time` identity is positively
+verified as still ours. Skips the signal (but still marks `cancelled` with an explanatory `error`
+and clears `pid`) when identity mismatches or cannot be verified — unlike startup reaping, cancel
+fails closed on unverifiable identity so a reused pid is never signalled.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
