@@ -115,6 +115,9 @@ class RunOpts(BaseModel):
     timeout_s: int = 600                  # external timeout + kill - never run without one
     extra_env: dict[str, str] = {}
     on_pid: Callable[[int], None] | None = None  # called by base.run() with the child pid
+    # Called by base.run() once the child has been REAPED. Until then the OS cannot reuse its pid,
+    # so this is what tells a canceller that signalling that pid is no longer safe.
+    on_exit: Callable[[], None] | None = None
 
 
 class UsageRecord(BaseModel):

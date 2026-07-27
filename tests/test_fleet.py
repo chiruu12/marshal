@@ -24,9 +24,10 @@ from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
-from marshal_engine.fleet import Fleet, RunRequest
+from marshal_engine.fleet import Fleet, RunRequest, _active_runs_guard, _register_inflight_run
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
+from marshal_engine.state import RunRecord
 from marshal_engine.worktree import WorktreeError
 
 
@@ -94,6 +95,66 @@ class _Sleeper(CodingAgentBackend):
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         return [sys.executable, "-c", "import time; time.sleep(0.5); print('done')"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+class _SelfCommitter(CodingAgentBackend):
+    """Commits its work onto the run branch before exiting (like Cursor / Claude Code)."""
+
+    name = "selfcommit"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; open('out.txt','w').write('hi');"
+            "s.run(['git','add','out.txt'],check=True);"
+            "s.run(['git','commit','--no-verify','-q','-m','agent','out.txt'],check=True);"
+            "print('done')"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+class _Committer(CodingAgentBackend):
+    """Self-commits A.txt onto the branch, then leaves B.txt uncommitted."""
+
+    name = "committer"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; open('A.txt','w').write('a');"
+            "s.run(['git','add','A.txt'],check=True);"
+            "s.run(['git','commit','--no-verify','-q','-m','agent','A.txt'],check=True);"
+            "open('B.txt','w').write('b'); print('done')"
+        )
+        return [sys.executable, "-c", script]
 
     def map_permission(self, mode: PermissionMode) -> list[str]:
         return []
@@ -836,6 +897,52 @@ def test_collect_run_unknown_run_raises(repo: Path) -> None:
         fleet.collect_run("nope.writer")
 
 
+def test_collect_run_surfaces_self_committed_work(repo: Path) -> None:
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    rec = fleet.run("selfcommit", TaskSpec(id="sc1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == []  # working tree is clean
+    assert collected.diff == ""
+    assert collected.commit_count == 1
+    assert collected.committed_changed_files == ["out.txt"]
+    assert "out.txt" in collected.committed_diff
+    assert collected.diff == ""  # uncommitted section stays empty
+
+
+def test_collect_run_uncommitted_only_unchanged(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cu1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == ["out.txt"]
+    assert "out.txt" in collected.diff
+    assert collected.committed_changed_files == []
+    assert collected.committed_diff == ""
+    assert collected.commit_count == 0
+
+
+def test_collect_run_reports_committed_and_uncommitted_separately(repo: Path) -> None:
+    fleet = Fleet(repo, {"committer": _Committer()})
+    rec = fleet.run("committer", TaskSpec(id="mix1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == ["B.txt"]
+    assert "B.txt" in collected.diff
+    assert collected.committed_changed_files == ["A.txt"]
+    assert "A.txt" in collected.committed_diff
+    assert "B.txt" not in collected.committed_diff
+    assert collected.commit_count == 1
+
+
+def test_collect_run_empty_run_reports_no_work(repo: Path) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="em1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == []
+    assert collected.diff == ""
+    assert collected.committed_changed_files == []
+    assert collected.committed_diff == ""
+    assert collected.commit_count == 0
+
+
 def test_integrate_merges_run_into_current_branch(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     run_rec = fleet.run("writer", TaskSpec(id="m1", goal="x"), ts="2026-06-19T00:00:00Z")
@@ -942,6 +1049,54 @@ def test_integrate_blocked_on_detached_head(repo: Path) -> None:
     result = fleet.integrate(rec.run_id)
     assert result.status == "blocked"            # refuses before committing, no orphaned merge
     assert "detached" in result.message.lower()
+
+
+def test_run_persists_resolved_base_branch_on_run_record(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    _git(repo, "checkout", "-b", "spawn-base")
+    _git(repo, "checkout", "-")
+    explicit = fleet.run("writer", TaskSpec(id="bb1", goal="x", base_branch="spawn-base"))
+    assert fleet.state.get(explicit.run_id).base_branch == "spawn-base"
+
+    current = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    resolved = fleet.run("writer", TaskSpec(id="bb2", goal="x"))
+    assert fleet.state.get(resolved.run_id).base_branch == current
+
+
+def test_integrate_same_base_branch_has_no_drift_warning(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_rec = fleet.run("writer", TaskSpec(id="nd1", goal="x"))
+    result = fleet.integrate(run_rec.run_id)
+    assert result.status == "merged"
+    assert result.base_branch_drift is False
+    assert result.message == ""
+
+
+def test_integrate_different_branch_reports_base_branch_drift(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    spawn_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    run_rec = fleet.run("writer", TaskSpec(id="dr1", goal="x"))
+    assert fleet.state.get(run_rec.run_id).base_branch == spawn_branch
+
+    _git(repo, "checkout", "-b", "feature/other-pr")
+    result = fleet.integrate(run_rec.run_id)
+    assert result.status == "merged"
+    assert (repo / "out.txt").read_text() == "hi"
+    assert result.base_branch_drift is True
+    assert spawn_branch in result.message
+    assert "feature/other-pr" in result.message
+
+
+def test_integrate_legacy_record_without_base_branch_has_no_drift_warning(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_rec = fleet.run("writer", TaskSpec(id="lg1", goal="x"))
+    fleet.state.update(run_rec.run_id, base_branch=None)
+
+    _git(repo, "checkout", "-b", "feature/unrelated")
+    result = fleet.integrate(run_rec.run_id)
+    assert result.status == "merged"
+    assert result.base_branch_drift is False
+    assert result.message == ""
 
 
 # --- commit_run: freeze a run's work onto its branch so a dependent run can chain off it ---------
@@ -1499,6 +1654,189 @@ def test_budget_status_no_budgets_is_empty(repo: Path) -> None:
     assert fleet.budget_status(now=datetime.now(timezone.utc)) == []
 
 
+# --- startup orphan reap: stale RUNNING/QUEUED records from a prior Fleet -----------------------
+
+
+def _write_run_record(repo: Path, rec: RunRecord) -> None:
+    runs = repo / ".marshal" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / f"{rec.run_id}.json").write_text(rec.model_dump_json(indent=2), encoding="utf-8")
+
+
+def test_startup_reaps_running_record_left_by_prior_fleet(repo: Path) -> None:
+    run_id = "orphan.writer.deadbeef"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.status == "failed"
+    assert rec.pid is None
+    assert rec.ended_at is not None
+    assert rec.error and "orphaned at startup" in rec.error
+
+
+def test_startup_leaves_terminal_record_unchanged(repo: Path) -> None:
+    run_id = "done.writer.cafebabe"
+    original = RunRecord(
+        run_id=run_id,
+        task_id="done",
+        backend="writer",
+        status="succeeded",
+        started_at="2026-01-01T00:00:00Z",
+        ended_at="2026-01-01T00:01:00Z",
+        pid=11111,
+        cost_usd=0.42,
+        text="all good",
+    )
+    _write_run_record(repo, original)
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.model_dump() == original.model_dump()
+
+
+def test_startup_reap_skips_corrupt_record_without_crashing(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = repo / ".marshal" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "broken.writer.json").write_text("{not json", encoding="utf-8")
+    Fleet(repo, {"writer": _Writer()})  # must not raise
+    err = capsys.readouterr().err
+    assert "skipping unreadable run record" in err
+
+
+def test_cancel_on_reaped_run_does_not_signal_pid(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    run_id = "reaped.writer.abc12345"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="reaped",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=99999,
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get(run_id).pid is None
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+    rec = fleet.cancel_run(run_id)
+    assert killed == []
+    assert rec.status == "failed"
+
+
+def test_startup_skips_running_record_when_agent_pid_still_alive(repo: Path) -> None:
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    run_id = "live.writer.feedface"
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id=run_id,
+                task_id="live",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=proc.pid,
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get(run_id)
+        assert rec is not None
+        assert rec.status == "running"
+        assert rec.pid == proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_startup_does_not_steal_the_lock_from_a_live_fleet(repo: Path) -> None:
+    """REGRESSION: claiming the lock unconditionally destroyed the protection it just relied on.
+
+    A short-lived CLI Fleet alongside a live MCP server correctly skipped reaping, then overwrote
+    `fleet.lock` with its own pid and exited - leaving a DEAD holder. The next Fleet then saw "no
+    live supervisor" and reaped the server's runs; a run recorded RUNNING before its pid is stamped
+    has no pid to protect it, so a live run got marked failed with its pid cleared (unkillable).
+    """
+    import json
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock_path = repo / ".marshal" / "fleet.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({"pid": holder.pid}), encoding="utf-8")
+
+        Fleet(repo, {"writer": _Writer()})  # a second Fleet while the first is alive
+
+        still_held = json.loads(lock_path.read_text(encoding="utf-8"))
+        assert still_held["pid"] == holder.pid, "the live supervisor's lock was stolen"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_startup_claims_the_lock_when_no_live_fleet_holds_it(repo: Path) -> None:
+    import json
+    import os as _os
+
+    lock_path = repo / ".marshal" / "fleet.lock"
+    Fleet(repo, {"writer": _Writer()})
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == _os.getpid()
+
+
+def test_startup_skips_reap_when_another_fleet_lock_holder_is_alive(repo: Path) -> None:
+    import json
+
+    run_id = "locked.writer.deadbeef"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="locked",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock_path = repo / ".marshal" / "fleet.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({"pid": holder.pid}), encoding="utf-8")
+
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get(run_id)
+        assert rec is not None
+        assert rec.status == "running"
+        assert rec.pid == 424242
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 # --- Cursor safe-edit cli.json transaction: Fleet never observes the deny overlay (#37) --------
 #
 # These run a REAL CursorBackend through the shared base run loop and Fleet, with a local fake
@@ -1630,3 +1968,482 @@ def test_cursor_timeout_still_cleans_up_overlay(
     assert rec.status == "timed_out"
     assert not (Path(rec.worktree or "") / ".cursor").exists()  # finally-path cleanup held
     assert fleet.collect_run(rec.run_id).changed_files == []
+
+
+# --- confirmed-defect regressions (audit fleet, 2026-07-27) --------------------------------
+
+
+def test_collect_run_uses_the_runs_own_base_not_the_current_branch(repo: Path) -> None:
+    """REGRESSION: collection computed the committed diff against whatever was checked out NOW.
+
+    A checkout between spawn and collect silently changed the review: commits inherited from an
+    unrelated branch showed up as the agent's work, or the agent's own commits vanished.
+    """
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    spawn_base = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    rec = fleet.run("selfcommit", TaskSpec(id="cb1", goal="x"))
+    assert fleet.state.get(rec.run_id).base_branch == spawn_base
+
+    # The driver switches branches and puts an unrelated commit on the new one.
+    _git(repo, "checkout", "-q", "-b", "unrelated")
+    (repo / "noise.txt").write_text("not the agent's work\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "unrelated work")
+
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.committed_changed_files == ["out.txt"], collected.committed_changed_files
+    assert "noise.txt" not in collected.committed_diff
+    assert collected.commit_count == 1
+
+
+def test_collect_run_falls_back_to_current_branch_for_legacy_records(repo: Path) -> None:
+    """A record written before `base_branch` existed must still collect, not crash."""
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    rec = fleet.run("selfcommit", TaskSpec(id="cb2", goal="x"))
+    fleet.state.update(rec.run_id, base_branch=None)
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.committed_changed_files == ["out.txt"]
+
+
+def test_a_live_holders_lock_is_never_claimed(repo: Path) -> None:
+    """REGRESSION: check-then-write let a second PROCESS pass the liveness check and also reap.
+
+    (A claim from the SAME process is allowed on purpose: a config hot-reload rebuilds the Fleet
+    in-process and must still be able to reconcile its own state.)
+    """
+    import json as _json
+
+    from marshal_engine.fleet import _claim_fleet_lock
+
+    lock = repo / ".marshal" / "fleet.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock.write_text(_json.dumps({"pid": holder.pid}), encoding="utf-8")
+        assert _claim_fleet_lock(lock) is False, "claimed a lock held by a live process"
+        assert _json.loads(lock.read_text(encoding="utf-8"))["pid"] == holder.pid
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_only_one_of_two_racing_processes_claims_the_lock(repo: Path) -> None:
+    """REGRESSION: the empty-file window. `O_EXCL` created the lock and wrote the pid afterwards,
+    so a competing process reading it in between saw an unparseable file, concluded "no live
+    holder", unlinked the winner's lock and took over - both reaped.
+
+    The loser must still be ALIVE when the other checks, or taking over a dead holder's lock is
+    correct behaviour and the test proves nothing. Each child therefore stays alive after
+    claiming. Real processes are required: a same-process claim is deliberately allowed (config
+    hot-reload), so threads cannot express this.
+    """
+    lock = repo / ".marshal" / "fleet.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "import sys, time\n"
+        "sys.path.insert(0, %r)\n"
+        "from pathlib import Path\n"
+        "from marshal_engine.fleet import _claim_fleet_lock\n"
+        "start = float(sys.argv[2])\n"
+        "time.sleep(max(0.0, start - time.time()))\n"
+        "won = _claim_fleet_lock(Path(sys.argv[1]))\n"
+        "print('WON' if won else 'LOST', flush=True)\n"
+        "time.sleep(3)\n"  # stay alive so the other process's liveness probe is meaningful
+    ) % str(Path(__file__).resolve().parent.parent / "src")
+
+    for _ in range(8):  # a race that fires rarely must still never produce two winners
+        if lock.exists():
+            lock.unlink()
+        go = time.time() + 0.40
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(lock), str(go)],
+                stdout=subprocess.PIPE, text=True,
+            )
+            for _ in range(2)
+        ]
+        try:
+            outs = [p.stdout.readline().strip() for p in procs]  # read before they exit
+            assert outs.count("WON") == 1, f"expected exactly one winner, got {outs}"
+        finally:
+            for p in procs:
+                p.terminate()
+                p.wait(timeout=10)
+
+
+def test_a_dead_holders_lock_is_taken_over(repo: Path) -> None:
+    import json as _json
+    import os
+
+    from marshal_engine.fleet import _claim_fleet_lock
+
+    lock = repo / ".marshal" / "fleet.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait(timeout=10)
+    lock.write_text(_json.dumps({"pid": dead.pid}), encoding="utf-8")
+    assert _claim_fleet_lock(lock) is True
+    assert _json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+
+def test_a_reused_pid_does_not_shield_a_stale_record(repo: Path) -> None:
+    """REGRESSION: `_pid_alive` proved liveness, not ownership. A reused pid kept a stale RUNNING
+    record alive, and `cancel_run` would then signal an unrelated process group."""
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="reused.writer.deadbeef",
+                task_id="reused",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time="Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get("reused.writer.deadbeef")
+        assert rec.status == RunStatus.FAILED.value, "a reused pid shielded the stale record"
+        assert rec.pid is None, "the stale pid must be cleared so cancel_run cannot signal it"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_an_unverifiable_pid_fails_open_and_keeps_the_run(repo: Path) -> None:
+    """No recorded start time (an older record) must NOT reap: falsely failing a live run is
+    destructive and silent, while a lingering stale record needs an explicit cancel to do harm."""
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="legacy.writer.deadbeef",
+                task_id="legacy",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,  # alive, but no pid_start_time recorded
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get("legacy.writer.deadbeef")
+        assert rec.status == RunStatus.RUNNING.value
+        assert rec.pid == holder.pid
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_cancel_does_not_signal_a_run_this_process_does_not_own(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale record whose pid was reused must not killpg an unrelated process group."""
+    import os
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="mismatch.writer.deadbeef",
+                task_id="mismatch",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time="Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
+            ),
+        )
+        rec = fleet.cancel_run("mismatch.writer.deadbeef")
+        assert killed == [], "killpg must not run when pid identity mismatches"
+        assert rec.status == RunStatus.CANCELLED.value
+        assert rec.error and "started by another process" in rec.error
+        assert rec.pid is None
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_cancel_signals_a_verified_live_run(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The happy path: a run THIS process started is signalled and cancelled."""
+    import os
+    import signal
+
+    from marshal_engine.fleet import _pid_start_time
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        started = _pid_start_time(holder.pid)
+        if started is None:
+            pytest.skip("ps start-time probe unavailable on this host")
+        fleet = Fleet(repo, {"writer": _Writer()})
+        handle = _register_inflight_run(fleet.state.dir, "verified.writer.deadbeef")
+        handle.pid = holder.pid  # we own this run and its child is live (not yet reaped)
+        fleet.state.add(
+            RunRecord(
+                run_id="verified.writer.deadbeef",
+                task_id="verified",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time=started,
+            ),
+        )
+        rec = fleet.cancel_run("verified.writer.deadbeef")
+        assert killed == [(holder.pid, signal.SIGTERM)]
+        assert rec.status == RunStatus.CANCELLED.value
+        assert rec.ended_at is not None
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_cancel_does_not_signal_a_run_with_no_recorded_identity(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail CLOSED on cancel (unlike reaper): without a verifiable identity, do not killpg.
+
+    Signalling the wrong process is the harm; a stale record left running until explicit cancel
+    is acceptable. The run is still terminal-stamped cancelled with an explanatory error.
+    """
+    import os
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="unverified.writer.deadbeef",
+                task_id="unverified",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,  # alive, but no pid_start_time to verify against
+            ),
+        )
+        rec = fleet.cancel_run("unverified.writer.deadbeef")
+        assert killed == [], "unverifiable identity must not be signalled (fail closed)"
+        assert rec.status == RunStatus.CANCELLED.value
+        assert rec.error and "started by another process" in rec.error
+        assert rec.pid is None
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_a_live_run_with_matching_identity_is_never_reaped(repo: Path) -> None:
+    """The dangerous direction. Nothing asserted the KEEP path, so a mutation making
+    `_pid_is_still_ours` always return False would have stayed green - and that mutation reaps
+    LIVE runs: status forced to failed, pid cleared (uncancellable), real outcome never recorded.
+    """
+    from marshal_engine.fleet import _pid_start_time
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        started = _pid_start_time(holder.pid)
+        if started is None:
+            pytest.skip("ps start-time probe unavailable on this host")
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="livematch.writer.deadbeef",
+                task_id="livematch",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time=started,  # identity MATCHES the live process
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get("livematch.writer.deadbeef")
+        assert rec.status == RunStatus.RUNNING.value, "a live, verified run was reaped"
+        assert rec.pid == holder.pid, "a live run's pid was cleared - it is now uncancellable"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_startup_reap_skips_validation_for_terminal_records(repo: Path) -> None:
+    """The pre-filter must not change behaviour: a terminal record that would fail model
+    validation is skipped either way, and a non-terminal one is still reaped."""
+    (repo / ".marshal" / "runs").mkdir(parents=True, exist_ok=True)
+    (repo / ".marshal" / "runs" / "weird.json").write_text(
+        '{"run_id": "weird", "task_id": "t", "backend": "writer", "status": "succeeded",'
+        ' "unexpected_future_field": 1}',
+        encoding="utf-8",
+    )
+    _write_run_record(
+        repo,
+        RunRecord(run_id="stale.writer.x", task_id="stale", backend="writer", status="running"),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get("stale.writer.x").status == RunStatus.FAILED.value
+    assert fleet.state.get("weird").status == "succeeded"  # untouched
+
+
+def test_base_commit_matches_what_the_worktree_was_actually_cut_from(repo: Path) -> None:
+    """REGRESSION: the sha was resolved BEFORE `worktree add`, so a base branch that moved in
+    between left the record claiming a commit the worktree was never cut from."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="pin2", goal="x"))
+    stored = fleet.state.get(rec.run_id)
+    assert stored.base_commit
+    # The run's branch was created at the base; its merge-base with the recorded commit must be
+    # that same commit - i.e. the record describes the real starting point.
+    out = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", stored.base_commit, stored.branch],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert out == stored.base_commit
+
+
+def test_collect_uses_the_pinned_base_commit_when_the_branch_moves(repo: Path) -> None:
+    """REGRESSION: the base was recorded as a branch NAME, which is mutable. If the branch moves
+    while the agent works, the review is computed against a different base than the run started
+    from - showing commits the agent never made, or hiding ones it did."""
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    rec = fleet.run("selfcommit", TaskSpec(id="pin1", goal="x"))
+    stored = fleet.state.get(rec.run_id)
+    assert stored.base_commit, "the run's base commit was not pinned"
+
+    # The base BRANCH now moves on: a commit the agent never saw.
+    (repo / "moved.txt").write_text("landed after the run started\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "moved the base branch")
+
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.committed_changed_files == ["out.txt"]
+    assert "moved.txt" not in collected.committed_diff
+
+
+def test_a_run_records_its_pid_start_time(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="pst1", goal="x"))
+    stored = fleet.state.get(rec.run_id)
+    # The run is finished, so pid is cleared - but the identity pair was recorded while it ran.
+    assert stored.pid_start_time is None or isinstance(stored.pid_start_time, str)
+
+
+def test_cancel_before_the_pid_is_known_still_stops_the_agent(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: a cancel arriving after the RUNNING record but before the pid was recorded
+    skipped signalling and still stamped the run cancelled - the agent kept running and modifying
+    its worktree behind an already-terminal record."""
+    import os as _os
+
+    from marshal_engine.fleet import _inflight_handle, _register_inflight_run
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "early.writer.deadbeef"
+    _register_inflight_run(fleet.state.dir, run_id)  # in flight, pid not yet known
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="early", backend="writer", status="running")
+    )
+
+    fleet.cancel_run(run_id)  # cancel beats the pid
+    assert killed == [], "nothing to signal yet"
+    handle = _inflight_handle(fleet.state.dir, run_id)
+    assert handle is not None and handle.cancel_requested
+
+    # The pid arrives; the pending cancel must be applied instead of silently dropped.
+    fleet.state.update(run_id, pid=4242)
+    with _active_runs_guard:
+        handle.pid = 4242
+        pending = handle.cancel_requested and not handle.exited
+    if pending:
+        _os.killpg(4242, 15)
+    assert killed == [4242]
+
+
+def test_cancel_does_not_signal_after_the_child_is_reaped(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: registry membership alone was not ownership. Between the child being reaped and
+    the run being unregistered, its pid can already have been recycled - signalling then hits a
+    stranger."""
+    import os as _os
+
+    from marshal_engine.fleet import _register_inflight_run
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "reaped.writer.deadbeef"
+    handle = _register_inflight_run(fleet.state.dir, run_id)
+    handle.pid = 4242
+    handle.exited = True  # base.run has reaped the child; the pid is now recyclable
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="reaped", backend="writer", status="running", pid=4242)
+    )
+
+    rec = fleet.cancel_run(run_id)
+    assert killed == [], "signalled a pid that may already have been recycled"
+    assert rec.status == RunStatus.CANCELLED.value
+
+
+def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: the handle is reused across retries. Attempt 1's exit left `exited` set, and
+    publishing attempt 2's pid did not clear it - so a cancel during the retry skipped killpg and
+    the agent kept running behind a cancelled record."""
+    import os as _os
+
+    from marshal_engine.fleet import _active_runs_guard, _register_inflight_run
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "retry.writer.deadbeef"
+    handle = _register_inflight_run(fleet.state.dir, run_id)
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="retry", backend="writer", status="running")
+    )
+
+    from marshal_engine.fleet import _publish_pid
+
+    # Attempt 1 spawns and exits (a retryable failure).
+    _publish_pid(handle, 1111)
+    with _active_runs_guard:
+        handle.exited = True
+
+    # Attempt 2 publishes its pid through the SAME production path the run loop uses.
+    _publish_pid(handle, 2222)
+    fleet.state.update(run_id, pid=2222)
+
+    fleet.cancel_run(run_id)
+    assert killed == [2222], "the retry's agent was not signalled"

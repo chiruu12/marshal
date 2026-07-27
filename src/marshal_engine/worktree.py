@@ -163,6 +163,18 @@ class WorktreeManager:
                 f"git {' '.join(args)!r} timed out after {self.git_timeout_s}s"
             ) from exc
 
+    def resolve_base_branch(self, base_branch: str | None) -> str:
+        """The ref recorded for a run: caller's branch name, or HEAD resolved when omitted."""
+        if base_branch is not None:
+            return base_branch
+        proc = self._git("rev-parse", "--abbrev-ref", "HEAD")
+        if proc.returncode != 0:
+            raise WorktreeError(f"could not resolve base branch: {proc.stderr.strip()}")
+        ref = proc.stdout.strip()
+        if ref != "HEAD":
+            return ref
+        return self._git("rev-parse", "HEAD").stdout.strip()
+
     def create(self, task_id: str, base_branch: str | None = None) -> Worktree:
         """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch (git op only).
 
@@ -350,19 +362,24 @@ class WorktreeManager:
             raise WorktreeError("repo is in detached HEAD; check out a branch before integrating")
         return branch
 
-    def has_unmerged_commits(self, branch: str, target: str) -> bool:
-        """True if `branch` has commits not reachable from `target` (work awaiting merge).
+    def unmerged_commit_count(self, branch: str, target: str) -> int:
+        """How many commits `branch` has that are not reachable from `target`.
 
-        Raises on a git error rather than returning False: integrate uses this to decide "empty",
-        and a silent False there would report "empty" (and drop committed work) when we actually
-        cannot tell. Failing here surfaces as integrate's "error" status - never a false "empty".
+        Raises on a git error rather than returning 0: callers use this to decide whether work
+        exists, and a silent 0 would report "empty" (and drop committed work) when we actually
+        cannot tell.
         """
         proc = self._git("rev-list", "--count", f"{target}..{branch}")
         if proc.returncode != 0:
             raise WorktreeError(
                 f"could not count unmerged commits {target}..{branch}: {proc.stderr.strip()}"
             )
-        return proc.stdout.strip() not in ("", "0")
+        raw = proc.stdout.strip()
+        return int(raw) if raw else 0
+
+    def has_unmerged_commits(self, branch: str, target: str) -> bool:
+        """True if `branch` has commits not reachable from `target` (work awaiting merge)."""
+        return self.unmerged_commit_count(branch, target) > 0
 
     def branch_tip(self, branch: str) -> str:
         """The commit sha at the tip of `branch`."""
@@ -377,6 +394,15 @@ class WorktreeManager:
         """
         proc = self._git("diff", "--name-only", "-z", f"{target}...{branch}")
         return [f for f in proc.stdout.split("\0") if f]
+
+    def merged_diff(self, branch: str, target: str) -> str:
+        """Unified diff of commits on `branch` since the merge-base with `target` (three-dot)."""
+        proc = self._git("diff", f"{target}...{branch}")
+        if proc.returncode != 0:
+            raise WorktreeError(
+                f"could not diff {target}...{branch}: {proc.stderr.strip()}"
+            )
+        return proc.stdout
 
     def merge(self, branch: str, *, message: str | None = None) -> MergeResult:
         """Merge `branch` into the repo's current branch.

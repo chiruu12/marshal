@@ -31,6 +31,11 @@ class RunRecord(BaseModel):
     model: str | None = None
     worktree: str | None = None
     branch: str | None = None
+    base_branch: str | None = None  # branch the worktree was cut from (None = pre-drift records)
+    # The COMMIT that branch pointed at when the run was spawned. A branch name is mutable: if
+    # `main` moves while the agent works, reviewing against the name compares to a different base
+    # than the agent started from. The sha is what the run actually branched off.
+    base_commit: str | None = None
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -43,6 +48,9 @@ class RunRecord(BaseModel):
     merged_into: str | None = None  # branch this run was integrated into, once merged
     commit: str | None = None  # branch tip after commit_run froze the work (for chaining/integrate)
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
+    # Start time of `pid` as the OS reports it. Pids are reused, so this is what makes the pid an
+    # identity: a live pid whose start time differs is somebody else's process, never our agent.
+    pid_start_time: str | None = None
     attempts: int = 1  # how many times the backend was run (>1 means a transient failure was retried)
     # Outcome of the workspace's optional `verify:` gate. None = no gate ran (unconfigured, run
     # not would-be-succeeded, or no file changes to gate); False pairs with status `verify_failed`.

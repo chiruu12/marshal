@@ -9,10 +9,14 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import json
 import logging
 import os
 import signal
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -43,6 +47,74 @@ from .worktree import Worktree, WorktreeError, WorktreeManager
 
 logger = logging.getLogger(__name__)
 
+# Process-wide in-flight run ids keyed by ``<repo>/.marshal`` (resolved). A replacement Fleet
+# constructed in the same MCP server process (config hot-reload) shares this map with the evicted
+# Fleet's background pool, so startup reaping must not touch those runs even when they have no pid
+# yet (e.g. a test backend that overrides run() without spawning).
+_active_runs_guard = threading.Lock()
+_active_runs: dict[str, dict[str, "_RunHandle"]] = {}
+
+
+class _RunHandle:
+    """Live state for a run started by THIS process, used to cancel it safely.
+
+    A pid alone is not safe to signal: the OS recycles pids. A child's pid is held until its parent
+    reaps it, so signalling is safe exactly while the run loop is between spawn and reap - which is
+    what ``exited`` tracks. ``cancel_requested`` covers the other end: a cancel that arrives before
+    the pid is known is applied as soon as it is.
+    """
+
+    __slots__ = ("pid", "exited", "cancel_requested")
+
+    def __init__(self) -> None:
+        self.pid: int | None = None
+        self.exited = False
+        self.cancel_requested = False
+
+
+def _marshal_base_key(runs_dir: Path) -> str:
+    return str(runs_dir.resolve().parent)
+
+
+def _register_inflight_run(runs_dir: Path, run_id: str) -> "_RunHandle":
+    key = _marshal_base_key(runs_dir)
+    with _active_runs_guard:
+        handle = _RunHandle()
+        _active_runs.setdefault(key, {})[run_id] = handle
+        return handle
+
+
+def _unregister_inflight_run(runs_dir: Path, run_id: str) -> None:
+    key = _marshal_base_key(runs_dir)
+    with _active_runs_guard:
+        active = _active_runs.get(key)
+        if active is not None:
+            active.pop(run_id, None)
+            if not active:
+                del _active_runs[key]
+
+
+def _publish_pid(handle: "_RunHandle", pid: int) -> bool:
+    """Record a newly spawned child's pid on ``handle``; True if a cancel is already pending.
+
+    Clears ``exited``: a published pid means a LIVE child. The handle is reused across retries, so
+    an exit recorded by a previous attempt would otherwise make cancel skip signalling the retry.
+    """
+    with _active_runs_guard:
+        handle.pid = pid
+        handle.exited = False
+        return handle.cancel_requested
+
+
+def _inflight_handle(runs_dir: Path, run_id: str) -> "_RunHandle | None":
+    key = _marshal_base_key(runs_dir)
+    with _active_runs_guard:
+        return _active_runs.get(key, {}).get(run_id)
+
+
+def _inflight_in_this_process(runs_dir: Path, run_id: str) -> bool:
+    return _inflight_handle(runs_dir, run_id) is not None
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -68,9 +140,199 @@ _CLEANABLE_NONSUCCESS = frozenset(
 )
 
 
+#: Raw status strings that mean "not finished". Used as a cheap text pre-filter over run records
+#: before paying for model validation (see `_reap_orphaned_runs`).
+_NON_TERMINAL_STATUSES = (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
+
+
 def _is_terminal(rec: RunRecord) -> bool:
     """True once a run has stopped - i.e. it is neither queued nor still running."""
     return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
+
+
+#: Stale non-terminal runs reaped at Fleet startup are stamped ``failed``: the supervising process
+#: vanished before Marshal recorded an outcome, so we cannot honestly claim success, cancellation,
+#: or timeout. ``error`` carries the reap reason; ``pid`` is cleared so ``cancel_run`` can never
+#: signal a reused OS pid.
+_ORPHAN_REAP_ERROR = (
+    "fleet: run orphaned at startup (supervising process exited before run completed)"
+)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when ``pid`` still names a live process (signal 0 probe).
+
+    Liveness only - it says nothing about WHOSE process it is. See ``_pid_is_still_ours``.
+    """
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Permission denied or other ambiguity: assume alive so we never reap a live run.
+        return True
+
+
+def _pid_start_time(pid: int) -> str | None:
+    """The OS-reported start time of ``pid``, or None when it cannot be determined.
+
+    A pid alone is not an identity: the OS reuses pids, so "something is alive at pid 4242" does
+    not mean "our agent is alive". Pairing the pid with its start time makes the identity
+    verifiable. POSIX-only via ``ps``; None on any failure, and callers must treat None as
+    "unverifiable", never as "different".
+    """
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    started = proc.stdout.strip()
+    return started or None
+
+
+def _pid_is_still_ours(rec: RunRecord) -> bool:
+    """Whether ``rec.pid`` still names the agent this run started.
+
+    Fails OPEN (True = "assume it is ours, do not reap") whenever identity cannot be established:
+    no recorded start time (an older record), or the probe is unavailable. That direction is
+    deliberate. Falsely reaping a LIVE run is destructive and silent - the record is stamped
+    failed, its pid cleared so it can never be cancelled, and its real outcome is never recorded
+    because the terminal stamp is guarded on the status still being running. Failing to reap a
+    stale record only leaves it visible as running until someone explicitly calls ``cancel_run``,
+    and only then can a wrong process be signalled.
+    """
+    if rec.pid is None or not _pid_alive(rec.pid):
+        return False
+    if not rec.pid_start_time:
+        return True  # unverifiable (record predates the field) - fail open
+    now = _pid_start_time(rec.pid)
+    if now is None:
+        return True  # probe unavailable (non-POSIX, permission) - fail open
+    return now == rec.pid_start_time
+
+
+def _another_fleet_active(lock_path: Path) -> bool:
+    """True when another Marshal Fleet process holds ``base/fleet.lock`` and is still alive."""
+    if not lock_path.exists():
+        return False
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        pid = int(data["pid"])
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return False  # corrupt/stale lock - treat as inactive; this Fleet will reclaim it
+    if pid == os.getpid():
+        return False
+    return _pid_alive(pid)
+
+
+def _reap_orphaned_runs(state: FleetState) -> None:
+    """Terminal-stamp persisted ``running``/``queued`` runs left by a prior Fleet instance.
+
+    Callers MUST have established that no other live Fleet supervises this repo (see the
+    ``fleet.lock`` check in ``Fleet.__init__``) - this function does not re-check.
+
+    A new Fleet's in-process pool starts empty, so any non-terminal record on disk is orphaned
+    unless the agent subprocess is still running (per-record ``pid`` probe) or another Fleet in
+    THIS process still owns it (config hot-reload). Reaping clears ``pid`` so a later
+    ``cancel_run`` can never ``killpg`` a reused pid. Corrupt records are skipped with a warning.
+    """
+    if not state.dir.exists():
+        return
+    for path in sorted(state.dir.glob("*.json")):
+        try:
+            rec = RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (ValidationError, OSError, ValueError) as exc:
+            print(f"[marshal] skipping unreadable run record {path.name}: {exc}", file=sys.stderr)
+            continue
+        if _is_terminal(rec):
+            continue
+        if _inflight_in_this_process(state.dir, rec.run_id):
+            continue  # another Fleet in this process still owns the run (config hot-reload)
+        if _pid_is_still_ours(rec):
+            continue  # our agent is genuinely still running (MCP died, the child survived)
+        try:
+            state.update_if(
+                rec.run_id,
+                lambda r: not _is_terminal(r),
+                status=RunStatus.FAILED.value,
+                pid=None,
+                ended_at=_now(),
+                error=_ORPHAN_REAP_ERROR,
+            )
+        except Exception as exc:  # noqa: BLE001 - startup reaping must never crash Fleet construction
+            print(f"[marshal] failed to reap orphaned run {rec.run_id}: {exc}", file=sys.stderr)
+
+
+def _claim_fleet_lock(lock_path: Path) -> bool:
+    """Atomically become this repo's Fleet supervisor. True only if THIS process won the claim.
+
+    The whole decision - read the holder, judge liveness, take over - runs under an advisory
+    ``flock`` on a sibling guard file, so it is one critical section rather than three steps other
+    processes can interleave with.
+
+    Two earlier attempts were not enough, and both failure modes are worth remembering:
+    ``O_CREAT | O_EXCL`` then writing the pid leaves the lock EMPTY for a moment, and a competing
+    process reading it in that window saw an unparseable file, concluded "no live holder", and took
+    over. Publishing by hard-link fixed that, but the stale-lock path still did unlink-then-create:
+    two processes that both found a dead holder could both unlink - the second deleting the FIRST's
+    freshly published lock - and both end up believing they won.
+
+    ``flock`` is released by the OS when the process exits, so a crash mid-decision cannot wedge
+    it. The lock file itself is never released: a long-lived server keeps it, and a short-lived CLI
+    leaves a dead pid the next process takes over.
+    """
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[marshal] failed to create fleet lock dir: {exc}", file=sys.stderr)
+        return False
+
+    guard_path = lock_path.with_name(lock_path.name + ".guard")
+    try:
+        guard = open(guard_path, "a+")  # noqa: SIM115 - closed explicitly below
+    except OSError as exc:
+        print(f"[marshal] failed to open fleet lock guard: {exc}", file=sys.stderr)
+        return False
+    try:
+        try:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another process is deciding right now. Whoever it is will reconcile; we stand down
+            # rather than racing it.
+            return False
+        if _another_fleet_active(lock_path):
+            return False
+        try:
+            _write_lock_payload(lock_path)
+        except OSError as exc:
+            print(f"[marshal] failed to write fleet lock: {exc}", file=sys.stderr)
+            return False
+        return True
+    finally:
+        guard.close()  # releases the flock
+
+
+def _write_lock_payload(lock_path: Path) -> None:
+    """Write this process's pid to the lock atomically (temp + replace, never half-written)."""
+    fd, tmp_str = tempfile.mkstemp(dir=str(lock_path.parent), prefix="fleet.lock.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": os.getpid()}))
+        os.replace(tmp_str, lock_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_str)
+        raise
+
+
+def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool, str]:
+    """Warn when integrate's target differs from the branch the run was spawned from."""
+    if rec is None or rec.base_branch is None or rec.base_branch == target:
+        return False, ""
+    return True, f"warning: run was based on {rec.base_branch!r}, merging into {target!r}"
 
 
 def _in_clean_scope(rec: RunRecord, scope: str) -> bool:
@@ -115,13 +377,22 @@ def _load_default_prices() -> PriceTable:
 
 
 class CollectResult(BaseModel):
-    """A run's uncommitted work, surfaced read-only for the driver to review."""
+    """A run's work surfaced read-only for the driver to review.
+
+    Uncommitted work lives in ``changed_files`` / ``diff`` (working tree vs HEAD). Commits the
+    agent made on the run's branch since the merge-base with the collect target are in
+    ``committed_changed_files`` / ``committed_diff`` / ``commit_count`` — both sections are
+    reported when both exist.
+    """
 
     run_id: str
     branch: str | None
     worktree: str | None
     changed_files: list[str]
     diff: str
+    committed_changed_files: list[str] = []
+    committed_diff: str = ""
+    commit_count: int = 0
 
 
 class IntegrateResult(BaseModel):
@@ -142,6 +413,7 @@ class IntegrateResult(BaseModel):
     conflicts: list[str] = []
     commit: str | None = None
     message: str = ""
+    base_branch_drift: bool = False  # True when merge target differs from the run's recorded base
 
 
 class CommitResult(BaseModel):
@@ -305,6 +577,11 @@ class Fleet:
         self.session_start: datetime = (
             session_start if session_start is not None else datetime.now(timezone.utc)
         )
+        # Reap ONLY as the winner of an atomic claim. Checking liveness and then writing was a
+        # TOCTOU: two Fleets could both pass the check and both reap. Winning the claim is the
+        # permission to reconcile.
+        if _claim_fleet_lock(base / "fleet.lock"):
+            _reap_orphaned_runs(self.state)
 
     def run(
         self,
@@ -360,6 +637,7 @@ class Fleet:
                 run_id, status=RunStatus.FAILED.value, ended_at=_now(),
                 error=f"spawn: executor unavailable: {exc}",
             )
+            _unregister_inflight_run(self.state.dir, run_id)
             raise
         return run_id
 
@@ -415,9 +693,17 @@ class Fleet:
             # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
             # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
             # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
+            resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
             with self._create_lock:
                 wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+            # Pin the sha AFTER creation, from the new worktree's own branch tip. Resolving the ref
+            # beforehand was racy: if the base branch moved between the lookup and `worktree add`,
+            # the record claimed one commit while the worktree was cut from another, and reviews
+            # were then computed against a base the agent never had. The created branch's tip IS
+            # what it was cut from, so there is no window to lose.
+            resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
             self.worktrees.setup(wt)
+            _register_inflight_run(self.state.dir, run_id)
             self.state.add(
                 RunRecord(
                     run_id=run_id,
@@ -428,6 +714,8 @@ class Fleet:
                     status=RunStatus.RUNNING.value,
                     worktree=str(wt.path),
                     branch=wt.branch,
+                    base_branch=resolved_base,
+                    base_commit=resolved_base_commit,
                     started_at=started,
                 )
             )
@@ -463,8 +751,26 @@ class Fleet:
         result: AgentResult | None = None
         record: RunRecord | None = None
         try:
+            handle = _inflight_handle(self.state.dir, run_id)
+
             def _record_pid(pid: int) -> None:
-                self.state.update(run_id, pid=pid)
+                # Stamp the pid together with its start time: the pair is an identity a later
+                # process can verify, where a bare pid can be silently reused by the OS.
+                self.state.update(run_id, pid=pid, pid_start_time=_pid_start_time(pid))
+                if handle is None:
+                    return
+                pending_cancel = _publish_pid(handle, pid)
+                if pending_cancel:
+                    # Cancel arrived before the pid existed; apply it now rather than leaving the
+                    # agent running behind an already-terminal record.
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        os.killpg(pid, signal.SIGTERM)
+
+            def _record_exit() -> None:
+                # The child has been reaped, so its pid may now be recycled - never signal it again.
+                if handle is not None:
+                    with _active_runs_guard:
+                        handle.exited = True
 
             opts = RunOpts(
                 cwd=wt.path,
@@ -472,6 +778,7 @@ class Fleet:
                 model=req.model,
                 timeout_s=req.timeout_s,
                 on_pid=_record_pid,
+                on_exit=_record_exit,
             )
             # Hold a slot for the agent run (the heavy, memory-hungry part) - including any transient
             # retry backoff, since the run is still in flight. Worktree creation/provision in _start
@@ -534,6 +841,7 @@ class Fleet:
             # Release enforce-budget concurrency slots once spend is (or would have been) recorded
             # so the next matching spawn can re-check the ledger.
             self._budget_gate.release_run(run_id)
+            _unregister_inflight_run(self.state.dir, run_id)
             # Persist the FULL raw stdout/stderr for every terminal run (success OR failure) so a
             # driver can inspect what the agent actually did after the fact. Best-effort: a logging
             # failure (disk full, permission, ...) must never break a finished run; stderr the cause
@@ -702,15 +1010,52 @@ class Fleet:
             return RunStatus.SUCCEEDED  # can't tell -> don't mislabel a success as empty
         return RunStatus.SUCCEEDED if changed else RunStatus.EMPTY
 
+    def _collect_target(self, rec: RunRecord | None = None) -> str:
+        """Merge-base reference for a run's committed work.
+
+        The run's OWN recorded base when we have it - NOT whatever is checked out now. Those are
+        different questions: `integrate` merges into the current branch (that is the user's intent
+        at merge time), but a *review* has to be computed against the base the agent actually
+        started from. Using the current branch means a checkout between spawn and collect silently
+        changes the diff: commits inherited from an unrelated branch appear as the agent's work, or
+        the agent's own commits vanish because the new target already contains them.
+
+        Falls back to the current branch for records written before `base_branch` existed.
+        """
+        # Prefer the pinned sha over the branch name: the name may point somewhere else now.
+        if rec is not None and rec.base_commit:
+            return rec.base_commit
+        if rec is not None and rec.base_branch:
+            return rec.base_branch
+        try:
+            return self.worktrees.current_branch()
+        except WorktreeError:
+            return "HEAD"  # detached checkout: diff against the checked-out commit
+
     def collect_run(self, run_id: str) -> CollectResult:
-        """Surface a run's uncommitted diff + changed files. Read-only - nothing is merged."""
+        """Surface a run's diff + changed files. Read-only - nothing is merged."""
         wt = self._worktree_for(run_id)
+        rec = self.state.get(run_id)
+        changed_files = self.worktrees.changed_files(wt)
+        diff = self.worktrees.diff(wt)
+        committed_changed_files: list[str] = []
+        committed_diff = ""
+        commit_count = 0
+        if wt.branch:
+            target = self._collect_target(rec)
+            commit_count = self.worktrees.unmerged_commit_count(wt.branch, target)
+            if commit_count:
+                committed_changed_files = self.worktrees.merged_diff_files(wt.branch, target)
+                committed_diff = self.worktrees.merged_diff(wt.branch, target)
         return CollectResult(
             run_id=run_id,
             branch=wt.branch or None,
             worktree=str(wt.path),
-            changed_files=self.worktrees.changed_files(wt),
-            diff=self.worktrees.diff(wt),
+            changed_files=changed_files,
+            diff=diff,
+            committed_changed_files=committed_changed_files,
+            committed_diff=committed_diff,
+            commit_count=commit_count,
         )
 
     def commit_run(self, run_id: str, *, message: str | None = None) -> CommitResult:
@@ -850,16 +1195,40 @@ class Fleet:
             raise ValueError(f"no such run: {run_id!r}")
         if rec.status != RunStatus.RUNNING.value:
             return rec
-        if rec.pid is not None:
-            try:
-                os.killpg(rec.pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass  # already exited
+        cancel_error: str | None = None
+        cancel_extra: dict[str, object] = {}
+        # Signal only through a live handle for a run THIS process started. A child's pid is held
+        # by the OS until its parent reaps it, so the handle's `exited` flag marks exactly when the
+        # pid stops being safe to signal. A run owned by another (or dead) process gets no signal:
+        # guessing at a pid we do not own risks SIGTERM to an unrelated process group.
+        handle = _inflight_handle(self.state.dir, run_id)
+        if handle is None:
+            cancel_extra["pid"] = None
+            cancel_error = (
+                "fleet: cancelled without signalling - this run was started by another process, "
+                "so its pid cannot be confirmed to still belong to the agent"
+            )
+        else:
+            with _active_runs_guard:
+                handle.cancel_requested = True
+                pid, exited = handle.pid, handle.exited
+            if exited:
+                pass  # the agent already finished; the terminal stamp below is all that is left
+            elif pid is None:
+                # Cancel beat the pid: `_record_pid` applies it the moment the pid is known, so the
+                # agent is stopped rather than left running behind a terminal record.
+                pass
+            else:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.killpg(pid, signal.SIGTERM)
+        stamp: dict[str, object] = {"status": "cancelled", "ended_at": _now(), **cancel_extra}
+        if cancel_error:
+            stamp["error"] = cancel_error
         # Stamp cancelled ONLY if the run is still running - update_if does the re-check and the
         # write atomically under the per-run lock, so a run that finished (succeeded/failed) between
         # the kill and now is never overwritten with "cancelled".
         return self.state.update_if(
-            run_id, lambda r: r.status == RunStatus.RUNNING.value, status="cancelled", ended_at=_now()
+            run_id, lambda r: r.status == RunStatus.RUNNING.value, **stamp
         )
 
     def integrate(
@@ -944,6 +1313,7 @@ class Fleet:
         self.state.update(run_id, merged_into=target)
         if cleanup:
             self.worktrees.remove(wt)
+        drift, drift_msg = _base_branch_drift_warning(rec, target)
         return IntegrateResult(
             run_id=run_id,
             status="merged",
@@ -951,6 +1321,8 @@ class Fleet:
             merged_into=target,
             changed_files=changed,
             commit=commit,
+            base_branch_drift=drift,
+            message=drift_msg,
         )
 
     def _worktree_for(self, run_id: str) -> Worktree:

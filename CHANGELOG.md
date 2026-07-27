@@ -61,6 +61,24 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **`cancel_run` signals only a live child of the current process.** Signalling goes through an
+  in-process handle tracking the child from spawn until it is reaped — the OS cannot recycle a
+  child's pid before its parent reaps it, so within that window the pid is unambiguous. A cancel
+  arriving before the pid is known is applied the moment it is; a cancel after the child is reaped
+  does not signal; publishing a pid clears the handle's exit flag so a cancel during a retry still
+  reaches the retry's agent. A run owned by another (or dead) process is stamped `cancelled`
+  without a signal and records why.
+- **Reap orphaned RUNNING runs at Fleet startup.** A persisted `running`/`queued` record left when
+  the supervising MCP server or CLI process died is terminal-stamped `failed` (outcome unknown),
+  its `pid` cleared, and `error` records the reap — so `cancel_run` can never `killpg` a reused OS
+  pid. Skipped when another live Fleet holds `fleet.lock` or the agent subprocess is still alive.
+- **`integrate` warns on base-branch drift.** `RunRecord` now persists the branch a run was
+  spawned from; `integrate` sets `base_branch_drift` and names both branches in `message` when the
+  merge target differs (the merge still proceeds).
+- **`collect_run` surfaces agent self-commits.** Committed work on the run branch (since the
+  merge-base with the current branch) is returned in `committed_changed_files`, `committed_diff`,
+  and `commit_count`; uncommitted work stays in `changed_files` / `diff`. Fixes the review blind
+  spot where Cursor/Claude Code agents commit before exit and the working tree looks empty.
 - **Antigravity `trustedWorkspaces` scoped to the run (#48).** `prepare()` no longer leaves
   durable trust entries in the host-global agy settings file: `run()` removes the run's worktree
   path on completion (best-effort; warns on stderr if cleanup cannot read/write the file). A

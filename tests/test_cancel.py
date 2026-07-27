@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine.fleet import Fleet
+from marshal_engine.fleet import Fleet, _register_inflight_run
 from marshal_engine.state import RunRecord
 
 
@@ -45,6 +45,8 @@ def test_cancel_running_with_pid_kills_and_marks_cancelled(
     monkeypatch.setattr(os, "killpg", _fake_killpg)
 
     fleet = Fleet(tmp_path, {})
+    # Cancel signals only through a live handle for a run THIS process started.
+    _register_inflight_run(fleet.state.dir, "t.x.a2").pid = 12345
     fleet.state.add(
         RunRecord(
             run_id="t.x.a2",
@@ -53,6 +55,7 @@ def test_cancel_running_with_pid_kills_and_marks_cancelled(
             status="running",
             started_at="2026-01-01T00:00:00Z",
             pid=12345,
+            pid_start_time="Mon Jan  1 00:00:00 2026",
         )
     )
     rec = fleet.cancel_run("t.x.a2")
@@ -111,6 +114,10 @@ def test_cancel_running_race_natural_finish_no_overwrite(
         pass  # pretend we killed it
 
     monkeypatch.setattr(os, "killpg", _fake_killpg)
+    monkeypatch.setattr(
+        "marshal_engine.fleet._pid_start_time", lambda pid: "Mon Jan  1 00:00:00 2026"
+    )
+    monkeypatch.setattr("marshal_engine.fleet._pid_alive", lambda pid: True)
 
     running = RunRecord(
         run_id="t.x.a5",
@@ -119,6 +126,7 @@ def test_cancel_running_race_natural_finish_no_overwrite(
         status="running",
         started_at="2026-01-01T00:00:00Z",
         pid=12345,
+        pid_start_time="Mon Jan  1 00:00:00 2026",
     )
     finished = RunRecord(
         run_id="t.x.a5",

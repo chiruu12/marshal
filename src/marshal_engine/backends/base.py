@@ -227,11 +227,21 @@ class CodingAgentBackend(ABC):
         # a zombie and strand the group.
         pgid = proc.pid
 
+        def _notify_exit() -> None:
+            """Tell the caller the child is reaped, so its pid may now be recycled by the OS."""
+            if opts.on_exit is None:
+                return
+            try:
+                opts.on_exit()
+            except Exception as exc:  # noqa: BLE001 - never let a callback break a finished run
+                print(f"[marshal] {self.name}: on_exit callback failed: {exc}", file=sys.stderr)
+
         try:
             out, err = proc.communicate(timeout=opts.timeout_s)
         except subprocess.TimeoutExpired:
             _kill_process_group(pgid)
             out, err = _drain(proc)  # bounded: a setsid-escaped survivor holding the pipe can't hang us
+            _notify_exit()
             return AgentResult(
                 status=RunStatus.TIMED_OUT,
                 error=f"{self.name}: timed out after {opts.timeout_s}s",
@@ -242,6 +252,7 @@ class CodingAgentBackend(ABC):
                 duration_ms=_elapsed_ms(),
             )
 
+        _notify_exit()
         result = self.parse_output(out, err, proc.returncode)
         result = self.finalize(result)
         result.duration_ms = _elapsed_ms()

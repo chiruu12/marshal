@@ -100,8 +100,12 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
   and when the workspace configures a `verify:` command, `succeeded` also means that gate passed.
 
 ## 4. Collect - review before you trust
-- `collect_run(run_id)` returns the run's **diff + changed files**, read-only. Read it. You are the
-  reviewer; `succeeded` means "the process exited cleanly," not "the code is correct."
+- `collect_run(run_id)` returns the run's work read-only in two sections:
+  - **Uncommitted** (`changed_files`, `diff`) — working-tree changes not yet committed.
+  - **Committed** (`committed_changed_files`, `committed_diff`, `commit_count`) — commits the
+    agent made on the run's branch (common with Cursor and Claude Code). Read both. An empty
+    uncommitted diff does **not** mean no work — check the committed section too.
+- `succeeded` means "the process exited cleanly," not "the code is correct."
 - Reject work that is wrong or off-scope by simply not integrating it. The worktree stays isolated;
   main is untouched.
 - **When your own read isn't enough** - a migration, a public API, a security-sensitive path -
@@ -121,6 +125,10 @@ Handle the outcome:
   target (commit/stash your edits, check out a branch) and retry - the work is safe on its branch.
 - `empty` - nothing to integrate.
 - `error` - a git operation failed in a way that needs a human (read `message`); do not blindly retry.
+- `base_branch_drift` (on `merged`) - the run was spawned from a different branch than the one you
+  currently have checked out (`message` names both). The merge **still landed**; this is a warning,
+  not a block. Integrating into a different branch is sometimes deliberate — read the branches and
+  decide whether the result is what you intended.
 
 Integrate **one run at a time**, reviewing each. Worktree isolation means main is never touched until
 this step.

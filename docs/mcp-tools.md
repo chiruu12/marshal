@@ -275,8 +275,11 @@ Read-only diff collection; nothing is merged.
 | `run_id` | string | |
 | `branch` | string \| null | Run's worktree branch. |
 | `worktree` | string \| null | Worktree path. |
-| `changed_files` | list[string] | |
-| `diff` | string | Unified diff. |
+| `changed_files` | list[string] | Paths with uncommitted changes in the worktree. |
+| `diff` | string | Unified diff of uncommitted work (working tree vs HEAD). |
+| `committed_changed_files` | list[string] | Files changed in commits on the run branch since the merge-base with the current branch. |
+| `committed_diff` | string | Unified diff of those commits (`target...branch`). |
+| `commit_count` | integer | Number of commits on the run branch not reachable from the current branch. |
 
 ### `status`
 
@@ -289,7 +292,10 @@ workspaces for visibility; it is **not** a merged usage/budget view (see `usage`
 
 ### `cancel_run`
 
-SIGTERM the agent process group.
+SIGTERM the agent process group when the recorded `pid` + `pid_start_time` identity is positively
+verified as still ours. Skips the signal (but still marks `cancelled` with an explanatory `error`
+and clears `pid`) when identity mismatches or cannot be verified — unlike startup reaping, cancel
+fails closed on unverifiable identity so a reused pid is never signalled.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -342,7 +348,8 @@ Merge a run's worktree branch into the workspace's current branch. Review with `
 | `changed_files` | list[string] | |
 | `conflicts` | list[string] | |
 | `commit` | string \| null | Merge commit hash. |
-| `message` | string | Detail on failure. |
+| `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. |
+| `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
 
 ### `clean`
 
@@ -415,11 +422,12 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `run_id` | string | Unique id. |
 | `task_id` | string | Grouping id. |
 | `backend` | string | Backend that ran. |
-| `status` | string | `queued` \| `running` \| `succeeded` \| `empty` \| `failed` \| `timed_out` \| `cancelled` \| `verify_failed` |
+| `status` | string | `queued` \| `running` \| `succeeded` \| `empty` \| `failed` \| `timed_out` \| `cancelled` \| `verify_failed` — a `failed` with `error` mentioning *orphaned at startup* means the supervising process died before the run finished (not an agent failure); `pid` is cleared |
 | `client` | string \| null | Client name (null for ad-hoc spawns). |
 | `model` | string \| null | Model used. |
 | `worktree` | string \| null | Worktree path. |
 | `branch` | string \| null | Worktree branch. |
+| `base_branch` | string \| null | Branch the worktree was cut from at spawn time. |
 | `cost_usd` | float | Recorded cost. |
 | `input_tokens` | int | |
 | `output_tokens` | int | |

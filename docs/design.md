@@ -33,6 +33,10 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 
 Claude Code is **stateless across turns** - it forgets the fleet between messages, but background
 agents outlive a turn. So fleet state lives in the **long-lived MCP server**, persisted to disk.
+On Fleet construction the engine reconciles any persisted `running`/`queued` records left by a
+prior supervisor (stamped `failed`, `pid` cleared) unless another live Fleet holds `fleet.lock`,
+the agent subprocess is still running, or this process still has the run in its in-flight pool
+(config hot-reload) — so stale pids can never be signalled by `cancel_run`.
 
 - **MCP tools** = mechanism (imperative verbs).
 - **Skills** = policy (decomposition, prompt-writing, merge judgment).
