@@ -2412,3 +2412,38 @@ def test_cancel_does_not_signal_after_the_child_is_reaped(
     rec = fleet.cancel_run(run_id)
     assert killed == [], "signalled a pid that may already have been recycled"
     assert rec.status == RunStatus.CANCELLED.value
+
+
+def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: the handle is reused across retries. Attempt 1's exit left `exited` set, and
+    publishing attempt 2's pid did not clear it - so a cancel during the retry skipped killpg and
+    the agent kept running behind a cancelled record."""
+    import os as _os
+
+    from marshal_engine.fleet import _active_runs_guard, _register_inflight_run
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "retry.writer.deadbeef"
+    handle = _register_inflight_run(fleet.state.dir, run_id)
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="retry", backend="writer", status="running")
+    )
+
+    from marshal_engine.fleet import _publish_pid
+
+    # Attempt 1 spawns and exits (a retryable failure).
+    _publish_pid(handle, 1111)
+    with _active_runs_guard:
+        handle.exited = True
+
+    # Attempt 2 publishes its pid through the SAME production path the run loop uses.
+    _publish_pid(handle, 2222)
+    fleet.state.update(run_id, pid=2222)
+
+    fleet.cancel_run(run_id)
+    assert killed == [2222], "the retry's agent was not signalled"

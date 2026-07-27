@@ -94,6 +94,18 @@ def _unregister_inflight_run(runs_dir: Path, run_id: str) -> None:
                 del _active_runs[key]
 
 
+def _publish_pid(handle: "_RunHandle", pid: int) -> bool:
+    """Record a newly spawned child's pid on ``handle``; True if a cancel is already pending.
+
+    Clears ``exited``: a published pid means a LIVE child. The handle is reused across retries, so
+    an exit recorded by a previous attempt would otherwise make cancel skip signalling the retry.
+    """
+    with _active_runs_guard:
+        handle.pid = pid
+        handle.exited = False
+        return handle.cancel_requested
+
+
 def _inflight_handle(runs_dir: Path, run_id: str) -> "_RunHandle | None":
     key = _marshal_base_key(runs_dir)
     with _active_runs_guard:
@@ -747,9 +759,7 @@ class Fleet:
                 self.state.update(run_id, pid=pid, pid_start_time=_pid_start_time(pid))
                 if handle is None:
                     return
-                with _active_runs_guard:
-                    handle.pid = pid
-                    pending_cancel = handle.cancel_requested and not handle.exited
+                pending_cancel = _publish_pid(handle, pid)
                 if pending_cancel:
                     # Cancel arrived before the pid existed; apply it now rather than leaving the
                     # agent running behind an already-terminal record.
