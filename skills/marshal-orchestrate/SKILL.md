@@ -124,6 +124,9 @@ Handle the outcome:
 - `blocked` - the target checkout is dirty/colliding or on a detached HEAD; nothing changed. Fix the
   target (commit/stash your edits, check out a branch) and retry - the work is safe on its branch.
 - `empty` - nothing to integrate.
+- A `failed` run has two possible meanings: the agent/backend failed, or the run was **orphaned at
+  startup** because the process supervising it died before an outcome was recorded. Read `error` to
+  tell them apart - an orphan says so, and its work may still be sitting in the worktree.
 - `error` - a git operation failed in a way that needs a human (read `message`); do not blindly retry.
 - `base_branch_drift` (on `merged`) - the run was spawned from a different branch than the one you
   currently have checked out (`message` names both). The merge **still landed**; this is a warning,
