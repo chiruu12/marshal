@@ -29,6 +29,12 @@ Honest gaps from research (these shape what we expose):
     `trustedWorkspaces` (removed when the run completes; see `run()`), and the run passes
     `--add-dir <cwd>`. VERIFIED end-to-end: edits then land in the worktree, not scratch.
     `--add-dir` alone was insufficient (the prior known limitation); the trust entry is the fix.
+    RESIDUAL: if Marshal is hard-killed mid-run, teardown never runs and the worktree path stays in
+    `trustedWorkspaces`. It is inert (a path string) and self-heals: once the worktree directory is
+    gone - `marshal clean`, or integrate's cleanup - the next Antigravity run's dead-Marshal-path
+    sweep removes it. Deliberately NOT mitigated with atexit hooks or a cross-process ledger; that
+    machinery would cost more than the problem, and the fail-closed "no bookkeeping means do not
+    revoke" rule is the safety bias we want.
 
 Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-opus-4.6, gpt-oss-120b.
 """
