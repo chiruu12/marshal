@@ -17,10 +17,15 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
-- **Cursor long-run text loss (#47).** Switched the adapter to ``--output-format stream-json``
-  and reconstruct final text by concatenating assistant deltas; when the terminal ``result``
-  field is shorter (observed on long ``cursor-grok`` / ``composer`` runs), the stream wins.
-  Truncated/killed runs return partial text without crashing the parser.
+- **Cursor silently truncated long runs.** `--output-format json` returns one final object whose
+  `result` holds only the last few hundred characters on a long run (measured: 11,417 output
+  tokens generated, 266 characters returned). The adapter now uses `--output-format stream-json`
+  and reconstructs the text by concatenating assistant events; when the terminal `result` is
+  shorter, the stream wins. A timeout-killed run returns its partial text instead of nothing.
+- **Child env scrubs `MARSHAL_*` session variables.** `child_env()` now strips every `MARSHAL_*`
+  variable inherited from the driver/MCP process (not just `VIRTUAL_ENV`/`PYTHONHOME`), so worker
+  agents' test suites and `marshal` CLI invocations resolve the worktree instead of the driver's
+  repo/config. Callers can still pass `MARSHAL_*` values via `extra`.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.
