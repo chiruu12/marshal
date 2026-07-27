@@ -51,6 +51,28 @@ def test_child_env_extra_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert env["MARSHAL_X"] == "1"
 
 
+def test_child_env_strips_marshal_session_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARSHAL_CONFIG", "/driver/fleet.config.yaml")
+    monkeypatch.setenv("MARSHAL_REPO", "/driver/repo")
+    env = child_env()
+    assert "MARSHAL_CONFIG" not in env
+    assert "MARSHAL_REPO" not in env
+
+
+def test_child_env_marshal_prefix_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARSHALL_X", "keep")
+    monkeypatch.setenv("NOT_MARSHAL_CONFIG", "keep")
+    env = child_env()
+    assert env["MARSHALL_X"] == "keep"  # only the MARSHAL_ prefix matches, not MARSHALL_
+    assert env["NOT_MARSHAL_CONFIG"] == "keep"
+
+
+def test_child_env_extra_overrides_marshal_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARSHAL_CONFIG", "/driver/fleet.config.yaml")
+    env = child_env({"MARSHAL_CONFIG": "/worktree/fleet.config.yaml"})
+    assert env["MARSHAL_CONFIG"] == "/worktree/fleet.config.yaml"
+
+
 # --- user_path: derive the login-shell PATH ----------------------------------------------
 
 

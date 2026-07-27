@@ -29,6 +29,15 @@ from pathlib import Path
 # need it (and merge_user_path, called once at engine entry, sets it up before that).
 LEAKY_VENV_VARS = ("VIRTUAL_ENV", "PYTHONHOME")
 
+# Marshal session vars set on the driver/MCP process (MARSHAL_CONFIG, MARSHAL_REPO, …). Cleared so
+# a worker's tests and `marshal` CLI resolve the worktree, not the driver's repo/config.
+_MARSHAL_PREFIX = "MARSHAL_"
+
+
+def _is_marshal_env_var(name: str) -> bool:
+    """True when ``name`` is a Marshal session variable (``MARSHAL_*``), not a similar prefix."""
+    return name.startswith(_MARSHAL_PREFIX)
+
 # Shell candidates (in order) used to derive the user's interactive PATH. $SHELL first so the
 # answer matches what the user would see in a fresh terminal of THEIR shell, then common
 # fallbacks for environments where $SHELL is unset or the binary is missing. Each must support
@@ -70,11 +79,21 @@ _USER_PATH_CACHE: str | None = None
 
 
 def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """``os.environ`` minus the driver's venv pins, with ``extra`` layered on top.
+    """``os.environ`` minus driver leaks, with ``extra`` layered on top.
 
-    ``extra`` wins, so a caller that genuinely wants to set ``VIRTUAL_ENV`` for a child still can.
+    Strips ``LEAKY_VENV_VARS`` (the driver's activated venv pins) and every ``MARSHAL_*`` session
+    variable (``MARSHAL_CONFIG``, ``MARSHAL_REPO``, …). Without the latter, a worker running the
+    repo's test suite or invoking ``marshal`` inherits the driver's config path and silently targets
+    the driver's repo instead of its own worktree.
+
+    ``extra`` wins, so a caller that deliberately passes ``VIRTUAL_ENV`` or a ``MARSHAL_*`` value
+    for a child still gets it through.
     """
-    env = {k: v for k, v in os.environ.items() if k not in LEAKY_VENV_VARS}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in LEAKY_VENV_VARS and not _is_marshal_env_var(k)
+    }
     if extra:
         env.update(extra)
     return env
