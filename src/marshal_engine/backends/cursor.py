@@ -6,12 +6,14 @@ Invocation reference (cursor-agent, headless):
                  [--mode plan | --force | --yolo]
                  [--model MODEL] --workspace CWD [--resume SESSION] <PROMPT>
 
-`-p/--print` = non-interactive. `--output-format json` emits a single result object:
+`-p/--print` = non-interactive. Marshal uses ``--output-format stream-json`` (NDJSON events)
+and concatenates assistant ``message.content[].text`` deltas — the single-object ``json`` mode
+truncates ``result`` on long runs. A terminal ``type":"result"`` event still supplies
+``session_id`` / ``is_error``; when its ``result`` is shorter than the stream concat, the
+stream wins.
 
-    {"type":"result","subtype":"success","is_error":false,"duration_ms":...,
-     "result":"<final text>","session_id":"<uuid>"}
-
-On failure the process exits non-zero and writes to stderr with no JSON object on stdout.
+On failure the process exits non-zero and writes to stderr; a timeout-killed run may lack a
+``result`` event but partial stream text is still returned.
 
 Notes / gaps baked in from research:
   * Cursor CLI emits NO tokens or cost in its output - usage is reported as unavailable here.
@@ -50,7 +52,7 @@ from ..types import (
     UsageRecord,
     UsageSource,
 )
-from .base import CodingAgentBackend
+from .base import CodingAgentBackend, parse_jsonl
 
 #: Curated deny tokens for ``safe-edit`` (deny beats allow). Destructive shell, secrets,
 #: ``.git`` writes, and Write to the policy file itself via Cursor's permission grammar.
@@ -196,7 +198,7 @@ class CursorBackend(CodingAgentBackend):
         return True
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
-        argv = [self.binary, "-p", "--output-format", "json", "--trust"]
+        argv = [self.binary, "-p", "--output-format", "stream-json", "--trust"]
         argv += self.map_permission(opts.permission)
         if opts.model:
             argv += ["--model", opts.model]
@@ -214,27 +216,70 @@ class CursorBackend(CodingAgentBackend):
         return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        obj = _find_result(raw_stdout)
+        return self._parse_event_stream(raw_stdout, raw_stderr, exit_code)
 
-        if exit_code != 0 or obj is None:
+    def _parse_event_stream(
+        self, raw_stdout: str, raw_stderr: str, exit_code: int
+    ) -> AgentResult:
+        events = parse_jsonl(raw_stdout)
+
+        text_parts: list[str] = []
+        session_id: str | None = None
+        result_obj: dict[str, Any] | None = None
+
+        for ev in events:
+            sid = ev.get("session_id")
+            if isinstance(sid, str):
+                session_id = sid
+
+            etype = ev.get("type")
+            if etype == "assistant":
+                text_parts.extend(_assistant_content_texts(ev))
+            elif etype == "result":
+                result_obj = ev
+                sid = ev.get("session_id")
+                if isinstance(sid, str):
+                    session_id = sid
+
+        if result_obj is None and not events:
+            result_obj = _find_result(raw_stdout)
+
+        stream_text = "".join(text_parts)
+        result_text = ""
+        is_error = False
+        usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
+
+        if result_obj is not None:
+            is_error = bool(result_obj.get("is_error", False))
+            result_text = str(result_obj.get("result", "") or "")
+            sid = result_obj.get("session_id")
+            if isinstance(sid, str):
+                session_id = sid
+            _apply_cursor_usage(usage, result_obj.get("usage"))
+
+        text = stream_text if len(stream_text) >= len(result_text) else result_text
+
+        if exit_code != 0 or result_obj is None:
+            # Carry the session id and whatever usage the stream reported. A failed run still
+            # consumed tokens, and dropping them here silently under-reports spend in the ledger -
+            # the one thing this project refuses to get wrong. `session_id` is likewise needed to
+            # resume or investigate the failure.
             return AgentResult(
                 status=RunStatus.FAILED,
+                text=text,
+                session_id=session_id,
+                usage=usage,
                 error=raw_stderr.strip() or f"cursor-agent exited {exit_code}",
                 exit_code=exit_code,
                 raw_stdout=raw_stdout,
                 raw_stderr=raw_stderr,
             )
 
-        is_error = bool(obj.get("is_error", False))
-        text = str(obj.get("result", "") or "")
-        sid = obj.get("session_id")
-        session_id = sid if isinstance(sid, str) else None
-
         return AgentResult(
             status=RunStatus.FAILED if is_error else RunStatus.SUCCEEDED,
             text=text,
             session_id=session_id,
-            usage=UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE),
+            usage=usage,
             error=text if is_error else None,
             exit_code=exit_code,
             raw_stdout=raw_stdout,
@@ -465,6 +510,44 @@ def _parse_about(raw: str) -> dict[str, str] | None:
     if "plan" not in info:
         return None
     return info or None
+
+
+def _assistant_content_texts(ev: dict[str, Any]) -> list[str]:
+    """Extract assistant text deltas from a Cursor stream-json ``assistant`` event."""
+    message_raw = ev.get("message")
+    message: dict[str, Any] = message_raw if isinstance(message_raw, dict) else {}
+    if message.get("role") != "assistant":
+        return []
+    return _content_texts(message.get("content"))
+
+
+def _content_texts(content: object) -> list[str]:
+    out: list[str] = []
+    if isinstance(content, str):
+        out.append(content)
+        return out
+    if not isinstance(content, list):
+        return out
+    for part in content:
+        if isinstance(part, str):
+            out.append(part)
+        elif isinstance(part, dict) and part.get("type") == "text":
+            txt = part.get("text")
+            if isinstance(txt, str):
+                out.append(txt)
+    return out
+
+
+def _apply_cursor_usage(usage: UsageRecord, usage_raw: object) -> None:
+    """Stamp token counts from a ``result`` event when present; source stays unavailable."""
+    if not isinstance(usage_raw, dict):
+        return
+    inp = usage_raw.get("inputTokens", usage_raw.get("input_tokens"))
+    out = usage_raw.get("outputTokens", usage_raw.get("output_tokens"))
+    if isinstance(inp, int) and inp > 0:
+        usage.input_tokens += inp
+    if isinstance(out, int) and out > 0:
+        usage.output_tokens += out
 
 
 def _find_result(raw: str) -> dict[str, Any] | None:

@@ -8,6 +8,50 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **Adversarial review teams (`teams.py`).** A *team* is a declarative panel of independent,
+  read-only reviewers — each role pinned to the client best at its lens — that review one subject
+  and each write a report. Teams live in `<repo>/teams/*.yaml` and are surfaced as the `list_teams`
+  / `run_team` MCP tools (see [`docs/mcp-tools.md`](docs/mcp-tools.md)), the `marshal teams` /
+  `marshal team run` CLI commands, and the `marshal-adversarial-review` Skill; two starter teams
+  ship in `examples/teams/`.
+  - Four subjects: a run's diff, a commit `range`, a `plan` (free text), or an `audit` of the repo.
+    A `range` review can be scoped with `paths` — without it a large diff is truncated at the tail,
+    and since git orders paths alphabetically that cuts exactly the code worth reviewing.
+  - **The engine computes no verdict.** It parses no reviewer prose and reports no pass/fail: a
+    decision derived from text the reviewed material can influence is not trustworthy, and judgment
+    belongs to the driver. You get `unified_report` (the panel's shape with every review inline,
+    read this first) plus each reviewer's full report; collecting the objections and deciding is
+    the caller's job.
+  - Reports persist to `.marshal/reports/<stamp>-<team>-<id>/` — `<role>.md` per reviewer plus
+    `README.md`.
+  - **Fail-closed read-only:** a role naming a client that is not `permission: read-only` is a
+    config error raised *before* any reviewer spawns. Marshal will not route a role to a writable
+    client; note that `read-only` is OS-enforced only where the backend provides a sandbox, so the
+    dependable boundary remains the worktree plus explicit integrate.
+  - **Independent, and a shrunken panel is visible.** All roles go out in one `run_many` call under
+    a shared `task_id`, so they cannot observe each other and the review prices as one unit. A role
+    that failed, timed out, or whose backend was missing is listed in `incomplete_roles` with its
+    report absent — a missing lens, never silent approval.
+  - **Reviewed material is treated as hostile data.** The subject is delimited by a per-run nonce
+    (a markdown fence it could close would let content escape into the strongest prompt position)
+    and labelled untrusted. Refs reaching `diff_range` are validated: a `base` of `--output=<path>`
+    would otherwise make a read-only diff write an arbitrary file *and* empty stdout, leaving the
+    panel to review nothing. Empty subjects are refused, and a team file must live in the
+    workspace's own `teams/` directory.
+  - Team lookup is contained for **every** name form: a bare name is still a path fragment, so
+    `run_team("../evil")` is refused, not just an explicit out-of-tree `.yaml` path.
+  - A run that is `running`, `queued`, or `cancelled` cannot be reviewed - its worktree is not a
+    stable snapshot (cancellation stamps the status right after signalling, so the agent may still
+    be exiting and writing). A terminal-but-unsuccessful run can be, and its status is carried into
+    every reviewer's prompt and the report so it is never mistaken for finished work.
+  - Like `workflow.py`, the runner **adds no new execution path**: it issues only `collect_run` /
+    `diff_range` / `run_many`, so every reviewer still flows through `Fleet.run`. It never
+    integrates.
+  - `marshal doctor` validates every declared team (unknown clients, the read-only rule) as a
+    WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
+    reviewer clients — without one, the first `run_team` a new user tries fails validation.
+
 ### Documentation
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
   multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
@@ -22,6 +66,11 @@ versions may include breaking API changes until 1.0.
   path on completion (best-effort; warns on stderr if cleanup cannot read/write the file). A
   malformed or unreadable settings file is preserved and fails the run closed instead of being
   replaced with `{}`.
+- **Cursor silently truncated long runs.** `--output-format json` returns one final object whose
+  `result` holds only the last few hundred characters on a long run (measured: 11,417 output
+  tokens generated, 266 characters returned). The adapter now uses `--output-format stream-json`
+  and reconstructs the text by concatenating assistant events; when the terminal `result` is
+  shorter, the stream wins. A timeout-killed run returns its partial text instead of nothing.
 - **Child env scrubs `MARSHAL_*` session variables.** `child_env()` now strips every `MARSHAL_*`
   variable inherited from the driver/MCP process (not just `VIRTUAL_ENV`/`PYTHONHOME`), so worker
   agents' test suites and `marshal` CLI invocations resolve the worktree instead of the driver's

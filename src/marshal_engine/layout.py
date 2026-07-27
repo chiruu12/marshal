@@ -34,3 +34,8 @@ def usage_dir(repo: Path | str) -> Path:
 def logs_dir(repo: Path | str) -> Path:
     """Return ``<repo>/.marshal/logs``."""
     return marshal_dir(repo) / "logs"
+
+
+def reports_dir(repo: Path | str) -> Path:
+    """Return ``<repo>/.marshal/reports`` — durable markdown twins of team review reports."""
+    return marshal_dir(repo) / "reports"

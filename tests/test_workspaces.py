@@ -566,6 +566,25 @@ def test_scaffold_fleet_config(tmp_path: Path) -> None:
     assert load_config(repo / "fleet.config.yaml").clients == {}  # a loadable zero-client stub
 
 
+def test_scaffold_suggests_read_only_reviewers(tmp_path: Path) -> None:
+    """Without these, the first `run_team` a new user tries fails: a team needs read-only clients.
+
+    They stay commented (the stub must load as a valid zero-client config), but uncommenting one is
+    the whole setup step - the alternative is discovering the requirement from a validation error.
+    """
+    from marshal_engine.config import load_config
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    scaffold_fleet_config(repo)
+    stub = (repo / "fleet.config.yaml").read_text(encoding="utf-8")
+    assert "permission: read-only" in stub
+    assert "claude-readonly" in stub and "cursor-readonly" in stub
+    assert "examples/teams/" in stub  # points at the starter panels
+    # Still commented, so the stub stays a zero-client config that loads.
+    assert load_config(repo / "fleet.config.yaml").clients == {}
+
+
 def test_detect_project_markers_root_wins(tmp_path: Path) -> None:
     from marshal_engine.workspaces import detect_project_markers
 

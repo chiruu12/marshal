@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from marshal_engine.config import ConfigError
 from marshal_engine.mcp_server import build_service
 
 _CONFIG = """
@@ -99,9 +100,89 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     expected = {
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
         "status", "usage", "get_run", "get_run_log", "collect_run", "commit_run", "integrate", "clean",
-        "cancel_run", "list_workflows", "run_workflow", "doctor",
+        "cancel_run", "list_workflows", "run_workflow", "doctor", "list_teams", "run_team",
     }
     assert expected <= names
+
+
+def test_list_teams_surfaces_malformed_team(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    tdir = repo / "teams"
+    tdir.mkdir()
+    (tdir / "broken.yaml").write_text("roles: not-a-list\n")
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    _content, structured = asyncio.run(app.call_tool("list_teams", {}))
+    payload = structured.get("result", structured) if isinstance(structured, dict) else structured
+    assert payload["teams"] == []
+    assert "broken.yaml" in payload["errors"]
+
+
+def test_run_team_maps_its_flat_params_onto_the_subject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The MCP tool flattens six params into a TeamSubject; a swapped base/head would ship silently."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    svc = build_service()
+    seen: dict[str, object] = {}
+
+    def fake_run_team(name: str, subject: object, **kw: object) -> object:
+        seen["name"] = name
+        seen["subject"] = subject
+        raise ConfigError("stop here - the mapping is what is under test")
+
+    monkeypatch.setattr(svc, "run_team", fake_run_team)
+    app = build_app(svc)
+    with pytest.raises(Exception, match="the mapping is what is under test"):
+        asyncio.run(
+            app.call_tool(
+                "run_team",
+                {
+                    "name": "gate", "target": "range", "base": "main", "head": "feature",
+                    "paths": ["src/", "tests/"],
+                },
+            )
+        )
+    subject = seen["subject"]
+    assert seen["name"] == "gate"
+    assert subject.kind == "range"  # type: ignore[attr-defined]
+    assert subject.base == "main"  # type: ignore[attr-defined]
+    assert subject.head == "feature"  # type: ignore[attr-defined]
+    # Every path must land: dropping `paths` here would silently review the WHOLE diff.
+    assert subject.paths == ["src/", "tests/"]  # type: ignore[attr-defined]
+    assert subject.run_id is None and subject.text is None  # type: ignore[attr-defined]
+
+    seen.clear()
+    with pytest.raises(Exception, match="the mapping is what is under test"):
+        asyncio.run(
+            app.call_tool(
+                "run_team", {"name": "gate", "target": "run", "run_id": "r7"}
+            )
+        )
+    assert seen["subject"].run_id == "r7"  # type: ignore[attr-defined,union-attr]
+    assert seen["subject"].paths == []  # type: ignore[attr-defined,union-attr]
+
+    seen.clear()
+    with pytest.raises(Exception, match="the mapping is what is under test"):
+        asyncio.run(
+            app.call_tool("run_team", {"name": "gate", "target": "plan", "text": "a plan"})
+        )
+    assert seen["subject"].text == "a plan"  # type: ignore[attr-defined,union-attr]
 
 
 def test_tools_are_async_and_round_trip_via_call_tool(
