@@ -491,6 +491,18 @@ def test_doctor_reports_valid_teams_as_ok(tmp_path: Path) -> None:
     assert teams and teams[0].status == OK
 
 
+def test_doctor_surfaces_an_unparseable_team_file(tmp_path: Path) -> None:
+    """A team file that doesn't even parse must name itself here, not only via list_teams."""
+    repo = tmp_path / "repo"
+    (repo / "teams").mkdir(parents=True)
+    (repo / "fleet.config.yaml").write_text("clients: {}\n")
+    (repo / "teams" / "broken.yaml").write_text("roles: not-a-list\n")
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    teams = [c for c in checks if c.name == "teams"]
+    assert teams and teams[0].status == WARN
+    assert "broken.yaml" in teams[0].detail
+
+
 def test_doctor_omits_the_teams_check_when_no_teams_exist(tmp_path: Path) -> None:
     """No teams/ dir is the common case; don't add a row for a feature nobody opted into."""
     repo = tmp_path / "repo"

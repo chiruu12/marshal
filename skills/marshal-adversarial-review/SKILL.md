@@ -67,6 +67,12 @@ run_team(name="hard-gate", target="range", base="main", head="feature")
 All roles go out together under one `task_id`, so they cannot see each other and `usage()` prices the
 whole review as one unit.
 
+**Scope a large `range` review with `paths`.** The subject is truncated at the *tail*, and git orders
+paths alphabetically - so on a big change `src/` and `tests/` are exactly what gets cut. But scoping
+is a trade: a reviewer that cannot see `docs/` or `CHANGELOG.md` will correctly report that it cannot
+verify whether they were updated. Include the paths a lens needs to reach its conclusion, and read
+"could not check" in a report as the honest signal it is, not as a finding against the code.
+
 ## 3. Read the unified report first, then the individual ones
 `unified_report` is written for you: it shows the panel's shape, who reviewed from which lens, every
 review inline, and who did not report. Read it to orient, then open the individual reports

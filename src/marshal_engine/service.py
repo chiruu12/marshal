@@ -655,7 +655,7 @@ class MarshalService:
                     f"invalid {label} ref {ref!r}: refs cannot be empty or start with '-' "
                     "(that would be read as a git option, not a revision)"
                 )
-            probe = self.fleet.worktrees._git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+            probe = self.fleet.worktrees.git_read("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
             if probe.returncode != 0:
                 raise ConfigError(f"unknown {label} ref {ref!r}")
         # Validate BEFORE building argv. An empty pathspec makes git fail with a message that
@@ -672,7 +672,7 @@ class MarshalService:
         # `--` separates revs from pathspecs, so a path can never be read as a rev or an option.
         pathspec = ["--", *paths] if paths else []
         try:
-            proc = self.fleet.worktrees._git("diff", f"{base}...{head}", *pathspec)
+            proc = self.fleet.worktrees.git_read("diff", f"{base}...{head}", *pathspec)
         except WorktreeError as exc:  # a hung git must surface as the documented error type
             raise ConfigError(f"cannot diff {base}...{head}: {exc}") from exc
         if proc.returncode != 0:

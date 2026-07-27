@@ -131,6 +131,17 @@ class WorktreeManager:
             if refused:
                 raise WorktreeError(f"{label}: {refused}")
 
+    def git_read(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run a READ-ONLY git command on the repo through the same guarded wrapper as everything else.
+
+        The public seam for callers outside this module (``MarshalService.diff_range``) that need a
+        guarded git read: closed stdin, hard timeout, ``GIT_TERMINAL_PROMPT=0``. Reaching for the
+        private ``_git`` across two composition layers worked, but it made a rename here a silent
+        breakage there that no type-checker would catch. Nothing about this method enforces
+        read-only-ness - it is the caller's contract, which is why the name says so.
+        """
+        return self._git(*args)
+
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         # These git calls run on the driver's checkout (commit/merge/status), so they get the same
         # headless guards as agent runs: stdin closed + a hard timeout so a credential/lock/hook

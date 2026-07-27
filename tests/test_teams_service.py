@@ -290,6 +290,62 @@ def test_run_team_refuses_an_empty_range(repo: Path) -> None:
         _svc(repo).run_team("gate", TeamSubject(kind="range", base="master", head="master"))
 
 
+def test_diff_range_surfaces_a_failing_git_diff(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the returncode check, git's stderr would be handed to reviewers AS the diff."""
+    import subprocess as sp
+
+    svc = _svc(repo)
+    real = svc.fleet.worktrees.git_read
+
+    def flaky(*args: str) -> sp.CompletedProcess[str]:
+        if args and args[0] == "diff":
+            return sp.CompletedProcess(list(args), 128, "", "fatal: bad thing")
+        return real(*args)
+
+    monkeypatch.setattr(svc.fleet.worktrees, "git_read", flaky)
+    with pytest.raises(ConfigError, match="cannot diff.*bad thing"):
+        svc.diff_range("master")
+
+
+def test_diff_range_surfaces_a_hung_git_as_a_config_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A git timeout must arrive as the documented error type, not a raw WorktreeError."""
+    from marshal_engine.worktree import WorktreeError
+
+    svc = _svc(repo)
+    real = svc.fleet.worktrees.git_read
+
+    def hang(*args: str) -> object:
+        if args and args[0] == "diff":
+            raise WorktreeError("git 'diff' timed out after 30s")
+        return real(*args)
+
+    monkeypatch.setattr(svc.fleet.worktrees, "git_read", hang)
+    with pytest.raises(ConfigError, match="cannot diff.*timed out"):
+        svc.diff_range("master")
+
+
+def test_run_team_survives_an_unwritable_report_directory(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure creating the directory takes a different branch than a failing file write."""
+    _write_team(repo)
+    svc = _svc(repo)
+
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+    result = svc.run_team("gate", TeamSubject(kind="plan", text="x"))
+    assert result.report_dir is None
+    assert result.unified_report_path is None
+    assert all(r.report_path is None for r in result.reviews)
+    assert result.unified_report  # the reports still come back in memory
+
+
 def test_run_team_by_path_and_missing_name(repo: Path) -> None:
     _write_team(repo)
     svc = _svc(repo)

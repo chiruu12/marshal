@@ -148,11 +148,14 @@ def test_run_team_maps_its_flat_params_onto_the_subject(
 
     monkeypatch.setattr(svc, "run_team", fake_run_team)
     app = build_app(svc)
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="the mapping is what is under test"):
         asyncio.run(
             app.call_tool(
                 "run_team",
-                {"name": "gate", "target": "range", "base": "main", "head": "feature"},
+                {
+                    "name": "gate", "target": "range", "base": "main", "head": "feature",
+                    "paths": ["src/", "tests/"],
+                },
             )
         )
     subject = seen["subject"]
@@ -160,7 +163,26 @@ def test_run_team_maps_its_flat_params_onto_the_subject(
     assert subject.kind == "range"  # type: ignore[attr-defined]
     assert subject.base == "main"  # type: ignore[attr-defined]
     assert subject.head == "feature"  # type: ignore[attr-defined]
+    # Every path must land: dropping `paths` here would silently review the WHOLE diff.
+    assert subject.paths == ["src/", "tests/"]  # type: ignore[attr-defined]
     assert subject.run_id is None and subject.text is None  # type: ignore[attr-defined]
+
+    seen.clear()
+    with pytest.raises(Exception, match="the mapping is what is under test"):
+        asyncio.run(
+            app.call_tool(
+                "run_team", {"name": "gate", "target": "run", "run_id": "r7"}
+            )
+        )
+    assert seen["subject"].run_id == "r7"  # type: ignore[attr-defined,union-attr]
+    assert seen["subject"].paths == []  # type: ignore[attr-defined,union-attr]
+
+    seen.clear()
+    with pytest.raises(Exception, match="the mapping is what is under test"):
+        asyncio.run(
+            app.call_tool("run_team", {"name": "gate", "target": "plan", "text": "a plan"})
+        )
+    assert seen["subject"].text == "a plan"  # type: ignore[attr-defined,union-attr]
 
 
 def test_tools_are_async_and_round_trip_via_call_tool(
