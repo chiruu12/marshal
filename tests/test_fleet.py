@@ -24,7 +24,7 @@ from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
-from marshal_engine.fleet import Fleet, RunRequest, _register_inflight_run
+from marshal_engine.fleet import Fleet, RunRequest, _active_runs_guard, _register_inflight_run
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
 from marshal_engine.state import RunRecord
@@ -2196,7 +2196,8 @@ def test_cancel_signals_a_verified_live_run(
         if started is None:
             pytest.skip("ps start-time probe unavailable on this host")
         fleet = Fleet(repo, {"writer": _Writer()})
-        _register_inflight_run(fleet.state.dir, "verified.writer.deadbeef")  # we own this run
+        handle = _register_inflight_run(fleet.state.dir, "verified.writer.deadbeef")
+        handle.pid = holder.pid  # we own this run and its child is live (not yet reaped)
         fleet.state.add(
             RunRecord(
                 run_id="verified.writer.deadbeef",
@@ -2349,3 +2350,65 @@ def test_a_run_records_its_pid_start_time(repo: Path) -> None:
     stored = fleet.state.get(rec.run_id)
     # The run is finished, so pid is cleared - but the identity pair was recorded while it ran.
     assert stored.pid_start_time is None or isinstance(stored.pid_start_time, str)
+
+
+def test_cancel_before_the_pid_is_known_still_stops_the_agent(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: a cancel arriving after the RUNNING record but before the pid was recorded
+    skipped signalling and still stamped the run cancelled - the agent kept running and modifying
+    its worktree behind an already-terminal record."""
+    import os as _os
+
+    from marshal_engine.fleet import _inflight_handle, _register_inflight_run
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "early.writer.deadbeef"
+    _register_inflight_run(fleet.state.dir, run_id)  # in flight, pid not yet known
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="early", backend="writer", status="running")
+    )
+
+    fleet.cancel_run(run_id)  # cancel beats the pid
+    assert killed == [], "nothing to signal yet"
+    handle = _inflight_handle(fleet.state.dir, run_id)
+    assert handle is not None and handle.cancel_requested
+
+    # The pid arrives; the pending cancel must be applied instead of silently dropped.
+    fleet.state.update(run_id, pid=4242)
+    with _active_runs_guard:
+        handle.pid = 4242
+        pending = handle.cancel_requested and not handle.exited
+    if pending:
+        _os.killpg(4242, 15)
+    assert killed == [4242]
+
+
+def test_cancel_does_not_signal_after_the_child_is_reaped(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: registry membership alone was not ownership. Between the child being reaped and
+    the run being unregistered, its pid can already have been recycled - signalling then hits a
+    stranger."""
+    import os as _os
+
+    from marshal_engine.fleet import _register_inflight_run
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "reaped.writer.deadbeef"
+    handle = _register_inflight_run(fleet.state.dir, run_id)
+    handle.pid = 4242
+    handle.exited = True  # base.run has reaped the child; the pid is now recyclable
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="reaped", backend="writer", status="running", pid=4242)
+    )
+
+    rec = fleet.cancel_run(run_id)
+    assert killed == [], "signalled a pid that may already have been recycled"
+    assert rec.status == RunStatus.CANCELLED.value

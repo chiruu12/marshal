@@ -52,17 +52,36 @@ logger = logging.getLogger(__name__)
 # Fleet's background pool, so startup reaping must not touch those runs even when they have no pid
 # yet (e.g. a test backend that overrides run() without spawning).
 _active_runs_guard = threading.Lock()
-_active_runs: dict[str, set[str]] = {}
+_active_runs: dict[str, dict[str, "_RunHandle"]] = {}
+
+
+class _RunHandle:
+    """Live state for a run started by THIS process, used to cancel it safely.
+
+    A pid alone is not safe to signal: the OS recycles pids. A child's pid is held until its parent
+    reaps it, so signalling is safe exactly while the run loop is between spawn and reap - which is
+    what ``exited`` tracks. ``cancel_requested`` covers the other end: a cancel that arrives before
+    the pid is known is applied as soon as it is.
+    """
+
+    __slots__ = ("pid", "exited", "cancel_requested")
+
+    def __init__(self) -> None:
+        self.pid: int | None = None
+        self.exited = False
+        self.cancel_requested = False
 
 
 def _marshal_base_key(runs_dir: Path) -> str:
     return str(runs_dir.resolve().parent)
 
 
-def _register_inflight_run(runs_dir: Path, run_id: str) -> None:
+def _register_inflight_run(runs_dir: Path, run_id: str) -> "_RunHandle":
     key = _marshal_base_key(runs_dir)
     with _active_runs_guard:
-        _active_runs.setdefault(key, set()).add(run_id)
+        handle = _RunHandle()
+        _active_runs.setdefault(key, {})[run_id] = handle
+        return handle
 
 
 def _unregister_inflight_run(runs_dir: Path, run_id: str) -> None:
@@ -70,15 +89,19 @@ def _unregister_inflight_run(runs_dir: Path, run_id: str) -> None:
     with _active_runs_guard:
         active = _active_runs.get(key)
         if active is not None:
-            active.discard(run_id)
+            active.pop(run_id, None)
             if not active:
                 del _active_runs[key]
 
 
-def _inflight_in_this_process(runs_dir: Path, run_id: str) -> bool:
+def _inflight_handle(runs_dir: Path, run_id: str) -> "_RunHandle | None":
     key = _marshal_base_key(runs_dir)
     with _active_runs_guard:
-        return run_id in _active_runs.get(key, set())
+        return _active_runs.get(key, {}).get(run_id)
+
+
+def _inflight_in_this_process(runs_dir: Path, run_id: str) -> bool:
+    return _inflight_handle(runs_dir, run_id) is not None
 
 
 def _now() -> str:
@@ -716,10 +739,28 @@ class Fleet:
         result: AgentResult | None = None
         record: RunRecord | None = None
         try:
+            handle = _inflight_handle(self.state.dir, run_id)
+
             def _record_pid(pid: int) -> None:
                 # Stamp the pid together with its start time: the pair is an identity a later
                 # process can verify, where a bare pid can be silently reused by the OS.
                 self.state.update(run_id, pid=pid, pid_start_time=_pid_start_time(pid))
+                if handle is None:
+                    return
+                with _active_runs_guard:
+                    handle.pid = pid
+                    pending_cancel = handle.cancel_requested and not handle.exited
+                if pending_cancel:
+                    # Cancel arrived before the pid existed; apply it now rather than leaving the
+                    # agent running behind an already-terminal record.
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        os.killpg(pid, signal.SIGTERM)
+
+            def _record_exit() -> None:
+                # The child has been reaped, so its pid may now be recycled - never signal it again.
+                if handle is not None:
+                    with _active_runs_guard:
+                        handle.exited = True
 
             opts = RunOpts(
                 cwd=wt.path,
@@ -727,6 +768,7 @@ class Fleet:
                 model=req.model,
                 timeout_s=req.timeout_s,
                 on_pid=_record_pid,
+                on_exit=_record_exit,
             )
             # Hold a slot for the agent run (the heavy, memory-hungry part) - including any transient
             # retry backoff, since the run is still in flight. Worktree creation/provision in _start
@@ -1145,23 +1187,30 @@ class Fleet:
             return rec
         cancel_error: str | None = None
         cancel_extra: dict[str, object] = {}
-        if rec.pid is not None:
-            # Only signal a process this process started. Its run id is still in the in-flight
-            # registry, so the pid cannot have been recycled while our own child is alive - which
-            # removes the pid-reuse hazard entirely rather than narrowing it. A run owned by some
-            # other (or dead) Marshal process is stamped cancelled without a signal: guessing at a
-            # pid we do not own risks SIGTERM to an unrelated process group.
-            if _inflight_in_this_process(self.state.dir, run_id):
-                try:
-                    os.killpg(rec.pid, signal.SIGTERM)
-                except (ProcessLookupError, OSError):
-                    pass  # already exited
+        # Signal only through a live handle for a run THIS process started. A child's pid is held
+        # by the OS until its parent reaps it, so the handle's `exited` flag marks exactly when the
+        # pid stops being safe to signal. A run owned by another (or dead) process gets no signal:
+        # guessing at a pid we do not own risks SIGTERM to an unrelated process group.
+        handle = _inflight_handle(self.state.dir, run_id)
+        if handle is None:
+            cancel_extra["pid"] = None
+            cancel_error = (
+                "fleet: cancelled without signalling - this run was started by another process, "
+                "so its pid cannot be confirmed to still belong to the agent"
+            )
+        else:
+            with _active_runs_guard:
+                handle.cancel_requested = True
+                pid, exited = handle.pid, handle.exited
+            if exited:
+                pass  # the agent already finished; the terminal stamp below is all that is left
+            elif pid is None:
+                # Cancel beat the pid: `_record_pid` applies it the moment the pid is known, so the
+                # agent is stopped rather than left running behind a terminal record.
+                pass
             else:
-                cancel_extra["pid"] = None
-                cancel_error = (
-                    "fleet: cancelled without signalling - this run was started by another "
-                    "process, so its pid cannot be verified as still belonging to the agent"
-                )
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.killpg(pid, signal.SIGTERM)
         stamp: dict[str, object] = {"status": "cancelled", "ended_at": _now(), **cancel_extra}
         if cancel_error:
             stamp["error"] = cancel_error

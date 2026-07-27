@@ -119,12 +119,14 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   Marshal deny layer). Worktree isolation remains the hard boundary for those adapters and for
   everything the curated denies do not cover. See `permission_fidelity` on `list_clients` /
   `marshal backends` / `doctor`.
-- **`cancel_run` signals only runs the current process started.** A run's pid is signalled only
-  while that run is in this process's in-flight registry, so the pid cannot have been recycled
-  under us. A run owned by another (or dead) Marshal process is stamped cancelled *without* a
-  signal and says so on the record - guessing at a pid we do not own risks SIGTERM to an unrelated
-  process group. The trade-off is that an orphaned agent whose supervisor died is not killed by
-  `cancel_run`; reconciliation stamps its record terminal, and the process must be ended by hand.
+- **`cancel_run` signals only a live child of the current process.** Signalling goes through an
+  in-process handle that tracks the child from spawn until it is reaped; the OS cannot recycle a
+  child's pid before its parent reaps it, so within that window the pid is unambiguous. A cancel
+  that arrives before the pid is known is applied as soon as it is; a cancel after the child is
+  reaped does not signal at all. A run owned by another (or dead) Marshal process is stamped
+  cancelled *without* a signal and says so on the record. The trade-off is that an orphaned agent
+  whose supervisor died is not killed by `cancel_run`; reconciliation stamps its record terminal,
+  and the process must be ended by hand.
 - **A team file is prompt text delivered to fleet agents.** `<repo>/teams/*.yaml` rubrics are
   concatenated into every reviewer's goal, so anyone who can write that directory can instruct the
   fleet. `run_team` refuses a team path outside the workspace's own `teams/` directory, and the

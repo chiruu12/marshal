@@ -45,8 +45,8 @@ def test_cancel_running_with_pid_kills_and_marks_cancelled(
     monkeypatch.setattr(os, "killpg", _fake_killpg)
 
     fleet = Fleet(tmp_path, {})
-    # Cancel signals only runs THIS process started, so register it as in-flight.
-    _register_inflight_run(fleet.state.dir, "t.x.a2")
+    # Cancel signals only through a live handle for a run THIS process started.
+    _register_inflight_run(fleet.state.dir, "t.x.a2").pid = 12345
     fleet.state.add(
         RunRecord(
             run_id="t.x.a2",
