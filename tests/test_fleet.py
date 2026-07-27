@@ -2307,6 +2307,22 @@ def test_startup_reap_skips_validation_for_terminal_records(repo: Path) -> None:
     assert fleet.state.get("weird").status == "succeeded"  # untouched
 
 
+def test_base_commit_matches_what_the_worktree_was_actually_cut_from(repo: Path) -> None:
+    """REGRESSION: the sha was resolved BEFORE `worktree add`, so a base branch that moved in
+    between left the record claiming a commit the worktree was never cut from."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="pin2", goal="x"))
+    stored = fleet.state.get(rec.run_id)
+    assert stored.base_commit
+    # The run's branch was created at the base; its merge-base with the recorded commit must be
+    # that same commit - i.e. the record describes the real starting point.
+    out = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", stored.base_commit, stored.branch],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert out == stored.base_commit
+
+
 def test_collect_uses_the_pinned_base_commit_when_the_branch_moves(repo: Path) -> None:
     """REGRESSION: the base was recorded as a branch NAME, which is mutable. If the branch moves
     while the agent works, the review is computed against a different base than the run started

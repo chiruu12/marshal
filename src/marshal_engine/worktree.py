@@ -175,16 +175,6 @@ class WorktreeManager:
             return ref
         return self._git("rev-parse", "HEAD").stdout.strip()
 
-    def resolve_commit(self, ref: str) -> str | None:
-        """The commit sha `ref` names right now, or None if it cannot be resolved.
-
-        Used to pin a run's base at spawn: a branch name is mutable, a sha is not.
-        """
-        proc = self._git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-        if proc.returncode != 0:
-            return None
-        return proc.stdout.strip() or None
-
     def create(self, task_id: str, base_branch: str | None = None) -> Worktree:
         """Add a worktree for `task_id` on a fresh `<prefix>/<task_id>` branch (git op only).
 

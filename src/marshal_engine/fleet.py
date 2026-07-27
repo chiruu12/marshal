@@ -659,11 +659,14 @@ class Fleet:
             # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
             # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
             resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
-            # Pin the sha too: the branch name can move while the agent works, and a review has to
-            # be computed against what the run actually started from.
-            resolved_base_commit = self.worktrees.resolve_commit(resolved_base)
             with self._create_lock:
                 wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+            # Pin the sha AFTER creation, from the new worktree's own branch tip. Resolving the ref
+            # beforehand was racy: if the base branch moved between the lookup and `worktree add`,
+            # the record claimed one commit while the worktree was cut from another, and reviews
+            # were then computed against a base the agent never had. The created branch's tip IS
+            # what it was cut from, so there is no window to lose.
+            resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
             self.worktrees.setup(wt)
             _register_inflight_run(self.state.dir, run_id)
             self.state.add(
@@ -1154,10 +1157,22 @@ class Fleet:
                 and _pid_start_time(rec.pid) is not None
             )
             if verified_ours:
-                try:
-                    os.killpg(rec.pid, signal.SIGTERM)
-                except (ProcessLookupError, OSError):
-                    pass  # already exited
+                # IRREDUCIBLE RESIDUAL: POSIX offers no atomic "signal this pid only if it is still
+                # that process". Between the verification above and killpg the agent could exit and
+                # the OS reuse its pid, and we would signal a stranger. Nothing in userspace closes
+                # that window - pidfd would, but it is Linux-only. We do the one thing that helps:
+                # verify as late as possible, immediately before signalling, so the window is the
+                # syscall gap rather than the whole function. Documented in SECURITY.md.
+                if _pid_start_time(rec.pid) == rec.pid_start_time:
+                    try:
+                        os.killpg(rec.pid, signal.SIGTERM)
+                    except (ProcessLookupError, OSError):
+                        pass  # already exited
+                else:
+                    cancel_extra["pid"] = None
+                    cancel_error = (
+                        "fleet: cancel skipped (pid was reused between verification and signal)"
+                    )
             elif _pid_alive(rec.pid):
                 cancel_extra["pid"] = None
                 if rec.pid_start_time and _pid_start_time(rec.pid) is not None:
