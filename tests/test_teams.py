@@ -87,6 +87,7 @@ class StubService:
         self.reverse_records = reverse_records
         self.jobs: list[dict[str, Any]] = []
         self.calls: list[str] = []
+        self.diff_paths: list[str] = []
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
         self.calls.append("run_many")
@@ -116,8 +117,11 @@ class StubService:
             run_id=run_id, branch="b", worktree="w", changed_files=["x.py"], diff=self.diff
         )
 
-    def diff_range(self, base: str, head: str | None = None) -> str:
+    def diff_range(
+        self, base: str, head: str | None = None, *, paths: list[str] | None = None
+    ) -> str:
         self.calls.append("diff_range")
+        self.diff_paths = paths or []
         return self.diff
 
     def client_available(self, client_name: str) -> bool:
@@ -498,6 +502,18 @@ def test_runner_resolves_each_subject_read_only(
     svc = StubService(_config("ro-a", "ro-b"))
     _runner(svc).run(_spec(target=target), subject, team_run_id="t1")
     assert expected_call in svc.calls
+
+
+def test_runner_passes_the_path_scope_through_to_the_diff() -> None:
+    svc = StubService(_config("ro-a", "ro-b"))
+    result = _runner(svc).run(
+        _spec(target="range"),
+        TeamSubject(kind="range", base="main", paths=["src/"]),
+        team_run_id="t1",
+    )
+    assert svc.diff_paths == ["src/"]
+    assert "limited to src/" in result.subject_summary
+    assert "limited to src/" in svc.jobs[0]["goal"]
 
 
 def test_runner_reviews_a_plan_without_touching_git() -> None:

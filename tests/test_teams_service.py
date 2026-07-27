@@ -185,6 +185,43 @@ def test_run_team_on_a_range_diffs_real_git(repo: Path) -> None:
     assert "new.py" in backend.goals[0]
 
 
+def test_diff_range_can_be_scoped_to_paths(repo: Path) -> None:
+    """A large change is truncated at the TAIL, and git orders paths alphabetically - so without
+    scoping, src/ and tests/ are exactly what a reviewer never sees."""
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "feature"], check=True)
+    (repo / "aaa_docs.md").write_text("docs change\n")
+    (repo / "zzz_code.py").write_text("print('code')\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "both"], check=True, capture_output=True
+    )
+    svc = _svc(repo)
+    full = svc.diff_range("master", "feature")
+    assert "aaa_docs.md" in full and "zzz_code.py" in full
+    scoped = svc.diff_range("master", "feature", paths=["zzz_code.py"])
+    assert "zzz_code.py" in scoped and "aaa_docs.md" not in scoped
+
+
+def test_diff_range_refuses_a_path_that_looks_like_an_option(repo: Path) -> None:
+    with pytest.raises(ConfigError, match="paths cannot start"):
+        _svc(repo).diff_range("master", paths=["--output=x"])
+
+
+def test_run_team_records_the_path_scope_in_the_summary(repo: Path) -> None:
+    _write_team(repo, target="range")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "feature"], check=True)
+    (repo / "code.py").write_text("print('x')\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "c"], check=True, capture_output=True
+    )
+    result = _svc(repo).run_team(
+        "gate", TeamSubject(kind="range", base="master", head="feature", paths=["code.py"])
+    )
+    assert "limited to code.py" in result.subject_summary
+    assert "limited to code.py" in result.unified_report
+
+
 def test_diff_range_raises_on_an_unknown_ref(repo: Path) -> None:
     with pytest.raises(ConfigError, match="unknown base ref"):
         _svc(repo).diff_range("no-such-ref")

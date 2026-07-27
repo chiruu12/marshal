@@ -636,7 +636,9 @@ class MarshalService:
     def teams_dir(self) -> Path:
         return self.repo_root / "teams"
 
-    def diff_range(self, base: str, head: str | None = None) -> str:
+    def diff_range(
+        self, base: str, head: str | None = None, *, paths: list[str] | None = None
+    ) -> str:
         """Read-only diff of ``base...head`` on the driver's checkout (a team `range` subject).
 
         Both refs are verified with ``rev-parse`` and refused if they look like options, because
@@ -656,8 +658,13 @@ class MarshalService:
             probe = self.fleet.worktrees._git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
             if probe.returncode != 0:
                 raise ConfigError(f"unknown {label} ref {ref!r}")
+        # `--` separates revs from pathspecs, so a path can never be read as a rev or an option.
+        pathspec = ["--", *paths] if paths else []
+        for spec in paths or []:
+            if spec.startswith("-"):
+                raise ConfigError(f"invalid path {spec!r}: paths cannot start with '-'")
         try:
-            proc = self.fleet.worktrees._git("diff", f"{base}...{head}")
+            proc = self.fleet.worktrees._git("diff", f"{base}...{head}", *pathspec)
         except WorktreeError as exc:  # a hung git must surface as the documented error type
             raise ConfigError(f"cannot diff {base}...{head}: {exc}") from exc
         if proc.returncode != 0:

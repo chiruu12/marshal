@@ -462,7 +462,8 @@ def _cmd_team_run(args: argparse.Namespace) -> int:
             return 1
 
     subject = TeamSubject(
-        kind=args.target, run_id=args.run_id, base=args.base, head=args.head, text=text
+        kind=args.target, run_id=args.run_id, base=args.base, head=args.head, text=text,
+        paths=args.path or [],
     )
     try:
         svc = MarshalService(repo, config, config_path=cfg_path)
@@ -758,6 +759,10 @@ def main(argv: list[str] | None = None) -> int:
     trun.add_argument("--run-id", default=None, help="run whose diff to review (--target run)")
     trun.add_argument("--base", default=None, help="base ref (--target range)")
     trun.add_argument("--head", default=None, help="head ref (--target range; default HEAD)")
+    trun.add_argument(
+        "--path", action="append", default=None,
+        help="limit a range diff to this path (repeatable); without it a large diff is truncated at the tail",
+    )
     trun.add_argument("--text", default=None, help="the plan to review (--target plan)")
     trun.add_argument("--plan-file", default=None, help="read the plan from a file (--target plan)")
     trun.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")

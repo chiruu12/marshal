@@ -556,6 +556,14 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         base: Annotated[str | None, Field(description="Base ref (target 'range').")] = None,
         head: Annotated[str | None, Field(description="Head ref (target 'range'; default HEAD).")] = None,
         text: Annotated[str | None, Field(description="The plan to review (target 'plan').")] = None,
+        paths: Annotated[
+            list[str] | None,
+            Field(description=(
+                "Limit a 'range' diff to these paths. Use it on a large change: the subject is "
+                "truncated at the tail, and git orders paths alphabetically, so src/ and tests/ "
+                "are exactly what gets cut."
+            )),
+        ] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Run a panel of independent, read-only reviewers and get back their reports.
@@ -570,7 +578,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         that judgment is not safely derivable from reviewer prose. Reviewers listed under
         `incomplete_roles` did not report at all; that is a missing lens, not approval. Nothing is
         ever integrated by this tool."""
-        subject = TeamSubject(kind=target, run_id=run_id, base=base, head=head, text=text)
+        subject = TeamSubject(
+            kind=target, run_id=run_id, base=base, head=head, text=text, paths=paths or []
+        )
         return await ws_call(workspace, lambda svc: svc.run_team(name, subject))
 
     @app.tool()

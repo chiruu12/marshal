@@ -112,6 +112,10 @@ class TeamSubject(BaseModel):
     base: str | None = None
     head: str | None = None
     text: str | None = None
+    # Optional pathspec limiting a `range` diff. Without it a large change is truncated at the tail,
+    # and git orders paths alphabetically - so `src/` and `tests/` are exactly what gets cut. Scope
+    # the review to the code instead of hoping it fits.
+    paths: list[str] = []
 
 
 # --- results (JSON-serializable for the MCP surface) --------------------------------------
@@ -276,7 +280,10 @@ def build_subject_block(subject: TeamSubject, body: str, *, nonce: str) -> str:
     """
     header = {
         "run": f"# Subject: the diff produced by run {subject.run_id}",
-        "range": f"# Subject: the diff of {subject.base}...{subject.head or 'HEAD'}",
+        "range": (
+            f"# Subject: the diff of {subject.base}...{subject.head or 'HEAD'}"
+            + (f" (limited to {', '.join(subject.paths)})" if subject.paths else "")
+        ),
         "plan": "# Subject: the plan below (not yet implemented)",
         "audit": "# Subject: the repository as it currently stands",
     }[subject.kind]
@@ -450,7 +457,7 @@ class TeamService(Protocol):
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]: ...
     def collect_run(self, run_id: str) -> CollectResult: ...
-    def diff_range(self, base: str, head: str | None = None) -> str: ...
+    def diff_range(self, base: str, head: str | None = None, *, paths: list[str] | None = None) -> str: ...
     def client_available(self, client_name: str) -> bool: ...
 
 
@@ -466,8 +473,9 @@ class TeamRunner:
             cr = self.service.collect_run(str(subject.run_id))
             return cr.diff, f"run {subject.run_id} ({len(cr.changed_files)} file(s) changed)"
         if subject.kind == "range":
-            diff = self.service.diff_range(str(subject.base), subject.head)
-            return diff, f"range {subject.base}...{subject.head or 'HEAD'}"
+            diff = self.service.diff_range(str(subject.base), subject.head, paths=subject.paths)
+            scope = f" limited to {', '.join(subject.paths)}" if subject.paths else ""
+            return diff, f"range {subject.base}...{subject.head or 'HEAD'}{scope}"
         if subject.kind == "plan":
             return str(subject.text), "a plan (text supplied by the requesting agent)"
         return "", f"repository audit ({self.service.repo_root})"
