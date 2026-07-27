@@ -17,6 +17,10 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **Reap orphaned RUNNING runs at Fleet startup.** A persisted `running`/`queued` record left when
+  the supervising MCP server or CLI process died is terminal-stamped `failed` (outcome unknown),
+  its `pid` cleared, and `error` records the reap — so `cancel_run` can never `killpg` a reused OS
+  pid. Skipped when another live Fleet holds `fleet.lock` or the agent subprocess is still alive.
 - **`integrate` warns on base-branch drift.** `RunRecord` now persists the branch a run was
   spawned from; `integrate` sets `base_branch_drift` and names both branches in `message` when the
   merge target differs (the merge still proceeds).

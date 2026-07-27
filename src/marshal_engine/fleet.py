@@ -9,6 +9,7 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import signal
@@ -43,6 +44,39 @@ from .worktree import Worktree, WorktreeError, WorktreeManager
 
 logger = logging.getLogger(__name__)
 
+# Process-wide in-flight run ids keyed by ``<repo>/.marshal`` (resolved). A replacement Fleet
+# constructed in the same MCP server process (config hot-reload) shares this map with the evicted
+# Fleet's background pool, so startup reaping must not touch those runs even when they have no pid
+# yet (e.g. a test backend that overrides run() without spawning).
+_active_runs_guard = threading.Lock()
+_active_runs: dict[str, set[str]] = {}
+
+
+def _marshal_base_key(runs_dir: Path) -> str:
+    return str(runs_dir.resolve().parent)
+
+
+def _register_inflight_run(runs_dir: Path, run_id: str) -> None:
+    key = _marshal_base_key(runs_dir)
+    with _active_runs_guard:
+        _active_runs.setdefault(key, set()).add(run_id)
+
+
+def _unregister_inflight_run(runs_dir: Path, run_id: str) -> None:
+    key = _marshal_base_key(runs_dir)
+    with _active_runs_guard:
+        active = _active_runs.get(key)
+        if active is not None:
+            active.discard(run_id)
+            if not active:
+                del _active_runs[key]
+
+
+def _inflight_in_this_process(runs_dir: Path, run_id: str) -> bool:
+    key = _marshal_base_key(runs_dir)
+    with _active_runs_guard:
+        return run_id in _active_runs.get(key, set())
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -71,6 +105,87 @@ _CLEANABLE_NONSUCCESS = frozenset(
 def _is_terminal(rec: RunRecord) -> bool:
     """True once a run has stopped - i.e. it is neither queued nor still running."""
     return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
+
+
+#: Stale non-terminal runs reaped at Fleet startup are stamped ``failed``: the supervising process
+#: vanished before Marshal recorded an outcome, so we cannot honestly claim success, cancellation,
+#: or timeout. ``error`` carries the reap reason; ``pid`` is cleared so ``cancel_run`` can never
+#: signal a reused OS pid.
+_ORPHAN_REAP_ERROR = (
+    "fleet: run orphaned at startup (supervising process exited before run completed)"
+)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when ``pid`` still names a live process (signal 0 probe)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Permission denied or other ambiguity: assume alive so we never reap a live run.
+        return True
+
+
+def _another_fleet_active(lock_path: Path) -> bool:
+    """True when another Marshal Fleet process holds ``base/fleet.lock`` and is still alive."""
+    if not lock_path.exists():
+        return False
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        pid = int(data["pid"])
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return False  # corrupt/stale lock - treat as inactive; this Fleet will reclaim it
+    if pid == os.getpid():
+        return False
+    return _pid_alive(pid)
+
+
+def _reap_orphaned_runs(state: FleetState, *, lock_path: Path) -> None:
+    """Terminal-stamp persisted ``running``/``queued`` runs left by a prior Fleet instance.
+
+    A new Fleet's in-process pool starts empty, so any non-terminal record on disk is orphaned
+    unless another live Fleet supervises it (``fleet.lock`` pid probe) or the agent subprocess is
+    still running (per-record ``pid`` probe). Reaping clears ``pid`` so a later ``cancel_run`` can
+    never ``killpg`` a reused pid. Corrupt records are skipped with a stderr warning.
+    """
+    if _another_fleet_active(lock_path):
+        return
+    if not state.dir.exists():
+        return
+    for path in sorted(state.dir.glob("*.json")):
+        try:
+            rec = RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (ValidationError, OSError, ValueError) as exc:
+            print(f"[marshal] skipping unreadable run record {path.name}: {exc}", file=sys.stderr)
+            continue
+        if _is_terminal(rec):
+            continue
+        if _inflight_in_this_process(state.dir, rec.run_id):
+            continue  # another Fleet in this process still owns the run (config hot-reload)
+        if rec.pid is not None and _pid_alive(rec.pid):
+            continue  # agent still running (e.g. MCP died but the CLI child survived)
+        try:
+            state.update_if(
+                rec.run_id,
+                lambda r: not _is_terminal(r),
+                status=RunStatus.FAILED.value,
+                pid=None,
+                ended_at=_now(),
+                error=_ORPHAN_REAP_ERROR,
+            )
+        except Exception as exc:  # noqa: BLE001 - startup reaping must never crash Fleet construction
+            print(f"[marshal] failed to reap orphaned run {rec.run_id}: {exc}", file=sys.stderr)
+
+
+def _claim_fleet_lock(lock_path: Path) -> None:
+    """Record this process as the active Fleet supervisor for the repo (best-effort)."""
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    except OSError as exc:
+        print(f"[marshal] failed to write fleet lock: {exc}", file=sys.stderr)
 
 
 def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool, str]:
@@ -322,6 +437,9 @@ class Fleet:
         self.session_start: datetime = (
             session_start if session_start is not None else datetime.now(timezone.utc)
         )
+        lock_path = base / "fleet.lock"
+        _reap_orphaned_runs(self.state, lock_path=lock_path)
+        _claim_fleet_lock(lock_path)
 
     def run(
         self,
@@ -377,6 +495,7 @@ class Fleet:
                 run_id, status=RunStatus.FAILED.value, ended_at=_now(),
                 error=f"spawn: executor unavailable: {exc}",
             )
+            _unregister_inflight_run(self.state.dir, run_id)
             raise
         return run_id
 
@@ -450,6 +569,7 @@ class Fleet:
                     started_at=started,
                 )
             )
+            _register_inflight_run(self.state.dir, run_id)
             self._budget_gate.bind(budget_keys, run_id)
             return run_id, wt, started
         except Exception:
@@ -553,6 +673,7 @@ class Fleet:
             # Release enforce-budget concurrency slots once spend is (or would have been) recorded
             # so the next matching spawn can re-check the ledger.
             self._budget_gate.release_run(run_id)
+            _unregister_inflight_run(self.state.dir, run_id)
             # Persist the FULL raw stdout/stderr for every terminal run (success OR failure) so a
             # driver can inspect what the agent actually did after the fact. Best-effort: a logging
             # failure (disk full, permission, ...) must never break a finished run; stderr the cause

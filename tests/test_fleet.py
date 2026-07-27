@@ -27,6 +27,7 @@ from marshal_engine.eastrouter import ExternalCost
 from marshal_engine.fleet import Fleet, RunRequest
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
+from marshal_engine.state import RunRecord
 from marshal_engine.worktree import WorktreeError
 
 
@@ -1651,6 +1652,155 @@ def test_budget_status_no_budgets_is_empty(repo: Path) -> None:
 
     fleet = Fleet(repo, {"metered": _Metered()})
     assert fleet.budget_status(now=datetime.now(timezone.utc)) == []
+
+
+# --- startup orphan reap: stale RUNNING/QUEUED records from a prior Fleet -----------------------
+
+
+def _write_run_record(repo: Path, rec: RunRecord) -> None:
+    runs = repo / ".marshal" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / f"{rec.run_id}.json").write_text(rec.model_dump_json(indent=2), encoding="utf-8")
+
+
+def test_startup_reaps_running_record_left_by_prior_fleet(repo: Path) -> None:
+    run_id = "orphan.writer.deadbeef"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.status == "failed"
+    assert rec.pid is None
+    assert rec.ended_at is not None
+    assert rec.error and "orphaned at startup" in rec.error
+
+
+def test_startup_leaves_terminal_record_unchanged(repo: Path) -> None:
+    run_id = "done.writer.cafebabe"
+    original = RunRecord(
+        run_id=run_id,
+        task_id="done",
+        backend="writer",
+        status="succeeded",
+        started_at="2026-01-01T00:00:00Z",
+        ended_at="2026-01-01T00:01:00Z",
+        pid=11111,
+        cost_usd=0.42,
+        text="all good",
+    )
+    _write_run_record(repo, original)
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.model_dump() == original.model_dump()
+
+
+def test_startup_reap_skips_corrupt_record_without_crashing(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = repo / ".marshal" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "broken.writer.json").write_text("{not json", encoding="utf-8")
+    Fleet(repo, {"writer": _Writer()})  # must not raise
+    err = capsys.readouterr().err
+    assert "skipping unreadable run record" in err
+
+
+def test_cancel_on_reaped_run_does_not_signal_pid(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    run_id = "reaped.writer.abc12345"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="reaped",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=99999,
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get(run_id).pid is None
+
+    killed: list[tuple[int, int]] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _fake_killpg)
+    rec = fleet.cancel_run(run_id)
+    assert killed == []
+    assert rec.status == "failed"
+
+
+def test_startup_skips_running_record_when_agent_pid_still_alive(repo: Path) -> None:
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    run_id = "live.writer.feedface"
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id=run_id,
+                task_id="live",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=proc.pid,
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get(run_id)
+        assert rec is not None
+        assert rec.status == "running"
+        assert rec.pid == proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_startup_skips_reap_when_another_fleet_lock_holder_is_alive(repo: Path) -> None:
+    import json
+
+    run_id = "locked.writer.deadbeef"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="locked",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock_path = repo / ".marshal" / "fleet.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({"pid": holder.pid}), encoding="utf-8")
+
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get(run_id)
+        assert rec is not None
+        assert rec.status == "running"
+        assert rec.pid == 424242
+    finally:
+        holder.kill()
+        holder.wait()
 
 
 # --- Cursor safe-edit cli.json transaction: Fleet never observes the deny overlay (#37) --------
