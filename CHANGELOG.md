@@ -28,6 +28,10 @@ versions may include breaking API changes until 1.0.
   merge-base with the current branch) is returned in `committed_changed_files`, `committed_diff`,
   and `commit_count`; uncommitted work stays in `changed_files` / `diff`. Fixes the review blind
   spot where Cursor/Claude Code agents commit before exit and the working tree looks empty.
+- **Child env scrubs `MARSHAL_*` session variables.** `child_env()` now strips every `MARSHAL_*`
+  variable inherited from the driver/MCP process (not just `VIRTUAL_ENV`/`PYTHONHOME`), so worker
+  agents' test suites and `marshal` CLI invocations resolve the worktree instead of the driver's
+  repo/config. Callers can still pass `MARSHAL_*` values via `extra`.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.
