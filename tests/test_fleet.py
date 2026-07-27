@@ -2027,6 +2027,41 @@ def test_a_live_holders_lock_is_never_claimed(repo: Path) -> None:
         holder.wait(timeout=10)
 
 
+def test_only_one_of_two_racing_processes_claims_the_lock(repo: Path) -> None:
+    """REGRESSION: the empty-file window. `O_EXCL` created the lock then wrote the pid after, so a
+    competing process reading it in between saw an unparseable file, concluded "no live holder",
+    unlinked the winner's lock and took over - both reaped.
+
+    Needs real PROCESSES: a same-process claim is deliberately allowed (config hot-reload), so
+    threads cannot express this property.
+    """
+    lock = repo / ".marshal" / "fleet.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "import sys, time\n"
+        "sys.path.insert(0, %r)\n"
+        "from pathlib import Path\n"
+        "from marshal_engine.fleet import _claim_fleet_lock\n"
+        "start = float(sys.argv[2])\n"
+        "time.sleep(max(0.0, start - time.time()))\n"  # both processes start together
+        "print('WON' if _claim_fleet_lock(Path(sys.argv[1])) else 'LOST')\n"
+    ) % str(Path(__file__).resolve().parent.parent / "src")
+
+    for _ in range(12):  # repeat: a race that fires rarely still must never produce two winners
+        if lock.exists():
+            lock.unlink()
+        go = time.time() + 0.30
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(lock), str(go)],
+                stdout=subprocess.PIPE, text=True,
+            )
+            for _ in range(2)
+        ]
+        outs = [p.communicate(timeout=60)[0].strip() for p in procs]
+        assert outs.count("WON") == 1, f"expected exactly one winner, got {outs}"
+
+
 def test_a_dead_holders_lock_is_taken_over(repo: Path) -> None:
     import json as _json
     import os
@@ -2091,6 +2126,57 @@ def test_an_unverifiable_pid_fails_open_and_keeps_the_run(repo: Path) -> None:
     finally:
         holder.terminate()
         holder.wait(timeout=10)
+
+
+def test_a_live_run_with_matching_identity_is_never_reaped(repo: Path) -> None:
+    """The dangerous direction. Nothing asserted the KEEP path, so a mutation making
+    `_pid_is_still_ours` always return False would have stayed green - and that mutation reaps
+    LIVE runs: status forced to failed, pid cleared (uncancellable), real outcome never recorded.
+    """
+    from marshal_engine.fleet import _pid_start_time
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        started = _pid_start_time(holder.pid)
+        if started is None:
+            pytest.skip("ps start-time probe unavailable on this host")
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="livematch.writer.deadbeef",
+                task_id="livematch",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=holder.pid,
+                pid_start_time=started,  # identity MATCHES the live process
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get("livematch.writer.deadbeef")
+        assert rec.status == RunStatus.RUNNING.value, "a live, verified run was reaped"
+        assert rec.pid == holder.pid, "a live run's pid was cleared - it is now uncancellable"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_startup_reap_skips_validation_for_terminal_records(repo: Path) -> None:
+    """The pre-filter must not change behaviour: a terminal record that would fail model
+    validation is skipped either way, and a non-terminal one is still reaped."""
+    (repo / ".marshal" / "runs").mkdir(parents=True, exist_ok=True)
+    (repo / ".marshal" / "runs" / "weird.json").write_text(
+        '{"run_id": "weird", "task_id": "t", "backend": "writer", "status": "succeeded",'
+        ' "unexpected_future_field": 1}',
+        encoding="utf-8",
+    )
+    _write_run_record(
+        repo,
+        RunRecord(run_id="stale.writer.x", task_id="stale", backend="writer", status="running"),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get("stale.writer.x").status == RunStatus.FAILED.value
+    assert fleet.state.get("weird").status == "succeeded"  # untouched
 
 
 def test_a_run_records_its_pid_start_time(repo: Path) -> None:

@@ -15,6 +15,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -101,6 +102,11 @@ _CLEANABLE_NONSUCCESS = frozenset(
         RunStatus.VERIFY_FAILED.value,
     }
 )
+
+
+#: Raw status strings that mean "not finished". Used as a cheap text pre-filter over run records
+#: before paying for model validation (see `_reap_orphaned_runs`).
+_NON_TERMINAL_STATUSES = (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
 
 
 def _is_terminal(rec: RunRecord) -> bool:
@@ -234,10 +240,17 @@ def _claim_fleet_lock(lock_path: Path) -> bool:
     and its real outcome never recorded because the terminal stamp is guarded on status ==
     running).
 
-    `O_CREAT | O_EXCL` makes creation the atomic winner-takes-all step. A pre-existing lock is
-    honoured while its holder lives; a dead holder's lock is removed and the create retried, so at
-    most one of two simultaneous takers wins. The lock is never released: a long-lived server keeps
-    it, and a short-lived CLI leaves a dead pid the next process can take over.
+    The payload is written to a private temp file and **published by hard-linking it into place**.
+    `link` is atomic and fails when the target exists, so the lock is only ever observable
+    fully-formed. Creating with `O_CREAT | O_EXCL` and writing afterwards was not enough: it leaves
+    the lock EMPTY for a moment, and a competing process that reads it in that window sees an
+    unparseable file, concludes there is no live holder, unlinks the winner's lock and takes over -
+    so both reap, which is the very race this function exists to prevent.
+
+    A pre-existing lock is honoured while its holder lives; a dead holder's lock is removed and the
+    publish retried once, so at most one of two simultaneous takers wins. The lock is never
+    released: a long-lived server keeps it, and a short-lived CLI leaves a dead pid that the next
+    process takes over.
     """
     payload = json.dumps({"pid": os.getpid()})
     try:
@@ -247,21 +260,32 @@ def _claim_fleet_lock(lock_path: Path) -> bool:
         return False
     for attempt in (1, 2):
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            if attempt == 2 or _another_fleet_active(lock_path):
-                return False  # a live supervisor owns it, or we lost the takeover race
-            try:
-                lock_path.unlink()  # stale holder: clear it and retry the atomic create once
-            except OSError:
-                return False
-            continue
+            fd, tmp_str = tempfile.mkstemp(dir=str(lock_path.parent), prefix="fleet.lock.", suffix=".tmp")
         except OSError as exc:
             print(f"[marshal] failed to write fleet lock: {exc}", file=sys.stderr)
             return False
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
-        return True
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            try:
+                os.link(tmp_str, lock_path)  # atomic publish: never a half-written lock
+            except FileExistsError:
+                if attempt == 2 or _another_fleet_active(lock_path):
+                    return False  # a live supervisor owns it, or we lost the takeover race
+                try:
+                    lock_path.unlink()  # stale holder: clear it and retry the atomic publish once
+                except OSError:
+                    return False
+                continue
+            except OSError as exc:
+                print(f"[marshal] failed to publish fleet lock: {exc}", file=sys.stderr)
+                return False
+            return True
+        finally:
+            try:
+                os.unlink(tmp_str)
+            except OSError:
+                pass
     return False
 
 
