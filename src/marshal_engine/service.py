@@ -658,11 +658,19 @@ class MarshalService:
             probe = self.fleet.worktrees._git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
             if probe.returncode != 0:
                 raise ConfigError(f"unknown {label} ref {ref!r}")
+        # Validate BEFORE building argv. An empty pathspec makes git fail with a message that
+        # blames the refs, and a newline-bearing path would break out of the single-line subject
+        # header the reviewer prompt is built from - both are caller errors, named as such here.
+        for spec in paths or []:
+            if not spec or spec.startswith("-"):
+                raise ConfigError(
+                    f"invalid path {spec!r}: paths cannot be empty or start with '-' "
+                    "(that would be read as a git option, not a path)"
+                )
+            if any(ch in spec for ch in "\r\n"):
+                raise ConfigError(f"invalid path {spec!r}: paths cannot contain newlines")
         # `--` separates revs from pathspecs, so a path can never be read as a rev or an option.
         pathspec = ["--", *paths] if paths else []
-        for spec in paths or []:
-            if spec.startswith("-"):
-                raise ConfigError(f"invalid path {spec!r}: paths cannot start with '-'")
         try:
             proc = self.fleet.worktrees._git("diff", f"{base}...{head}", *pathspec)
         except WorktreeError as exc:  # a hung git must surface as the documented error type

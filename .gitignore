@@ -51,3 +51,7 @@ fleet.config.yaml
 
 # Live agent-run artifacts + playground (review locally, don't commit)
 marshal-runs/
+
+# Local dogfood review panels (they reference clients from the gitignored fleet.config.yaml).
+# Shareable starters live in examples/teams/.
+teams/

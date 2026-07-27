@@ -16,6 +16,8 @@ versions may include breaking API changes until 1.0.
   `marshal team run` CLI commands, and the `marshal-adversarial-review` Skill; two starter teams
   ship in `examples/teams/`.
   - Four subjects: a run's diff, a commit `range`, a `plan` (free text), or an `audit` of the repo.
+    A `range` review can be scoped with `paths` — without it a large diff is truncated at the tail,
+    and since git orders paths alphabetically that cuts exactly the code worth reviewing.
   - **The engine computes no verdict.** It parses no reviewer prose and reports no pass/fail: a
     decision derived from text the reviewed material can influence is not trustworthy, and judgment
     belongs to the driver. You get `unified_report` (the panel's shape with every review inline,

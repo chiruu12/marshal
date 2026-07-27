@@ -219,6 +219,7 @@ reports. This tool never integrates.
 | `base` | string \| null | `null` | Base ref (target `range`). Validated — a ref that git would read as an option is refused. |
 | `head` | string \| null | `null` | Head ref (target `range`; default `HEAD`). |
 | `text` | string \| null | `null` | The plan to review (target `plan`). |
+| `paths` | list[string] \| null | `null` | Limit a `range` diff to these paths. Use it on a large change: the subject is truncated at the **tail**, and git orders paths alphabetically, so `src/` and `tests/` are exactly what gets cut. Paths that are empty, start with `-`, or contain newlines are refused. |
 | `workspace` | string \| null | `null` | Target workspace. |
 
 **Returns:** `TeamReview` + `workspace`:

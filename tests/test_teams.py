@@ -281,6 +281,7 @@ def test_audit_subject_block_has_no_diff_fence() -> None:
         (TeamSubject(kind="range", base="main", head="feat"), "main...feat"),
         (TeamSubject(kind="range", base="main"), "main...HEAD"),
         (TeamSubject(kind="plan", text="p"), "the plan below"),
+        (TeamSubject(kind="range", base="main", paths=["src/", "tests/"]), "limited to src/, tests/"),
     ],
 )
 def test_subject_block_header_names_what_is_reviewed(subject: TeamSubject, expected: str) -> None:
