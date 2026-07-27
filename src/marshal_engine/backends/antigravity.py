@@ -66,10 +66,12 @@ class AntigravityBackend(CodingAgentBackend):
     binary = "agy"
     # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs).
     _settings_lock = threading.Lock()
-    #: cwd -> did THIS run add the trust entry? Teardown revokes only what we granted, so a
-    #: workspace the user had already trusted survives the run. Class-level like the lock: one
-    #: backend instance serves every run, and parallel runs each key on their own worktree.
-    _trust_added: dict[str, bool] = {}
+    #: cwd -> how many IN-FLIGHT runs added the trust entry for that path. Teardown revokes only
+    #: what we granted, so a workspace the user had already trusted survives the run. A count, not
+    #: a bool: two concurrent runs can share a cwd, and a bool let the second run's teardown fall
+    #: back to "assume we added it" after the first consumed the key - silently deleting the
+    #: user's own trust entry. Class-level like the lock: one backend instance serves every run.
+    _trust_added: dict[str, int] = {}
     settings_path = DEFAULT_SETTINGS_PATH
     capabilities = Capabilities(
         json_output=False,  # --output-format json reported broken; text output only
@@ -122,8 +124,10 @@ class AntigravityBackend(CodingAgentBackend):
         unreadable settings file (preserved byte-for-byte).
         """
         added = _trust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
-        with self._settings_lock:
-            self._trust_added[str(Path(opts.cwd).resolve())] = added
+        if added:
+            key = str(Path(opts.cwd).resolve())
+            with self._settings_lock:
+                self._trust_added[key] = self._trust_added.get(key, 0) + 1
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
         """Shared run loop, wrapped in a host-global ``trustedWorkspaces`` transaction.
@@ -138,8 +142,18 @@ class AntigravityBackend(CodingAgentBackend):
         finally:
             key = str(Path(opts.cwd).resolve())
             with self._settings_lock:
-                added = self._trust_added.pop(key, True)
-            if added:
+                outstanding = self._trust_added.get(key, 0)
+                # Absent (0) means no in-flight run of ours introduced this entry - so it is the
+                # user's, and we must NOT revoke it. Defaulting the other way ("assume we added
+                # it") destroys user trust silently and permanently; leaving a stray entry is
+                # recoverable and the Marshal-worktree sweep collects it later.
+                revoke = outstanding > 0
+                if revoke:
+                    if outstanding == 1:
+                        del self._trust_added[key]
+                    else:
+                        self._trust_added[key] = outstanding - 1
+            if revoke:
                 _untrust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:

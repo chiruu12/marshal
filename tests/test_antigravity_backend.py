@@ -363,3 +363,41 @@ def test_untrust_leaves_other_unavailable_paths_alone(
     backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt))
     trusted = json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
     assert trusted == [user_path]
+
+
+def test_concurrent_runs_on_one_cwd_do_not_revoke_user_trust(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    """REGRESSION: bookkeeping keyed on cwd with a bool let the SECOND run's teardown fall back to
+    "assume we added it" after the first consumed the key - silently deleting the user's entry."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"trustedWorkspaces": [str(wt.resolve())]}), encoding="utf-8"
+    )
+    backend.settings_path = settings
+    # Two runs share one worktree path; neither added the entry (the user already trusted it).
+    backend.run(TaskSpec(id="a", goal="x"), _opts(cwd=wt))
+    backend.run(TaskSpec(id="b", goal="x"), _opts(cwd=wt))
+    trusted = json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+    assert str(wt.resolve()) in trusted, "the user's own trust entry was revoked"
+
+
+def test_teardown_without_bookkeeping_leaves_the_entry_alone(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    """If we cannot prove we added it, leave it: a stray entry is recoverable, a deleted user
+    grant is not."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"trustedWorkspaces": [str(wt.resolve())]}), encoding="utf-8"
+    )
+    backend.settings_path = settings
+    AntigravityBackend._trust_added.clear()
+    _untrust_if_ours = getattr(backend, "run")
+    _untrust_if_ours(TaskSpec(id="c", goal="x"), _opts(cwd=wt))
+    trusted = json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+    assert str(wt.resolve()) in trusted
