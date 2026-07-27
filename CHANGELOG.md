@@ -17,6 +17,10 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **Cursor long-run text loss (#47).** Switched the adapter to ``--output-format stream-json``
+  and reconstruct final text by concatenating assistant deltas; when the terminal ``result``
+  field is shorter (observed on long ``cursor-grok`` / ``composer`` runs), the stream wins.
+  Truncated/killed runs return partial text without crashing the parser.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.
