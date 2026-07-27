@@ -17,6 +17,11 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **Cursor silently truncated long runs.** `--output-format json` returns one final object whose
+  `result` holds only the last few hundred characters on a long run (measured: 11,417 output
+  tokens generated, 266 characters returned). The adapter now uses `--output-format stream-json`
+  and reconstructs the text by concatenating assistant events; when the terminal `result` is
+  shorter, the stream wins. A timeout-killed run returns its partial text instead of nothing.
 - **Child env scrubs `MARSHAL_*` session variables.** `child_env()` now strips every `MARSHAL_*`
   variable inherited from the driver/MCP process (not just `VIRTUAL_ENV`/`PYTHONHOME`), so worker
   agents' test suites and `marshal` CLI invocations resolve the worktree instead of the driver's
