@@ -22,6 +22,10 @@ versions may include breaking API changes until 1.0.
   path on completion (best-effort; warns on stderr if cleanup cannot read/write the file). A
   malformed or unreadable settings file is preserved and fails the run closed instead of being
   replaced with `{}`.
+- **Child env scrubs `MARSHAL_*` session variables.** `child_env()` now strips every `MARSHAL_*`
+  variable inherited from the driver/MCP process (not just `VIRTUAL_ENV`/`PYTHONHOME`), so worker
+  agents' test suites and `marshal` CLI invocations resolve the worktree instead of the driver's
+  repo/config. Callers can still pass `MARSHAL_*` values via `extra`.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.

@@ -382,6 +382,12 @@ def _merge_safe_edit_cli_json(path: Path) -> None:
         if rule not in existing:
             existing.append(rule)
     perms["deny"] = existing
+    # Recent Cursor CLIs schema-validate the file and REQUIRE permissions.allow as an array —
+    # a deny-only document fails validation and the agent never launches. An empty list adds no
+    # grants (--force still means "allow everything not explicitly denied"); an existing list
+    # is preserved untouched.
+    allow_raw = perms.get("allow")
+    perms["allow"] = allow_raw if isinstance(allow_raw, list) else []
     data["permissions"] = perms
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
