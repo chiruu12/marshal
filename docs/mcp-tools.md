@@ -277,7 +277,7 @@ Read-only diff collection; nothing is merged.
 | `worktree` | string \| null | Worktree path. |
 | `changed_files` | list[string] | Paths with uncommitted changes in the worktree. |
 | `diff` | string | Unified diff of uncommitted work (working tree vs HEAD). |
-| `committed_changed_files` | list[string] | Files changed in commits on the run branch since the run's **own** base (`base_commit`, falling back to `base_branch`, then the current branch for records predating both) — deliberately not the currently checked-out branch, which may have moved since the run started. |
+| `committed_changed_files` | list[string] | Files changed in commits on the run branch since the run's **own** base (`base_commit`, falling back to `base_branch`, then — for records predating both — the current branch, or the checked-out commit `HEAD` when the repo is in detached HEAD) — deliberately not the currently checked-out branch, which may have moved since the run started. |
 | `committed_diff` | string | Unified diff of those commits (`base...branch`). |
 | `commit_count` | integer | Number of commits on the run branch not reachable from that base. |
 
