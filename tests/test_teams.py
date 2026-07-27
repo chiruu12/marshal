@@ -39,6 +39,7 @@ from marshal_engine.teams import (
     validate_team,
 )
 from marshal_engine.types import PermissionMode
+from marshal_engine.worktree import WorktreeError
 
 
 def _config(*names: str, permission: PermissionMode = PermissionMode.READ_ONLY) -> FleetConfig:
@@ -76,7 +77,7 @@ class StubService:
         drop_records: int = 0,
         reverse_records: bool = False,
         run_status: str = "succeeded",
-        collect_raises: bool = False,
+        collect_raises: type[Exception] | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path("/repo")
@@ -123,7 +124,7 @@ class StubService:
     def collect_run(self, run_id: str) -> CollectResult:
         self.calls.append("collect_run")
         if self.collect_raises:
-            raise ValueError(f"worktree for run {run_id!r} no longer exists: /gone")
+            raise self.collect_raises(f"worktree for run {run_id!r} no longer exists: /gone")
         return CollectResult(
             run_id=run_id, branch="b", worktree="w", changed_files=["x.py"], diff=self.diff
         )
@@ -559,11 +560,14 @@ def test_runner_reviews_an_unsuccessful_run_but_says_so(status: str) -> None:
     assert f"run status {status}" in result.unified_report if result.unified_report else True
 
 
-def test_runner_reports_a_worktree_removed_between_the_two_reads() -> None:
+@pytest.mark.parametrize("exc", [ValueError, WorktreeError])
+def test_runner_reports_a_worktree_removed_between_the_two_reads(exc: type[Exception]) -> None:
     """The status check and the diff collection are separate reads; a concurrent `clean` can
-    remove the worktree in between. The driver must get an actionable error, not a bare
-    ValueError crossing the MCP boundary."""
-    svc = StubService(_config("ro-a", "ro-b"), collect_raises=True)
+    remove the worktree in between. BOTH failure shapes must become an actionable error:
+    `ValueError` when the path is already gone at resolution, and `WorktreeError` when it vanishes
+    after resolution so the git call itself fails. Neither may cross the MCP boundary raw.
+    """
+    svc = StubService(_config("ro-a", "ro-b"), collect_raises=exc)
     with pytest.raises(ConfigError, match="no longer reviewable"):
         _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
     assert "run_many" not in svc.calls

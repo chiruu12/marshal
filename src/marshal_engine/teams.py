@@ -51,6 +51,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .config import ConfigError, FleetConfig
 from .types import PermissionMode, RunStatus
+from .worktree import WorktreeError
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
     from .fleet import CollectResult
@@ -513,11 +514,13 @@ class TeamRunner:
                 )
             try:
                 cr = self.service.collect_run(run_id)
-            except ValueError as exc:
-                # The status check and this collection are two reads; a concurrent `clean` can
-                # remove the worktree in between. Nothing can lock against that (clean is an
+            except (ValueError, WorktreeError) as exc:
+                # The status check and this collection are separate reads; a concurrent `clean`
+                # can remove the worktree in between. Nothing can lock against that (clean is an
                 # external caller), so translate the raw failure into something a driver can act
-                # on rather than letting a bare ValueError cross the MCP boundary.
+                # on rather than letting it cross the MCP boundary. BOTH failure shapes matter:
+                # `ValueError` when the path is already gone at resolution, and `WorktreeError`
+                # when it disappears *after* resolution and the git call itself fails.
                 raise ConfigError(
                     f"run {run_id} is no longer reviewable: {exc}. Its worktree was removed "
                     "(most likely by `clean`) after the run finished - collect the diff before "
