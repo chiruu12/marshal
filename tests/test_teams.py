@@ -560,12 +560,16 @@ def test_runner_reviews_an_unsuccessful_run_but_says_so(status: str) -> None:
     assert f"run status {status}" in result.unified_report if result.unified_report else True
 
 
-@pytest.mark.parametrize("exc", [ValueError, WorktreeError])
+@pytest.mark.parametrize("exc", [ValueError, WorktreeError, FileNotFoundError])
 def test_runner_reports_a_worktree_removed_between_the_two_reads(exc: type[Exception]) -> None:
     """The status check and the diff collection are separate reads; a concurrent `clean` can
     remove the worktree in between. BOTH failure shapes must become an actionable error:
-    `ValueError` when the path is already gone at resolution, and `WorktreeError` when it vanishes
-    after resolution so the git call itself fails. Neither may cross the MCP boundary raw.
+    THREE shapes, each a different point in the race:
+      ValueError        - already gone when the worktree was resolved
+      WorktreeError     - vanished after resolution, the git call failed
+      FileNotFoundError - vanished before the git process started, so spawning with a deleted cwd
+                          raises from subprocess itself
+    None may cross the MCP boundary raw.
     """
     svc = StubService(_config("ro-a", "ro-b"), collect_raises=exc)
     with pytest.raises(ConfigError, match="no longer reviewable"):
