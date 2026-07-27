@@ -1,0 +1,36 @@
+# User Taste Profile
+- Prefers serial agent execution with verification between each step ("one by one" pattern). Confidence: 0.95
+- Prioritizes work by risk/value buckets: low-risk/high-value first, then low-value/low-risk, then high-value/high-risk (collaborative), skipping high-risk/low-value. Confidence: 0.9
+- Runs adversarial/verification agents after every build phase to catch regressions and design flaws before moving on. Confidence: 0.95
+- Delegates different review concerns to specialized sub-agents (code quality, docs, content, OSS readiness) rather than a single pass. Confidence: 0.9
+- Prefers planning and doc gauntlet up front before implementing ("plan everything first and then use agents to complete the work"). Confidence: 0.9
+- Chains dependent work sequentially: foundation committed inline first, then dependents spawn on that committed base — never fans out a dependency chain in parallel. Confidence: 0.85
+- Small, single-logical-change commits only; never large omnibus commits. Confidence: 0.95
+- Commit messages describe WHAT shipped, not HOW or WHY; never expose internal process, AI involvement, or iteration history in public output (commits, PRs, README, docs). Confidence: 0.98
+- Uses feature branches for isolation; keeps unrelated work on separate branches. Confidence: 0.9
+- Only commits/pushes when explicitly asked ("commit/push only when asked"). Confidence: 0.95
+- Merges PRs before starting new feature branches; keeps the commit history clean and linear. Confidence: 0.85
+- Enforces SOLID principles and YAGNI — run quality checks for both against the codebase periodically. Confidence: 0.9
+- Prefers Pydantic models over raw dicts/dataclasses for structured data ("pydantic everywhere but the places where adding pydantic will actually be worse"). Confidence: 0.9
+- Gate must be green after every commit: pytest + ruff + mypy (and coverage floor). Confidence: 0.98
+- Uses architectural-invariant tests to lock structural properties in source (assert structure via AST/inspect, not just behavior). Confidence: 0.85
+- Strongly avoids hardcoded counts or stale numbers in prose. Confidence: 0.9
+- Agent-first product design: Marshal's primary user is an AI driver agent; every surface should be optimized for agents. Confidence: 0.95
+- Engine = pure mechanism (spawn/isolate/measure/collect/integrate); judgment/routing/decomposition lives in Skills, not the engine. Confidence: 0.9
+- Prefers dogfooding — use the product to build the product when possible, captures measured cost as proof. Confidence: 0.9
+- Cost honesty is non-negotiable: never present estimates as native, unpriced ≠ $0, tag every usage record with source. Confidence: 0.95
+- Engine stamps immutable facts to a ledger; interpretation (cost-per-outcome, savings) derived on read, never stored. Confidence: 0.9
+- Runs multiple models in parallel for benchmarking/comparison (e.g., kimi vs glm, composer vs deepseek) and picks the winner based on measured cost+quality. Confidence: 0.9
+- Prefers environment variables over new config file formats for server-side configuration. Confidence: 0.8
+- Keeps reference/temp files gitignored rather than deleting them for future use. Confidence: 0.85
+- Uses Conductor (Mac app) to run many coding agents in parallel across workspaces. Confidence: 0.9
+- Extremely concise feedback — uses "LGTM", "cont", "yes" to keep momentum. Confidence: 0.95
+- Casual typing with frequent typos and abbreviations; expects the agent to infer intent without asking for clarification. Confidence: 0.9
+- Direct and action-oriented: "make sure to add ci cd too properly!! make small commits not huge ones!" Confidence: 0.9
+- Prefers getting an overview/small summary before committing to a direction (e.g., "just give me a small overview thats all"). Confidence: 0.85
+- When satisfied with a direction, says "yes go ahead" or "LGTM" to greenlight execution. Confidence: 0.9
+- Never burn Fireworks credits (force opencode-go/*; reject fireworks-ai/*). Confidence: 0.98
+- Never expose internal process in any public-facing output. Confidence: 0.98
+- Do NOT make the repo public unilaterally; user does it themselves. Confidence: 0.95
+- Cleans up prose style (removed all em dashes from entire repo, removed from GitHub description). Confidence: 0.85
+- Keeps secrets by reference only (secret_ref advisory, never injected). Confidence: 0.9

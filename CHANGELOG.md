@@ -61,6 +61,11 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **Antigravity `trustedWorkspaces` scoped to the run (#48).** `prepare()` no longer leaves
+  durable trust entries in the host-global agy settings file: `run()` removes the run's worktree
+  path on completion (best-effort; warns on stderr if cleanup cannot read/write the file). A
+  malformed or unreadable settings file is preserved and fails the run closed instead of being
+  replaced with `{}`.
 - **A worktree removed mid-review no longer escapes as a raw exception.** Collecting a team's
   review subject races `clean`: the worktree can vanish at three different points, and each raises
   a different type - `ValueError` (already gone at resolution), `WorktreeError` (gone after
