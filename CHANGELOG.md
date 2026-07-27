@@ -61,6 +61,12 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **A worktree removed mid-review no longer escapes as a raw exception.** Collecting a team's
+  review subject races `clean`: the worktree can vanish at three different points, and each raises
+  a different type - `ValueError` (already gone at resolution), `WorktreeError` (gone after
+  resolution, git failed), and `FileNotFoundError` (gone before the git process started, so
+  spawning with a deleted cwd raises from subprocess). All three now become the same actionable
+  "no longer reviewable" error instead of crossing the MCP boundary raw.
 - **Cursor silently truncated long runs.** `--output-format json` returns one final object whose
   `result` holds only the last few hundred characters on a long run (measured: 11,417 output
   tokens generated, 266 characters returned). The adapter now uses `--output-format stream-json`
