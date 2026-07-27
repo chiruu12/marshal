@@ -66,6 +66,10 @@ class AntigravityBackend(CodingAgentBackend):
     binary = "agy"
     # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs).
     _settings_lock = threading.Lock()
+    #: cwd -> did THIS run add the trust entry? Teardown revokes only what we granted, so a
+    #: workspace the user had already trusted survives the run. Class-level like the lock: one
+    #: backend instance serves every run, and parallel runs each key on their own worktree.
+    _trust_added: dict[str, bool] = {}
     settings_path = DEFAULT_SETTINGS_PATH
     capabilities = Capabilities(
         json_output=False,  # --output-format json reported broken; text output only
@@ -117,7 +121,9 @@ class AntigravityBackend(CodingAgentBackend):
         paths are pruned as a backstop. Serialized for parallel runs. Fails closed on a malformed or
         unreadable settings file (preserved byte-for-byte).
         """
-        _trust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
+        added = _trust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
+        with self._settings_lock:
+            self._trust_added[str(Path(opts.cwd).resolve())] = added
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
         """Shared run loop, wrapped in a host-global ``trustedWorkspaces`` transaction.
@@ -130,7 +136,11 @@ class AntigravityBackend(CodingAgentBackend):
         try:
             return super().run(task, opts)
         finally:
-            _untrust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
+            key = str(Path(opts.cwd).resolve())
+            with self._settings_lock:
+                added = self._trust_added.pop(key, True)
+            if added:
+                _untrust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         if exit_code != 0:
@@ -199,7 +209,17 @@ def _atomic_write_settings(settings_path: Path, data: dict[str, object]) -> None
         raise
 
 
-def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
+def _is_marshal_worktree(path: str) -> bool:
+    """True for a path that looks like one of Marshal's own worktrees.
+
+    Used to bound the dead-path sweep. A user's own trusted path may be *temporarily* unavailable
+    (unmounted volume, external drive, network share); deleting it because it does not exist right
+    now silently destroys their agy trust config. Only Marshal's own leftovers are swept.
+    """
+    return f"{os.sep}.marshal{os.sep}worktrees{os.sep}" in path
+
+
+def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> bool:
     """Add `cwd` to agy's `trustedWorkspaces` in `settings_path`, preserving other settings.
 
     Merge-preserving (other keys untouched), idempotent (no duplicate entry), and atomic (unique
@@ -213,10 +233,19 @@ def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> No
         data = _load_settings_object(settings_path)
         existing = data.get("trustedWorkspaces")
         trusted = [t for t in existing if isinstance(t, str)] if isinstance(existing, list) else []
-        # Keep this worktree + any other still-existing trusted paths; drop dead ones.
-        kept = [t for t in trusted if t != cwd_str and Path(t).exists()]
+        already_trusted = cwd_str in trusted
+        # Keep every other entry; sweep only Marshal's OWN dead worktrees (a crashed run's
+        # leftover). A user path that is merely unavailable right now is never touched.
+        kept = [
+            t
+            for t in trusted
+            if t != cwd_str and not (_is_marshal_worktree(t) and not Path(t).exists())
+        ]
         data["trustedWorkspaces"] = [*kept, cwd_str]
         _atomic_write_settings(settings_path, data)
+        # Report whether WE introduced this entry, so teardown never revokes trust the user
+        # granted themselves before Marshal ever ran.
+        return not already_trusted
 
 
 def _untrust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
@@ -261,8 +290,10 @@ def _untrust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> 
         trusted = [t for t in existing if isinstance(t, str)]
         if cwd_str not in trusted:
             return
-        # Remove only this run's path; prune dead entries as a backstop.
-        loaded["trustedWorkspaces"] = [t for t in trusted if t != cwd_str and Path(t).exists()]
+        # Remove ONLY this run's path. No general dead-path sweep here: another entry that is
+        # temporarily unavailable belongs to the user, and dropping it would silently revoke
+        # trust they granted themselves.
+        loaded["trustedWorkspaces"] = [t for t in trusted if t != cwd_str]
         try:
             _atomic_write_settings(settings_path, loaded)
         except OSError as exc:
