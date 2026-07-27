@@ -61,10 +61,13 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
-- **`cancel_run` verifies pid identity before signalling.** SIGTERM is sent only when the recorded
-  `pid` + `pid_start_time` pair positively matches the live process; identity mismatch or
-  unverifiable identity skips the signal (fail closed — unlike reaping) but still marks the run
-  `cancelled` with an explanatory `error` and clears `pid`.
+- **`cancel_run` signals only a live child of the current process.** Signalling goes through an
+  in-process handle tracking the child from spawn until it is reaped — the OS cannot recycle a
+  child's pid before its parent reaps it, so within that window the pid is unambiguous. A cancel
+  arriving before the pid is known is applied the moment it is; a cancel after the child is reaped
+  does not signal; publishing a pid clears the handle's exit flag so a cancel during a retry still
+  reaches the retry's agent. A run owned by another (or dead) process is stamped `cancelled`
+  without a signal and records why.
 - **Reap orphaned RUNNING runs at Fleet startup.** A persisted `running`/`queued` record left when
   the supervising MCP server or CLI process died is terminal-stamped `failed` (outcome unknown),
   its `pid` cleared, and `error` records the reap — so `cancel_run` can never `killpg` a reused OS
@@ -76,6 +79,11 @@ versions may include breaking API changes until 1.0.
   merge-base with the current branch) is returned in `committed_changed_files`, `committed_diff`,
   and `commit_count`; uncommitted work stays in `changed_files` / `diff`. Fixes the review blind
   spot where Cursor/Claude Code agents commit before exit and the working tree looks empty.
+- **Antigravity `trustedWorkspaces` scoped to the run (#48).** `prepare()` no longer leaves
+  durable trust entries in the host-global agy settings file: `run()` removes the run's worktree
+  path on completion (best-effort; warns on stderr if cleanup cannot read/write the file). A
+  malformed or unreadable settings file is preserved and fails the run closed instead of being
+  replaced with `{}`.
 - **A worktree removed mid-review no longer escapes as a raw exception.** Collecting a team's
   review subject races `clean`: the worktree can vanish at three different points, and each raises
   a different type - `ValueError` (already gone at resolution), `WorktreeError` (gone after

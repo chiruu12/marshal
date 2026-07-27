@@ -114,8 +114,11 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   `.git`; wrappers and alternate writers can bypass); `yolo` still gets `question: deny` only
   (headless: skip-permissions does not cover `question`). **`boundary-only` backends:** Command
   Code (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar), Goose (`safe-edit`/`yolo` both
-  `GOOSE_MODE=auto`), Antigravity (no PTY wrapper; stdout can be swallowed without a TTY; no
-  distinct safe-edit scoping beyond `trustedWorkspaces`), and Claude Code (`acceptEdits` with no
+  `GOOSE_MODE=auto`), Antigravity (`prepare()` briefly adds the run worktree to host-global
+  `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`; `run()` removes it on
+  completion; malformed settings fail closed; residual: parallel Antigravity runs still share and
+  serialize on that global file; no PTY wrapper; stdout can be swallowed without a TTY; no distinct
+  safe-edit scoping beyond the run-scoped trust grant), and Claude Code (`acceptEdits` with no
   Marshal deny layer). Worktree isolation remains the hard boundary for those adapters and for
   everything the curated denies do not cover. See `permission_fidelity` on `list_clients` /
   `marshal backends` / `doctor`.
