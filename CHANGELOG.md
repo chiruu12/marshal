@@ -41,9 +41,10 @@ versions may include breaking API changes until 1.0.
     workspace's own `teams/` directory.
   - Team lookup is contained for **every** name form: a bare name is still a path fragment, so
     `run_team("../evil")` is refused, not just an explicit out-of-tree `.yaml` path.
-  - A run still `running`/`queued` cannot be reviewed (an in-flight worktree is a partial
-    snapshot); a terminal-but-unsuccessful run can be, and its status is carried into every
-    reviewer's prompt and the report so it is never mistaken for finished work.
+  - A run that is `running`, `queued`, or `cancelled` cannot be reviewed - its worktree is not a
+    stable snapshot (cancellation stamps the status right after signalling, so the agent may still
+    be exiting and writing). A terminal-but-unsuccessful run can be, and its status is carried into
+    every reviewer's prompt and the report so it is never mistaken for finished work.
   - Like `workflow.py`, the runner **adds no new execution path**: it issues only `collect_run` /
     `diff_range` / `run_many`, so every reviewer still flows through `Fleet.run`. It never
     integrates.

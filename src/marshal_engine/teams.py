@@ -63,6 +63,14 @@ TargetKind = Literal["run", "plan", "range", "audit"]
 # silently written against a partial diff.
 MAX_SUBJECT_CHARS = 120_000
 
+#: Run states whose worktree cannot be trusted as a stable snapshot to review.
+#: `running`/`queued` are obvious. `cancelled` is here for a subtler reason: cancellation records
+#: the status immediately after signalling the process group, so the agent may still be exiting
+#: and writing when the record already reads terminal - a review would race a live writer.
+_UNSTABLE_FOR_REVIEW = frozenset(
+    {RunStatus.RUNNING.value, RunStatus.QUEUED.value, RunStatus.CANCELLED.value}
+)
+
 # A team name becomes part of `task_id` (`team.<name>.<run>`), which TaskSpec validates as a
 # worktree-safe id, and part of the report directory name. Bound it here so a bad name fails at
 # load rather than deep inside run_many.
@@ -498,10 +506,10 @@ class TeamRunner:
             # reviewer's prompt and the unified report - so nobody mistakes it for a candidate.
             rec = self.service.get_run(run_id)
             status = rec.status if rec is not None else ""
-            if status in (RunStatus.RUNNING.value, RunStatus.QUEUED.value):
+            if status in _UNSTABLE_FOR_REVIEW:
                 raise ConfigError(
-                    f"run {run_id} is still {status}; wait for it to finish before reviewing "
-                    "(an in-flight worktree is a partial snapshot, not a candidate)"
+                    f"run {run_id} is {status}; its worktree is not a stable snapshot, so a review "
+                    "of it describes nothing. Wait for the run to settle before reviewing."
                 )
             cr = self.service.collect_run(run_id)
             note = (

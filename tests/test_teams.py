@@ -535,16 +535,17 @@ def test_runner_passes_the_path_scope_through_to_the_diff() -> None:
     assert "limited to src/" in svc.jobs[0]["goal"]
 
 
-@pytest.mark.parametrize("status", ["running", "queued"])
+@pytest.mark.parametrize("status", ["running", "queued", "cancelled"])
 def test_runner_refuses_to_review_a_run_still_in_flight(status: str) -> None:
-    """An in-flight worktree is a partial snapshot; a review of it describes nothing stable."""
+    """Not a stable snapshot. `cancelled` counts: the status is stamped right after the process
+    group is signalled, so the agent may still be exiting and writing."""
     svc = StubService(_config("ro-a", "ro-b"), run_status=status)
-    with pytest.raises(ConfigError, match="still " + status):
+    with pytest.raises(ConfigError, match="is " + status):
         _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
     assert svc.calls == []
 
 
-@pytest.mark.parametrize("status", ["failed", "timed_out", "cancelled", "verify_failed"])
+@pytest.mark.parametrize("status", ["failed", "timed_out", "verify_failed"])
 def test_runner_reviews_an_unsuccessful_run_but_says_so(status: str) -> None:
     """Post-mortems are legitimate - but the status must reach the reviewers and the report."""
     svc = StubService(_config("ro-a", "ro-b"), run_status=status)
