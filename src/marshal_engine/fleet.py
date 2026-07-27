@@ -1157,12 +1157,16 @@ class Fleet:
                 and _pid_start_time(rec.pid) is not None
             )
             if verified_ours:
-                # IRREDUCIBLE RESIDUAL: POSIX offers no atomic "signal this pid only if it is still
-                # that process". Between the verification above and killpg the agent could exit and
-                # the OS reuse its pid, and we would signal a stranger. Nothing in userspace closes
-                # that window - pidfd would, but it is Linux-only. We do the one thing that helps:
-                # verify as late as possible, immediately before signalling, so the window is the
-                # syscall gap rather than the whole function. Documented in SECURITY.md.
+                # IRREDUCIBLE RESIDUAL - do not "fix" this by adding another check; read this first.
+                # POSIX offers no atomic "signal this pid only if it is still that process".
+                # Between the verification below and killpg the agent could exit and the OS reuse
+                # its pid, and we would signal a stranger. Linux `pidfd` does not help either: a
+                # pidfd is a file descriptor, so it cannot be persisted in a run record and
+                # reopened by the DIFFERENT process that later cancels the run - which is exactly
+                # this path. (Same-process cancels are already covered by the run pool.) The only
+                # available mitigation is to verify as late as possible, so the window is the
+                # syscall gap rather than the whole function. Residual documented in SECURITY.md
+                # under "Known trust-boundary gaps".
                 if _pid_start_time(rec.pid) == rec.pid_start_time:
                     try:
                         os.killpg(rec.pid, signal.SIGTERM)
