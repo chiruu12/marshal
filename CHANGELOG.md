@@ -42,6 +42,9 @@ versions may include breaking API changes until 1.0.
   - Like `workflow.py`, the runner **adds no new execution path**: it issues only `collect_run` /
     `diff_range` / `run_many`, so every reviewer still flows through `Fleet.run`. It never
     integrates.
+  - `marshal doctor` validates every declared team (unknown clients, the read-only rule) as a
+    WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
+    reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
 ### Documentation
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that

@@ -104,6 +104,11 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
   reviewer; `succeeded` means "the process exited cleanly," not "the code is correct."
 - Reject work that is wrong or off-scope by simply not integrating it. The worktree stays isolated;
   main is untouched.
+- **When your own read isn't enough** - a migration, a public API, a security-sensitive path -
+  `run_team(name, target="run", run_id=...)` puts the same diff in front of several independent
+  read-only reviewers (each a different model, each holding one lens) and hands you their reports.
+  It computes no verdict: you still collect the objections and decide. See
+  `marshal-adversarial-review`, and `list_teams()` for the declared panels.
 
 ## 5. Integrate - merge the good ones
 `integrate(run_id, cleanup?)` merges the run's branch into the branch you currently have checked out.

@@ -451,3 +451,50 @@ def test_unknown_backend_has_no_fidelity_check(tmp_path: Path) -> None:
     checks = run_checks(repo, cfg, backends={})
     assert _by_name(checks, "backend:no-such-backend").detail == "unknown backend name"
     assert "permission:no-such-backend" not in _names(checks)
+
+
+def test_doctor_flags_a_team_whose_reviewer_can_write(tmp_path: Path) -> None:
+    """A team that can never run should surface at preflight, not when you reach for the panel."""
+    repo = tmp_path / "repo"
+    (repo / "teams").mkdir(parents=True)
+    (repo / "fleet.config.yaml").write_text(
+        "clients:\n  rw:\n    backend: cursor\n    permission: safe-edit\n"
+    )
+    (repo / "teams" / "gate.yaml").write_text(
+        "target: plan\nroles:\n"
+        "  - name: a\n    client: rw\n    rubric: x\n"
+        "  - name: b\n    client: rw\n    rubric: y\n"
+    )
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    teams = [c for c in checks if c.name == "teams"]
+    assert teams and teams[0].status == WARN
+    assert "must be read-only" in teams[0].detail
+    # Optional feature: a broken team never fails the whole preflight.
+    assert not any(c.status == FAIL and c.name == "teams" for c in checks)
+
+
+def test_doctor_reports_valid_teams_as_ok(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "teams").mkdir(parents=True)
+    (repo / "fleet.config.yaml").write_text(
+        "clients:\n"
+        "  ro-a:\n    backend: cursor\n    permission: read-only\n"
+        "  ro-b:\n    backend: cursor\n    permission: read-only\n"
+    )
+    (repo / "teams" / "gate.yaml").write_text(
+        "target: plan\nroles:\n"
+        "  - name: a\n    client: ro-a\n    rubric: x\n"
+        "  - name: b\n    client: ro-b\n    rubric: y\n"
+    )
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    teams = [c for c in checks if c.name == "teams"]
+    assert teams and teams[0].status == OK
+
+
+def test_doctor_omits_the_teams_check_when_no_teams_exist(tmp_path: Path) -> None:
+    """No teams/ dir is the common case; don't add a row for a feature nobody opted into."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "fleet.config.yaml").write_text("clients: {}\n")
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    assert not [c for c in checks if c.name == "teams"]
