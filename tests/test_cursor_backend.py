@@ -664,3 +664,25 @@ def test_account_info_none_on_status_timeout(
         lambda *a, **k: (_ for _ in ()).throw(sp.TimeoutExpired(cmd=a[0], timeout=15)),
     )
     assert backend.account_info() is None
+
+
+def test_failed_run_still_reports_tokens_and_session(backend: CursorBackend) -> None:
+    """A failed run still consumed tokens. Dropping them under-reports spend in the ledger - the
+    one thing this project refuses to get wrong - and the session id is needed to investigate."""
+    stream = "\n".join(
+        [
+            json.dumps({"type": "assistant", "session_id": "s-1",
+                        "message": {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}}),
+            json.dumps({"type": "result", "subtype": "error", "is_error": True, "result": "boom",
+                        "session_id": "s-1",
+                        "usage": {"inputTokens": 120, "outputTokens": 7, "cacheReadTokens": 3}}),
+        ]
+    )
+    res = backend.parse_output(stream, "exploded", 1)
+    assert res.status is RunStatus.FAILED
+    assert res.session_id == "s-1"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 120
+    assert res.usage.output_tokens == 7
+    assert res.usage.source.value == "unavailable"  # tokens yes, cost still never invented
+    assert "partial" in res.text  # partial output is preserved, not discarded

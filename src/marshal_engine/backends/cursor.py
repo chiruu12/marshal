@@ -260,9 +260,15 @@ class CursorBackend(CodingAgentBackend):
         text = stream_text if len(stream_text) >= len(result_text) else result_text
 
         if exit_code != 0 or result_obj is None:
+            # Carry the session id and whatever usage the stream reported. A failed run still
+            # consumed tokens, and dropping them here silently under-reports spend in the ledger -
+            # the one thing this project refuses to get wrong. `session_id` is likewise needed to
+            # resume or investigate the failure.
             return AgentResult(
                 status=RunStatus.FAILED,
                 text=text,
+                session_id=session_id,
+                usage=usage,
                 error=raw_stderr.strip() or f"cursor-agent exited {exit_code}",
                 exit_code=exit_code,
                 raw_stdout=raw_stdout,
