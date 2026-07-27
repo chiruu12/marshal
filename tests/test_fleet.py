@@ -2307,6 +2307,25 @@ def test_startup_reap_skips_validation_for_terminal_records(repo: Path) -> None:
     assert fleet.state.get("weird").status == "succeeded"  # untouched
 
 
+def test_collect_uses_the_pinned_base_commit_when_the_branch_moves(repo: Path) -> None:
+    """REGRESSION: the base was recorded as a branch NAME, which is mutable. If the branch moves
+    while the agent works, the review is computed against a different base than the run started
+    from - showing commits the agent never made, or hiding ones it did."""
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    rec = fleet.run("selfcommit", TaskSpec(id="pin1", goal="x"))
+    stored = fleet.state.get(rec.run_id)
+    assert stored.base_commit, "the run's base commit was not pinned"
+
+    # The base BRANCH now moves on: a commit the agent never saw.
+    (repo / "moved.txt").write_text("landed after the run started\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "moved the base branch")
+
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.committed_changed_files == ["out.txt"]
+    assert "moved.txt" not in collected.committed_diff
+
+
 def test_a_run_records_its_pid_start_time(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="pst1", goal="x"))

@@ -9,6 +9,7 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -233,60 +234,63 @@ def _reap_orphaned_runs(state: FleetState) -> None:
 def _claim_fleet_lock(lock_path: Path) -> bool:
     """Atomically become this repo's Fleet supervisor. True only if THIS process won the claim.
 
-    A check-then-write pair is not enough: two Fleets starting together both saw "no live holder",
-    both reaped, and both wrote the lock. The loser then exited leaving a dead pid, so the next
-    process reaped again - and a run recorded RUNNING before its pid is stamped has nothing to
-    protect it, so a live run got marked failed with its pid cleared (permanently uncancellable,
-    and its real outcome never recorded because the terminal stamp is guarded on status ==
-    running).
+    The whole decision - read the holder, judge liveness, take over - runs under an advisory
+    ``flock`` on a sibling guard file, so it is one critical section rather than three steps other
+    processes can interleave with.
 
-    The payload is written to a private temp file and **published by hard-linking it into place**.
-    `link` is atomic and fails when the target exists, so the lock is only ever observable
-    fully-formed. Creating with `O_CREAT | O_EXCL` and writing afterwards was not enough: it leaves
-    the lock EMPTY for a moment, and a competing process that reads it in that window sees an
-    unparseable file, concludes there is no live holder, unlinks the winner's lock and takes over -
-    so both reap, which is the very race this function exists to prevent.
+    Two earlier attempts were not enough, and both failure modes are worth remembering:
+    ``O_CREAT | O_EXCL`` then writing the pid leaves the lock EMPTY for a moment, and a competing
+    process reading it in that window saw an unparseable file, concluded "no live holder", and took
+    over. Publishing by hard-link fixed that, but the stale-lock path still did unlink-then-create:
+    two processes that both found a dead holder could both unlink - the second deleting the FIRST's
+    freshly published lock - and both end up believing they won.
 
-    A pre-existing lock is honoured while its holder lives; a dead holder's lock is removed and the
-    publish retried once, so at most one of two simultaneous takers wins. The lock is never
-    released: a long-lived server keeps it, and a short-lived CLI leaves a dead pid that the next
-    process takes over.
+    ``flock`` is released by the OS when the process exits, so a crash mid-decision cannot wedge
+    it. The lock file itself is never released: a long-lived server keeps it, and a short-lived CLI
+    leaves a dead pid the next process takes over.
     """
-    payload = json.dumps({"pid": os.getpid()})
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         print(f"[marshal] failed to create fleet lock dir: {exc}", file=sys.stderr)
         return False
-    for attempt in (1, 2):
+
+    guard_path = lock_path.with_name(lock_path.name + ".guard")
+    try:
+        guard = open(guard_path, "a+")  # noqa: SIM115 - closed explicitly below
+    except OSError as exc:
+        print(f"[marshal] failed to open fleet lock guard: {exc}", file=sys.stderr)
+        return False
+    try:
         try:
-            fd, tmp_str = tempfile.mkstemp(dir=str(lock_path.parent), prefix="fleet.lock.", suffix=".tmp")
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another process is deciding right now. Whoever it is will reconcile; we stand down
+            # rather than racing it.
+            return False
+        if _another_fleet_active(lock_path):
+            return False
+        try:
+            _write_lock_payload(lock_path)
         except OSError as exc:
             print(f"[marshal] failed to write fleet lock: {exc}", file=sys.stderr)
             return False
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-            try:
-                os.link(tmp_str, lock_path)  # atomic publish: never a half-written lock
-            except FileExistsError:
-                if attempt == 2 or _another_fleet_active(lock_path):
-                    return False  # a live supervisor owns it, or we lost the takeover race
-                try:
-                    lock_path.unlink()  # stale holder: clear it and retry the atomic publish once
-                except OSError:
-                    return False
-                continue
-            except OSError as exc:
-                print(f"[marshal] failed to publish fleet lock: {exc}", file=sys.stderr)
-                return False
-            return True
-        finally:
-            try:
-                os.unlink(tmp_str)
-            except OSError:
-                pass
-    return False
+        return True
+    finally:
+        guard.close()  # releases the flock
+
+
+def _write_lock_payload(lock_path: Path) -> None:
+    """Write this process's pid to the lock atomically (temp + replace, never half-written)."""
+    fd, tmp_str = tempfile.mkstemp(dir=str(lock_path.parent), prefix="fleet.lock.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": os.getpid()}))
+        os.replace(tmp_str, lock_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_str)
+        raise
 
 
 def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool, str]:
@@ -655,9 +659,13 @@ class Fleet:
             # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
             # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
             resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
+            # Pin the sha too: the branch name can move while the agent works, and a review has to
+            # be computed against what the run actually started from.
+            resolved_base_commit = self.worktrees.resolve_commit(resolved_base)
             with self._create_lock:
                 wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
             self.worktrees.setup(wt)
+            _register_inflight_run(self.state.dir, run_id)
             self.state.add(
                 RunRecord(
                     run_id=run_id,
@@ -669,10 +677,10 @@ class Fleet:
                     worktree=str(wt.path),
                     branch=wt.branch,
                     base_branch=resolved_base,
+                    base_commit=resolved_base_commit,
                     started_at=started,
                 )
             )
-            _register_inflight_run(self.state.dir, run_id)
             self._budget_gate.bind(budget_keys, run_id)
             return run_id, wt, started
         except Exception:
@@ -959,6 +967,9 @@ class Fleet:
 
         Falls back to the current branch for records written before `base_branch` existed.
         """
+        # Prefer the pinned sha over the branch name: the name may point somewhere else now.
+        if rec is not None and rec.base_commit:
+            return rec.base_commit
         if rec is not None and rec.base_branch:
             return rec.base_branch
         try:

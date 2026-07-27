@@ -32,6 +32,10 @@ class RunRecord(BaseModel):
     worktree: str | None = None
     branch: str | None = None
     base_branch: str | None = None  # branch the worktree was cut from (None = pre-drift records)
+    # The COMMIT that branch pointed at when the run was spawned. A branch name is mutable: if
+    # `main` moves while the agent works, reviewing against the name compares to a different base
+    # than the agent started from. The sha is what the run actually branched off.
+    base_commit: str | None = None
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
