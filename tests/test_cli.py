@@ -293,6 +293,158 @@ def test_workflows_none_present(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert "no workflows" in capsys.readouterr()[0]
 
 
+# --- teams subcommand -------------------------------------------------------------------------
+
+
+_RO_FLEET = (
+    "clients:\n"
+    "  ro-a:\n    backend: cursor\n    permission: read-only\n"
+    "  ro-b:\n    backend: cursor\n    permission: read-only\n"
+    "  rw:\n    backend: cursor\n    permission: safe-edit\n"
+)
+_TEAM = (
+    "target: plan\nroles:\n"
+    "  - name: architect\n    client: {a}\n    rubric: rules\n"
+    "  - name: tests\n    client: ro-b\n    rubric: tests\n"
+)
+
+
+def _repo_with_team(tmp_path: Path, body: str) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "teams").mkdir(parents=True)
+    (repo / "fleet.config.yaml").write_text(_RO_FLEET)
+    (repo / "teams" / "gate.yaml").write_text(body)
+    return repo
+
+
+def test_teams_json_valid(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    ret = cli.main(["teams", "--repo", str(repo), "--json"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data[0]["name"] == "gate"
+    assert data[0]["target"] == "plan"
+    assert data[0]["error"] is None
+    assert [r["name"] for r in data[0]["roles"]] == ["architect", "tests"]
+
+
+def test_teams_flags_a_reviewer_that_can_write(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`marshal teams` must surface the read-only rule, not just unknown client names."""
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="rw"))
+    ret = cli.main(["teams", "--repo", str(repo)])
+    assert ret == 1
+    assert "must be read-only" in capsys.readouterr()[0]
+
+
+def test_teams_none_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ret = cli.main(["teams", "--repo", str(repo)])
+    assert ret == 0
+    assert "no teams" in capsys.readouterr()[0]
+
+
+def test_teams_json_has_no_decision_field(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The engine computes no verdict, so no surface may advertise one."""
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    cli.main(["teams", "--repo", str(repo), "--json"])
+    data = json.loads(capsys.readouterr()[0])
+    assert "decision" not in data[0]
+
+
+def _stub_team_result(incomplete: list[str]) -> object:
+    from marshal_engine.teams import RoleReview, TeamReview, TeamSubject
+
+    return TeamReview(
+        name="gate",
+        team_run_id="t1",
+        subject=TeamSubject(kind="plan", text="x"),
+        reviews=[RoleReview(role="architect", client="ro-a", completed=not incomplete)],
+        unified_report="# Team review: gate\n",
+        incomplete_roles=incomplete,
+    )
+
+
+@pytest.mark.parametrize(
+    ("incomplete", "expected"), [([], 0), (["tests"], 1)]
+)
+def test_team_run_exit_code_reports_whether_the_panel_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    incomplete: list[str], expected: int,
+) -> None:
+    """The shell-gate contract: non-zero means a reviewer did NOT report, never "they objected".
+
+    Without this, `return 1 if result.incomplete_roles else 0` could be reverted to `return 0` with
+    a green suite, and `marshal team run ... && deploy` would proceed on a partial panel.
+    """
+    from marshal_engine.service import MarshalService
+
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    monkeypatch.setattr(
+        MarshalService, "run_team", lambda self, name, subject, **kw: _stub_team_result(incomplete)
+    )
+    ret = cli.main(["team", "run", "gate", "--target", "plan", "--text", "x", "--repo", str(repo)])
+    assert ret == expected
+    assert "# Team review: gate" in capsys.readouterr()[0]
+
+
+def test_team_run_reads_a_plan_from_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from marshal_engine.service import MarshalService
+
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    plan = tmp_path / "plan.md"
+    plan.write_text("ship the widget", encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    def fake(self: object, name: str, subject: object, **kw: object) -> object:
+        seen["text"] = subject.text  # type: ignore[attr-defined]
+        return _stub_team_result([])
+
+    monkeypatch.setattr(MarshalService, "run_team", fake)
+    ret = cli.main(
+        ["team", "run", "gate", "--target", "plan", "--plan-file", str(plan), "--repo", str(repo)]
+    )
+    assert ret == 0
+    assert seen["text"] == "ship the widget"
+
+
+def test_team_run_reports_an_unreadable_plan_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    ret = cli.main(
+        ["team", "run", "gate", "--target", "plan", "--plan-file", str(tmp_path / "gone.md"),
+         "--repo", str(repo)]
+    )
+    assert ret == 1
+    assert "cannot read" in capsys.readouterr()[1]
+
+
+def test_teams_says_when_it_could_not_validate_clients(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no readable config the read-only rule is unchecked - say so rather than implying a pass."""
+    repo = tmp_path / "repo"
+    (repo / "teams").mkdir(parents=True)
+    (repo / "teams" / "gate.yaml").write_text(_TEAM.format(a="ro-a"))
+    ret = cli.main(["teams", "--repo", str(repo)])
+    assert ret == 0
+    assert "were not validated" in capsys.readouterr()[0]
+
+
+def test_team_run_reports_a_config_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    ret = cli.main(
+        ["team", "run", "gate", "--target", "run", "--run-id", "x", "--repo", str(repo)]
+    )
+    assert ret == 1  # target mismatch: the team reviews plans
+    assert "reviews target 'plan'" in capsys.readouterr()[1]
+
+
 # --- workspace registry subcommand ----------------------------------------------------------
 
 

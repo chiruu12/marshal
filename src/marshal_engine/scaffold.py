@@ -22,6 +22,20 @@ clients:
   # claude:
   #   backend: claude-code
   #   model: claude-sonnet-4-6
+
+  # --- read-only reviewers -------------------------------------------------------------------
+  # Review teams (`marshal team run` / the run_team MCP tool) refuse any role whose client is not
+  # permission: read-only - a reviewer that can edit is not a reviewer - so a panel needs its own
+  # entries. Point each lens at a DIFFERENT backend: heterogeneous reviewers catch what one model's
+  # blind spot hides, and the usage ledger then shows what each provider cost.
+  # Starter panels to copy into <repo>/teams/ live in the Marshal repo's examples/teams/.
+  # claude-readonly:
+  #   backend: claude-code
+  #   model: claude-sonnet-4-6
+  #   permission: read-only
+  # cursor-readonly:
+  #   backend: cursor
+  #   permission: read-only
 """
 
 # Project markers the scaffold detector recognizes: marker filename -> (label, setup command).

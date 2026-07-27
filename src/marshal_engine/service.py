@@ -45,6 +45,21 @@ from .state import RunRecord
 from .registry import make_backend
 from .types import RunStatus, TaskSpec, UsageSource
 from .usage import UsageSummary
+from .layout import reports_dir
+from .worktree import WorktreeError
+from .teams import (
+    TeamListing,
+    TeamReview,
+    TeamRunner,
+    TeamSubject,
+    discover_teams,
+    find_team,
+    load_team,
+    render_role_report,
+    render_unified_report,
+    report_dirname,
+    utc_stamp,
+)
 from .workflow import (
     WorkflowListing,
     WorkflowResult,
@@ -614,3 +629,137 @@ class MarshalService:
             path = find_workflow(name, self.workflows_dir)
         spec = load_workflow(path)
         return WorkflowRunner(self).run(spec, inputs or {}, max_concurrency=max_concurrency)
+
+    # --- teams: adversarial review panels over the same primitives ---------------------------
+
+    @property
+    def teams_dir(self) -> Path:
+        return self.repo_root / "teams"
+
+    def diff_range(
+        self, base: str, head: str | None = None, *, paths: list[str] | None = None
+    ) -> str:
+        """Read-only diff of ``base...head`` on the driver's checkout (a team `range` subject).
+
+        Both refs are verified with ``rev-parse`` and refused if they look like options, because
+        this argument is caller-supplied over MCP: a ``base`` starting with ``-`` would be parsed
+        by git as a flag, and ``--output=<path>`` turns a "read-only" diff into an arbitrary file
+        write (while emptying stdout, so the panel would then review nothing). ``--`` alone does
+        not help - a rev cannot sit after it. Uses the WorktreeManager's guarded git wrapper
+        (closed stdin, hard timeout, ``GIT_TERMINAL_PROMPT=0``).
+        """
+        head = head or "HEAD"
+        for label, ref in (("base", base), ("head", head)):
+            if not ref or ref.startswith("-"):
+                raise ConfigError(
+                    f"invalid {label} ref {ref!r}: refs cannot be empty or start with '-' "
+                    "(that would be read as a git option, not a revision)"
+                )
+            probe = self.fleet.worktrees.git_read("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+            if probe.returncode != 0:
+                raise ConfigError(f"unknown {label} ref {ref!r}")
+        # Validate BEFORE building argv. An empty pathspec makes git fail with a message that
+        # blames the refs, and a newline-bearing path would break out of the single-line subject
+        # header the reviewer prompt is built from - both are caller errors, named as such here.
+        for spec in paths or []:
+            if not spec or spec.startswith("-"):
+                raise ConfigError(
+                    f"invalid path {spec!r}: paths cannot be empty or start with '-' "
+                    "(that would be read as a git option, not a path)"
+                )
+            if any(ch in spec for ch in "\r\n"):
+                raise ConfigError(f"invalid path {spec!r}: paths cannot contain newlines")
+        # `--` separates revs from pathspecs, so a path can never be read as a rev or an option.
+        pathspec = ["--", *paths] if paths else []
+        try:
+            proc = self.fleet.worktrees.git_read("diff", f"{base}...{head}", *pathspec)
+        except WorktreeError as exc:  # a hung git must surface as the documented error type
+            raise ConfigError(f"cannot diff {base}...{head}: {exc}") from exc
+        if proc.returncode != 0:
+            raise ConfigError(f"cannot diff {base}...{head}: {proc.stderr.strip() or 'git failed'}")
+        return proc.stdout
+
+    def list_teams(self) -> TeamListing:
+        """Discover review teams under ``<repo>/teams/`` (well-formed and broken)."""
+        return discover_teams(self.teams_dir)
+
+    def run_team(
+        self,
+        name: str,
+        subject: TeamSubject,
+        *,
+        max_concurrency: int = 4,
+    ) -> TeamReview:
+        """Run a review team by name (or path) against a subject and persist its reports.
+
+        Validates the team - including the fail-closed read-only check on every role - before any
+        reviewer spawns. Returns every reviewer's report plus a unified report for the requesting
+        agent to read first; both are persisted under ``.marshal/reports/<stamp>-<team>-<id>/``.
+
+        The engine computes no verdict and never integrates. Reading the reviews and deciding what
+        they mean is the caller's job.
+        """
+        # A team file is prompt text delivered to fleet agents, so it must come from THIS repo's
+        # teams/ directory. Without containment, `name="../../evil.yaml"` (or an absolute path)
+        # would let a caller hand fully attacker-authored rubrics to the fleet. A bare name is
+        # resolved against teams_dir; a path is accepted only if it lands inside it.
+        if Path(name).suffix in (".yaml", ".yml"):
+            directory = self.teams_dir.resolve()
+            path = (directory / name if not Path(name).is_absolute() else Path(name)).resolve()
+            if not path.is_relative_to(directory):
+                raise ConfigError(
+                    f"team file {name!r} is outside {directory}; teams must live in the "
+                    "workspace's teams/ directory"
+                )
+            if not path.exists():
+                raise ConfigError(f"no team file at {path}")
+        else:
+            path = find_team(name, self.teams_dir)
+        spec = load_team(path)
+        result = TeamRunner(self).run(
+            spec,
+            subject,
+            team_run_id=uuid.uuid4().hex[:8],
+            max_concurrency=max_concurrency,
+        )
+        self._write_reports(result)
+        # Rendered after the per-role paths are stamped on, so the unified report can point at them.
+        result.unified_report = render_unified_report(result)
+        result.unified_report_path = self._write_unified(result)
+        return result
+
+    def _write_reports(self, result: TeamReview) -> None:
+        """Persist one markdown file per reviewer. A write failure must not lose the reports."""
+        try:
+            directory = reports_dir(self.repo_root) / report_dirname(
+                result.name, result.team_run_id, stamp=utc_stamp()
+            )
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"marshal: could not create team report directory: {exc}", file=sys.stderr)
+            return
+        result.report_dir = str(directory)
+        for review in result.reviews:
+            try:
+                out = directory / f"{review.role}.md"
+                out.write_text(
+                    render_role_report(
+                        review, team=result.name, subject_summary=result.subject_summary
+                    ),
+                    encoding="utf-8",
+                )
+                review.report_path = str(out)
+            except OSError as exc:
+                print(f"marshal: could not write {review.role} report: {exc}", file=sys.stderr)
+
+    def _write_unified(self, result: TeamReview) -> str | None:
+        """Persist the unified report next to the per-role ones."""
+        if result.report_dir is None:
+            return None
+        try:
+            out = Path(result.report_dir) / "README.md"
+            out.write_text(result.unified_report, encoding="utf-8")
+            return str(out)
+        except OSError as exc:
+            print(f"marshal: could not write unified team report: {exc}", file=sys.stderr)
+            return None

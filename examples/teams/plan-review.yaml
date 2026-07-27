@@ -1,0 +1,30 @@
+# Adversarial review of a PLAN, before anyone writes code - the cheapest place to kill a bad idea.
+#
+# Copy to <repo>/teams/plan-review.yaml and point each role at a read-only client of your own.
+#
+#   run_team("plan-review", target="plan", text="<the plan>")
+#
+# You get one report per lens plus a unified report. Nothing is scored or tallied - read the
+# objections and decide whether the plan survives them.
+
+description: Two adversarial lenses on a proposed plan; you read their reports and decide.
+target: plan
+
+roles:
+  - name: skeptic
+    client: claude-readonly
+    rubric: |
+      Your job is to REFUTE this plan, not to improve it. Assume it is wrong and look for the reason.
+      Attack the premises: does the problem it describes actually exist in this repo? Is the stated
+      cause the real cause? Does a simpler change get most of the value?
+      Name the false premise or the cheaper alternative. If you genuinely cannot refute it after
+      trying, say so plainly - a failed refutation is real evidence, and worth reporting as such.
+
+  - name: operator
+    client: cursor-readonly
+    rubric: |
+      You judge what happens AFTER this ships, and nothing else.
+      Migration and rollback: can this be undone? What breaks for existing callers/data? What is
+      unobservable when it fails at 3am? What does it cost to maintain?
+      Name any specific unhandled failure mode or irreversible step with no escape hatch. Design
+      taste is not your lens - if it ships and operates safely, say so.

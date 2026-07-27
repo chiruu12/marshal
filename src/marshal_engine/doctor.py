@@ -25,6 +25,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .backends.base import CodingAgentBackend
+from .teams import discover_teams, validate_team
 from .config import (
     ConfigError,
     FleetConfig,
@@ -199,6 +200,32 @@ def run_checks(
         checks.append(Check("config", OK, f"{config_path} ({len(config.clients)} clients)"))
     except ConfigError as exc:
         checks.append(Check("config", FAIL, str(exc), "fix the config, then re-run `marshal doctor`"))
+
+    # --- review teams ------------------------------------------------------------------------
+    # A team that can never run (unknown client, a reviewer that isn't read-only) otherwise only
+    # surfaces when you reach for the panel - which is exactly when you don't want to debug config.
+    # WARN, never FAIL: teams are optional, and a broken one blocks no other Marshal work.
+    if config is not None:
+        listing = discover_teams(repo / "teams")
+        problems: list[str] = [f"{name}: {msg}" for name, msg in sorted(listing.errors.items())]
+        for spec in listing.teams:
+            try:
+                validate_team(spec, config)
+            except ConfigError as exc:
+                problems.append(str(exc))
+        if listing.teams or listing.errors:
+            checks.append(
+                Check(
+                    "teams",
+                    WARN if problems else OK,
+                    "; ".join(problems)
+                    if problems
+                    else f"{len(listing.teams)} team(s) in {repo / 'teams'}, all valid",
+                    "fix the team file(s); reviewers must name clients with permission: read-only"
+                    if problems
+                    else "",
+                )
+            )
 
     # --- mcp extra ---------------------------------------------------------------------------
     has_mcp = importlib.util.find_spec("mcp") is not None

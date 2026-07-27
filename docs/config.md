@@ -111,6 +111,33 @@ run under the old key does not block a spawn admitted under the new key).
 | `limit_usd` | float (> 0) | *(required)* | Dollar cap for the scope and window. | `limit_usd: 25.0` |
 | `enforce` | bool | `false` | When `true`, refuse new matching spawns once spend ≥ cap, and serialize matching in-flight spawns. When `false`, print a soft warning only. | `enforce: true` |
 
+## `<repo>/teams/*.yaml`
+
+Adversarial review panels for `run_team` / `marshal team run`. One file per team; the filename stem
+is the default team name. Discovered from `<repo>/teams/` only — a team file outside that directory
+is refused, because a team's `rubric` is prompt text delivered to fleet agents. Starter panels to
+copy live in `examples/teams/`. `marshal doctor` validates every declared team (WARN, never FAIL —
+teams are optional).
+
+| Key | Type | Default | Meaning | Example |
+|-----|------|---------|---------|---------|
+| `name` | string | *(filename stem)* | Team name. `[A-Za-z0-9._-]`, no leading `.`/`-`, ≤ 40 chars — it becomes part of the run's `task_id` and the report directory. | `name: hard-gate` |
+| `description` | string | `""` | What this panel is for; shown by `list_teams`. | |
+| `target` | `run` \| `plan` \| `range` \| `audit` | `run` | What the panel reviews. The subject passed at call time must match. | `target: range` |
+| `roles[]` | list | *(required, ≥ 2)* | The reviewer lenses. One role is a single opinion, so two is the minimum. | |
+| `roles[].name` | string | *(required)* | Lens name; becomes `<role>.md` in the report directory. Same charset rule as `name`. | `name: correctness` |
+| `roles[].client` | string | *(required)* | A client from `clients`. **Must be `permission: read-only`** — a team naming a writable client is a config error raised before any reviewer spawns. Point each lens at a different backend. | `client: codex-readonly` |
+| `roles[].rubric` | string | *(required)* | The one lens this role holds, and what counts as evidence. May not be empty. | |
+
+There is deliberately **no decision/quorum key**: the engine parses no reviewer prose and computes
+no verdict. See [`design.md`](design.md) for why.
+
+## `<repo>/.marshal/reports/`
+
+One directory per panel run (`<stamp>-<team>-<team_run_id>/`) holding `<role>.md` per reviewer plus
+`README.md`, the unified report. Written by `run_team`; never read back by the engine. Under
+`.marshal/`, so it is covered by the same gitignore as the rest of Marshal's runtime state.
+
 ## `~/.marshal/workspaces.yaml`
 
 Central registry for multi-repo MCP. Override the path with `MARSHAL_WORKSPACES_FILE`. Workspaces

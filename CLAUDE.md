@@ -48,13 +48,14 @@ marshal/
 │   ├── scaffold.py          # repo-shape-aware fleet.config.yaml scaffold
 │   ├── budgets.py           # budget caps (soft-warn default; optional enforce: true)
 │   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
+│   ├── teams.py             # adversarial review teams: panels of independent READ-ONLY reviewers over one subject (run diff / range / plan / audit) → structured report; never integrates
 │   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
 │   ├── mcp_server.py        # MCP server (FastMCP) - see docs/mcp-tools.md for the tool reference
-│   └── cli.py               # `marshal` CLI (doctor/backends/models/run/spawn/usage/status/logs/workflows/workspace/clean/mcp)
-├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus
-├── examples/                # runnable library_quickstart.py + a benchmark-output sample
+│   └── cli.py               # `marshal` CLI (doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
+├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus, marshal-adversarial-review
+├── examples/                # runnable library_quickstart.py, a benchmark-output sample, workflows/ + teams/ starters
 ├── SETUP.md                 # clone-to-first-run setup guide
 ├── docs/                    # design · status · usage · config · mcp-tools · model-playbook · chauffeur-future · sources (docs/internal/ is local-only, gitignored)
 └── tests/                   # contract tests per backend + engine/service/mcp tests

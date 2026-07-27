@@ -28,6 +28,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `budgets.py` | Dollar caps (soft-warn by default; optional `enforce: true`) | done |
 | `doctor.py` | `marshal doctor` preflight (toolchain, backends, hygiene advisories) | done |
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
+| `teams.py` | Adversarial review teams - panels of independent read-only reviewers over one subject | done |
 | `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |
 | `service.py` | Testable core the MCP/CLI call into (single-repo) | done |
 | `cli.py` | `marshal doctor/backends/models/run/spawn/usage/status/logs/workflows/workflow/workspace/clean/mcp` | done |
@@ -160,5 +161,18 @@ layout (root vs nested `pyproject.toml`/`package.json`/`go.mod`/`Cargo.toml`); (
 reaping** - scope-mode `clean` reconciles `.marshal/worktrees` against the ledger and reaps dirs
 with no (readable) run record (`orphans_removed`); (6) resolution errors carry actionable hints
 (ad-hoc `backend=` escape hatch, `doctor`, `add_workspace`).
+**Adversarial review teams** (`teams.py`) - a declarative panel of independent, read-only reviewer
+roles, each pinned to the client best at its lens, reviewing one subject (a run's diff, a commit
+range, a plan, or a repo audit). Returns one report per reviewer plus a unified report for the
+orchestrating agent to read first; both persist under `.marshal/reports/<stamp>-<team>-<id>/`. The
+engine **computes no verdict** - it parses no reviewer prose, so a decision cannot be forged by the
+material under review; collecting the objections and deciding is the caller's job. Roles are
+fail-closed read-only (a team naming a writable client is refused before any spawn), independent
+(one `run_many` call, shared `task_id`), and a reviewer that did not report is surfaced in
+`incomplete_roles` rather than dropped. Reviewed material is treated as hostile data:
+nonce-delimited, refs validated, empty subjects refused. Surfaced as `list_teams`/`run_team` (MCP),
+`marshal teams`/`marshal team run` (CLI), the `marshal-adversarial-review` Skill, and starter panels
+in `examples/teams/`.
+
 Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini
 backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

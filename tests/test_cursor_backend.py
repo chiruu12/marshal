@@ -380,7 +380,7 @@ def test_build_invocation_basic(backend: CursorBackend) -> None:
     argv = backend.build_invocation(
         TaskSpec(id="t1", goal="do it"), _opts(permission=PermissionMode.SAFE_EDIT)
     )
-    assert argv[:5] == ["cursor-agent", "-p", "--output-format", "json", "--trust"]
+    assert argv[:5] == ["cursor-agent", "-p", "--output-format", "stream-json", "--trust"]
     assert "--force" in argv
     assert "--workspace" in argv and "/tmp/wt" in argv
     assert argv[-1] == "do it"
@@ -406,6 +406,79 @@ def test_compose_prompt_uses_at_mentions(backend: CursorBackend) -> None:
         TaskSpec(id="t1", goal="fix", context_files=["a.py", "b.py"]), _opts()
     )
     assert "@a.py" in argv[-1] and "@b.py" in argv[-1]
+
+
+def _assistant_event(text: str, *, session_id: str = "uuid-9") -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+            "session_id": session_id,
+        }
+    )
+
+
+def _result_event(
+    result: str,
+    *,
+    session_id: str = "uuid-9",
+    is_error: bool = False,
+    usage: dict[str, int] | None = None,
+) -> str:
+    payload: dict[str, object] = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": is_error,
+        "result": result,
+        "session_id": session_id,
+    }
+    if usage is not None:
+        payload["usage"] = usage
+    return json.dumps(payload)
+
+
+def test_parse_output_stream_concatenates_assistant_deltas(backend: CursorBackend) -> None:
+    # Regression: long runs must not collapse to the terminal result's truncated tail.
+    chunks = [
+        "# Audit report\n\n",
+        "## Section 1\n\nDetailed findings across many files.\n\n",
+        "## Section 2\n\nMore analysis and recommendations.\n",
+    ]
+    truncated = "I'll summarize the audit now."
+    out = "\n".join(_assistant_event(c) for c in chunks) + "\n" + _result_event(truncated)
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.text == "".join(chunks)
+    assert res.text != truncated
+    assert res.session_id == "uuid-9"
+
+
+def test_parse_output_prefers_stream_over_truncated_result(backend: CursorBackend) -> None:
+    full = "A" * 500
+    out = _assistant_event(full) + "\n" + _result_event(full[-50:])
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.text == full
+
+
+def test_parse_output_truncated_stream_returns_partial_text(backend: CursorBackend) -> None:
+    out = _assistant_event("partial ") + "\n" + _assistant_event("report")
+    res = backend.parse_output(out, "killed", 137)
+    assert res.status is RunStatus.FAILED
+    assert res.text == "partial report"
+    assert res.exit_code == 137
+
+
+def test_parse_output_skips_malformed_lines(backend: CursorBackend) -> None:
+    out = (
+        "not json at all\n"
+        + _assistant_event("kept ")
+        + "\n{broken\n"
+        + _result_event("kept")
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.SUCCEEDED
+    assert res.text == "kept "
 
 
 def test_parse_output_success(backend: CursorBackend) -> None:
@@ -591,3 +664,25 @@ def test_account_info_none_on_status_timeout(
         lambda *a, **k: (_ for _ in ()).throw(sp.TimeoutExpired(cmd=a[0], timeout=15)),
     )
     assert backend.account_info() is None
+
+
+def test_failed_run_still_reports_tokens_and_session(backend: CursorBackend) -> None:
+    """A failed run still consumed tokens. Dropping them under-reports spend in the ledger - the
+    one thing this project refuses to get wrong - and the session id is needed to investigate."""
+    stream = "\n".join(
+        [
+            json.dumps({"type": "assistant", "session_id": "s-1",
+                        "message": {"role": "assistant", "content": [{"type": "text", "text": "partial"}]}}),
+            json.dumps({"type": "result", "subtype": "error", "is_error": True, "result": "boom",
+                        "session_id": "s-1",
+                        "usage": {"inputTokens": 120, "outputTokens": 7, "cacheReadTokens": 3}}),
+        ]
+    )
+    res = backend.parse_output(stream, "exploded", 1)
+    assert res.status is RunStatus.FAILED
+    assert res.session_id == "s-1"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 120
+    assert res.usage.output_tokens == 7
+    assert res.usage.source.value == "unavailable"  # tokens yes, cost still never invented
+    assert "partial" in res.text  # partial output is preserved, not discarded
