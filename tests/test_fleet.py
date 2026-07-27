@@ -2028,12 +2028,14 @@ def test_a_live_holders_lock_is_never_claimed(repo: Path) -> None:
 
 
 def test_only_one_of_two_racing_processes_claims_the_lock(repo: Path) -> None:
-    """REGRESSION: the empty-file window. `O_EXCL` created the lock then wrote the pid after, so a
-    competing process reading it in between saw an unparseable file, concluded "no live holder",
-    unlinked the winner's lock and took over - both reaped.
+    """REGRESSION: the empty-file window. `O_EXCL` created the lock and wrote the pid afterwards,
+    so a competing process reading it in between saw an unparseable file, concluded "no live
+    holder", unlinked the winner's lock and took over - both reaped.
 
-    Needs real PROCESSES: a same-process claim is deliberately allowed (config hot-reload), so
-    threads cannot express this property.
+    The loser must still be ALIVE when the other checks, or taking over a dead holder's lock is
+    correct behaviour and the test proves nothing. Each child therefore stays alive after
+    claiming. Real processes are required: a same-process claim is deliberately allowed (config
+    hot-reload), so threads cannot express this.
     """
     lock = repo / ".marshal" / "fleet.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -2043,14 +2045,16 @@ def test_only_one_of_two_racing_processes_claims_the_lock(repo: Path) -> None:
         "from pathlib import Path\n"
         "from marshal_engine.fleet import _claim_fleet_lock\n"
         "start = float(sys.argv[2])\n"
-        "time.sleep(max(0.0, start - time.time()))\n"  # both processes start together
-        "print('WON' if _claim_fleet_lock(Path(sys.argv[1])) else 'LOST')\n"
+        "time.sleep(max(0.0, start - time.time()))\n"
+        "won = _claim_fleet_lock(Path(sys.argv[1]))\n"
+        "print('WON' if won else 'LOST', flush=True)\n"
+        "time.sleep(3)\n"  # stay alive so the other process's liveness probe is meaningful
     ) % str(Path(__file__).resolve().parent.parent / "src")
 
-    for _ in range(12):  # repeat: a race that fires rarely still must never produce two winners
+    for _ in range(8):  # a race that fires rarely must still never produce two winners
         if lock.exists():
             lock.unlink()
-        go = time.time() + 0.30
+        go = time.time() + 0.40
         procs = [
             subprocess.Popen(
                 [sys.executable, "-c", script, str(lock), str(go)],
@@ -2058,8 +2062,13 @@ def test_only_one_of_two_racing_processes_claims_the_lock(repo: Path) -> None:
             )
             for _ in range(2)
         ]
-        outs = [p.communicate(timeout=60)[0].strip() for p in procs]
-        assert outs.count("WON") == 1, f"expected exactly one winner, got {outs}"
+        try:
+            outs = [p.stdout.readline().strip() for p in procs]  # read before they exit
+            assert outs.count("WON") == 1, f"expected exactly one winner, got {outs}"
+        finally:
+            for p in procs:
+                p.terminate()
+                p.wait(timeout=10)
 
 
 def test_a_dead_holders_lock_is_taken_over(repo: Path) -> None:
