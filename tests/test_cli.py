@@ -293,6 +293,76 @@ def test_workflows_none_present(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert "no workflows" in capsys.readouterr()[0]
 
 
+# --- teams subcommand -------------------------------------------------------------------------
+
+
+_RO_FLEET = (
+    "clients:\n"
+    "  ro-a:\n    backend: cursor\n    permission: read-only\n"
+    "  ro-b:\n    backend: cursor\n    permission: read-only\n"
+    "  rw:\n    backend: cursor\n    permission: safe-edit\n"
+)
+_TEAM = (
+    "target: plan\nroles:\n"
+    "  - name: architect\n    client: {a}\n    rubric: rules\n"
+    "  - name: tests\n    client: ro-b\n    rubric: tests\n"
+)
+
+
+def _repo_with_team(tmp_path: Path, body: str) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "teams").mkdir(parents=True)
+    (repo / "fleet.config.yaml").write_text(_RO_FLEET)
+    (repo / "teams" / "gate.yaml").write_text(body)
+    return repo
+
+
+def test_teams_json_valid(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    ret = cli.main(["teams", "--repo", str(repo), "--json"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data[0]["name"] == "gate"
+    assert data[0]["target"] == "plan"
+    assert data[0]["error"] is None
+    assert [r["name"] for r in data[0]["roles"]] == ["architect", "tests"]
+
+
+def test_teams_flags_a_reviewer_that_can_write(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`marshal teams` must surface the read-only rule, not just unknown client names."""
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="rw"))
+    ret = cli.main(["teams", "--repo", str(repo)])
+    assert ret == 1
+    assert "must be read-only" in capsys.readouterr()[0]
+
+
+def test_teams_none_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ret = cli.main(["teams", "--repo", str(repo)])
+    assert ret == 0
+    assert "no teams" in capsys.readouterr()[0]
+
+
+def test_teams_json_has_no_decision_field(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The engine computes no verdict, so no surface may advertise one."""
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    cli.main(["teams", "--repo", str(repo), "--json"])
+    data = json.loads(capsys.readouterr()[0])
+    assert "decision" not in data[0]
+
+
+def test_team_run_reports_a_config_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
+    ret = cli.main(
+        ["team", "run", "gate", "--target", "run", "--run-id", "x", "--repo", str(repo)]
+    )
+    assert ret == 1  # target mismatch: the team reviews plans
+    assert "reviews target 'plan'" in capsys.readouterr()[1]
+
+
 # --- workspace registry subcommand ----------------------------------------------------------
 
 

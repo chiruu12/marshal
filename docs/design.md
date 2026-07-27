@@ -257,7 +257,9 @@ default. Same idea for the CLI: `marshal run --duration large ...`. Validation h
 in `_request_for` (via `resolve_duration`), so a typo or non-positive value fails fast before
 any worktree is created.
 
-Runtime state - worktrees, per-run JSON, usage, **per-run raw logs** - lands under `.marshal/`. Auth is per-CLI login;
+Runtime state - worktrees, per-run JSON, usage, **per-run raw logs**, and **team review reports**
+(`.marshal/reports/<stamp>-<team>-<id>/`, one markdown file per reviewer plus the unified
+`README.md`) - lands under `.marshal/`. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
 **Worktree environment isolation.** The driver usually runs inside its own activated venv, so
@@ -297,10 +299,8 @@ startup; a client whose backend is unavailable is **skipped** (stderr warning, r
 Fleet, so `doctor` (which probes every configured backend) still reports a missing one as a FAIL.
 
 **Lean tool surface** (backend is a param, NOT in tool names - avoids the 2N-tool explosion).
-Shipped today (21): `list_workspaces`, `add_workspace`, `doctor`, `list_clients`, `list_models`,
-`run_agent`, `run_many`, `spawn`, `cancel_run`, `benchmark`, `report`, `get_run`, `get_run_log`,
-`collect_run`, `commit_run`, `integrate`, `clean`, `status`, `usage`, `list_workflows`,
-`run_workflow`. Current state is tracked in `docs/status.md`.
+The normative tool reference - every tool, its parameters, and its return shape - is
+[`mcp-tools.md`](mcp-tools.md); current implementation state is tracked in `docs/status.md`.
 
 Mirror to **driver Skills** (the `marshal-*` Skills in `skills/`) so the
 fleet works in both MCP and Skills hosts.
@@ -322,6 +322,45 @@ fleet remains, raising only if **all** are unavailable; non-succeeded runs surfa
 runs as candidates with `next_actions`, and the driver merges the good ones after review - `succeeded`
 is not `correct`. The judgment (which recipe, when to merge) stays in the `marshal-workflow` Skill;
 the engine only sequences. Discover/validate with `marshal workflows`; run via `run_workflow`.
+
+### Adversarial review teams (a panel is a fan-out that produces reports, not a decision)
+
+A **team** (`teams.py`) is a declarative panel of independent reviewer **roles**, each pinned to the
+client best suited to its lens, that review one subject - a run's diff, a commit `range`, a `plan`,
+or an `audit` of the repo - and produce **one report per reviewer plus a unified report** the
+requesting agent reads first. It shares the workflow safety property: **the runner adds no new
+execution path**, issuing only `collect_run` / `diff_range` / `run_many`, so every reviewer still
+flows through `Fleet.run`.
+
+**The engine does not judge.** It parses no verdicts, tallies no votes, and computes no pass/fail.
+That is both a layering rule (judgment belongs to the driver, per "engine is mechanism") and a
+security property: a decision derived from reviewer prose can be forged by the material under
+review - a diff carrying a verdict-shaped line, or a reviewer echoing the contract back, was enough
+to invert a rejection. Removing the derived decision removes the whole attack class. Reviewers are
+asked for a structured report (Bottom line / Findings / Blocking / Confidence) that a human or a
+driver agent reads; nothing in it is machine-interpreted.
+
+What the engine does guarantee:
+
+- **Fail-closed read-only.** `validate_team` rejects a role whose client is not configured
+  `permission: read-only`, before any spawn. Precisely: Marshal will not *route* a role to a
+  writable client, and Codex's `--sandbox read-only` is OS-enforced, but where `read-only` maps to a
+  cooperative `plan` mode it is a strong hint, not a jail (see `PermissionFidelity`). The dependable
+  boundary is the worktree plus explicit integrate.
+- **Independent.** All roles go out in one `run_many` call under a shared `task_id`, so they cannot
+  observe each other and the panel prices as one unit. There is no synthesis agent.
+- **A shrunken panel is visible.** A role that failed, timed out, or whose backend was missing is
+  reported in `incomplete_roles` with its report absent - never dropped, because a panel that
+  quietly lost a lens must not read as consensus.
+- **Reviewed material is data.** The subject is delimited by a per-run nonce (a markdown fence it
+  could close would let content escape into the strongest prompt position, after the contract) and
+  labelled untrusted; refs reaching `diff_range` are validated, since a `base` of `--output=<path>`
+  would otherwise turn a read-only diff into an arbitrary file write while emptying stdout.
+
+Reports persist to `.marshal/reports/<stamp>-<team>-<id>/` - `<role>.md` per reviewer plus
+`README.md` (the unified one). Judgment - which panel, how to write a lens, what to do with the
+objections - lives in the `marshal-adversarial-review` Skill. Discover/validate with
+`marshal teams`; run via `run_team`.
 
 ---
 

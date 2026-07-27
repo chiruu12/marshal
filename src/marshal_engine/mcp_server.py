@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from .env import merge_user_path
 from .scaffold import scaffold_fleet_config
 from .service import MarshalService
+from .teams import TeamSubject
 from .workspaces import (
     DEFAULT_WORKSPACE,
     WorkspaceDef,
@@ -512,6 +513,65 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """Run a workflow recipe by name in `workspace`'s repo. Integration is gated off by default -
         the result's `next_actions` lists the runs to review and integrate. Validates before any spawn."""
         return await ws_call(workspace, lambda svc: svc.run_workflow(name, inputs))
+
+    @app.tool()
+    async def list_teams(
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> dict[str, Any]:
+        """List declared adversarial review teams (name, description, target, roles) for a workspace.
+
+        A team is a panel of independent read-only reviewers, each pinned to the client best at its
+        lens. Malformed team files are returned in ``errors`` (filename -> message) so a driver can
+        tell a broken team from a missing one."""
+        svc = await offload(registry.get, workspace)
+        listing = await offload(svc.list_teams)
+        return tag(
+            {
+                "teams": [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "target": t.target,
+                        "roles": [{"name": r.name, "client": r.client} for r in t.roles],
+                    }
+                    for t in listing.teams
+                ],
+                "errors": listing.errors,
+            },
+            workspace or DEFAULT_WORKSPACE,
+        )
+
+    @app.tool()
+    async def run_team(
+        name: Annotated[str, Field(description="Review team name (from list_teams).")],
+        target: Annotated[
+            Literal["run", "plan", "range", "audit"],
+            Field(description=(
+                "What is being reviewed; must match the team's declared target. 'run' judges a "
+                "run's diff (give `run_id`), 'range' a commit range (`base`, optional `head`), "
+                "'plan' free text (`text`), 'audit' the repo as it stands."
+            )),
+        ],
+        run_id: Annotated[str | None, Field(description="Run whose diff to review (target 'run').")] = None,
+        base: Annotated[str | None, Field(description="Base ref (target 'range').")] = None,
+        head: Annotated[str | None, Field(description="Head ref (target 'range'; default HEAD).")] = None,
+        text: Annotated[str | None, Field(description="The plan to review (target 'plan').")] = None,
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> dict[str, Any]:
+        """Run a panel of independent, read-only reviewers and get back their reports.
+
+        Each role reviews ONE lens on the SAME subject in parallel isolation and writes a report.
+        You get `unified_report` (read this FIRST - it shows the whole panel and every review
+        inline) plus per-role entries with the full text and a `report_path`; all of it is
+        persisted under `.marshal/reports/<stamp>-<team>-<id>/`.
+
+        **This tool computes no verdict.** There is no pass/fail and no tally: collecting the
+        objections, weighing them against each other, and deciding what happens next is YOUR job -
+        that judgment is not safely derivable from reviewer prose. Reviewers listed under
+        `incomplete_roles` did not report at all; that is a missing lens, not approval. Nothing is
+        ever integrated by this tool."""
+        subject = TeamSubject(kind=target, run_id=run_id, base=base, head=head, text=text)
+        return await ws_call(workspace, lambda svc: svc.run_team(name, subject))
 
     @app.tool()
     async def status(

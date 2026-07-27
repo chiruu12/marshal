@@ -23,6 +23,7 @@ from .registry import backend_names, default_backends
 from .service import MarshalService
 from .state import FleetState
 from .scaffold import scaffold_fleet_config
+from .teams import TeamSubject, load_team, team_paths, validate_team
 from .usage import Bucket, UsageTracker
 from .workflow import WorkflowRunner, load_workflow, validate_workflow, workflow_paths
 from .worktree import WorktreeError
@@ -400,6 +401,87 @@ def _cmd_workflow_run(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_teams(args: argparse.Namespace) -> int:
+    """List review teams and validate them against the fleet config (incl. the read-only check)."""
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    config = None
+    if cfg_path.exists():
+        try:
+            config = load_config(cfg_path)
+        except ConfigError:
+            config = None  # a broken config is its own `doctor` problem; still list/parse teams
+
+    tdir = repo / "teams"
+    rows: list[dict[str, Any]] = []
+    for p in team_paths(tdir):
+        row: dict[str, Any] = {"file": p.name, "name": p.stem, "target": None, "roles": [], "error": None}
+        try:
+            spec = load_team(p)
+            row["name"] = spec.name
+            row["target"] = spec.target
+            row["roles"] = [{"name": r.name, "client": r.client} for r in spec.roles]
+            if config is not None:
+                # Cross-checks client names AND the fail-closed read-only rule, so a team that
+                # could never run is caught here rather than at review time.
+                validate_team(spec, config)
+        except ConfigError as exc:
+            row["error"] = str(exc)
+        rows.append(row)
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 1 if any(r["error"] for r in rows) else 0
+
+    if not rows:
+        print(f"no teams in {tdir} (copy a template from examples/teams/)")
+        return 0
+    for row in rows:
+        glyph = "✗" if row["error"] else "✓"
+        roles = ", ".join(f"{r['name']}→{r['client']}" for r in row["roles"]) or "(unparsed)"
+        print(f"{glyph} {row['name']:16} [{row['target'] or '?'}]  {roles}")
+        if row["error"]:
+            print(f"    error: {row['error']}")
+    if config is None:
+        print(f"\nnote: no readable {cfg_path.name} - clients and the read-only rule were not validated")
+    return 1 if any(r["error"] for r in rows) else 0
+
+
+def _cmd_team_run(args: argparse.Namespace) -> int:
+    """Run a review team against a subject and print its report."""
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    config = load_config(cfg_path) if cfg_path.exists() else FleetConfig()
+
+    text = args.text
+    if args.plan_file:
+        try:
+            text = Path(args.plan_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"error: cannot read {args.plan_file}: {exc}", file=sys.stderr)
+            return 1
+
+    subject = TeamSubject(
+        kind=args.target, run_id=args.run_id, base=args.base, head=args.head, text=text
+    )
+    try:
+        svc = MarshalService(repo, config, config_path=cfg_path)
+        result = svc.run_team(args.name, subject, max_concurrency=args.max_concurrency)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), indent=2))
+    else:
+        print(result.unified_report)
+        if result.report_dir:
+            print(f"reports written: {result.report_dir}")
+    # Exit status reports whether the PANEL ran, not what it concluded - there is no verdict to
+    # branch on, and a shell gate must not mistake "everyone reviewed" for "everyone approved".
+    return 1 if result.incomplete_roles else 0
+
+
 def _cmd_workspace(args: argparse.Namespace) -> int:
     """Manage the central workspace registry (~/.marshal/workspaces.yaml)."""
     as_json = getattr(args, "json", False)
@@ -661,6 +743,27 @@ def main(argv: list[str] | None = None) -> int:
     wrun.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     wrun.add_argument("--max-concurrency", type=int, default=4, help="max concurrent agents (default: 4)")
     wrun.add_argument("--json", action="store_true", help="output JSON")
+    pt = sub.add_parser("teams", help="list and validate adversarial review teams")
+    pt.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pt.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    pt.add_argument("--json", action="store_true", help="output JSON")
+    ptr = sub.add_parser("team", help="run an adversarial review team")
+    trub = ptr.add_subparsers(dest="team_cmd", required=True)
+    trun = trub.add_parser("run", help="run a review team against a subject")
+    trun.add_argument("name", help="team name (stem of .yaml file)")
+    trun.add_argument(
+        "--target", required=True, choices=("run", "plan", "range", "audit"),
+        help="what to review; must match the team's declared target",
+    )
+    trun.add_argument("--run-id", default=None, help="run whose diff to review (--target run)")
+    trun.add_argument("--base", default=None, help="base ref (--target range)")
+    trun.add_argument("--head", default=None, help="head ref (--target range; default HEAD)")
+    trun.add_argument("--text", default=None, help="the plan to review (--target plan)")
+    trun.add_argument("--plan-file", default=None, help="read the plan from a file (--target plan)")
+    trun.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    trun.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
+    trun.add_argument("--max-concurrency", type=int, default=4, help="max concurrent reviewers (default: 4)")
+    trun.add_argument("--json", action="store_true", help="output JSON")
     prun = sub.add_parser("run", help="run a task on a configured client (or ad-hoc by backend+model)")
     _add_run_args(prun)
     pspwn = sub.add_parser("spawn", help="start a task in the background and return its RUNNING record at once")
@@ -700,6 +803,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_workflows(args)
     if args.cmd == "workflow" and args.wf_cmd == "run":
         return _cmd_workflow_run(args)
+    if args.cmd == "teams":
+        return _cmd_teams(args)
+    if args.cmd == "team" and args.team_cmd == "run":
+        return _cmd_team_run(args)
     if args.cmd == "run":
         return _cmd_run(args)
     if args.cmd == "spawn":

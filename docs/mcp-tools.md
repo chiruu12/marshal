@@ -188,6 +188,54 @@ Race the same goal through several configured clients.
 | `status` | `"completed"` \| `"awaiting_review"` \| `"error"` | |
 | `next_actions` | list[string] | Suggested follow-ups (e.g. runs to review/integrate). |
 
+### `list_teams`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `workspace` | string \| null | `null` | Target workspace. |
+
+**Returns:** `{ teams, errors, workspace }`
+
+- `teams`: `[{ name, description, target, roles: [{ name, client }], decision }]`
+- `errors`: `{ "<filename>": "<message>" }` — malformed team files
+
+### `run_team`
+
+Runs a panel of **independent, read-only** reviewers over one subject. Each role holds one lens,
+reviews the same subject in parallel isolation, and writes a report. Every role's client must be
+configured `permission: read-only` — a team that names a writable client is a config error raised
+before any reviewer spawns.
+
+**This tool computes no verdict.** There is no pass/fail, no tally, and no parsing of reviewer
+prose: a decision derived from text the reviewed material can influence is not a decision worth
+trusting, and judgment belongs to the caller. Read `unified_report` first, then the individual
+reports. This tool never integrates.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `name` | string | *(required)* | Review team name (from `list_teams`). |
+| `target` | `"run"` \| `"plan"` \| `"range"` \| `"audit"` | *(required)* | What is reviewed; must match the team's declared `target`. |
+| `run_id` | string \| null | `null` | Run whose diff to review (target `run`). |
+| `base` | string \| null | `null` | Base ref (target `range`). Validated — a ref that git would read as an option is refused. |
+| `head` | string \| null | `null` | Head ref (target `range`; default `HEAD`). |
+| `text` | string \| null | `null` | The plan to review (target `plan`). |
+| `workspace` | string \| null | `null` | Target workspace. |
+
+**Returns:** `TeamReview` + `workspace`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Team name. |
+| `team_run_id` | string | Unique id for this review. |
+| `subject` / `subject_summary` | object / string | What was reviewed. |
+| `truncated` | bool | True when the subject exceeded the reviewer size cap and was cut (reviews cover only the visible part). |
+| `reviews` | list | Per-role `{ role, client, run_id, status, completed, review, report_path, note }`. `review` is the reviewer's full report text; `completed` describes the *process* (ran clean and produced text), never the content. |
+| `unified_report` | string | The report to read first: the panel's shape, who reviewed from which lens, every review inline, and who did not report. States no verdict. |
+| `unified_report_path` | string \| null | `README.md` inside the report directory. |
+| `report_dir` | string \| null | `.marshal/reports/<stamp>-<team>-<id>/`, holding one `<role>.md` per reviewer plus `README.md`. |
+| `incomplete_roles` | list[string] | Roles that produced no report (failed, timed out, backend missing). A missing lens — **not** silent approval. |
+| `next_actions` | list[string] | Suggested follow-ups. |
+
 ## Inspect
 
 ### `get_run`

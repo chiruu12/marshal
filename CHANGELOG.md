@@ -8,6 +8,39 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **Adversarial review teams (`teams.py`).** A *team* is a declarative panel of independent,
+  read-only reviewers — each role pinned to the client best at its lens — that review one subject
+  and each write a report. Teams live in `<repo>/teams/*.yaml` and are surfaced as the `list_teams`
+  / `run_team` MCP tools (see [`docs/mcp-tools.md`](docs/mcp-tools.md)), the `marshal teams` /
+  `marshal team run` CLI commands, and the `marshal-adversarial-review` Skill; two starter teams
+  ship in `examples/teams/`.
+  - Four subjects: a run's diff, a commit `range`, a `plan` (free text), or an `audit` of the repo.
+  - **The engine computes no verdict.** It parses no reviewer prose and reports no pass/fail: a
+    decision derived from text the reviewed material can influence is not trustworthy, and judgment
+    belongs to the driver. You get `unified_report` (the panel's shape with every review inline,
+    read this first) plus each reviewer's full report; collecting the objections and deciding is
+    the caller's job.
+  - Reports persist to `.marshal/reports/<stamp>-<team>-<id>/` — `<role>.md` per reviewer plus
+    `README.md`.
+  - **Fail-closed read-only:** a role naming a client that is not `permission: read-only` is a
+    config error raised *before* any reviewer spawns. Marshal will not route a role to a writable
+    client; note that `read-only` is OS-enforced only where the backend provides a sandbox, so the
+    dependable boundary remains the worktree plus explicit integrate.
+  - **Independent, and a shrunken panel is visible.** All roles go out in one `run_many` call under
+    a shared `task_id`, so they cannot observe each other and the review prices as one unit. A role
+    that failed, timed out, or whose backend was missing is listed in `incomplete_roles` with its
+    report absent — a missing lens, never silent approval.
+  - **Reviewed material is treated as hostile data.** The subject is delimited by a per-run nonce
+    (a markdown fence it could close would let content escape into the strongest prompt position)
+    and labelled untrusted. Refs reaching `diff_range` are validated: a `base` of `--output=<path>`
+    would otherwise make a read-only diff write an arbitrary file *and* empty stdout, leaving the
+    panel to review nothing. Empty subjects are refused, and a team file must live in the
+    workspace's own `teams/` directory.
+  - Like `workflow.py`, the runner **adds no new execution path**: it issues only `collect_run` /
+    `diff_range` / `run_many`, so every reviewer still flows through `Fleet.run`. It never
+    integrates.
+
 ### Documentation
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
   multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
