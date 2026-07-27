@@ -1146,45 +1146,22 @@ class Fleet:
         cancel_error: str | None = None
         cancel_extra: dict[str, object] = {}
         if rec.pid is not None:
-            # Reaper's _pid_is_still_ours fails OPEN on unverifiable identity (falsely reaping a
-            # live run is destructive). Cancel's harm is the opposite: killpg on a reused pid signals
-            # the WRONG process group. Signal ONLY when _pid_is_still_ours is True AND identity was
-            # positively verified (recorded start time + live probe both succeeded) - not the
-            # fail-open path. When we skip the signal, still terminal-stamp cancelled and record why.
-            verified_ours = (
-                _pid_is_still_ours(rec)
-                and rec.pid_start_time
-                and _pid_start_time(rec.pid) is not None
-            )
-            if verified_ours:
-                # IRREDUCIBLE RESIDUAL - do not "fix" this by adding another check; read this first.
-                # POSIX offers no atomic "signal this pid only if it is still that process".
-                # Between the verification below and killpg the agent could exit and the OS reuse
-                # its pid, and we would signal a stranger. Linux `pidfd` does not help either: a
-                # pidfd is a file descriptor, so it cannot be persisted in a run record and
-                # reopened by the DIFFERENT process that later cancels the run - which is exactly
-                # this path. (Same-process cancels are already covered by the run pool.) The only
-                # available mitigation is to verify as late as possible, so the window is the
-                # syscall gap rather than the whole function. Residual documented in SECURITY.md
-                # under "Known trust-boundary gaps".
-                if _pid_start_time(rec.pid) == rec.pid_start_time:
-                    try:
-                        os.killpg(rec.pid, signal.SIGTERM)
-                    except (ProcessLookupError, OSError):
-                        pass  # already exited
-                else:
-                    cancel_extra["pid"] = None
-                    cancel_error = (
-                        "fleet: cancel skipped (pid was reused between verification and signal)"
-                    )
-            elif _pid_alive(rec.pid):
+            # Only signal a process this process started. Its run id is still in the in-flight
+            # registry, so the pid cannot have been recycled while our own child is alive - which
+            # removes the pid-reuse hazard entirely rather than narrowing it. A run owned by some
+            # other (or dead) Marshal process is stamped cancelled without a signal: guessing at a
+            # pid we do not own risks SIGTERM to an unrelated process group.
+            if _inflight_in_this_process(self.state.dir, run_id):
+                try:
+                    os.killpg(rec.pid, signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    pass  # already exited
+            else:
                 cancel_extra["pid"] = None
-                if rec.pid_start_time and _pid_start_time(rec.pid) is not None:
-                    cancel_error = "fleet: cancel skipped (pid identity mismatch; not signalling)"
-                else:
-                    cancel_error = (
-                        "fleet: cancel skipped (pid identity unverifiable; not signalling)"
-                    )
+                cancel_error = (
+                    "fleet: cancelled without signalling - this run was started by another "
+                    "process, so its pid cannot be verified as still belonging to the agent"
+                )
         stamp: dict[str, object] = {"status": "cancelled", "ended_at": _now(), **cancel_extra}
         if cancel_error:
             stamp["error"] = cancel_error

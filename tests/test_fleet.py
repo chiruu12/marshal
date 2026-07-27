@@ -24,7 +24,7 @@ from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
-from marshal_engine.fleet import Fleet, RunRequest
+from marshal_engine.fleet import Fleet, RunRequest, _register_inflight_run
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
 from marshal_engine.state import RunRecord
@@ -2137,7 +2137,7 @@ def test_an_unverifiable_pid_fails_open_and_keeps_the_run(repo: Path) -> None:
         holder.wait(timeout=10)
 
 
-def test_cancel_skips_signal_when_pid_identity_mismatches(
+def test_cancel_does_not_signal_a_run_this_process_does_not_own(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A stale record whose pid was reused must not killpg an unrelated process group."""
@@ -2167,7 +2167,7 @@ def test_cancel_skips_signal_when_pid_identity_mismatches(
         rec = fleet.cancel_run("mismatch.writer.deadbeef")
         assert killed == [], "killpg must not run when pid identity mismatches"
         assert rec.status == RunStatus.CANCELLED.value
-        assert rec.error and "identity mismatch" in rec.error
+        assert rec.error and "started by another process" in rec.error
         assert rec.pid is None
     finally:
         holder.terminate()
@@ -2177,7 +2177,7 @@ def test_cancel_skips_signal_when_pid_identity_mismatches(
 def test_cancel_signals_a_verified_live_run(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The happy path: a live run whose pid+start_time match is still signalled and cancelled."""
+    """The happy path: a run THIS process started is signalled and cancelled."""
     import os
     import signal
 
@@ -2196,6 +2196,7 @@ def test_cancel_signals_a_verified_live_run(
         if started is None:
             pytest.skip("ps start-time probe unavailable on this host")
         fleet = Fleet(repo, {"writer": _Writer()})
+        _register_inflight_run(fleet.state.dir, "verified.writer.deadbeef")  # we own this run
         fleet.state.add(
             RunRecord(
                 run_id="verified.writer.deadbeef",
@@ -2216,7 +2217,7 @@ def test_cancel_signals_a_verified_live_run(
         holder.wait(timeout=10)
 
 
-def test_cancel_skips_signal_when_pid_identity_is_unverifiable(
+def test_cancel_does_not_signal_a_run_with_no_recorded_identity(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Fail CLOSED on cancel (unlike reaper): without a verifiable identity, do not killpg.
@@ -2249,7 +2250,7 @@ def test_cancel_skips_signal_when_pid_identity_is_unverifiable(
         rec = fleet.cancel_run("unverified.writer.deadbeef")
         assert killed == [], "unverifiable identity must not be signalled (fail closed)"
         assert rec.status == RunStatus.CANCELLED.value
-        assert rec.error and "unverifiable" in rec.error
+        assert rec.error and "started by another process" in rec.error
         assert rec.pid is None
     finally:
         holder.terminate()

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine.fleet import Fleet
+from marshal_engine.fleet import Fleet, _register_inflight_run
 from marshal_engine.state import RunRecord
 
 
@@ -43,12 +43,10 @@ def test_cancel_running_with_pid_kills_and_marks_cancelled(
         killed.append((pgid, sig))
 
     monkeypatch.setattr(os, "killpg", _fake_killpg)
-    monkeypatch.setattr(
-        "marshal_engine.fleet._pid_start_time", lambda pid: "Mon Jan  1 00:00:00 2026"
-    )
-    monkeypatch.setattr("marshal_engine.fleet._pid_alive", lambda pid: True)
 
     fleet = Fleet(tmp_path, {})
+    # Cancel signals only runs THIS process started, so register it as in-flight.
+    _register_inflight_run(fleet.state.dir, "t.x.a2")
     fleet.state.add(
         RunRecord(
             run_id="t.x.a2",
