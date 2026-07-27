@@ -412,9 +412,10 @@ class WorkflowRunner:
                         notes.append(f"{rid}: {exc}")
                         continue
                     collected.append(cr.model_dump(mode="json"))
-                    if cr.changed_files:
+                    review_files = len(cr.changed_files) + len(cr.committed_changed_files)
+                    if review_files:
                         needs_review = True
-                        next_actions.append(f"review diff: {rid} ({len(cr.changed_files)} file(s))")
+                        next_actions.append(f"review diff: {rid} ({review_files} file(s))")
                 phases.append(
                     PhaseResult(name=phase.name, run=phase.run, collected=collected, notes=notes)
                 )

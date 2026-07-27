@@ -100,8 +100,12 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
   and when the workspace configures a `verify:` command, `succeeded` also means that gate passed.
 
 ## 4. Collect - review before you trust
-- `collect_run(run_id)` returns the run's **diff + changed files**, read-only. Read it. You are the
-  reviewer; `succeeded` means "the process exited cleanly," not "the code is correct."
+- `collect_run(run_id)` returns the run's work read-only in two sections:
+  - **Uncommitted** (`changed_files`, `diff`) — working-tree changes not yet committed.
+  - **Committed** (`committed_changed_files`, `committed_diff`, `commit_count`) — commits the
+    agent made on the run's branch (common with Cursor and Claude Code). Read both. An empty
+    uncommitted diff does **not** mean no work — check the committed section too.
+- `succeeded` means "the process exited cleanly," not "the code is correct."
 - Reject work that is wrong or off-scope by simply not integrating it. The worktree stays isolated;
   main is untouched.
 

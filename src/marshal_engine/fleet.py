@@ -115,13 +115,22 @@ def _load_default_prices() -> PriceTable:
 
 
 class CollectResult(BaseModel):
-    """A run's uncommitted work, surfaced read-only for the driver to review."""
+    """A run's work surfaced read-only for the driver to review.
+
+    Uncommitted work lives in ``changed_files`` / ``diff`` (working tree vs HEAD). Commits the
+    agent made on the run's branch since the merge-base with the collect target are in
+    ``committed_changed_files`` / ``committed_diff`` / ``commit_count`` — both sections are
+    reported when both exist.
+    """
 
     run_id: str
     branch: str | None
     worktree: str | None
     changed_files: list[str]
     diff: str
+    committed_changed_files: list[str] = []
+    committed_diff: str = ""
+    commit_count: int = 0
 
 
 class IntegrateResult(BaseModel):
@@ -702,15 +711,36 @@ class Fleet:
             return RunStatus.SUCCEEDED  # can't tell -> don't mislabel a success as empty
         return RunStatus.SUCCEEDED if changed else RunStatus.EMPTY
 
+    def _collect_target(self) -> str:
+        """Merge-base reference for committed work on a run branch (matches integrate's target)."""
+        try:
+            return self.worktrees.current_branch()
+        except WorktreeError:
+            return "HEAD"  # detached checkout: diff against the checked-out commit
+
     def collect_run(self, run_id: str) -> CollectResult:
-        """Surface a run's uncommitted diff + changed files. Read-only - nothing is merged."""
+        """Surface a run's diff + changed files. Read-only - nothing is merged."""
         wt = self._worktree_for(run_id)
+        changed_files = self.worktrees.changed_files(wt)
+        diff = self.worktrees.diff(wt)
+        committed_changed_files: list[str] = []
+        committed_diff = ""
+        commit_count = 0
+        if wt.branch:
+            target = self._collect_target()
+            commit_count = self.worktrees.unmerged_commit_count(wt.branch, target)
+            if commit_count:
+                committed_changed_files = self.worktrees.merged_diff_files(wt.branch, target)
+                committed_diff = self.worktrees.merged_diff(wt.branch, target)
         return CollectResult(
             run_id=run_id,
             branch=wt.branch or None,
             worktree=str(wt.path),
-            changed_files=self.worktrees.changed_files(wt),
-            diff=self.worktrees.diff(wt),
+            changed_files=changed_files,
+            diff=diff,
+            committed_changed_files=committed_changed_files,
+            committed_diff=committed_diff,
+            commit_count=commit_count,
         )
 
     def commit_run(self, run_id: str, *, message: str | None = None) -> CommitResult:

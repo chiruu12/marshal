@@ -17,6 +17,10 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **`collect_run` surfaces agent self-commits.** Committed work on the run branch (since the
+  merge-base with the current branch) is returned in `committed_changed_files`, `committed_diff`,
+  and `commit_count`; uncommitted work stays in `changed_files` / `diff`. Fixes the review blind
+  spot where Cursor/Claude Code agents commit before exit and the working tree looks empty.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.

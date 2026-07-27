@@ -226,8 +226,11 @@ Read-only diff collection; nothing is merged.
 | `run_id` | string | |
 | `branch` | string \| null | Run's worktree branch. |
 | `worktree` | string \| null | Worktree path. |
-| `changed_files` | list[string] | |
-| `diff` | string | Unified diff. |
+| `changed_files` | list[string] | Paths with uncommitted changes in the worktree. |
+| `diff` | string | Unified diff of uncommitted work (working tree vs HEAD). |
+| `committed_changed_files` | list[string] | Files changed in commits on the run branch since the merge-base with the current branch. |
+| `committed_diff` | string | Unified diff of those commits (`target...branch`). |
+| `commit_count` | integer | Number of commits on the run branch not reachable from the current branch. |
 
 ### `status`
 

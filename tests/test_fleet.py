@@ -106,6 +106,66 @@ class _Sleeper(CodingAgentBackend):
         )
 
 
+class _SelfCommitter(CodingAgentBackend):
+    """Commits its work onto the run branch before exiting (like Cursor / Claude Code)."""
+
+    name = "selfcommit"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; open('out.txt','w').write('hi');"
+            "s.run(['git','add','out.txt'],check=True);"
+            "s.run(['git','commit','--no-verify','-q','-m','agent','out.txt'],check=True);"
+            "print('done')"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+class _Committer(CodingAgentBackend):
+    """Self-commits A.txt onto the branch, then leaves B.txt uncommitted."""
+
+    name = "committer"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; open('A.txt','w').write('a');"
+            "s.run(['git','add','A.txt'],check=True);"
+            "s.run(['git','commit','--no-verify','-q','-m','agent','A.txt'],check=True);"
+            "open('B.txt','w').write('b'); print('done')"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
 class _NoOp(CodingAgentBackend):
     """Exits 0 but writes nothing and prints nothing - should be recorded as EMPTY, not success."""
 
@@ -834,6 +894,52 @@ def test_collect_run_unknown_run_raises(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError):
         fleet.collect_run("nope.writer")
+
+
+def test_collect_run_surfaces_self_committed_work(repo: Path) -> None:
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter()})
+    rec = fleet.run("selfcommit", TaskSpec(id="sc1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == []  # working tree is clean
+    assert collected.diff == ""
+    assert collected.commit_count == 1
+    assert collected.committed_changed_files == ["out.txt"]
+    assert "out.txt" in collected.committed_diff
+    assert collected.diff == ""  # uncommitted section stays empty
+
+
+def test_collect_run_uncommitted_only_unchanged(repo: Path) -> None:
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cu1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == ["out.txt"]
+    assert "out.txt" in collected.diff
+    assert collected.committed_changed_files == []
+    assert collected.committed_diff == ""
+    assert collected.commit_count == 0
+
+
+def test_collect_run_reports_committed_and_uncommitted_separately(repo: Path) -> None:
+    fleet = Fleet(repo, {"committer": _Committer()})
+    rec = fleet.run("committer", TaskSpec(id="mix1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == ["B.txt"]
+    assert "B.txt" in collected.diff
+    assert collected.committed_changed_files == ["A.txt"]
+    assert "A.txt" in collected.committed_diff
+    assert "B.txt" not in collected.committed_diff
+    assert collected.commit_count == 1
+
+
+def test_collect_run_empty_run_reports_no_work(repo: Path) -> None:
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="em1", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == []
+    assert collected.diff == ""
+    assert collected.committed_changed_files == []
+    assert collected.committed_diff == ""
+    assert collected.commit_count == 0
 
 
 def test_integrate_merges_run_into_current_branch(repo: Path) -> None:
