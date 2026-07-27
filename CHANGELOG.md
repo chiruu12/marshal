@@ -17,6 +17,11 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **Antigravity `trustedWorkspaces` scoped to the run (#48).** `prepare()` no longer leaves
+  durable trust entries in the host-global agy settings file: `run()` removes the run's worktree
+  path on completion (best-effort; warns on stderr if cleanup cannot read/write the file). A
+  malformed or unreadable settings file is preserved and fails the run closed instead of being
+  replaced with `{}`.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.

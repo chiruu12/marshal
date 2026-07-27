@@ -24,9 +24,10 @@ Honest gaps from research (these shape what we expose):
     one-shot read-only flag (the read-only presets prompt), so READ_ONLY is unsupported here.
   * WORKSPACE TRUST (fixed 2026-06-27): headless `agy` cannot establish workspace trust without a
     TTY, so it used to write edits into its scratch dir (`~/.gemini/antigravity-cli/scratch`)
-    instead of `cwd` ("you do not have an active workspace"). `prepare()` now pre-registers the
-    run's worktree in `~/.gemini/antigravity-cli/settings.json` `trustedWorkspaces`, and the run
-    passes `--add-dir <cwd>`. VERIFIED end-to-end: edits then land in the worktree, not scratch.
+    instead of `cwd` ("you do not have an active workspace"). `prepare()` briefly registers the
+    run's worktree in the host-global `~/.gemini/antigravity-cli/settings.json`
+    `trustedWorkspaces` (removed when the run completes; see `run()`), and the run passes
+    `--add-dir <cwd>`. VERIFIED end-to-end: edits then land in the worktree, not scratch.
     `--add-dir` alone was insufficient (the prior known limitation); the trust entry is the fix.
 
 Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-opus-4.6, gpt-oss-120b.
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -109,10 +111,26 @@ class AntigravityBackend(CodingAgentBackend):
         """Register the run's worktree as a trusted agy workspace so headless edits land in `cwd`.
 
         Without a trust entry, headless `agy` writes into its scratch dir instead of `cwd` (it cannot
-        establish workspace trust without a TTY). Merge-preserving, atomic, and idempotent; dead
-        worktree paths are pruned so the list stays bounded. Serialized for parallel runs.
+        establish workspace trust without a TTY). This writes the host-global agy settings file
+        (``settings_path``, default ``~/.gemini/antigravity-cli/settings.json``); ``run()`` removes
+        the entry when the run completes. Merge-preserving, atomic, and idempotent; dead worktree
+        paths are pruned as a backstop. Serialized for parallel runs. Fails closed on a malformed or
+        unreadable settings file (preserved byte-for-byte).
         """
         _trust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        """Shared run loop, wrapped in a host-global ``trustedWorkspaces`` transaction.
+
+        ``prepare()`` adds this run's worktree to agy's global settings; the finally path removes
+        only that path before returning - so the trust grant lasts for the run, not indefinitely.
+        Teardown is best-effort: a missing or unreadable settings file at cleanup time warns on
+        stderr and does not affect the run result.
+        """
+        try:
+            return super().run(task, opts)
+        finally:
+            _untrust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         if exit_code != 0:
@@ -137,6 +155,50 @@ class AntigravityBackend(CodingAgentBackend):
 # --- module helpers ----------------------------------------------------------------------
 
 
+def _load_settings_object(settings_path: Path) -> dict[str, object]:
+    """Load ``settings_path`` as a JSON object. Raises ``RuntimeError`` on any read/parse failure."""
+    if not settings_path.exists():
+        return {}
+    try:
+        raw = settings_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"existing {settings_path} is unreadable ({exc}); fix its permissions or remove it "
+            "before an antigravity run"
+        ) from exc
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"existing {settings_path} is not valid JSON ({exc}); fix or remove it before an "
+            "antigravity run - refusing to overwrite it"
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise RuntimeError(
+            f"existing {settings_path} is valid JSON but not an object; fix or remove it before "
+            "an antigravity run - refusing to overwrite it"
+        )
+    return loaded
+
+
+def _atomic_write_settings(settings_path: Path, data: dict[str, object]) -> None:
+    """Atomically replace ``settings_path`` with ``data`` (unique temp + ``os.replace``)."""
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(
+        dir=str(settings_path.parent), prefix=f"{settings_path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2))
+        os.replace(tmp_str, settings_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_str)
+        except OSError:
+            pass
+        raise
+
+
 def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
     """Add `cwd` to agy's `trustedWorkspaces` in `settings_path`, preserving other settings.
 
@@ -144,40 +206,68 @@ def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> No
     temp + replace, so a concurrent agy read never sees a torn file even if a writer dies
     between write + replace). Dead paths are pruned so the trust list stays bounded to live
     worktrees. The lock serializes concurrent writers (parallel runs all share this one
-    global file).
+    global file). Fails closed on a malformed or unreadable existing file.
     """
     cwd_str = str(cwd.resolve())
     with lock:
-        data: dict[str, object] = {}
-        if settings_path.exists():
-            try:
-                loaded = json.loads(settings_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
-            except (json.JSONDecodeError, OSError):
-                data = {}  # a malformed file is replaced, not trusted
+        data = _load_settings_object(settings_path)
         existing = data.get("trustedWorkspaces")
         trusted = [t for t in existing if isinstance(t, str)] if isinstance(existing, list) else []
         # Keep this worktree + any other still-existing trusted paths; drop dead ones.
         kept = [t for t in trusted if t != cwd_str and Path(t).exists()]
         data["trustedWorkspaces"] = [*kept, cwd_str]
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic temp + replace. The temp MUST be uniquely named (mkstemp) so a partial write
-        # that crashes between write_text and replace can't be confused with a later writer's
-        # temp - a fixed `.tmp` filename would also race under any future code path that
-        # releases the lock between phases.
-        fd, tmp_str = tempfile.mkstemp(
-            dir=str(settings_path.parent), prefix=f"{settings_path.name}.", suffix=".tmp"
-        )
+        _atomic_write_settings(settings_path, data)
+
+
+def _untrust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
+    """Best-effort: remove `cwd` from `trustedWorkspaces`. Never raises."""
+    cwd_str = str(cwd.resolve())
+    with lock:
+        if not settings_path.exists():
+            print(
+                f"[marshal] antigravity: {settings_path} missing during trust cleanup; "
+                "skipping untrust",
+                file=sys.stderr,
+            )
+            return
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(data, indent=2))
-            os.replace(tmp_str, settings_path)
-        except BaseException:
-            # Never leave a half-written temp file under a unique name (mkstemp gives us the
-            # chance to clean up properly - a fixed name would mask the next writer).
-            try:
-                os.unlink(tmp_str)
-            except OSError:
-                pass
-            raise
+            raw = settings_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"[marshal] antigravity: cannot read {settings_path} for trust cleanup ({exc}); "
+                "leaving file untouched",
+                file=sys.stderr,
+            )
+            return
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(
+                f"[marshal] antigravity: {settings_path} is not valid JSON during trust cleanup "
+                f"({exc}); leaving file untouched",
+                file=sys.stderr,
+            )
+            return
+        if not isinstance(loaded, dict):
+            print(
+                f"[marshal] antigravity: {settings_path} is not a JSON object during trust "
+                "cleanup; leaving file untouched",
+                file=sys.stderr,
+            )
+            return
+        existing = loaded.get("trustedWorkspaces")
+        if not isinstance(existing, list):
+            return
+        trusted = [t for t in existing if isinstance(t, str)]
+        if cwd_str not in trusted:
+            return
+        # Remove only this run's path; prune dead entries as a backstop.
+        loaded["trustedWorkspaces"] = [t for t in trusted if t != cwd_str and Path(t).exists()]
+        try:
+            _atomic_write_settings(settings_path, loaded)
+        except OSError as exc:
+            print(
+                f"[marshal] antigravity: failed to write {settings_path} during trust cleanup "
+                f"({exc}); leaving file untouched",
+                file=sys.stderr,
+            )

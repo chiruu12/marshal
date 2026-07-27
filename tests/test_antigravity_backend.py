@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
-from marshal_engine.backends.antigravity import AntigravityBackend
+from marshal_engine.backends.antigravity import AntigravityBackend, _untrust_workspace
 
 
 @pytest.fixture
@@ -207,3 +211,98 @@ def test_verifies_auth_false_documented_gap(backend: AntigravityBackend) -> None
     # No cheap dedicated auth/status/whoami probe on `agy`; doctor stays path-only.
     assert backend.verifies_auth() is False
     assert backend.account_info() is None
+
+
+# --- trustedWorkspaces transaction (run() adds on prepare, removes on completion) -------------
+
+
+@pytest.fixture
+def fake_agy(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Callable[[], None]:
+    """Install a fake ``agy`` on PATH so ``AntigravityBackend.run()`` exercises the real loop."""
+
+    def _install() -> None:
+        bindir = tmp_path_factory.mktemp("fake-agy-bin")
+        impl = bindir / "impl.py"
+        impl.write_text('print("ok")\n', encoding="utf-8")
+        shim = bindir / "agy"
+        shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{impl}" "$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    return _install
+
+
+def test_run_removes_trust_entry_after_completion(
+    backend: AntigravityBackend, tmp_path: Path, fake_agy: Callable[[], None]
+) -> None:
+    fake_agy()
+    backend.settings_path = tmp_path / "settings.json"
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt))
+    assert res.status is RunStatus.SUCCEEDED, res.error
+    assert not backend.settings_path.exists() or json.loads(backend.settings_path.read_text()).get(
+        "trustedWorkspaces", []
+    ) == []
+
+
+def test_run_preserves_user_trusted_paths_after_completion(
+    backend: AntigravityBackend, tmp_path: Path, fake_agy: Callable[[], None]
+) -> None:
+    fake_agy()
+    backend.settings_path = tmp_path / "settings.json"
+    user_wt = tmp_path / "user-trusted"
+    user_wt.mkdir()
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.settings_path.write_text(
+        json.dumps({"trustedWorkspaces": [str(user_wt.resolve())]}), encoding="utf-8"
+    )
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt))
+    assert res.status is RunStatus.SUCCEEDED, res.error
+    data = json.loads(backend.settings_path.read_text())
+    assert data["trustedWorkspaces"] == [str(user_wt.resolve())]
+    assert str(wt.resolve()) not in data["trustedWorkspaces"]
+
+
+def test_prepare_fails_closed_on_malformed_settings(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    backend.settings_path = tmp_path / "settings.json"
+    original = b"{not-json\n"
+    backend.settings_path.write_bytes(original)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt))
+    assert res.status is RunStatus.FAILED
+    assert "not valid JSON" in (res.error or "")
+    assert backend.settings_path.read_bytes() == original
+
+
+def test_run_teardown_swallows_missing_settings(
+    backend: AntigravityBackend, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    missing = tmp_path / "settings.json"
+    _untrust_workspace(missing, wt, threading.Lock())
+    assert "missing during trust cleanup" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permission bits")
+def test_run_teardown_swallows_unreadable_settings(
+    backend: AntigravityBackend, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"trustedWorkspaces": [str(wt.resolve())]}), encoding="utf-8")
+    os.chmod(settings, 0o000)
+    try:
+        _untrust_workspace(settings, wt, threading.Lock())
+    finally:
+        os.chmod(settings, 0o644)
+    assert "cannot read" in capsys.readouterr().err
+    assert str(wt.resolve()) in json.loads(settings.read_text())["trustedWorkspaces"]
