@@ -426,3 +426,40 @@ def test_overlapping_runs_keep_trust_until_the_last_one_finishes(
 
     backend.release_trust(_opts(cwd=wt))  # B finishes
     assert key not in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+
+
+def test_a_failed_prepare_does_not_release_a_siblings_claim(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    """REGRESSION: teardown ran unconditionally, so a run whose `prepare()` raised before
+    registering decremented a SIBLING's live claim - revoking trust while that agy process was
+    still running and silently redirecting its edits to the scratch dir."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    settings = tmp_path / "settings.json"
+    backend.settings_path = settings
+    AntigravityBackend._trust_added.clear()
+    key = str(wt.resolve())
+
+    backend.prepare(_opts(cwd=wt))  # sibling run A holds a real claim
+    assert key in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+
+    # Run B never registered (its prepare failed). Its teardown must be a no-op.
+    settings.write_text("{ not json", encoding="utf-8")  # what B's prepare would have choked on
+    settings.write_text(
+        json.dumps({"trustedWorkspaces": [key]}), encoding="utf-8"
+    )
+    import threading
+
+    def b_teardown_only() -> None:  # a different thread = a different run, holding no claim
+        backend.release_trust(_opts(cwd=wt))
+
+    t = threading.Thread(target=b_teardown_only)
+    t.start()
+    t.join(timeout=10)
+
+    trusted = json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
+    assert key in trusted, "a run that never claimed released the sibling's live grant"
+
+    backend.release_trust(_opts(cwd=wt))  # A finishes for real
+    assert key not in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]

@@ -82,6 +82,8 @@ class AntigravityBackend(CodingAgentBackend):
     #: process, silently redirecting its edits to the scratch dir. The entry is removed only when
     #: the last user finishes AND Marshal introduced it.
     _trust_added: dict[str, list[object]] = {}
+    #: Per-thread record of which cwds this run claimed (see `_claimed_cwds`).
+    _thread_claims = threading.local()
     settings_path = DEFAULT_SETTINGS_PATH
     capabilities = Capabilities(
         json_output=False,  # --output-format json reported broken; text output only
@@ -123,6 +125,24 @@ class AntigravityBackend(CodingAgentBackend):
         argv += ["-p", self._compose_prompt(task)]
         return argv
 
+    def _claimed_cwds(self) -> dict[str, int]:
+        """How many trust claims THIS thread currently holds, per cwd.
+
+        A count, not a flag: one thread can legitimately hold more than one claim on the same path
+        (nested or sequential runs in a single worker), and collapsing those to a boolean would
+        strand the entry - the first release would clear the marker and the second would no-op.
+
+        Per-thread, because a run's `prepare()` and its teardown happen on the same thread (the
+        base run loop calls `prepare` then the finally path) while the backend instance itself is
+        shared by every concurrent run. Without it, a run whose `prepare()` failed before
+        registering would still decrement — and could revoke — a *sibling* run's live claim.
+        """
+        claims: dict[str, int] | None = getattr(self._thread_claims, "cwds", None)
+        if claims is None:
+            claims = {}
+            self._thread_claims.cwds = claims
+        return claims
+
     def prepare(self, opts: RunOpts) -> None:
         """Register the run's worktree as a trusted agy workspace so headless edits land in `cwd`.
 
@@ -133,16 +153,21 @@ class AntigravityBackend(CodingAgentBackend):
         paths are pruned as a backstop. Serialized for parallel runs. Fails closed on a malformed or
         unreadable settings file (preserved byte-for-byte).
         """
-        added = _trust_workspace(self.settings_path, Path(opts.cwd), self._settings_lock)
         key = str(Path(opts.cwd).resolve())
+        # ONE critical section: mutate the settings file and record provenance under the same lock.
+        # Splitting them inverted provenance under concurrency - the run that merely *observed* a
+        # freshly added entry could register first and record it as user-owned, after which nobody
+        # would ever revoke Marshal's own grant.
         with self._settings_lock:
+            added = _trust_workspace_locked(self.settings_path, Path(opts.cwd))
             state = self._trust_added.get(key)
             if state is None:
-                # First Marshal run on this path: `added` tells us whose entry it is.
                 self._trust_added[key] = [added, 1]
             else:
                 # A sibling run already holds it; join as a user without changing provenance.
                 state[1] = int(state[1]) + 1  # type: ignore[call-overload]
+            mine = self._claimed_cwds()
+            mine[key] = mine.get(key, 0) + 1
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
         """Shared run loop, wrapped in a host-global ``trustedWorkspaces`` transaction.
@@ -165,6 +190,15 @@ class AntigravityBackend(CodingAgentBackend):
         in a test would mean the test could not catch a change here.
         """
         key = str(Path(opts.cwd).resolve())
+        # Only release what THIS run actually claimed. A `prepare()` that raised before registering
+        # never claimed anything, and its teardown must not decrement a sibling's live claim.
+        mine = self._claimed_cwds()
+        if mine.get(key, 0) <= 0:
+            return
+        if mine[key] == 1:
+            del mine[key]
+        else:
+            mine[key] -= 1
         with self._settings_lock:
             state = self._trust_added.get(key)
             # No bookkeeping at all means nothing we did introduced this entry, so it is the
@@ -258,6 +292,12 @@ def _is_marshal_worktree(path: str) -> bool:
 
 
 def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> bool:
+    """Locking wrapper kept for callers that do not already hold ``lock``."""
+    with lock:
+        return _trust_workspace_locked(settings_path, cwd)
+
+
+def _trust_workspace_locked(settings_path: Path, cwd: Path) -> bool:
     """Add `cwd` to agy's `trustedWorkspaces` in `settings_path`, preserving other settings.
 
     Merge-preserving (other keys untouched), idempotent (no duplicate entry), and atomic (unique
@@ -267,23 +307,22 @@ def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> bo
     global file). Fails closed on a malformed or unreadable existing file.
     """
     cwd_str = str(cwd.resolve())
-    with lock:
-        data = _load_settings_object(settings_path)
-        existing = data.get("trustedWorkspaces")
-        trusted = [t for t in existing if isinstance(t, str)] if isinstance(existing, list) else []
-        already_trusted = cwd_str in trusted
-        # Keep every other entry; sweep only Marshal's OWN dead worktrees (a crashed run's
-        # leftover). A user path that is merely unavailable right now is never touched.
-        kept = [
-            t
-            for t in trusted
-            if t != cwd_str and not (_is_marshal_worktree(t) and not Path(t).exists())
-        ]
-        data["trustedWorkspaces"] = [*kept, cwd_str]
-        _atomic_write_settings(settings_path, data)
-        # Report whether WE introduced this entry, so teardown never revokes trust the user
-        # granted themselves before Marshal ever ran.
-        return not already_trusted
+    data = _load_settings_object(settings_path)
+    existing = data.get("trustedWorkspaces")
+    trusted = [t for t in existing if isinstance(t, str)] if isinstance(existing, list) else []
+    already_trusted = cwd_str in trusted
+    # Keep every other entry; sweep only Marshal's OWN dead worktrees (a crashed run's
+    # leftover). A user path that is merely unavailable right now is never touched.
+    kept = [
+        t
+        for t in trusted
+        if t != cwd_str and not (_is_marshal_worktree(t) and not Path(t).exists())
+    ]
+    data["trustedWorkspaces"] = [*kept, cwd_str]
+    _atomic_write_settings(settings_path, data)
+    # Report whether WE introduced this entry, so teardown never revokes trust the user
+    # granted themselves before Marshal ever ran.
+    return not already_trusted
 
 
 def _untrust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
