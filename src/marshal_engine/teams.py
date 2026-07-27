@@ -511,7 +511,18 @@ class TeamRunner:
                     f"run {run_id} is {status}; its worktree is not a stable snapshot, so a review "
                     "of it describes nothing. Wait for the run to settle before reviewing."
                 )
-            cr = self.service.collect_run(run_id)
+            try:
+                cr = self.service.collect_run(run_id)
+            except ValueError as exc:
+                # The status check and this collection are two reads; a concurrent `clean` can
+                # remove the worktree in between. Nothing can lock against that (clean is an
+                # external caller), so translate the raw failure into something a driver can act
+                # on rather than letting a bare ValueError cross the MCP boundary.
+                raise ConfigError(
+                    f"run {run_id} is no longer reviewable: {exc}. Its worktree was removed "
+                    "(most likely by `clean`) after the run finished - collect the diff before "
+                    "cleaning, or re-run the work."
+                ) from exc
             note = (
                 ""
                 if status == RunStatus.SUCCEEDED.value
