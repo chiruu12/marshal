@@ -93,6 +93,10 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
 
 ## 3. Monitor
 - `status()` lists every run with status + cost; `get_run(run_id)` fetches one.
+- A `running` record means "no outcome recorded yet", which is not the same as "the agent is
+  working". Read `agent_alive` to tell them apart: `true` = still working, `false` = the process is
+  gone and the outcome is about to be written (re-read shortly), `null` = unknown, **not** dead.
+  Do not probe the pid yourself — a pid alone is not an identity, since the OS reuses them.
 - A run ends in `succeeded`, `empty` (ran clean but produced no work - do not integrate it),
   `failed`, `timed_out`, `cancelled`, or `verify_failed` (the work exists but the workspace's
   `verify:` gate rejected it - collect the diff and read the record's `verify_output` before

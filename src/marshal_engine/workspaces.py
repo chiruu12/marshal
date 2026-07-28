@@ -45,7 +45,7 @@ from .budgets import EnforceBudgetGate
 from .config import ConfigError, FleetConfig, load_config, validate
 from .layout import runs_dir
 from .scaffold import detect_project_markers, scaffold_fleet_config
-from .fleet import RunRequest
+from .fleet import RunRequest, with_liveness
 from .service import MarshalService
 from .state import FleetState, RunRecord
 
@@ -692,7 +692,16 @@ class WorkspaceRegistry:
             if fleet is not None:
                 fleet.reconcile_orphans()
             for rec in FleetState(self._runs_dir(self._defs[wsname])).list():
-                out.append((wsname, rec))
+                # Fill in `agent_alive` the same way `MarshalService.status` does. This path reads
+                # the ledger directly, so without it the field is always null on the MCP surface -
+                # the one a driver actually polls - and the whole point of it (telling "still
+                # working" from "finished, outcome not yet written") is lost exactly where it is
+                # needed. Only possible for a workspace whose Fleet already exists here; elsewhere
+                # the answer is honestly unknown.
+                # Liveness needs only the record, so it is filled in for EVERY workspace - not
+                # just ones whose service happens to be built. A fresh server reporting `null` for
+                # a verifiably live agent is the exact confusion the field exists to remove.
+                out.append((wsname, with_liveness(rec)))
         return out
 
     def describe(self) -> list[dict[str, Any]]:

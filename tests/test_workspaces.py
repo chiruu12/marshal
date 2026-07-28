@@ -364,6 +364,9 @@ def test_ledger_runs_finishes_a_deferred_reconciliation(tmp_path: Path) -> None:
         def reconcile_orphans(self) -> None:
             self.calls += 1
 
+        def with_liveness(self, rec: RunRecord) -> RunRecord:
+            return rec  # this test is about the reconcile hook, not the liveness fill-in
+
     class _StubService:
         def __init__(self) -> None:
             self.fleet = _StubFleet()
@@ -1316,9 +1319,9 @@ def test_mcp_round_trip_run_query_cancel(tmp_path: Path) -> None:
     col = _call(app, "collect_run", {"run_id": rid})
     assert col["workspace"] == "beta" and col["run_id"] == rid
 
-    allruns = _call(app, "status", {})  # aggregates across workspaces
+    allruns = _call(app, "status", {})["runs"]  # aggregates across workspaces
     assert any(r["run_id"] == rid and r["workspace"] == "beta" for r in allruns)
-    assert _call(app, "status", {"workspace": "default"}) == []  # nothing ran in default
+    assert _call(app, "status", {"workspace": "default"})["runs"] == []  # nothing ran in default
 
     us = _call(app, "usage", {"workspace": "beta"})
     assert us["workspace"] == "beta" and us["totals"]["runs"] == 1
@@ -1511,3 +1514,28 @@ def test_recency_does_not_parse_run_records(tmp_path: Path) -> None:
     defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
     row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
     assert row["last_activity_at"] is not None
+
+
+def test_ledger_runs_reports_liveness_without_a_built_service(tmp_path: Path) -> None:
+    """REGRESSION: liveness was gated on a cached Fleet, so a fresh server - or any workspace not
+    touched this session - reported `null` for a verifiably LIVE agent. Probing a pid needs only
+    the record, so it must not depend on whether a service happens to be built. (Reconciliation is
+    different: it mutates the ledger and is rightly gated on owning the fleet lock.)"""
+    from marshal_engine.fleet import _pid_start_time
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        a = tmp_path / "a"
+        a.mkdir()
+        FleetState(a / ".marshal" / "runs").add(
+            RunRecord(
+                run_id="live.echo.x", task_id="t", backend="echo", status="running",
+                pid=holder.pid, pid_start_time=_pid_start_time(holder.pid),
+            )
+        )
+        # builder=_explode: no service is ever built, which is the whole point.
+        reg = WorkspaceRegistry([WorkspaceDef("default", a, a / "c.yaml")], builder=_explode)
+        assert [r.agent_alive for _, r in reg.ledger_runs()] == [True]
+    finally:
+        holder.kill()
+        holder.wait()

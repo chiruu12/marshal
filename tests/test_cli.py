@@ -217,8 +217,10 @@ def test_status_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     assert ret == 0
     out, _ = capsys.readouterr()
     data = json.loads(out)
-    assert isinstance(data, list)
-    assert data == []
+    # An envelope, not a bare list: a paged listing has to be able to say how much it left out.
+    assert data["runs"] == []
+    assert data["matched"] == 0 and data["returned"] == 0
+    assert data["truncated"] is False
 
 
 def test_status_human_no_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -773,3 +775,40 @@ def test_run_and_spawn_catch_worktree_error(
     assert "not a git repository" in capsys.readouterr().err
     assert cli._cmd_run_like(args, spawn=True) == 1
     assert "not a git repository" in capsys.readouterr().err
+
+
+def test_status_since_hours_filters(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`--since-hours` is its own branch and shipped briefly with a NameError in it - the suite
+    stayed green because no test exercised the filter. An unexercised branch is an untested one
+    however many tests pass around it."""
+    from marshal_engine.state import FleetState, RunRecord
+
+    runs = tmp_path / "runs"
+    state = FleetState(runs)
+    state.add(RunRecord(run_id="old.e.1", task_id="t", backend="echo", status="succeeded",
+                        started_at="2020-01-01T00:00:00+00:00"))
+
+    ret = cli.main(["status", "--json", "--state", str(runs), "--since-hours", "1"])
+    assert ret == 0
+    assert json.loads(capsys.readouterr()[0])["matched"] == 0
+
+    ret = cli.main(["status", "--json", "--state", str(runs), "--since-hours", "999999"])
+    assert ret == 0
+    assert json.loads(capsys.readouterr()[0])["matched"] == 1
+
+
+def test_status_rejects_a_nonpositive_limit(tmp_path: Path) -> None:
+    """A negative limit does not error in Python - `rows[:-5]` silently returns a DIFFERENT slice
+    (all but the last five), so the caller gets plausible-looking wrong output. The MCP tool bounds
+    this parameter; the CLI must not be the lax door to the same logic."""
+    with pytest.raises(SystemExit):
+        cli.main(["status", "--state", str(tmp_path / "runs"), "--limit", "-5"])
+    with pytest.raises(SystemExit):
+        cli.main(["status", "--state", str(tmp_path / "runs"), "--limit", "0"])
+
+
+def test_status_rejects_a_nonfinite_lookback(tmp_path: Path) -> None:
+    """NaN and inf survive float() and only blow up later inside timedelta, mid-command."""
+    for bad in ("nan", "inf", "0", "-3"):
+        with pytest.raises(SystemExit):
+            cli.main(["status", "--state", str(tmp_path / "runs"), "--since-hours", bad])

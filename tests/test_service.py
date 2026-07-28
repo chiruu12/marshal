@@ -31,6 +31,7 @@ from marshal_engine.config import (
     load_config,
 )
 from marshal_engine.service import MarshalService
+from marshal_engine.state import RunRecord
 from marshal_engine.service import ModelList, ModelSpec
 
 
@@ -171,6 +172,56 @@ def _svc(repo: Path) -> MarshalService:
         clients={"worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT)}
     )
     return MarshalService(repo, cfg, backends={"echo": _Echo()})
+
+
+def test_get_run_reports_whether_the_agent_is_actually_alive(repo: Path) -> None:
+    """The driver's #1 field complaint: a `running` record with a dead agent made it report a run
+    as failed when it had succeeded. `agent_alive` answers that without the driver shelling out to
+    `kill -0` - which is not sound anyway, since pids get reused."""
+    import subprocess as _sp
+    import sys as _sys
+
+    from marshal_engine.fleet import _pid_start_time
+
+    svc = _svc(repo)
+    holder = _sp.Popen([_sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        svc.fleet.state.add(
+            RunRecord(
+                run_id="alive.echo.x",
+                task_id="t",
+                backend="echo",
+                status="running",
+                started_at="2026-01-01T00:00:00+00:00",
+                pid=holder.pid,
+                pid_start_time=_pid_start_time(holder.pid),
+            )
+        )
+        assert svc.get_run("alive.echo.x").agent_alive is True
+    finally:
+        holder.kill()
+        holder.wait()
+
+    # Same record, process now gone: reconciliation stamps it terminal, so liveness is moot.
+    rec = svc.get_run("alive.echo.x")
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.agent_alive is None
+
+
+def test_liveness_is_unknown_not_false_when_identity_cannot_be_checked(repo: Path) -> None:
+    """`null` must mean "cannot tell", never "dead" - a driver that reads absence as death would
+    make exactly the wrong call, which is the bug this field exists to prevent."""
+    svc = _svc(repo)
+    svc.fleet.state.add(
+        RunRecord(
+            run_id="nopid.echo.x",
+            task_id="t",
+            backend="echo",
+            status="running",
+            started_at="2026-01-01T00:00:00+00:00",  # pid-less: nothing to probe
+        )
+    )
+    assert svc.get_run("nopid.echo.x").agent_alive is None
 
 
 def test_config_verify_reaches_fleet_and_gates_runs(repo: Path) -> None:

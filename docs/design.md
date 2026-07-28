@@ -268,7 +268,9 @@ Runtime state - worktrees, per-run JSON, usage, **per-run raw logs**, and **team
 `README.md`) - lands under `.marshal/`, alongside `fleet.lock`: a small file naming the process
 that currently supervises this repo's runs. Only its holder reconciles run state at startup, and it
 is never released - a long-lived server keeps it, while a short-lived CLI leaves a dead pid that the
-next process takes over. Auth is per-CLI login;
+next process takes over. The holder is identified by pid **and** start time, the same pairing run
+records use: a bare pid the OS later recycled would otherwise impersonate a live supervisor forever
+and permanently suppress reaping. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
 **Worktree environment isolation.** The driver usually runs inside its own activated venv, so

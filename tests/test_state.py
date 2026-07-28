@@ -11,6 +11,18 @@ from pydantic import ValidationError
 from marshal_engine.state import FleetState, RunRecord
 
 
+def test_agent_liveness_is_never_written_to_the_ledger(tmp_path: Path) -> None:
+    """`agent_alive` answers "right now", so persisting it would store a value that is wrong the
+    moment it lands - the exact class of staleness the field exists to fix."""
+    state = FleetState(tmp_path / "runs")
+    state.add(
+        RunRecord(run_id="r1", task_id="t", backend="b", status="running", agent_alive=True)
+    )
+    raw = (tmp_path / "runs" / "r1.json").read_text(encoding="utf-8")
+    assert "agent_alive" not in raw
+    assert state.get("r1").agent_alive is None  # nothing to read back
+
+
 def test_add_get_update_list(tmp_path: Path) -> None:
     st = FleetState(tmp_path / "runs")
     assert st.list() == []

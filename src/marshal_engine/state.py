@@ -15,7 +15,8 @@ import contextlib
 import os
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,81 @@ class RunRecord(BaseModel):
     # not would-be-succeeded, or no file changes to gate); False pairs with status `verify_failed`.
     verify_passed: bool | None = None
     verify_output: str = ""  # tail-truncated verify command output (failures print last)
+    # DERIVED ON READ, never persisted (see FleetState._write). Whether the agent process is alive
+    # right now: True/False when the pid's identity could be checked, None when it could not (no
+    # pid recorded, or the probe is unavailable) - and None on any terminal record, where the
+    # question is meaningless. A driver reading `running` cannot otherwise tell "still working"
+    # from "finished, outcome not yet written", and guessing wrong misreports a run's outcome.
+    # Persisting it would recreate exactly that bug: a stored liveness is stale the moment it lands.
+    agent_alive: bool | None = None
+
+
+#: Fields computed when a record is READ and deliberately kept out of the ledger. The ledger holds
+#: facts about what happened; these are answers about right now, and storing one would guarantee it
+#: is wrong later.
+_DERIVED_FIELDS = {"agent_alive"}
+
+
+#: Unbounded free text on a run record. A listing carries one row per run, so these dominate its
+#: size - one observed `status` reply was ~395k characters, most of it agent prose the caller had
+#: not asked for. Omitted from a listing by default and fetched per run with `get_run`.
+_BULKY_FIELDS = ("text", "verify_output")
+
+
+def compact_run(rec: RunRecord) -> dict[str, Any]:
+    """A run as a dict without its unbounded text fields, plus flags saying what was dropped.
+
+    The flags matter: a caller must be able to tell "this run produced no final message" from
+    "the message exists and this view omitted it", or an empty `text` reads as a fact about the
+    run rather than about the view.
+    """
+    data = rec.model_dump(mode="json")
+    for field in _BULKY_FIELDS:
+        value = data.pop(field, None)
+        data[f"has_{field}"] = bool(value)
+    return data
+
+
+def filter_runs(
+    records: Sequence[RunRecord],
+    *,
+    status: str | None = None,
+    task_id: str | None = None,
+    since: datetime | None = None,
+) -> list[RunRecord]:
+    """Records matching every supplied filter, newest first (undated runs sort last).
+
+    ``since`` compares against the run's start; a record with no parseable ``started_at`` is kept,
+    because an unreadable timestamp is not evidence the run falls outside the window.
+    """
+    def in_window(rec: RunRecord) -> bool:
+        if since is None:
+            return True
+        started = _started_at_or_none(rec)
+        # An unreadable timestamp is not evidence the run falls outside the window.
+        return started is None or started >= since
+
+    out = [
+        r for r in records
+        if (status is None or r.status == status)
+        and (task_id is None or r.task_id == task_id)
+        and in_window(r)
+    ]
+    # Undated runs sort last in a newest-first list, so they never displace a dated run from a
+    # `limit`. `datetime.min` only orders them; it is never shown as a time.
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    out.sort(key=lambda r: _started_at_or_none(r) or oldest, reverse=True)
+    return out
+
+
+def _started_at_or_none(rec: RunRecord) -> datetime | None:
+    if not rec.started_at:
+        return None
+    try:
+        parsed = datetime.fromisoformat(rec.started_at)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class FleetState:
@@ -87,7 +163,10 @@ class FleetState:
         fd, tmp = tempfile.mkstemp(dir=str(self.dir), prefix=f"{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(record.model_dump_json(indent=2))
+                # `agent_alive` is a live probe, never a fact about the past: writing it would put
+                # a value in the ledger that is stale the instant it lands. It is recomputed by
+                # whoever reads the record.
+                fh.write(record.model_dump_json(indent=2, exclude=_DERIVED_FIELDS))
             os.replace(tmp, path)  # atomic: a reader sees either the old file or the whole new one
         except BaseException:
             with contextlib.suppress(OSError):
