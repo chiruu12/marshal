@@ -8,12 +8,45 @@ optionally filtered to a `[since, until]` time window over each event's `ts`.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Final, Literal
 
 from pydantic import BaseModel, Field
 
 from .types import AgentResult, RunStatus, UsageRecord, UsageSource
+
+# Canonical usage time-window vocabulary shared by CLI (`marshal usage --window`) and MCP
+# (`usage(window=...)`). Both surfaces must accept exactly this set — never diverge.
+UsageWindow = Literal["session", "day", "week", "month", "all"]
+USAGE_WINDOWS: Final[tuple[UsageWindow, ...]] = ("session", "day", "week", "month", "all")
+
+
+def usage_window_since(
+    window: str,
+    *,
+    session_start: datetime,
+    now: datetime,
+) -> datetime | None:
+    """Map a usage window name to a UTC ``since`` (``None`` for ``"all"``).
+
+    Shared by the CLI and MCP ``usage`` surfaces so the window vocabulary cannot drift.
+    ``session`` means since ``session_start`` (the Fleet's wake for a long-lived MCP server;
+    the one-shot CLI passes ``now`` so it honestly means "since this invocation").
+    """
+    if window == "all":
+        return None
+    if window == "session":
+        return session_start
+    if window == "day":
+        return now - timedelta(hours=24)
+    if window == "week":
+        return now - timedelta(days=7)
+    if window == "month":
+        return now - timedelta(days=30)
+    raise ValueError(
+        f"unknown usage window: {window!r} (use {'|'.join(USAGE_WINDOWS)})"
+    )
 
 
 class UsageEvent(BaseModel):

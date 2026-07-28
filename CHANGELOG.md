@@ -52,6 +52,12 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **PyPI publication prep.** The release workflow publishes via Trusted Publishing (OIDC) only on a
+  published GitHub Release or a manual `workflow_dispatch` — never on a branch push, and with no API
+  token anywhere. Packaging metadata and hatch sdist excludes are tightened so the wheel carries
+  `marshal_engine` plus `py.typed` and `data/prices.yaml` and nothing else (no `tests/`, `.marshal/`,
+  repo `teams/`, `fleet.config.yaml`, or `docs/internal/`).
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
@@ -59,12 +65,11 @@ versions may include breaking API changes until 1.0.
   the run's own base, not the current branch; and both surfaces now say that `failed` is overloaded
   (agent failure vs orphaned at startup) and how to tell them apart. The `cancel_run` reference
   still described the pre-handle identity check and has been corrected.
-- **PyPI publication prep.** Release workflow publishes via Trusted Publishing (OIDC) only on a
-  published GitHub Release or manual `workflow_dispatch` (never on branch push); packaging metadata
-  / hatch sdist excludes tightened for a clean wheel (`marshal_engine` + `py.typed` +
-  `data/prices.yaml`).
-
-### Documentation
+- **Marshal ↔ Chauffeur freeze line (#49).** Document the mechanism-vs-judgment boundary:
+  engine inventory (worktrees, run loop, ledger, primitives), what stays in Skills/Chauffeur,
+  grandfathered sequencers (`workflow.py`, `teams.py`), the three-question admission test, and
+  what Chauffeur is expected to replace. Normative detail in `docs/chauffeur-future.md`; inventory
+  table in `docs/design.md` §12.
 - **Release process for PyPI.** `CONTRIBUTING.md` documents version bumps, promoting CHANGELOG
   `[Unreleased]`, artifact smoke-checks (`uv build` + throwaway venv `marshal --version`), and the
   one-time PyPI Trusted Publisher setup (`marshal`, fallback `marshal-orchestrator`).
@@ -114,6 +119,10 @@ versions may include breaking API changes until 1.0.
   variable inherited from the driver/MCP process (not just `VIRTUAL_ENV`/`PYTHONHOME`), so worker
   agents' test suites and `marshal` CLI invocations resolve the worktree instead of the driver's
   repo/config. Callers can still pass `MARSHAL_*` values via `extra`.
+- **CLI and MCP `usage` windows reconciled.** Both surfaces accept the same set
+  (`session|day|week|month|all`) via a shared `usage_window_since` helper. CLI gains `session`
+  (honestly "since this invocation" — help + human output state the caveat; no long-lived Fleet);
+  MCP gains `day` (last 24h). Existing options kept so callers do not break.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.

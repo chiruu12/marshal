@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeVar
 
@@ -41,6 +41,7 @@ from .env import merge_user_path
 from .scaffold import scaffold_fleet_config
 from .service import MarshalService
 from .teams import TeamSubject
+from .usage import UsageWindow, usage_window_since
 from .workspaces import (
     DEFAULT_WORKSPACE,
     WorkspaceDef,
@@ -123,19 +124,6 @@ def build_service() -> MarshalService:
         missing_config="legacy",
         config_warnings="plain",
     )
-
-
-def _window_since(session_start: datetime, now: datetime, window: str) -> datetime | None:
-    """Map a `usage` window name to the [since, now) start (UTC). None for "all" (no filter)."""
-    if window == "all":
-        return None
-    if window == "session":
-        return session_start
-    if window == "week":
-        return now - timedelta(days=7)
-    if window == "month":
-        return now - timedelta(days=30)
-    raise ValueError(f"unknown usage window: {window!r} (use session|week|month|all)")
 
 
 def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
@@ -598,10 +586,11 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     @app.tool()
     async def usage(
         window: Annotated[
-            Literal["session", "week", "month", "all"],
+            UsageWindow,
             Field(description=(
-                "Time window: 'session' (since the MCP server started - the Fleet's session_start), "
-                "'week' (last 7d), 'month' (last 30d), 'all' (the full ledger, default). The "
+                "Time window: 'session' (since the MCP server started - the Fleet's "
+                "session_start), 'day' (last 24h), 'week' (last 7d), 'month' (last 30d), "
+                "'all' (the full ledger, default). Same set as `marshal usage --window`. The "
                 "resolved window and `since` are echoed back in the response."
             )),
         ] = "all",
@@ -615,7 +604,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         `enforce: true` may refuse subsequent matching spawns on that workspace)."""
         svc = await offload(registry.get, workspace)
         now = datetime.now(timezone.utc)
-        since = _window_since(svc.session_start, now, window)
+        since = usage_window_since(window, session_start=svc.session_start, now=now)
         summary = await offload(svc.usage, since, None)
         budgets = await offload(svc.budget_status, now)
         payload = {

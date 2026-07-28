@@ -201,7 +201,7 @@ the log store is best-effort and never breaks a finished run.
 
 Apply a local `(backend, model) → price` table for backends that report tokens but not cost.
 **Tag every record `source`** so estimated/scraped costs are auditable and never presented as ground truth.
-Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via `--window day|week|month|all` (CLI) or `window session|week|month|all` (MCP). The MCP `usage` tool's `window` (`session` / `week` / `month` / `all`) maps to a `since`; the Fleet stamps its `session_start` at process start, so a driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
+Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via the shared `session|day|week|month|all` vocabulary (`usage_window_since` in `usage.py`). MCP `session` maps to the Fleet's `session_start` (stamped at process start); CLI `session` is since that invocation (no long-lived Fleet). A driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
 
 **Budgets (soft-warn default; optional hard refuse).** An optional top-level `budgets:` list in
 `fleet.config.yaml` declares $ caps per scope (a `backend:`, a `client:`, or the whole fleet when
@@ -446,6 +446,36 @@ benchmark). **V2** (role-routing engine, policy engine, comparison reports/dashb
 budgets) and **V3** (auto routing recommendations, historical provider scoring, org policy,
 approvals, multi-repo) are post-v0. Design the data model so V2 reporting is a *query, not a rewrite*.
 Keep V1 focused - the #1 risk is becoming "yet another agent framework."
+
+---
+
+## 12. Marshal ↔ Chauffeur freeze line
+
+**Rule:** the engine is **mechanism** (spawn, monitor, collect, integrate, usage); **judgment**
+(decompose, route, prompt, review, merge) lives in **Skills** today and **Chauffeur** later.
+Full rationale, module inventory, decision rule, and what Chauffeur replaces:
+[`docs/chauffeur-future.md`](chauffeur-future.md#the-freeze-line-mechanism-vs-judgment).
+
+**Admission test for borderline engine features:** does the code add a **new execution path** (spawn,
+git write, ledger write the primitives did not already have)? Does it **decide on the user's behalf**
+(route, verdict, auto-merge, dynamic recall)? Features that pass both negatives — they only
+**sequence existing primitives** and leave judgment to the caller — may live in the engine (see
+`workflow.py`, `teams.py`).
+
+### Inventory (borderline + ruling)
+
+| Feature | Location | Ruling | Rationale |
+|---|---|---|---|
+| Declarative YAML workflows | `workflow.py` | **Mechanism (grandfathered)** | Phases map to `run_many` / `run_agent` / `collect_run` / `integrate`; runner adds no spawn/git/ledger path; `auto: false` default keeps merge judgment with the driver. |
+| Adversarial review teams | `teams.py` | **Mechanism (grandfathered)** | One `run_many` over read-only roles; returns reports only — **no verdict parsing** (forgery-safe); driver decides. |
+| Static worker context prefix | `service.py` `_compose_goal` | **Mechanism** | Prepends fixed preamble + config `context.worker`; not dynamic recall or routing. |
+| Registry cross-workspace `run_many` | `workspaces.py` | **Mechanism (MCP layer)** | Shared thread pool + concurrency cap only; per-workspace config, worktrees, and ledgers stay isolated. |
+| Memory / recall injection | *(extracted)* | **Judgment (out of core)** | Context routing by recall belongs above the engine; preserved on `feature/marshal-recall-cognee`. |
+| Task decomposition | Skills (`marshal-orchestrate`) | **Judgment** | Driver plans subtasks; engine runs what it is told. |
+| Model / backend routing | Driver + config | **Judgment** | `TaskSpec.role` is metadata; no engine role→client router. |
+| Review verdict / merge gate | Skills (`marshal-review-gate`) | **Judgment** | Truth table over parsed `REVIEW:` lines; engine never integrates on prose. |
+| Org-wide budgets / spend | — | **Chauffeur (future)** | Per-workspace ledgers by design (§6); no registry merge. |
+| Self-driving workflows | — | **Chauffeur (future)** | Engine executes human-authored YAML; generation is product policy. |
 
 ### Backends in scope (built)
 
