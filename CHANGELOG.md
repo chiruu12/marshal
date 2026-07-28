@@ -17,6 +17,10 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **CLI and MCP `usage` windows reconciled.** Both surfaces accept the same set
+  (`session|day|week|month|all`) via a shared `usage_window_since` helper. CLI gains `session`
+  (honestly "since this invocation" — help + human output state the caveat; no long-lived Fleet);
+  MCP gains `day` (last 24h). Existing options kept so callers do not break.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.

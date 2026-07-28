@@ -338,7 +338,7 @@ mode. Budgets in the payload come from that workspace's `fleet.config.yaml` alon
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `window` | `"session"` \| `"week"` \| `"month"` \| `"all"` | `"all"` | Time window (`session` = since MCP server started). |
+| `window` | `"session"` \| `"day"` \| `"week"` \| `"month"` \| `"all"` | `"all"` | Time window (`session` = since MCP server started / Fleet `session_start`; `day` = last 24h). Same set as `marshal usage --window`. |
 | `workspace` | string \| null | `null` | Target workspace. |
 
 **Returns:**

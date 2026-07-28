@@ -326,11 +326,12 @@ def test_get_run_log_round_trips_via_call_tool(
 def test_usage_window_param_is_in_schema(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The new `window` parameter must be on the tool schema (so a driver can pass session/week/month/all).
+    # The `window` parameter must be on the tool schema with the canonical USAGE_WINDOWS set.
     pytest.importorskip("mcp")
     import asyncio
 
     from marshal_engine.mcp_server import build_app
+    from marshal_engine.usage import USAGE_WINDOWS
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -339,7 +340,7 @@ def test_usage_window_param_is_in_schema(
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
     props = tools["usage"].inputSchema["properties"]
     assert "window" in props
-    assert set(props["window"]["enum"]) == {"session", "week", "month", "all"}
+    assert set(props["window"]["enum"]) == set(USAGE_WINDOWS)
 
 
 def test_usage_window_param_mapping(
@@ -400,6 +401,12 @@ def test_usage_window_param_mapping(
     out_month = _call("month")
     assert out_month["window"] == "month"
     assert out_month["totals"]["runs"] == 1
+
+    # day = last 24h; the 2020 event is excluded
+    out_day = _call("day")
+    assert out_day["window"] == "day"
+    assert out_day["since"] is not None
+    assert out_day["totals"]["runs"] == 1
 
     # session = since = svc.session_start (an event stamped at `now` is within the session window)
     out_session = _call("session")

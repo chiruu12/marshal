@@ -185,6 +185,33 @@ def test_usage_window_flag_is_wired(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert abs(data["totals"]["cost_usd"] - 0.01) < 1e-9
 
 
+def test_usage_session_window_states_cli_caveat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # CLI has no long-lived Fleet: --window session must succeed and plainly say it means
+    # "since this CLI invocation" (typically empty) — not silently return a misleading $0.
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="opencode", cost_usd=0.50, status="succeeded", source="native",
+        ).model_dump_json() + "\n"
+    )
+    ret = cli.main(["usage", "--dir", str(u), "--window", "session"])
+    assert ret == 0
+    out, _ = capsys.readouterr()
+    assert "window=session" in out
+    assert "since this CLI invocation" in out
+    assert "no long-lived Fleet" in out
+    # The ledger event is older than "now" session_start → filtered out (honest empty session).
+    assert "runs=0" in out
+
+
 def test_status_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ret = cli.main(["status", "--json", "--state", str(tmp_path / "runs")])
     assert ret == 0

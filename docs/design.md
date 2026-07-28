@@ -197,7 +197,7 @@ the log store is best-effort and never breaks a finished run.
 
 Apply a local `(backend, model) → price` table for backends that report tokens but not cost.
 **Tag every record `source`** so estimated/scraped costs are auditable and never presented as ground truth.
-Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via `--window day|week|month|all` (CLI) or `window session|week|month|all` (MCP). The MCP `usage` tool's `window` (`session` / `week` / `month` / `all`) maps to a `since`; the Fleet stamps its `session_start` at process start, so a driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
+Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via the shared `session|day|week|month|all` vocabulary (`usage_window_since` in `usage.py`). MCP `session` maps to the Fleet's `session_start` (stamped at process start); CLI `session` is since that invocation (no long-lived Fleet). A driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
 
 **Budgets (soft-warn default; optional hard refuse).** An optional top-level `budgets:` list in
 `fleet.config.yaml` declares $ caps per scope (a `backend:`, a `client:`, or the whole fleet when
