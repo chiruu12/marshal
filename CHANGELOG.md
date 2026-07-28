@@ -74,6 +74,16 @@ versions may include breaking API changes until 1.0.
   retry policy already backs off and retries it, and sending an operator to top up over throttling
   is the wrong remedy.
 
+- **A `context_files` path that is not in the worktree fails the spawn (#73).** A worktree holds
+  tracked files, so a gitignored path — `tmp/`, a build dir, a scratch report — exists in the
+  driver's checkout and simply is not there. The agent was handed a path it could not open; in the
+  reported case it said so, worked from the surrounding prose, and produced something adequate *by
+  luck*, with neither side able to tell it had solved a different problem. The spawn is now refused,
+  naming the missing paths, and the worktree is torn down rather than left behind. Failing is
+  deliberate over silently copying the file in: copying puts untracked content into a checkout whose
+  purpose is to mirror the repo, and `.env` is gitignored too — "copy whatever the caller named" is
+  a way to hand secrets to an agent.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is

@@ -351,6 +351,13 @@ def _capture_svc(repo: Path, backend: _Capture, *, worker: str | None = None) ->
 def test_run_agent_threads_context_files_to_the_task(repo: Path) -> None:
     # context_files is consumed by every backend's prompt; the service must carry it onto the TaskSpec
     # so a driver can actually point a worker at the files it should see.
+    # The files must be TRACKED: a worktree holds tracked files only, and a path that is not
+    # there now fails the spawn rather than reaching the agent as an unopenable path (#73).
+    for name in ("a.py", "b.py"):
+        (repo / name).write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "ctx"], check=True,
+                   capture_output=True)
     backend = _Capture()
     svc = _capture_svc(repo, backend)
     svc.run_agent("worker", "do x", task_id="t1", context_files=["a.py", "b.py"])
