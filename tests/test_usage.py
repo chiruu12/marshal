@@ -176,7 +176,7 @@ def test_usage_windows_match_across_surfaces(
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
-    mcp_windows = set(tools["usage"].inputSchema["properties"]["window"]["enum"])
+    mcp_windows = set(tools["usage"].input_schema["properties"]["window"]["enum"])
     assert mcp_windows == expected
 
 

@@ -135,17 +135,17 @@ def build_service() -> MarshalService:
 
 
 def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
-    """Construct the FastMCP app over a WorkspaceRegistry (backend AND workspace are per-call params).
+    """Construct the MCPServer app over a WorkspaceRegistry (backend AND workspace are per-call params).
 
     Accepts a bare MarshalService too (wrapped as a one-workspace registry) for the single-repo and
     test paths. Each tool is async and offloads its service call to a worker thread via anyio, so a
     blocking run() never holds the event loop - the driver can poll/cancel an in-flight run.
     """
     import anyio.to_thread
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     registry = target if isinstance(target, WorkspaceRegistry) else WorkspaceRegistry.for_service(target)
-    app = FastMCP("marshal")
+    app = MCPServer("marshal")
     # Captured ONCE at construction: mid-session os.environ mutation must not widen authority.
     allow_mcp_registration = os.environ.get(_ALLOW_MCP_REGISTRATION_ENV) == "1"
 
