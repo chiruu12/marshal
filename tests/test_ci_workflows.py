@@ -34,6 +34,17 @@ def _steps(wf: dict[str, Any]) -> list[dict[str, Any]]:
     return steps
 
 
+def _is_version_guard(step: dict[str, Any]) -> bool:
+    """The step that refuses to publish a ref whose version is not the tag.
+
+    Identified by what it reads, not by its name: the ref type (via `env`, since a tag name is
+    untrusted input) plus the built artifact under `dist/`.
+    """
+    run = str(step.get("run") or "")
+    env = str(step.get("env") or "")
+    return ("REF_TYPE" in run or "github.ref_type" in env) and "dist/" in run
+
+
 def test_ci_workflow_is_least_privilege() -> None:
     # Hardening: CI only reads the repo; it must never carry a default-broad write token.
     assert _load(_CI).get("permissions") == {"contents": "read"}
@@ -100,6 +111,37 @@ def test_release_actions_are_pinned_to_commit_shas() -> None:
         )
 
 
+def test_no_release_step_interpolates_untrusted_ref_values_into_a_script() -> None:
+    """A git tag may contain shell metacharacters. Substituting `github.ref_name` (or a
+    `workflow_dispatch` input) into a `run:` body lets a crafted tag execute commands in a job that
+    holds `id-token: write` - i.e. with reach to the publishing credential. Pass them via `env:`
+    and read them as quoted variables instead."""
+    untrusted = ("github.ref_name", "github.event.inputs", "inputs.", "github.head_ref")
+    for step in _steps(_load(_RELEASE)):
+        run = str(step.get("run") or "")
+        for expr in untrusted:
+            assert expr not in run, (
+                f"release.yml step {step.get('name')!r} interpolates {expr!r} into a script; "
+                "pass it through `env:` and reference it as a quoted variable"
+            )
+
+
+def test_release_verifies_the_version_of_the_built_artifact() -> None:
+    """The guard must read the version from the built wheel, not the source tree. hatchling builds
+    from `[project].version`; checking `marshal_engine.__version__` verifies a value the artifact
+    does not necessarily carry, so a drift between them passes the check and publishes a version
+    that does not match the tag - and a PyPI upload cannot be taken back."""
+    guards = [s for s in _steps(_load(_RELEASE)) if _is_version_guard(s)]
+    assert guards, "release.yml has no tag/version guard step"
+    # Comments are stripped: the script may *explain* why it avoids the source version.
+    body = "\n".join(
+        line for s in guards for line in str(s.get("run") or "").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "dist/" in body and ".whl" in body, "the guard does not read the built wheel"
+    assert "__version__" not in body, "the guard reads the source version, not the artifact's"
+
+
 def test_release_refuses_a_ref_whose_version_is_not_the_tag() -> None:
     # workflow_dispatch accepts ANY ref, and a publish cannot be undone: the run must verify it is
     # on a tag and that the built version matches it before the publish step.
@@ -107,11 +149,7 @@ def test_release_refuses_a_ref_whose_version_is_not_the_tag() -> None:
     publish_at = next(
         i for i, s in enumerate(steps) if "pypi-publish" in str(s.get("uses") or "")
     )
-    guards = [
-        i for i, s in enumerate(steps)
-        if "github.ref_type" in str(s.get("run") or "")
-        and "__version__" in str(s.get("run") or "")
-    ]
+    guards = [i for i, s in enumerate(steps) if _is_version_guard(s)]
     assert guards, "release.yml must verify ref_type and the built version before publishing"
     assert min(guards) < publish_at, "the version/tag guard must run BEFORE the publish step"
 

@@ -68,19 +68,34 @@ jobs:
       # tag and the built version is exactly that tag - which also catches the far likelier mistake
       # of cutting a release without bumping `[project].version`.
       - name: Refuse to publish a ref whose version is not the tag
+        # A git tag may legally contain shell metacharacters, so `github.ref_name` reaches the
+        # script through `env` and is only ever read as "$TAG". Interpolating it into the script
+        # body would let a crafted tag run commands here - in a job holding `id-token: write`,
+        # before this very check.
+        env:
+          TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
-          if [ "${{ github.ref_type }}" != "tag" ]; then
-            echo "::error::refusing to publish from ${{ github.ref_type }} '${{ github.ref_name }}' - release from a tag"
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::refusing to publish from $REF_TYPE '$TAG' - release from a tag"
             exit 1
           fi
-          tag="${{ github.ref_name }}"
-          version="$(uv run python -c 'import marshal_engine; print(marshal_engine.__version__)')"
-          if [ "$tag" != "v$version" ] && [ "$tag" != "$version" ]; then
-            echo "::error::tag '$tag' does not match built version '$version' - bump [project].version or retag"
+          # Read the version off the BUILT WHEEL, not the source tree. hatchling builds from
+          # `[project].version` in pyproject.toml, so checking `marshal_engine.__version__` would
+          # verify a value the artifact does not necessarily carry: if the two drift, the guard
+          # passes while PyPI receives a different version than the tag claims.
+          wheel="$(ls dist/*.whl)"
+          version="$(basename "$wheel" | cut -d- -f2)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read a version from the built wheel '$wheel'"
             exit 1
           fi
-          echo "publishing $version from tag $tag"
+          if [ "$TAG" != "v$version" ] && [ "$TAG" != "$version" ]; then
+            echo "::error::tag '$TAG' does not match built version '$version' - bump [project].version or retag"
+            exit 1
+          fi
+          echo "publishing $version from tag $TAG"
 
       - name: Publish to PyPI
         # OIDC trusted publishing — do not add password / API-token secrets.

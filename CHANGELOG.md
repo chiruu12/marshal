@@ -66,7 +66,13 @@ versions may include breaking API changes until 1.0.
   file **as it exists on the selected ref**, so the in-workflow guards can be edited away on a
   branch and PyPI validates only the workflow filename and environment — GitHub Environment
   protection is the one control that does not live inside the ref being published, and is required
-  rather than recommended.
+  rather than recommended. The guard reads the tag through `env:` rather than interpolating
+  `github.ref_name` into the script — a git tag may legally contain shell metacharacters, and a
+  crafted one would otherwise execute commands inside the `id-token: write` job, before the very
+  check meant to stop it. It compares against the version of the **built wheel**, not
+  `marshal_engine.__version__`: hatchling builds from `[project].version`, so checking the source
+  constant would verify a value the artifact need not carry, and a drift between the two would pass
+  the guard while PyPI received a version the tag never claimed.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
