@@ -4,7 +4,7 @@ name: Release
 # workflow_dispatch. Never on push to a branch / tag.
 #
 # Maintainer setup (one-time) for PyPI Trusted Publishing (OIDC) — no API token:
-# 1. Create a GitHub Environment named `pypi` on this repo AND configure protection
+# 1. Create a GitHub Environment named `PYPI` on this repo AND configure protection
 #    rules (required reviewers, deployment branches limited to `v*` tags).
 #    Treat this as REQUIRED, not optional. `workflow_dispatch` runs the workflow
 #    file as it exists ON THE SELECTED REF, so the tag/version guard below — and
@@ -17,7 +17,7 @@ name: Release
 #      Owner:             chiruu12
 #      Repository:        marshal
 #      Workflow:          release.yml
-#      Environment:       pypi
+#      Environment:       PYPI
 # 3. First upload can create the project if you registered a *pending* publisher
 #    before the name exists. Confirm the name is still free (or switch
 #    pyproject `[project].name` to the fallback) before cutting the first release.
@@ -41,7 +41,10 @@ jobs:
   release:
     runs-on: ubuntu-latest
     environment:
-      name: pypi
+      # MUST match the GitHub Environment name EXACTLY - they are case-sensitive, and a mismatch
+      # silently resolves to a different (non-existent) environment, so its protection rules would
+      # not apply and its secrets would not be in scope. The configured environment is `PYPI`.
+      name: PYPI
       url: https://pypi.org/p/marshal
     steps:
       # Every action in this job is pinned by commit SHA. The job holds `id-token: write`, so any

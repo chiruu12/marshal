@@ -85,8 +85,26 @@ def test_release_publishes_with_trusted_publishing_not_a_token_secret() -> None:
         with_block = step.get("with") or {}
         for key in ("password", "user", "api-token"):
             assert key not in with_block
+    # The environment must be SET (it is what carries the required reviewer and the v*-tag-only
+    # deployment policy). Which name it must be is asserted once, in the test below.
     env = wf["jobs"]["release"].get("environment")
-    assert env == "pypi" or (isinstance(env, dict) and env.get("name") == "pypi")
+    assert env, "the release job must run in a protected GitHub Environment"
+
+
+def test_release_environment_name_matches_the_configured_one() -> None:
+    """The environment name is case-sensitive and a mismatch fails SILENTLY: the run resolves to a
+    different (non-existent) environment, so its required reviewers and `v*`-tag-only deployment
+    policy do not apply and its secrets are not in scope. Everything that makes publishing safe
+    hangs off this string matching, and nothing in CI would otherwise notice.
+
+    The configured environment on this repo is `PYPI` (verified via the API). Change both together.
+    """
+    env = _load(_RELEASE)["jobs"]["release"].get("environment")
+    name = env.get("name") if isinstance(env, dict) else env
+    assert name == "PYPI", (
+        f"release.yml targets environment {name!r}; the repo's configured environment is 'PYPI' "
+        "and the names must match exactly"
+    )
 
 
 def test_all_workflow_actions_are_pinned() -> None:

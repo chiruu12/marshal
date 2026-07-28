@@ -66,7 +66,11 @@ versions may include breaking API changes until 1.0.
   file **as it exists on the selected ref**, so the in-workflow guards can be edited away on a
   branch and PyPI validates only the workflow filename and environment — GitHub Environment
   protection is the one control that does not live inside the ref being published, and is required
-  rather than recommended. The guard reads the tag through `env:` rather than interpolating
+  rather than recommended. The workflow targets the `PYPI` environment, matched to the one actually
+  configured on the repo (required reviewer, plus a deployment policy limited to `v*` **tags** with
+  no branch policies). A contract test pins that name: environment names are case-sensitive and a
+  mismatch fails *silently* — the run resolves to a different, non-existent environment, so its
+  reviewers and tag policy do not apply and its secrets are out of scope. The guard reads the tag through `env:` rather than interpolating
   `github.ref_name` into the script — a git tag may legally contain shell metacharacters, and a
   crafted one would otherwise execute commands inside the `id-token: write` job, before the very
   check meant to stop it. It compares against the version of the **built wheel**, not
