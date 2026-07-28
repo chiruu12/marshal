@@ -27,16 +27,24 @@ def _opts(**kw: object) -> RunOpts:
 
 
 def test_map_permission(backend: GeminiBackend) -> None:
-    assert backend.map_permission(PermissionMode.READ_ONLY) == ["--approval-mode", "plan"]
     assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--approval-mode", "yolo"]
     assert backend.map_permission(PermissionMode.YOLO) == ["--approval-mode", "yolo"]
 
 
-def test_no_mode_maps_to_a_prompting_approval_mode(backend: GeminiBackend) -> None:
-    """`default` and `auto_edit` both wait for a human: `auto_edit` auto-approves edits but still
-    asks before shell and other non-edit tools. Headless has closed stdin and would hang."""
-    for mode in PermissionMode:
-        assert set(backend.map_permission(mode)) & {"default", "auto_edit"} == set()
+def test_read_only_is_refused_rather_than_faked(backend: GeminiBackend) -> None:
+    """Gemini has no tier that reliably denies writes headless: `plan` auto-approves
+    `exit_plan_mode` and then switches to YOLO to implement the plan, and a settings flag can
+    silently demote it to `default`. Review panels route to `read-only`, so quietly mapping it to
+    something writable would defeat a safety boundary - refusing is the honest answer."""
+    assert PermissionMode.READ_ONLY not in backend.capabilities.permission_modes
+    with pytest.raises(ValueError):
+        backend.map_permission(PermissionMode.READ_ONLY)
+
+
+def test_no_mode_maps_to_a_prompting_or_escalating_approval_mode(backend: GeminiBackend) -> None:
+    """`default`/`auto_edit` wait on a human; `plan` escalates to yolo on plan exit."""
+    for mode in backend.capabilities.permission_modes:
+        assert set(backend.map_permission(mode)) & {"default", "auto_edit", "plan"} == set()
 
 
 def test_build_invocation_basic(backend: GeminiBackend) -> None:
@@ -50,13 +58,13 @@ def test_build_invocation_basic(backend: GeminiBackend) -> None:
     assert "--skip-trust" in argv
 
 
-def test_build_invocation_model_and_readonly(backend: GeminiBackend) -> None:
+def test_build_invocation_model(backend: GeminiBackend) -> None:
     argv = backend.build_invocation(
         TaskSpec(id="t1", goal="inspect"),
-        _opts(permission=PermissionMode.READ_ONLY, model="flash"),
+        _opts(permission=PermissionMode.YOLO, model="flash"),
     )
     assert "--model" in argv and "flash" in argv
-    assert "plan" in argv
+    assert "yolo" in argv
 
 
 def test_build_invocation_resume(backend: GeminiBackend) -> None:
@@ -94,8 +102,8 @@ def test_parse_output_success(backend: GeminiBackend) -> None:
                         "tokens": {"prompt": 100, "candidates": 200, "cached": 50}
                     }
                 },
-                "sessionId": "abc-123",
             },
+            "session_id": "abc-123",  # top level, where the CLI's JSON formatter writes it
             "error": None,
         }
     )
@@ -156,6 +164,14 @@ def test_parse_output_unparseable_is_failure(backend: GeminiBackend) -> None:
     res = backend.parse_output("not json at all", "stderr", 1)
     assert res.status is RunStatus.FAILED
     assert res.exit_code == 1
+
+
+def test_a_top_level_session_id_is_what_resume_gets(backend: GeminiBackend) -> None:
+    """REGRESSION: the id was read only out of `stats`, but the CLI writes it at the top level and
+    `stats` carries per-model metrics. Every real run parsed `session_id=None`, so `--resume` was
+    never given anything to resume and `sessions=True` was an overclaim."""
+    stdout = json.dumps({"response": "ok", "session_id": "top-1", "stats": {}, "error": None})
+    assert backend.parse_output(stdout, "", 0).session_id == "top-1"
 
 
 def test_extract_session_id_nested_session() -> None:

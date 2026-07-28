@@ -127,7 +127,13 @@ versions may include breaking API changes until 1.0.
 ### Added
 - **Gemini CLI backend adapter (`backends/gemini.py`).** Headless `gemini -p` with
   `--output-format json`; token counts parsed from JSON `stats` with cost `unavailable` (no
-  fabricated $0). safe-edit maps to `--approval-mode yolo`, not `auto_edit`: `auto_edit`
+  fabricated $0). **`read-only` is unsupported and raises** — Gemini has no tier that reliably
+  denies writes headless: `plan` auto-approves `exit_plan_mode` in non-interactive runs and then
+  switches to YOLO to implement the plan, and a settings flag can silently demote it to `default`.
+  Review panels route to `read-only`, so mapping it to something writable would defeat a safety
+  boundary rather than merely degrade it. The session id is read from the top level of the JSON
+  object, where the CLI writes it, so `--resume` actually receives one. safe-edit maps to
+  `--approval-mode yolo`, not `auto_edit`: `auto_edit`
   auto-approves edit tools but still prompts before shell and other non-edit tools, which
   deadlocks a headless run with closed stdin — so the git worktree is the boundary, the same
   stance as Command Code and Goose. Registered
