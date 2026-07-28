@@ -18,9 +18,12 @@ Documented `stats` shapes vary by CLI version: newer builds nest per-model token
 fabricates cost — Gemini JSON documents tokens but not USD, so usage stays `unavailable` for
 cost even when tokens are present.
 
-`--approval-mode default` prompts for tool approval and deadlocks headless runs; only the three
-non-prompting modes below are mapped. `permission_fidelity` is `boundary-only` (no Marshal deny
-layer; worktree isolation is the safety boundary).
+`--approval-mode default` prompts for tool approval and deadlocks headless runs, and so does
+`auto_edit`: it auto-approves edit tools but still asks before shell and other non-edit tools, and
+a headless run with closed stdin has nothing to answer with. So safe-edit maps to `yolo` with the
+git worktree as the enforced boundary - the same stance as Command Code and Goose, where the
+headless auto-accept tier is likewise unusable. `permission_fidelity` is `boundary-only` (no
+Marshal deny layer; worktree isolation is the safety boundary).
 
 Doctor stays path-only: no cheap authenticated-only probe is wired (verify `gemini auth` or
 equivalent against a real install before adding `account_info`/`verifies_auth`).
@@ -61,9 +64,12 @@ class GeminiBackend(CodingAgentBackend):
     )
 
     # Marshal tiers -> Gemini `--approval-mode` (documented choices; verify against `gemini --help`).
+    # safe-edit deliberately does NOT use `auto_edit`: it prompts for non-edit tools, which is a
+    # deadlock headless (see the module docstring). VERIFY: `plan` is absent from the official
+    # `--approval-mode` list and appears only in newer material, so read-only is version-sensitive.
     _PERMISSION: dict[PermissionMode, list[str]] = {
         PermissionMode.READ_ONLY: ["--approval-mode", "plan"],
-        PermissionMode.SAFE_EDIT: ["--approval-mode", "auto_edit"],
+        PermissionMode.SAFE_EDIT: ["--approval-mode", "yolo"],
         PermissionMode.YOLO: ["--approval-mode", "yolo"],
     }
 

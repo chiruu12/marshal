@@ -28,8 +28,15 @@ def _opts(**kw: object) -> RunOpts:
 
 def test_map_permission(backend: GeminiBackend) -> None:
     assert backend.map_permission(PermissionMode.READ_ONLY) == ["--approval-mode", "plan"]
-    assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--approval-mode", "auto_edit"]
+    assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--approval-mode", "yolo"]
     assert backend.map_permission(PermissionMode.YOLO) == ["--approval-mode", "yolo"]
+
+
+def test_no_mode_maps_to_a_prompting_approval_mode(backend: GeminiBackend) -> None:
+    """`default` and `auto_edit` both wait for a human: `auto_edit` auto-approves edits but still
+    asks before shell and other non-edit tools. Headless has closed stdin and would hang."""
+    for mode in PermissionMode:
+        assert set(backend.map_permission(mode)) & {"default", "auto_edit"} == set()
 
 
 def test_build_invocation_basic(backend: GeminiBackend) -> None:
@@ -39,7 +46,7 @@ def test_build_invocation_basic(backend: GeminiBackend) -> None:
     assert argv[0] == "gemini"
     assert argv[1:3] == ["-p", "do the thing"]
     assert "--output-format" in argv and "json" in argv
-    assert "--approval-mode" in argv and "auto_edit" in argv
+    assert "--approval-mode" in argv and "yolo" in argv
     assert "--skip-trust" in argv
 
 
@@ -128,6 +135,21 @@ def test_parse_output_error_object_is_failure(backend: GeminiBackend) -> None:
     res = backend.parse_output(stdout, "", 1)
     assert res.status is RunStatus.FAILED
     assert "not logged in" in (res.error or "")
+
+
+def test_an_error_object_fails_the_run_even_on_exit_zero(backend: GeminiBackend) -> None:
+    """The error object is authoritative, not the exit code: a CLI that reports a failure in its
+    JSON body and still exits 0 must not be recorded as a success."""
+    stdout = json.dumps(
+        {
+            "response": "partial text",
+            "stats": {},
+            "error": {"type": "QuotaError", "message": "quota exhausted"},
+        }
+    )
+    res = backend.parse_output(stdout, "", 0)
+    assert res.status is RunStatus.FAILED
+    assert "quota exhausted" in (res.error or "")
 
 
 def test_parse_output_unparseable_is_failure(backend: GeminiBackend) -> None:
