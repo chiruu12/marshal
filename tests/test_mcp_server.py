@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typing import Any
+
 import pytest
 
 from marshal_engine.config import ConfigError
@@ -226,6 +228,52 @@ def test_list_models_round_trips_via_call_tool(
     app = build_app(build_service())
     result = asyncio.run(app.call_tool("list_models", {}))
     assert result is not None
+
+
+def test_status_is_compact_and_reports_what_it_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One observed `status` reply was ~395k characters - mostly agent prose the caller had not
+    asked for - so its only consumer (a context-bounded agent) stopped calling it. It is compact by
+    default and pages, and it must never cap silently: a driver that reads a truncated list as the
+    whole ledger draws exactly the wrong conclusion."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+    from marshal_engine.state import FleetState, RunRecord
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    runs = FleetState(repo / ".marshal" / "runs")
+    for i in range(5):
+        runs.add(
+            RunRecord(
+                run_id=f"r{i}.echo.x",
+                task_id="t" if i < 3 else "other",
+                backend="echo",
+                status="succeeded",
+                started_at=f"2026-01-0{i + 1}T00:00:00+00:00",
+                text="x" * 5000,  # the bulk this view exists to drop
+            )
+        )
+    app = build_app(build_service())
+
+    def call(**kw: object) -> dict[str, Any]:
+        _, payload = asyncio.run(app.call_tool("status", kw))
+        return payload  # type: ignore[return-value]
+
+    out = call(limit=2)
+    assert out["returned"] == 2 and out["matched"] == 5
+    assert out["truncated"] is True, "a capped list must say so, never look complete"
+    assert out["runs"][0]["run_id"] == "r4.echo.x", "newest first"
+    assert "text" not in out["runs"][0], "the compact view still carried the bulky field"
+    assert out["runs"][0]["has_text"] is True, "cannot tell an omitted field from an empty one"
+
+    assert call(task_id="t")["matched"] == 3
+    assert call(status="failed")["matched"] == 0
+    assert "text" in call(limit=1, full=True)["runs"][0]
 
 
 def test_duration_param_is_wired_into_spawn_schema(

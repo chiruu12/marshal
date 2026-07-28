@@ -1286,9 +1286,9 @@ def test_mcp_round_trip_run_query_cancel(tmp_path: Path) -> None:
     col = _call(app, "collect_run", {"run_id": rid})
     assert col["workspace"] == "beta" and col["run_id"] == rid
 
-    allruns = _call(app, "status", {})  # aggregates across workspaces
+    allruns = _call(app, "status", {})["runs"]  # aggregates across workspaces
     assert any(r["run_id"] == rid and r["workspace"] == "beta" for r in allruns)
-    assert _call(app, "status", {"workspace": "default"}) == []  # nothing ran in default
+    assert _call(app, "status", {"workspace": "default"})["runs"] == []  # nothing ran in default
 
     us = _call(app, "usage", {"workspace": "beta"})
     assert us["workspace"] == "beta" and us["totals"]["runs"] == 1

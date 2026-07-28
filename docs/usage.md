@@ -260,7 +260,7 @@ marshal backends           # list backends, availability, and permission_fidelit
 marshal models             # list the optional `models:` catalog from fleet.config.yaml
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
 marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once
-marshal status             # list fleet runs (raw ledger read - see the note below)
+marshal status             # list runs, newest first (--limit/--status/--task-id/--since-hours/--full)
 marshal logs <run_id>      # print the persisted stdout/stderr for one run (full, not truncated)
 marshal clean              # tear down finished runs' worktrees + branches (--scope/--dry-run/--older-than)
 marshal usage              # per-provider usage summary (--window day|week|month|all, --json)

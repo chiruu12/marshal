@@ -15,7 +15,8 @@ import contextlib
 import os
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,68 @@ class RunRecord(BaseModel):
 #: facts about what happened; these are answers about right now, and storing one would guarantee it
 #: is wrong later.
 _DERIVED_FIELDS = {"agent_alive"}
+
+
+#: Unbounded free text on a run record. A listing carries one row per run, so these dominate its
+#: size - one observed `status` reply was ~395k characters, most of it agent prose the caller had
+#: not asked for. Omitted from a listing by default and fetched per run with `get_run`.
+_BULKY_FIELDS = ("text", "verify_output")
+
+
+def compact_run(rec: RunRecord) -> dict[str, Any]:
+    """A run as a dict without its unbounded text fields, plus flags saying what was dropped.
+
+    The flags matter: a caller must be able to tell "this run produced no final message" from
+    "the message exists and this view omitted it", or an empty `text` reads as a fact about the
+    run rather than about the view.
+    """
+    data = rec.model_dump(mode="json")
+    for field in _BULKY_FIELDS:
+        value = data.pop(field, None)
+        data[f"has_{field}"] = bool(value)
+    return data
+
+
+def filter_runs(
+    records: Sequence[RunRecord],
+    *,
+    status: str | None = None,
+    task_id: str | None = None,
+    since: datetime | None = None,
+) -> list[RunRecord]:
+    """Records matching every supplied filter, newest first (undated runs sort last).
+
+    ``since`` compares against the run's start; a record with no parseable ``started_at`` is kept,
+    because an unreadable timestamp is not evidence the run falls outside the window.
+    """
+    def in_window(rec: RunRecord) -> bool:
+        if since is None:
+            return True
+        started = _started_at_or_none(rec)
+        # An unreadable timestamp is not evidence the run falls outside the window.
+        return started is None or started >= since
+
+    out = [
+        r for r in records
+        if (status is None or r.status == status)
+        and (task_id is None or r.task_id == task_id)
+        and in_window(r)
+    ]
+    # Undated runs sort last in a newest-first list, so they never displace a dated run from a
+    # `limit`. `datetime.min` only orders them; it is never shown as a time.
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    out.sort(key=lambda r: _started_at_or_none(r) or oldest, reverse=True)
+    return out
+
+
+def _started_at_or_none(rec: RunRecord) -> datetime | None:
+    if not rec.started_at:
+        return None
+    try:
+        parsed = datetime.fromisoformat(rec.started_at)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class FleetState:

@@ -286,9 +286,25 @@ Read-only diff collection; nothing is merged.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Scope to one workspace; omit to list **all** workspaces. |
+| `limit` | int (1–500) | `50` | Max runs, newest first. |
+| `status` | string \| null | `null` | Only runs with this exact status. |
+| `task_id` | string \| null | `null` | Only runs with this `task_id`. |
+| `since_hours` | float \| null | `null` | Only runs started within N hours. A run whose start time is unreadable is **kept** — a missing timestamp is not evidence it falls outside the window. |
+| `full` | bool | `false` | Include `text` and `verify_output`. |
 
-**Returns:** `list[RunRecord + workspace]`. Omitting `workspace` aggregates run *records* across
-workspaces for visibility; it is **not** a merged usage/budget view (see `usage`).
+**Returns:** `{ runs, returned, matched, truncated, compact }`, newest first.
+
+**Compact by default.** `text` and `verify_output` are unbounded and dominate a listing's size
+(one observed reply was ~395k characters), so they are replaced by `has_text` /
+`has_verify_output` flags — a caller must be able to tell "this run produced no message" from
+"this view omitted it". Use `get_run` for one run's full text, or `full=true`.
+
+**Never silently capped.** `matched` is the number of runs that passed the filters and `returned`
+is how many came back, with `truncated` saying whether anything was dropped. A driver that read a
+capped list as the whole ledger would draw exactly the wrong conclusion.
+
+Omitting `workspace` aggregates run *records* across workspaces for visibility; it is **not** a
+merged usage/budget view (see `usage`).
 
 ### `cancel_run`
 

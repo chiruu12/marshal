@@ -1306,9 +1306,13 @@ class Fleet:
             # process did not start stamps `cancelled` without being able to signal, so the agent
             # can still be writing this worktree. Pulling it out from under a live writer loses its
             # work and leaves git confused, so skip it and say why.
-            if _pid_is_verifiably_ours(rec):
+            # Fail OPEN here, unlike the `kill` instruction on the record. The two questions have
+            # opposite costs: naming an unverified pid could send an operator after an unrelated
+            # process, but refusing to delete a worktree that MIGHT still have a writer only leaves
+            # a directory behind - deleting one that does destroys work in progress.
+            if _pid_is_still_ours(rec):
                 result.skipped.append(
-                    {"run_id": rec.run_id, "reason": f"agent still running at pid {rec.pid}"}
+                    {"run_id": rec.run_id, "reason": f"agent may still be running at pid {rec.pid}"}
                 )
                 continue
             if dry_run:
@@ -1369,15 +1373,25 @@ class Fleet:
         # guessing at a pid we do not own risks SIGTERM to an unrelated process group.
         handle = _inflight_handle(self.state.dir, run_id)
         if handle is None:
+            # Three cases, and the pid is kept in two of them. Clearing it is what once left an
+            # operator with no handle on a process that was still writing, and left `clean` with no
+            # reason to spare that worktree - so the pid only goes when the process is gone.
             if _pid_is_verifiably_ours(rec):
-                # The agent outlived the process that started it and is STILL RUNNING. Marshal
-                # cannot signal it (the pid belongs to no child of ours), but clearing the pid here
-                # would delete the only handle an operator has on it while the record claims the
-                # run is over. Keep the pid and say plainly that the process is still alive.
+                # Alive, and provably our agent: safe to name in an instruction to a human.
                 cancel_error = (
                     f"fleet: cancelled the record only - the agent is STILL RUNNING at pid "
                     f"{rec.pid} and was started by another process, so Marshal cannot signal it "
                     f"safely. Its worktree may still be written. End it with: kill -TERM -{rec.pid}"
+                )
+            elif _pid_is_still_ours(rec):
+                # Alive, but the identity could not be confirmed - it may be a recycled pid. Keep
+                # it as evidence (so `clean` still spares the worktree) without telling anyone to
+                # kill it, which could target an unrelated process.
+                cancel_error = (
+                    f"fleet: cancelled the record only - this run was started by another process "
+                    f"and something is still alive at pid {rec.pid}, but Marshal cannot confirm it "
+                    f"is the agent. Its worktree may still be written; verify the process before "
+                    f"ending it."
                 )
             else:
                 cancel_extra["pid"] = None

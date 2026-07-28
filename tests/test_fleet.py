@@ -2284,7 +2284,9 @@ def test_cancel_does_not_signal_a_run_this_process_did_not_start(
         assert killed == [], "unverifiable identity must not be signalled (fail closed)"
         assert rec.status == RunStatus.CANCELLED.value
         assert rec.error and "started by another process" in rec.error
-        assert rec.pid is None
+        # The pid stays: the process is alive and it is the only handle anyone has on it.
+        # Only a pid whose process is GONE is cleared - then there is nothing to point at.
+        assert rec.pid == holder.pid
     finally:
         holder.terminate()
         holder.wait(timeout=10)
@@ -2775,7 +2777,35 @@ def test_an_unverifiable_pid_is_never_named_in_a_kill_instruction(repo: Path) ->
         )
         rec = fleet.cancel_run("unverif.writer.x")
         assert "kill -TERM" not in (rec.error or ""), "named a pid it could not verify"
-        assert rec.pid is None
+        # Kept as evidence even though it could not be verified: `clean` needs it to know this
+        # worktree may still have a writer. Erasing it is what let a live agent's work be deleted.
+        assert rec.pid == holder.pid
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_clean_spares_a_worktree_whose_agent_is_alive_but_unverifiable(repo: Path) -> None:
+    """The two pid questions have opposite costs, and the first fix used one answer for both.
+    Naming an unverified pid in a `kill` instruction could send an operator after an unrelated
+    process, so that fails CLOSED. Deleting a worktree that might still have a writer destroys work
+    in progress, so THIS fails OPEN. With no recorded start time the identity cannot be confirmed -
+    and the worktree must still be spared."""
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="unverifwt.writer.x",
+                task_id="unverifwt",
+                backend="writer",
+                status="cancelled",
+                pid=holder.pid,  # alive, but nothing to verify it against
+                ended_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        result = fleet.clean()
+        assert "unverifwt.writer.x" not in result.removed, "deleted a possibly-live worktree"
     finally:
         holder.kill()
         holder.wait()
@@ -2798,7 +2828,7 @@ def test_clean_refuses_a_worktree_whose_agent_is_still_running(repo: Path) -> No
         )
     )
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod, "_pid_is_verifiably_ours", lambda rec: True)
+    monkey.setattr(fleet_mod, "_pid_is_still_ours", lambda rec: True)
     try:
         result = fleet.clean()
     finally:
@@ -2806,7 +2836,7 @@ def test_clean_refuses_a_worktree_whose_agent_is_still_running(repo: Path) -> No
 
     assert "livewt.writer.x" not in result.removed
     assert any(
-        s["run_id"] == "livewt.writer.x" and "still running" in s["reason"] for s in result.skipped
+        s["run_id"] == "livewt.writer.x" and "still be running" in s["reason"] for s in result.skipped
     ), result.skipped
 
 

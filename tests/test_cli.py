@@ -190,8 +190,10 @@ def test_status_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     assert ret == 0
     out, _ = capsys.readouterr()
     data = json.loads(out)
-    assert isinstance(data, list)
-    assert data == []
+    # An envelope, not a bare list: a paged listing has to be able to say how much it left out.
+    assert data["runs"] == []
+    assert data["matched"] == 0 and data["returned"] == 0
+    assert data["truncated"] is False
 
 
 def test_status_human_no_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

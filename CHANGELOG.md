@@ -52,6 +52,14 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **`status` can be filtered and paged, and is compact by default (#72).** It returned every run
+  ever recorded, whole — one observed reply was ~395k characters, mostly agent prose the caller had
+  not asked for — so its only consumer, a context-bounded agent, stopped calling it and issued N
+  `get_run` calls instead. Both the MCP tool and `marshal status` now take `limit` (newest first),
+  `status`, `task_id`, and `since_hours`, and omit `text`/`verify_output` unless asked, replacing
+  them with `has_text` / `has_verify_output` so an omitted field is never misread as an empty one.
+  The reply reports `matched` alongside `returned`: a capped list says so rather than looking like
+  the whole ledger.
 - **`agent_alive` on the run record (#71).** A driver reading `running` could not tell "still
   working" from "finished, outcome not yet written" — the field report that prompted this had the
   driver conclude a run failed when it had succeeded, and say so. `status`/`get_run` now derive
@@ -104,7 +112,10 @@ versions may include breaking API changes until 1.0.
   says the agent is still running and gives the `kill` command, and `clean` refuses to remove that
   worktree while the process lives. Identity here fails **closed** (pid *and* recorded start time
   must match): reaping assumes ambiguity means "still ours" so it never kills a live run, but
-  pointing a human at an unverified pid could send them after a recycled one. `SECURITY.md` claimed
+  pointing a human at an unverified pid could send them after a recycled one. `clean` takes the
+  opposite bias on purpose: refusing to remove a worktree that *might* still have a writer only
+  leaves a directory behind, while removing one that does destroys work in progress — so it spares
+  the worktree of any run whose pid is still alive, verified or not. `SECURITY.md` claimed
   reconciliation stamps such runs terminal — it does not, and never did.
 - **`fleet.lock` identity matches run-record identity (#88).** The lock stored a bare pid while run
   records had already learned that a pid is not an identity. If a holder died and the OS handed its
