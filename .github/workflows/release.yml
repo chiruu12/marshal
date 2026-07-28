@@ -1,27 +1,58 @@
 name: Release
 
-# Cuts a GitHub Release with the built sdist + wheel when a v* tag is pushed.
-# Install-from-source for now; PyPI trusted publishing can be added here later.
+# Publish to PyPI only when a GitHub Release is published, or via manual
+# workflow_dispatch. Never on push to a branch / tag.
+#
+# Maintainer setup (one-time) for PyPI Trusted Publishing (OIDC) — no API token:
+# 1. Create a GitHub Environment named `PYPI` on this repo AND configure protection
+#    rules (required reviewers, deployment branches limited to `v*` tags).
+#    Treat this as REQUIRED, not optional. `workflow_dispatch` runs the workflow
+#    file as it exists ON THE SELECTED REF, so the tag/version guard below — and
+#    the gate above it — can be edited away on an attacker-controlled branch. PyPI
+#    validates the workflow *filename* and environment, never the step contents.
+#    Environment protection is the only gate that lives outside the ref being built.
+# 2. On https://pypi.org/manage/account/publishing/ (or the project’s Publishing
+#    settings once it exists), add a Trusted Publisher:
+#      PyPI project name: marshal   # or marshal-orchestrator if `marshal` is taken
+#      Owner:             chiruu12
+#      Repository:        marshal
+#      Workflow:          release.yml
+#      Environment:       PYPI
+# 3. First upload can create the project if you registered a *pending* publisher
+#    before the name exists. Confirm the name is still free (or switch
+#    pyproject `[project].name` to the fallback) before cutting the first release.
+
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to release (e.g. v0.0.1)"
-        required: true
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write  # required for PyPI Trusted Publishing (OIDC)
+
+# A PyPI version can never be replaced, so two runs racing the same upload is not a retry - it is
+# one confusing partial failure. Never cancel in progress: killing a run mid-upload is worse.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment:
+      # MUST match the GitHub Environment name EXACTLY - they are case-sensitive, and a mismatch
+      # silently resolves to a different (non-existent) environment, so its protection rules would
+      # not apply and its secrets would not be in scope. The configured environment is `PYPI`.
+      name: PYPI
+      url: https://pypi.org/p/marshal
     steps:
-      - uses: actions/checkout@v7
+      # Every action in this job is pinned by commit SHA. The job holds `id-token: write`, so any
+      # step in it can reach the publishing credential - a mutable tag anywhere here is a way in.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: "3.12"
           enable-cache: true
@@ -34,8 +65,44 @@ jobs:
       - name: Build sdist + wheel
         run: uv build
 
-      - name: Create GitHub Release
+      # A publish is irreversible: PyPI never lets a version be replaced. `workflow_dispatch` lets
+      # a maintainer pick ANY ref, so without this a mis-selected branch publishes whatever it
+      # happens to contain under whatever version it happens to declare. Refuse unless the ref is a
+      # tag and the built version is exactly that tag - which also catches the far likelier mistake
+      # of cutting a release without bumping `[project].version`.
+      - name: Refuse to publish a ref whose version is not the tag
+        # A git tag may legally contain shell metacharacters, so `github.ref_name` reaches the
+        # script through `env` and is only ever read as "$TAG". Interpolating it into the script
+        # body would let a crafted tag run commands here - in a job holding `id-token: write`,
+        # before this very check.
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: gh release create "$TAG" dist/* --generate-notes --verify-tag
+          TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::refusing to publish from $REF_TYPE '$TAG' - release from a tag"
+            exit 1
+          fi
+          # Read the version off the BUILT WHEEL, not the source tree. hatchling builds from
+          # `[project].version` in pyproject.toml, so checking `marshal_engine.__version__` would
+          # verify a value the artifact does not necessarily carry: if the two drift, the guard
+          # passes while PyPI receives a different version than the tag claims.
+          wheel="$(ls dist/*.whl)"
+          version="$(basename "$wheel" | cut -d- -f2)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read a version from the built wheel '$wheel'"
+            exit 1
+          fi
+          if [ "$TAG" != "v$version" ] && [ "$TAG" != "$version" ]; then
+            echo "::error::tag '$TAG' does not match built version '$version' - bump [project].version or retag"
+            exit 1
+          fi
+          echo "publishing $version from tag $TAG"
+
+      - name: Publish to PyPI
+        # OIDC trusted publishing — do not add password / API-token secrets.
+        # Pinned to a commit SHA, not the `v1.14.0` tag: a tag is mutable, and this step runs in a
+        # job holding `id-token: write`, so whatever it resolves to can publish as us. Bump the SHA
+        # and the trailing version comment together.
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0

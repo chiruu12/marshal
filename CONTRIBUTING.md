@@ -17,7 +17,8 @@ uv sync --extra mcp --extra dev
 ```
 
 The import package is `marshal_engine` (a top-level package named `marshal` would shadow the stdlib
-builtin). The distribution name is `marshal`.
+builtin). The PyPI distribution name is `marshal` when that name is free; the documented fallback is
+`marshal-orchestrator`.
 
 Useful commands:
 
@@ -133,13 +134,54 @@ Run the gate, then open a PR describing what the new backend supports and its ve
 
 ## Releasing
 
-Cut a release by pushing a `v*` tag (e.g. `v0.1.0`) to `main`. The
-[Release workflow](.github/workflows/release.yml) runs the full gate (pytest with 90% coverage,
-ruff, mypy), builds an sdist and wheel with `uv build`, and publishes them to a GitHub Release with
-auto-generated notes. You can also trigger the workflow manually and supply an existing tag. Bump the
-`version` fields in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to match the
-tag when you cut a release. Marshal is pre-1.0 — minor versions may include breaking changes until
-1.0.
+Marshal is pre-1.0 — minor versions may include breaking changes until 1.0. Publishing to PyPI is a
+**human-gated** action: the [Release workflow](.github/workflows/release.yml) runs only on a
+**published GitHub Release** or a manual `workflow_dispatch` (never on push to a branch). It uses
+PyPI Trusted Publishing (OIDC); there is no long-lived PyPI API token in GitHub secrets.
+
+### Cut a version
+
+1. Bump `version` in `pyproject.toml` and `__version__` in `src/marshal_engine/__init__.py` to the
+   same value (e.g. `0.1.0`). Also bump `.claude-plugin/plugin.json` and
+   `.claude-plugin/marketplace.json` to match.
+2. In `CHANGELOG.md`, promote `## [Unreleased]` to a version heading
+   (`## [0.1.0] - YYYY-MM-DD`) and leave a fresh empty `## [Unreleased]` section above it.
+3. Open a PR with those changes; merge only after the gate is green.
+
+### Verify the artifact before releasing
+
+From a clean checkout of the release commit:
+
+```bash
+uv build
+unzip -l dist/marshal-*-py3-none-any.whl | grep -E 'marshal_engine/(py\.typed|data/prices\.yaml)'
+# Wheel must NOT contain tests/, .marshal/, teams/, or fleet.config.yaml
+tar -tzf dist/marshal-*.tar.gz | head   # sdist must include src/, tests/, pyproject.toml, README, LICENSE
+
+TMP=$(mktemp -d)
+uv venv "$TMP/venv"
+uv pip install --python "$TMP/venv/bin/python" dist/marshal-*-py3-none-any.whl
+"$TMP/venv/bin/marshal" --version   # expect: marshal <version>
+rm -rf "$TMP"
+```
+
+### Publish
+
+1. Confirm the PyPI project name is still available as `marshal`, or change
+   `[project].name` to `marshal-orchestrator` before the first publish (import package stays
+   `marshal_engine`).
+2. Ensure Trusted Publishing is configured on PyPI for this repo’s `release.yml` and the `pypi`
+   GitHub Environment named **`PYPI`** (see the comment block at the top of `.github/workflows/release.yml`). The name is case-sensitive and must match `environment:` in the workflow exactly — a mismatch resolves to a different, non-existent environment, so the protection rules silently do not apply.
+   **Configure that environment’s protection rules** — required reviewers, and deployment branches
+   limited to `v*` tags. This is not belt-and-braces: `workflow_dispatch` runs the workflow file as
+   it exists on the ref you select, so the in-workflow tag/version guard can be removed on a branch,
+   and PyPI checks only the workflow filename and environment name. Environment protection is the
+   one control that does not live inside the ref being published.
+3. Create and **publish** a GitHub Release for tag `v<version>`. Publishing the Release is the
+   human action that triggers the PyPI upload. A manual `workflow_dispatch` works too, but it must
+   select the **tag**, not a branch: the workflow refuses to publish from a non-tag ref, and
+   refuses when the tag name does not match the built `__version__`. Both refusals are deliberate —
+   a PyPI version can never be replaced once uploaded.
 
 ## Reporting security issues
 
