@@ -52,6 +52,15 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **`list_workspaces` says whether a workspace is actually usable (#99).** `configured` meant only
+  "a config file exists at this path", and every reader took it for "ready" — a workspace with an
+  empty or unparseable config looked identical to a working one, so a driver ran against it, got
+  nothing, and fell back to an ad-hoc spawn. `ready` now answers the question people were asking,
+  and `ready_reason` says why when it is false: "no config file", "config does not load: <error>",
+  and "config declares no clients" need different fixes, and collapsing them to a `0` just moved
+  the guessing onto the reader. `configured` keeps its old meaning and is documented as the weak
+  claim it always was. `marshal workspace list` prints the reason inline. Note `ready` is a claim
+  about configuration, not the machine — it does not probe backend CLIs; that is `doctor`.
 - **`doctor` surfaces recent billing/quota failures (#95).** It answered "is the CLI installed and
   logged in?" and presented that as readiness — so a backend that was installed, authed, and out of
   credit passed green, and the driver learned otherwise by spending a run. Two field reports hit
