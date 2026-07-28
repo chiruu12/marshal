@@ -15,8 +15,8 @@ import json
 import logging
 import os
 import shlex
-import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -192,25 +192,54 @@ def _resolve_read_path(raw: str, repo_root: Path) -> Path:
 
 
 def _iter_read_path_copy_targets(src: Path) -> list[Path]:
-    """Return ``src`` and every descendant that ``copytree``/``copy2`` would touch.
+    """Return ``src`` and every descendant that a guarded tree copy would touch.
 
-    Uses directory listing only (no open), so a FIFO descendant is discoverable without hanging.
+    Walks with ``iterdir`` and does not follow directory symlinks, so a link is listed as itself
+    (for refusal) rather than expanding into a foreign tree. Listing only (no open) so a FIFO
+    descendant is discoverable without hanging.
     """
     targets = [src]
-    if src.is_dir():
-        targets.extend(src.rglob("*"))
+    if not src.is_dir() or src.is_symlink():
+        return targets
+    stack = [src]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            targets.append(entry)
+            if entry.is_dir() and not entry.is_symlink():
+                stack.append(entry)
     return targets
 
 
 def _validate_read_path_tree(src: Path, raw: str) -> None:
-    """Refuse secret-shaped or non-file/dir entries under ``src`` before any copy.
+    """Refuse secret-shaped, symlink, or non-file/dir entries under ``src`` before any copy.
 
     Applied to every path that would be copied, not just the declared root: a directory named
-    innocently can still contain ``.env`` / ``.ssh`` / a FIFO. Raise loudly naming the offender
-    rather than silently skipping - a quietly incomplete tree is the same class of failure
-    ``_require_context_files`` exists to prevent.
+    innocently can still contain ``.env`` / ``.ssh`` / a FIFO / a symlink. Raise loudly naming
+    the offender rather than silently skipping - a quietly incomplete tree is the same class of
+    failure ``_require_context_files`` exists to prevent.
+
+    Symlinks among descendants are refused outright: a link's meaning depends on where it is
+    resolved, so a copied-in link either smuggles host content (dereferenced) or dangles/escapes
+    (preserved) — neither belongs in a read-only reference copy. The declared root may itself be
+    a driver-typed symlink (e.g. a linked docs dir); callers resolve it first, then this check
+    applies to descendants of the real path (so a root link into a secret still fails by
+    name/location).
     """
     for path in _iter_read_path_copy_targets(src):
+        if path != src and path.is_symlink():
+            try:
+                link_target = os.readlink(path)
+            except OSError:
+                link_target = "?"
+            raise ValueError(
+                f"read_paths refuses symlink: {path} -> {link_target}. "
+                f"Symlinks inside a declared tree are never copied (declared as {raw!r})."
+            )
         if _is_refused_read_path(path):
             raise ValueError(
                 f"read_paths refuses secret-shaped path: {path}. "
@@ -224,6 +253,70 @@ def _validate_read_path_tree(src: Path, raw: str) -> None:
                 f"(FIFOs, sockets, and devices block provisioning before any run timeout; "
                 f"declared as {raw!r})."
             )
+
+
+def _guarded_copy_file(src: Path, dest: Path) -> None:
+    """Copy one file through a fail-closed open: no follow, non-blocking, regular-file only.
+
+    ``O_NOFOLLOW`` refuses a symlink swapped in after validation; ``O_NONBLOCK`` means opening a
+    FIFO returns instead of blocking; ``fstat`` confirms a regular file before any read.
+    """
+    try:
+        fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        raise ValueError(
+            f"read_paths refused to open {src}: {exc}. "
+            f"Only regular files are copied (symlinks and special files are refused)."
+        ) from exc
+    try:
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError(
+                f"read_paths refuses special file: {src}. "
+                f"Only regular files and directories are accepted "
+                f"(FIFOs, sockets, and devices block provisioning before any run timeout)."
+            )
+        with open(dest, "wb") as out:
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+    finally:
+        os.close(fd)
+
+
+def _copy_read_path_tree(src: Path, dest: Path) -> None:
+    """Copy a resolved read_path into ``dest`` without ``shutil.copytree``/``copy2``.
+
+    Walks the tree and uses :func:`_guarded_copy_file` per file so a TOCTOU swap to a symlink or
+    FIFO cannot hang or smuggle content. Does not follow or preserve symlinks.
+    """
+    try:
+        st = src.lstat()
+    except OSError as exc:
+        raise ValueError(f"read_paths disappeared before copy: {src}: {exc}") from exc
+    if stat.S_ISLNK(st.st_mode):
+        try:
+            link_target = os.readlink(src)
+        except OSError:
+            link_target = "?"
+        raise ValueError(
+            f"read_paths refuses symlink: {src} -> {link_target}. "
+            f"Symlinks inside a declared tree are never copied."
+        )
+    if stat.S_ISDIR(st.st_mode):
+        dest.mkdir(parents=False, exist_ok=False)
+        for child in sorted(src.iterdir(), key=lambda p: p.name):
+            _copy_read_path_tree(child, dest / child.name)
+        return
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError(
+            f"read_paths refuses special file: {src}. "
+            f"Only regular files and directories are accepted "
+            f"(FIFOs, sockets, and devices block provisioning before any run timeout)."
+        )
+    _guarded_copy_file(src, dest)
 
 
 def _make_readonly(path: Path) -> None:
@@ -277,10 +370,14 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
     the agent can read them without breaking the worktree isolation boundary for writes.
 
     Secret-shaped paths are refused on the declared root **and every descendant** that would be
-    copied (a directory named innocently must not smuggle ``.env`` / keys under ``.ssh``). Only
+    copied (a directory named innocently must not smuggle ``.env`` / keys under ``.ssh``). Symlinks
+    inside a declared tree are refused (a link either smuggles host content when dereferenced or
+    escapes when preserved); the declared root may be a symlink and is resolved first. Only
     regular files and directories are accepted - FIFOs, sockets, and devices are refused so
-    provisioning cannot block forever before a run record (and its timeout) exists. Fail-closed
-    matches task_id validation, worktree containment, and read-only reviewer routing.
+    provisioning cannot block forever before a run record (and its timeout) exists. Copies open
+    fail-closed (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat``) so a TOCTOU swap after
+    validation cannot hang or follow a link. Fail-closed matches task_id validation, worktree
+    containment, and read-only reviewer routing.
 
     A missing path fails before any copy. Copied files are 0o444 and directories 0o555; teardown
     restores directory write bits so ``git worktree remove`` still works. Content is excluded
@@ -304,8 +401,8 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
                 f"read_paths has an unusable basename: {raw!r}. "
                 f"Each path must resolve to a named file or directory."
             )
-        # Validate the whole tree before mkdir/copy so a refused descendant never leaves a
-        # half-copied `.marshal-context/` (and so a FIFO is never opened).
+        # Up-front tree validation names the offender clearly; the guarded copy below is the
+        # fail-closed backstop if an entry changes between this pass and the open.
         _validate_read_path_tree(src, raw)
         resolved.append((raw, src))
 
@@ -333,10 +430,7 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
             raise ValueError(
                 f"read_paths destination escaped .marshal-context/: {raw!r} -> {dest}"
             )
-        if src.is_dir():
-            shutil.copytree(src, dest, dirs_exist_ok=False)
-        else:
-            shutil.copy2(src, dest)
+        _copy_read_path_tree(src, dest)
         _make_readonly(dest)
 
     _append_exclude(wt, f"{_READ_CONTEXT_DIR}/")

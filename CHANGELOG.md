@@ -32,9 +32,12 @@ versions may include breaking API changes until 1.0.
   diff or `changed_files`. Teardown restores owner-write on directories before
   `git worktree remove` / `rmtree` so immutable dirs cannot strand a worktree. Secret-shaped
   names (`.env*`, `*.pem`, `id_rsa*`, `id_ed25519*`) and anything under `.ssh` are refused on
-  the declared path **and every descendant** that would be copied; only regular files and
-  directories are accepted (FIFOs/sockets/devices refused so provisioning cannot hang before a
-  run timeout exists). A missing or refused path fails the spawn (worktree torn down). The
+  the declared path **and every descendant** that would be copied; symlinks inside a declared
+  tree are refused (a symlinked declared root is resolved first, then validated from the real
+  path); only regular files and directories are accepted (FIFOs/sockets/devices refused so
+  provisioning cannot hang before a run timeout exists). Copies open fail-closed
+  (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat`) so a TOCTOU swap after validation cannot hang
+  or follow a link. A missing or refused path fails the spawn (worktree torn down). The
   declared list is recorded on `RunRecord` so a reviewer can see the run saw more than its
   worktree. The worker prompt is told read-only reference material is under `.marshal-context/`.
 

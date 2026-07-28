@@ -27,6 +27,7 @@ from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
+from marshal_engine import fleet as fleet_mod
 from marshal_engine.fleet import Fleet, RunRequest, _active_runs_guard, _register_inflight_run
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
@@ -3337,6 +3338,104 @@ def test_read_paths_refuses_fifo_descendant_without_hanging(repo: Path) -> None:
         except FuturesTimeout:  # pragma: no cover - regression guard
             fut.cancel()
             pytest.fail("read_paths hung opening a FIFO descendant (P1-C regression)")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_innocent_symlink_to_secret(repo: Path) -> None:
+    """#105: a descendant symlink named innocently must not smuggle secret content via dereference."""
+    secret = repo.parent / ".env"
+    secret.write_text("SECRET=do-not-copy")
+    src_dir = repo.parent / "docs-with-link"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("fine")
+    link = src_dir / "notes.md"
+    link.symlink_to(secret)
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses symlink:.*notes\.md") as excinfo:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sym-secret", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert ".env" in str(excinfo.value) or "notes.md" in str(excinfo.value)
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert "SECRET=do-not-copy" not in leaked.read_text(errors="ignore")
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_any_symlink_descendant(repo: Path) -> None:
+    """#105: any symlink descendant is refused, regardless of target."""
+    src_dir = repo.parent / "docs-with-any-link"
+    src_dir.mkdir()
+    target = repo.parent / "elsewhere.md"
+    target.write_text("harmless")
+    link = src_dir / "alias.md"
+    link.symlink_to(target)
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses symlink:.*alias\.md"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sym-any", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert fleet.state.list() == []
+
+
+def test_read_paths_symlinked_declared_root_still_works(repo: Path) -> None:
+    """#105: a driver-typed symlink as the declared root is resolved and copied normally."""
+    real_docs = repo.parent / "real-docs"
+    real_docs.mkdir()
+    (real_docs / "a.md").write_text("from-symlinked-root")
+    link = repo.parent / "docs-link"
+    link.symlink_to(real_docs)
+    # ContextReader path is under the resolved basename (`real-docs`), not the link name.
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("real-docs/a.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp-sym-root", goal="use docs", read_paths=[str(link)]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.text == "from-symlinked-root"
+    dest = Path(rec.worktree) / ".marshal-context" / "real-docs" / "a.md"
+    assert dest.is_file()
+    assert dest.read_text() == "from-symlinked-root"
+    assert not dest.is_symlink()
+
+
+def test_read_paths_refuses_toctou_fifo_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: a file replaced by a FIFO between validation and copy is refused, not hung."""
+    target = repo.parent / "race.md"
+    target.write_text("ok-at-validate")
+    real_validate = fleet_mod._validate_read_path_tree
+
+    def _validate_then_swap_to_fifo(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        src.unlink()
+        os.mkfifo(src)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_swap_to_fifo)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-fifo", goal="x", read_paths=[str(target)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses special file|refused to open"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU FIFO swap (validation/copy race)")
     assert fleet.state.list() == []
     worktrees = repo / ".marshal" / "worktrees"
     assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
