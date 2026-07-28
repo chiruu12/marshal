@@ -1,22 +1,37 @@
 name: Release
 
-# Cuts a GitHub Release with the built sdist + wheel when a v* tag is pushed.
-# Install-from-source for now; PyPI trusted publishing can be added here later.
+# Publish to PyPI only when a GitHub Release is published, or via manual
+# workflow_dispatch. Never on push to a branch / tag.
+#
+# Maintainer setup (one-time) for PyPI Trusted Publishing (OIDC) — no API token:
+# 1. Create a GitHub Environment named `pypi` on this repo (optional protection
+#    rules / required reviewers recommended so dispatch cannot publish alone).
+# 2. On https://pypi.org/manage/account/publishing/ (or the project’s Publishing
+#    settings once it exists), add a Trusted Publisher:
+#      PyPI project name: marshal   # or marshal-orchestrator if `marshal` is taken
+#      Owner:             chiruu12
+#      Repository:        marshal
+#      Workflow:          release.yml
+#      Environment:       pypi
+# 3. First upload can create the project if you registered a *pending* publisher
+#    before the name exists. Confirm the name is still free (or switch
+#    pyproject `[project].name` to the fallback) before cutting the first release.
+
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to release (e.g. v0.0.1)"
-        required: true
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write  # required for PyPI Trusted Publishing (OIDC)
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/marshal
     steps:
       - uses: actions/checkout@v7
 
@@ -34,8 +49,6 @@ jobs:
       - name: Build sdist + wheel
         run: uv build
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: gh release create "$TAG" dist/* --generate-notes --verify-tag
+      - name: Publish to PyPI
+        # OIDC trusted publishing — do not add password / API-token secrets.
+        uses: pypa/gh-action-pypi-publish@v1.14.0
