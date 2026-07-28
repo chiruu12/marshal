@@ -61,6 +61,18 @@ versions may include breaking API changes until 1.0.
   the guessing onto the reader. `configured` keeps its old meaning and is documented as the weak
   claim it always was. `marshal workspace list` prints the reason inline. Note `ready` is a claim
   about configuration, not the machine — it does not probe backend CLIs; that is `doctor`.
+- **`doctor` surfaces recent billing/quota failures (#95).** It answered "is the CLI installed and
+  logged in?" and presented that as readiness — so a backend that was installed, authed, and out of
+  credit passed green, and the driver learned otherwise by spending a run. Two field reports hit
+  this independently on the same day (an "Insufficient balance" death at 3.5s, and an exhausted
+  premium quota discovered by burning runs). A `quota:<backend>` warn now reports how many recent
+  runs failed on billing/quota grounds and quotes the latest error, derived from the run ledger we
+  already keep — no provider API, and it reports what happened rather than predicting. Its absence
+  is deliberately **not** a clearance: doctor cannot read provider balances, and saying quota looks
+  fine because it was never checked is the same overclaim the field reports were about. Rate
+  limiting is deliberately excluded from the classifier: a 429 means *slow down*, not *pay*, the
+  retry policy already backs off and retries it, and sending an operator to top up over throttling
+  is the wrong remedy.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`

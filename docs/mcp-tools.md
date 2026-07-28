@@ -87,6 +87,12 @@ Preflight the selected workspace (toolchain, repo, config, per-backend CLI + aut
 `permission:<backend>` fidelity checks). Read-only. `permission:*` is `ok` for `enforced-denies`
 and `warn` for `boundary-only` (never a failure); it appears even when the CLI probe fails.
 
+A `quota:<backend>` **warn** appears when recent runs on that backend failed for billing or quota
+reasons, with the count and the latest error. It is derived from this workspace's run ledger, not
+from a provider API — so it reports what actually happened rather than predicting. **Its absence is
+not a quota clearance:** doctor cannot see provider balances, and a backend that is installed,
+authenticated, and out of credit still passes every other check.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Target workspace. |
