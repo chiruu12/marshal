@@ -56,7 +56,10 @@ versions may include breaking API changes until 1.0.
   published GitHub Release or a manual `workflow_dispatch` — never on a branch push, and with no API
   token anywhere. Packaging metadata and hatch sdist excludes are tightened so the wheel carries
   `marshal_engine` plus `py.typed` and `data/prices.yaml` and nothing else (no `tests/`, `.marshal/`,
-  repo `teams/`, `fleet.config.yaml`, or `docs/internal/`).
+  repo `teams/`, `fleet.config.yaml`, or `docs/internal/`). Every action in the release job is
+  pinned by commit SHA rather than a mutable tag — the job holds `id-token: write`, so any step in
+  it can reach the publishing credential — and the run refuses to publish unless it is on a tag
+  whose name matches the built version, which also catches a release cut without a version bump.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`

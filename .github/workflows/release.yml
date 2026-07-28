@@ -33,10 +33,12 @@ jobs:
       name: pypi
       url: https://pypi.org/p/marshal
     steps:
-      - uses: actions/checkout@v7
+      # Every action in this job is pinned by commit SHA. The job holds `id-token: write`, so any
+      # step in it can reach the publishing credential - a mutable tag anywhere here is a way in.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: "3.12"
           enable-cache: true
@@ -49,6 +51,29 @@ jobs:
       - name: Build sdist + wheel
         run: uv build
 
+      # A publish is irreversible: PyPI never lets a version be replaced. `workflow_dispatch` lets
+      # a maintainer pick ANY ref, so without this a mis-selected branch publishes whatever it
+      # happens to contain under whatever version it happens to declare. Refuse unless the ref is a
+      # tag and the built version is exactly that tag - which also catches the far likelier mistake
+      # of cutting a release without bumping `[project].version`.
+      - name: Refuse to publish a ref whose version is not the tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" != "tag" ]; then
+            echo "::error::refusing to publish from ${{ github.ref_type }} '${{ github.ref_name }}' - release from a tag"
+            exit 1
+          fi
+          tag="${{ github.ref_name }}"
+          version="$(uv run python -c 'import marshal_engine; print(marshal_engine.__version__)')"
+          if [ "$tag" != "v$version" ] && [ "$tag" != "$version" ]; then
+            echo "::error::tag '$tag' does not match built version '$version' - bump [project].version or retag"
+            exit 1
+          fi
+          echo "publishing $version from tag $tag"
+
       - name: Publish to PyPI
         # OIDC trusted publishing — do not add password / API-token secrets.
-        uses: pypa/gh-action-pypi-publish@v1.14.0
+        # Pinned to a commit SHA, not the `v1.14.0` tag: a tag is mutable, and this step runs in a
+        # job holding `id-token: write`, so whatever it resolves to can publish as us. Bump the SHA
+        # and the trailing version comment together.
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0

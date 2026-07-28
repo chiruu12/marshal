@@ -8,6 +8,7 @@ Marshal's own declarative *workflow* feature.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,35 @@ def test_all_workflow_actions_are_pinned() -> None:
             uses = step.get("uses")
             if uses is not None:
                 assert "@" in uses, f"{wf_path.name}: action {uses!r} is not pinned"
+
+
+def test_release_actions_are_pinned_to_commit_shas() -> None:
+    # Stricter than the repo-wide pin rule: every step in the release job runs alongside
+    # `id-token: write`, so a mutable tag anywhere in it can reach the publishing credential.
+    for step in _steps(_load(_RELEASE)):
+        uses = step.get("uses")
+        if uses is None:
+            continue
+        ref = str(uses).split("@", 1)[-1]
+        assert re.fullmatch(r"[0-9a-f]{40}", ref), (
+            f"release.yml: {uses!r} must pin a full commit SHA, not a mutable tag"
+        )
+
+
+def test_release_refuses_a_ref_whose_version_is_not_the_tag() -> None:
+    # workflow_dispatch accepts ANY ref, and a publish cannot be undone: the run must verify it is
+    # on a tag and that the built version matches it before the publish step.
+    steps = _steps(_load(_RELEASE))
+    publish_at = next(
+        i for i, s in enumerate(steps) if "pypi-publish" in str(s.get("uses") or "")
+    )
+    guards = [
+        i for i, s in enumerate(steps)
+        if "github.ref_type" in str(s.get("run") or "")
+        and "__version__" in str(s.get("run") or "")
+    ]
+    assert guards, "release.yml must verify ref_type and the built version before publishing"
+    assert min(guards) < publish_at, "the version/tag guard must run BEFORE the publish step"
 
 
 def test_dependency_sync_is_frozen() -> None:

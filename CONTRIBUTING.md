@@ -154,7 +154,7 @@ From a clean checkout of the release commit:
 
 ```bash
 uv build
-unzip -l dist/marshal-*-py3-none-any.whl | rg 'marshal_engine/(py\.typed|data/prices\.yaml)'
+unzip -l dist/marshal-*-py3-none-any.whl | grep -E 'marshal_engine/(py\.typed|data/prices\.yaml)'
 # Wheel must NOT contain tests/, .marshal/, teams/, or fleet.config.yaml
 tar -tzf dist/marshal-*.tar.gz | head   # sdist must include src/, tests/, pyproject.toml, README, LICENSE
 
@@ -172,8 +172,11 @@ rm -rf "$TMP"
    `marshal_engine`).
 2. Ensure Trusted Publishing is configured on PyPI for this repo’s `release.yml` and the `pypi`
    GitHub Environment (see the comment block at the top of `.github/workflows/release.yml`).
-3. Create and **publish** a GitHub Release for tag `v<version>` (or run the Release workflow via
-   `workflow_dispatch`). Publishing the Release is the human action that triggers PyPI upload.
+3. Create and **publish** a GitHub Release for tag `v<version>`. Publishing the Release is the
+   human action that triggers the PyPI upload. A manual `workflow_dispatch` works too, but it must
+   select the **tag**, not a branch: the workflow refuses to publish from a non-tag ref, and
+   refuses when the tag name does not match the built `__version__`. Both refusals are deliberate —
+   a PyPI version can never be replaced once uploaded.
 
 ## Reporting security issues
 
