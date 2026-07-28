@@ -175,7 +175,7 @@ object is tagged with the workspace the primary ran in:
 |-------|------|-------------|
 | `primary` | RunRecord | The job's primary run. |
 | `then` | RunRecord \| null | The follow-up run, when it ran. Absent when skipped. |
-| `then_skipped` | string \| null | Why `then` did not run (primary failed, no branch, `commit_run` blocked, …). |
+| `then_skipped` | string \| null | Why `then` did not run (primary failed, no branch, primary produced no diff, `commit_run` blocked, …). |
 | `workspace` | string | Workspace the chain ran in. |
 
 **Errors:** unknown per-job / call-level workspace names fail fast before any agent starts (same as

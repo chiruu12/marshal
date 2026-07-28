@@ -119,6 +119,58 @@ class _Reader(CodingAgentBackend):
         )
 
 
+class _TextOnly(CodingAgentBackend):
+    """Exits clean with prose only — no file changes (exited_clean, not empty)."""
+
+    name = "talker"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "print('here is my analysis; no edits')"]
+
+    def map_permission(self, mode):  # noqa: ANN001
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+class _CountingReader(CodingAgentBackend):
+    """Follow-up stub that records how many times it was invoked."""
+
+    name = "counter"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self) -> None:
+        self.invocations = 0
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        self.invocations += 1
+        return [sys.executable, "-c", "print('reviewed')"]
+
+    def map_permission(self, mode):  # noqa: ANN001
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
 def _init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=path, check=True, capture_output=True)
@@ -177,6 +229,29 @@ def test_then_skipped_when_primary_failed(repo: Path) -> None:
     assert results[0].primary.status == "failed"
     assert results[0].then is None
     assert results[0].then_skipped and "did not succeed" in results[0].then_skipped
+
+
+def test_then_skipped_when_primary_exits_clean_with_no_diff(repo: Path) -> None:
+    """Text-only primary is exited_clean but has nothing to review — do not spawn ``then``."""
+    counter = _CountingReader()
+    fleet = Fleet(repo, {"talker": _TextOnly(), "counter": counter})
+    results = fleet.run_many(
+        [
+            RunManyJob(
+                request=RunRequest(backend_name="talker", task=TaskSpec(id="chat", goal="x")),
+                then=RunRequest(
+                    backend_name="counter",
+                    task=TaskSpec(id="chat-then", goal="review"),
+                ),
+            )
+        ],
+        stagger_s=0,
+    )
+    assert results[0].primary.status == "exited_clean"
+    assert results[0].then is None
+    assert results[0].then_skipped is not None
+    assert "no diff" in results[0].then_skipped
+    assert counter.invocations == 0
 
 
 def test_then_runs_against_committed_primary_work(repo: Path) -> None:
