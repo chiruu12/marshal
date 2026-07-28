@@ -74,6 +74,14 @@ versions may include breaking API changes until 1.0.
   retry policy already backs off and retries it, and sending an operator to top up over throttling
   is the wrong remedy.
 
+- **`list_workspaces` reports recency (#104).** With fifteen registered repos the list was
+  unnavigable by name alone — `provo` from `domo` from `lore` meant opening each. `last_activity_at`
+  is the most recent write to that workspace's run ledger, which is how anyone actually finds the
+  repo they were just working in. It is a directory **stat**, not a ledger parse: `describe()`
+  builds no services and reads no run records, and a full parse per row would turn a cheap listing
+  into real work. Named for what it measures — a record's last write, not a run's start time —
+  rather than the `last_run_at` the report asked for, since the two are not the same thing.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
