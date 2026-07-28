@@ -3884,6 +3884,126 @@ def test_read_paths_refuses_toctou_dir_identity_swap(
     assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
 
 
+def test_read_paths_refuses_toctou_file_identity_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: a regular file replaced by a DIFFERENT regular file between lstat and open is refused.
+
+    Replacement is created separately and ``os.rename``d into place so it has a distinct inode
+    (unlink-and-recreate at the same path can reuse the inode and make the pin a no-op). The pin
+    refuses a swap to a different file; it is not the whole boundary (delete-then-recreate can
+    reuse an inode). Asserts the replacement content never appears under `.marshal-context/`.
+    """
+    target = repo.parent / "race-file-identity.md"
+    target.write_text("validated-ok")
+    replacement_marker = "REPLACED-FILE-IDENTITY-MARKER"
+    stand_in = repo.parent / "race-file-identity.md.replacement"
+    stand_in.write_text(replacement_marker)
+
+    real_validate = fleet_mod._validate_read_path_tree
+    real_lstat_at = fleet_mod._lstat_at
+    victim_resolved = target.resolve()
+    swapped = False
+
+    def _is_victim(src: Path) -> bool:
+        try:
+            return src.resolve() == victim_resolved
+        except OSError:
+            return src.name == target.name and src.parent.resolve() == target.parent.resolve()
+
+    def _lstat_at_then_swap(src: Path, *, dir_fd: int | None = None) -> os.stat_result:
+        nonlocal swapped
+        st = real_lstat_at(src, dir_fd=dir_fd)
+        if (
+            not swapped
+            and _is_victim(src)
+            and stat.S_ISREG(st.st_mode)
+            and not stat.S_ISLNK(st.st_mode)
+        ):
+            target.unlink()
+            os.rename(stand_in, target)
+            swapped = True
+        return st
+
+    def _validate_then_arm(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-file-identity", goal="x", read_paths=[str(target)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses swapped file"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU file identity swap")
+
+    _assert_no_smuggled_content(repo, replacement_marker)
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob(".marshal-context/**/*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert replacement_marker not in leaked.read_text(errors="ignore")
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_tracked_marshal_context_symlink(repo: Path) -> None:
+    """#105: a tracked `.marshal-context` symlink must not be followed into tracked content.
+
+    If the base branch has `.marshal-context` -> a tracked directory, ``resolve()`` would make
+    provisioning copy into (and chmod 0o444) that target. Refuse instead; leave the target
+    untouched.
+    """
+    tracked = repo / "tracked-docs"
+    tracked.mkdir()
+    victim = tracked / "keep-me.md"
+    original = "TRACKED-DOCS-ORIGINAL-CONTENT"
+    victim.write_text(original)
+    original_mode = victim.stat().st_mode
+    ctx = repo / ".marshal-context"
+    ctx.symlink_to("tracked-docs")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "tracked marshal-context symlink"],
+        check=True,
+        capture_output=True,
+    )
+
+    outside = repo.parent / "driver-notes-ctx-symlink.md"
+    smuggled = "SHOULD-NOT-LAND-IN-TRACKED-DOCS"
+    outside.write_text(smuggled)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    with pytest.raises(
+        ValueError, match=r"not a plain directory|\.marshal-context.*not a plain directory"
+    ):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-ctx-symlink", goal="x", read_paths=[str(outside)]),
+        )
+
+    assert victim.read_text() == original
+    assert victim.stat().st_mode == original_mode
+    assert (victim.stat().st_mode & 0o222) != 0, "tracked target must not be chmod'd read-only"
+    assert smuggled not in victim.read_text()
+    for path in tracked.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            assert smuggled not in path.read_text(errors="ignore")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
 def test_collect_run_returns_the_final_message_when_no_files_changed(repo: Path) -> None:
     """`collect_run` is the tool a driver reaches for first to answer "what did this run produce".
     For a research or review run the honest answer is prose - the engine already treats text alone

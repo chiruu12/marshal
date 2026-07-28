@@ -41,16 +41,19 @@ versions may include breaking API changes until 1.0.
   path); only regular files and directories are accepted (FIFOs/sockets/devices refused so
   provisioning cannot hang before a run timeout exists). Policy is enforced during the
   fd-relative copy walk (validation at point of use): every `scandir` entry is re-checked for
-  secret-shaped names / `.ssh`, symlinks, and non-file/dir types; each directory's
+  secret-shaped names / `.ssh`, symlinks, and non-file/dir types; each file and directory's
   `(st_dev, st_ino)` from the classifying `lstat` must match `fstat` of the opened fd, refusing
-  a swap to a different directory (identity is a secondary check — a delete-then-recreate can be
-  handed back the same inode, so the per-entry checks are what contain a swapped tree). The up-front tree scan only
+  a swap to a different file or directory (identity is a secondary check — a delete-then-recreate
+  can be handed back the same inode, so the per-entry checks are what contain a swapped tree).
+  Destination `.marshal-context` must be absent or a plain directory (a tracked symlink or
+  non-dir is refused; never `resolve()` through it); per-entry destinations never follow
+  symlinks (`O_CREAT|O_EXCL` / refuse existing dest symlinks). The up-front tree scan only
   names offenders early before worktree work — it is not the security boundary. Copies also
-  open fail-closed (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` for files;
-  `O_NOFOLLOW|O_DIRECTORY` for directory descent). A missing or refused path fails the spawn
-  (worktree torn down). The declared list is recorded on `RunRecord` so a reviewer can see the
-  run saw more than its worktree. The worker prompt is told read-only reference material is
-  under `.marshal-context/`.
+  open fail-closed (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` + identity for files;
+  `O_NOFOLLOW|O_DIRECTORY` + identity for directory descent). A missing or refused path fails
+  the spawn (worktree torn down). The declared list is recorded on `RunRecord` so a reviewer
+  can see the run saw more than its worktree. The worker prompt is told read-only reference
+  material is under `.marshal-context/`.
 
 - **Adversarial review teams (`teams.py`).** A *team* is a declarative panel of independent,
   read-only reviewers — each role pinned to the client best at its lens — that review one subject

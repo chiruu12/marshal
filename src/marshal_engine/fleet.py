@@ -220,8 +220,8 @@ def _validate_read_path_tree(src: Path, raw: str) -> None:
 
     This is **not** the security boundary. A TOCTOU swap after this pass can still replace the
     tree; ``_copy_read_path_tree`` re-applies the same policy at the point of use (fd-relative
-    walk) and pins directory identity by ``(st_dev, st_ino)``. Keep both: this pass for a clear
-    error before any worktree work; the copy walk to enforce.
+    walk) and pins file/directory identity by ``(st_dev, st_ino)``. Keep both: this pass for a
+    clear error before any worktree work; the copy walk to enforce.
 
     Applied to every path that would be copied, not just the declared root: a directory named
     innocently can still contain ``.env`` / ``.ssh`` / a FIFO / a symlink. Raise loudly naming
@@ -260,12 +260,23 @@ def _validate_read_path_tree(src: Path, raw: str) -> None:
             )
 
 
-def _guarded_copy_file(src: Path, dest: Path, *, dir_fd: int | None = None) -> None:
+def _guarded_copy_file(
+    src: Path,
+    dest: Path,
+    *,
+    dir_fd: int | None = None,
+    expected_id: tuple[int, int],
+) -> None:
     """Copy one file through a fail-closed open: no follow, non-blocking, regular-file only.
 
     ``O_NOFOLLOW`` refuses a symlink swapped in after validation; ``O_NONBLOCK`` means opening a
-    FIFO returns instead of blocking; ``fstat`` confirms a regular file before any read. When
-    ``dir_fd`` is set, opens ``src.name`` relative to that descriptor (no absolute-path reopen).
+    FIFO returns instead of blocking; ``fstat`` confirms a regular file before any read, and its
+    ``(st_dev, st_ino)`` must match ``expected_id`` from the classifying ``lstat``, which refuses
+    a swap to a DIFFERENT regular file. Identity is a secondary check, not the boundary: a
+    delete-then-recreate at the same path can be handed back the same inode (Linux reuses freed
+    inodes readily). Destination create uses ``O_CREAT|O_EXCL`` so an existing symlink at
+    ``dest`` is never followed. When ``dir_fd`` is set, opens ``src.name`` relative to that
+    descriptor (no absolute-path reopen).
     """
     open_name: str | Path = src.name if dir_fd is not None else src
     try:
@@ -279,22 +290,38 @@ def _guarded_copy_file(src: Path, dest: Path, *, dir_fd: int | None = None) -> N
             f"read_paths refused to open {src}: {exc}. "
             f"Only regular files are copied (symlinks and special files are refused)."
         ) from exc
+    out_fd: int | None = None
     try:
-        mode = os.fstat(fd).st_mode
-        if not stat.S_ISREG(mode):
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
             raise ValueError(
                 f"read_paths refuses special file: {src}. "
                 f"Only regular files and directories are accepted "
                 f"(FIFOs, sockets, and devices block provisioning before any run timeout)."
             )
-        with open(dest, "wb") as out:
-            while True:
-                chunk = os.read(fd, 1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
+        if (opened.st_dev, opened.st_ino) != expected_id:
+            raise ValueError(
+                f"read_paths refuses swapped file: {src}. "
+                f"File was replaced between classification and open."
+            )
+        try:
+            # O_EXCL: never open/follow an existing destination (including a symlink).
+            out_fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except OSError as exc:
+            raise ValueError(
+                f"read_paths refuses destination that already exists: {dest}. "
+                f"Copies never follow or replace an existing path at the destination "
+                f"(including a symlink)."
+            ) from exc
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            os.write(out_fd, chunk)
     finally:
         os.close(fd)
+        if out_fd is not None:
+            os.close(out_fd)
 
 
 def _lstat_at(src: Path, *, dir_fd: int | None) -> os.stat_result:
@@ -351,6 +378,19 @@ def _open_dir_nofollow(src: Path, *, dir_fd: int | None) -> int:
         ) from exc
 
 
+def _refuse_existing_dest_symlink(dest: Path) -> None:
+    """Refuse a destination path that already exists as a symlink (never follow or replace it)."""
+    try:
+        st = dest.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise ValueError(
+            f"read_paths refuses destination symlink: {dest}. "
+            f"Copies never follow a symlink on the destination side."
+        )
+
+
 def _copy_read_path_tree(
     src: Path,
     dest: Path,
@@ -366,10 +406,13 @@ def _copy_read_path_tree(
     regular-file-or-directory-only. Directory descent is fd-relative
     (``O_RDONLY|O_NOFOLLOW|O_DIRECTORY`` + scandir on the fd); after open, ``fstat`` must match
     the classifying ``lstat``'s ``(st_dev, st_ino)``, which refuses a swap to a DIFFERENT
-    directory. Identity is a secondary check, not the boundary: a delete-then-recreate at the
-    same path can be handed back the same inode (Linux reuses freed inodes readily), so the
-    per-entry policy checks above are what actually contain a swapped tree. Per-file open stays fail-closed
-    (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat``). Does not follow or preserve symlinks.
+    directory. File opens do the same identity pin (refuse a swap to a DIFFERENT regular file).
+    Identity is a secondary check, not the boundary: a delete-then-recreate at the same path can
+    be handed back the same inode (Linux reuses freed inodes readily), so the per-entry policy
+    checks above are what actually contain a swapped tree. Per-file open stays fail-closed
+    (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat`` + identity). Destination paths are never
+    followed as symlinks (``mkdir`` / ``O_CREAT|O_EXCL``; existing dest symlinks refused). Does
+    not follow or preserve source symlinks.
     """
     logical_path = logical if logical is not None else src
     if _is_refused_read_path(logical_path):
@@ -389,7 +432,14 @@ def _copy_read_path_tree(
         )
     if stat.S_ISDIR(st.st_mode):
         expected_id = (st.st_dev, st.st_ino)
-        dest.mkdir(parents=False, exist_ok=False)
+        _refuse_existing_dest_symlink(dest)
+        try:
+            dest.mkdir(parents=False, exist_ok=False)
+        except FileExistsError as exc:
+            raise ValueError(
+                f"read_paths refuses destination that already exists: {dest}. "
+                f"Copies never follow or replace an existing path at the destination."
+            ) from exc
         this_fd = _open_dir_nofollow(src, dir_fd=dir_fd)
         try:
             opened = os.fstat(this_fd)
@@ -417,7 +467,10 @@ def _copy_read_path_tree(
             f"Only regular files and directories are accepted "
             f"(FIFOs, sockets, and devices block provisioning before any run timeout)."
         )
-    _guarded_copy_file(src, dest, dir_fd=dir_fd)
+    _refuse_existing_dest_symlink(dest)
+    _guarded_copy_file(
+        src, dest, dir_fd=dir_fd, expected_id=(st.st_dev, st.st_ino)
+    )
 
 
 def _make_readonly(path: Path) -> None:
@@ -463,6 +516,27 @@ def _append_exclude(wt: Worktree, entry: str) -> None:
         fh.write(f"{entry}\n")
 
 
+def _ensure_plain_marshal_context_dir(dest_root: Path) -> Path:
+    """Return ``dest_root`` as a plain directory; refuse a pre-existing symlink or non-dir.
+
+    Do **not** ``resolve()`` through ``dest_root`` before this check: a tracked
+    ``.marshal-context`` symlink would be followed and provisioning would copy into (and chmod)
+    the link target. Create with ``mkdir`` only when absent; never silently replace or follow.
+    """
+    try:
+        st = dest_root.lstat()
+    except FileNotFoundError:
+        dest_root.mkdir(parents=True, exist_ok=False)
+    else:
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise ValueError(
+                f"read_paths refuses worktree `.marshal-context` that is not a plain directory: "
+                f"{dest_root}. The worktree already contains a `.marshal-context` that is not a "
+                f"plain directory; refuse rather than follow or replace it."
+            )
+    return dest_root
+
+
 def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) -> None:
     """Copy declared outside-worktree paths into ``.marshal-context/`` as read-only.
 
@@ -477,11 +551,14 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
     regular files and directories are accepted - FIFOs, sockets, and devices are refused so
     provisioning cannot block forever before a run record (and its timeout) exists. Policy is
     enforced during the fd-relative copy walk (validation at point of use): every scandir entry
-    is re-checked, and each directory's ``(st_dev, st_ino)`` from the classifying ``lstat`` must
-    match ``fstat`` of the opened fd so a same-type directory swap cannot smuggle unvalidated
-    descendants. The up-front ``_validate_read_path_tree`` pass only names offenders early —
-    it is not the security boundary. Fail-closed matches task_id validation, worktree
-    containment, and read-only reviewer routing.
+    is re-checked, and each file/directory's ``(st_dev, st_ino)`` from the classifying ``lstat``
+    must match ``fstat`` of the opened fd so a same-type swap cannot smuggle unvalidated
+    content (identity is secondary — delete-then-recreate can reuse an inode). The up-front
+    ``_validate_read_path_tree`` pass only names offenders early — it is not the security
+    boundary. Destination ``.marshal-context`` must be absent or a plain directory (a tracked
+    symlink or non-dir is refused; never ``resolve()`` through it). Per-entry destinations never
+    follow symlinks. Fail-closed matches task_id validation, worktree containment, and
+    read-only reviewer routing.
 
     A missing path fails before any copy. Copied files are 0o444 and directories 0o555; teardown
     restores directory write bits so ``git worktree remove`` still works. Content is excluded
@@ -506,19 +583,19 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
                 f"Each path must resolve to a named file or directory."
             )
         # Early naming only — not the security boundary. Policy is enforced in
-        # _copy_read_path_tree (at point of use) with directory (dev, ino) pinning.
+        # _copy_read_path_tree (at point of use) with (dev, ino) pinning.
         _validate_read_path_tree(src, raw)
         resolved.append((raw, src))
 
-    dest_root = wt.path / _READ_CONTEXT_DIR
+    dest_root = _ensure_plain_marshal_context_dir(wt.path / _READ_CONTEXT_DIR)
     # Containment: every copy lands under `.marshal-context/` inside this worktree.
+    # Safe to resolve now: dest_root is a plain directory (symlink/non-dir already refused).
     dest_root = dest_root.resolve()
     base = wt.path.resolve()
     if dest_root != base and base not in dest_root.parents:
         raise ValueError(
             f"read_paths destination escaped the worktree: {dest_root}"
         )
-    dest_root.mkdir(parents=True, exist_ok=True)
 
     seen_names: dict[str, str] = {}
     for raw, src in resolved:
@@ -529,10 +606,24 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
                 f".marshal-context/{name}."
             )
         seen_names[name] = raw
-        dest = (dest_root / name).resolve()
-        if dest != dest_root and dest_root not in dest.parents:
+        # Single basename under dest_root — do not resolve() the final component (would follow
+        # a pre-existing dest symlink into tracked content).
+        dest = dest_root / name
+        try:
+            dest.relative_to(dest_root)
+        except ValueError as exc:
             raise ValueError(
                 f"read_paths destination escaped .marshal-context/: {raw!r} -> {dest}"
+            ) from exc
+        _refuse_existing_dest_symlink(dest)
+        try:
+            dest.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(
+                f"read_paths refuses destination that already exists: {dest}. "
+                f"Copies never follow or replace an existing path at the destination."
             )
         _copy_read_path_tree(src, dest)
         _make_readonly(dest)
