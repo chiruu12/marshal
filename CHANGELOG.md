@@ -52,6 +52,13 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **Conflicting routing is refused instead of silently resolved (#101).** Passing both `client` and
+  `backend` names two different answers to "what runs this", and the loser was dropped without a
+  word — so a run executed on a backend the caller never asked for and nothing in the result said
+  so. It now raises, naming both values and the two valid shapes. `client` + `model` is deliberately
+  NOT covered: that is a coherent request (this client's backend, that model) and stays a supported
+  override. The MCP `backend` description said "ignored if `client` is also set"; documenting a
+  silent override does not make it safe.
 - **`list_workspaces` says whether a workspace is actually usable (#99).** `configured` meant only
   "a config file exists at this path", and every reader took it for "ready" — a workspace with an
   empty or unparseable config looked identical to a working one, so a driver ran against it, got
@@ -83,6 +90,33 @@ versions may include breaking API changes until 1.0.
   deliberate over silently copying the file in: copying puts untracked content into a checkout whose
   purpose is to mirror the repo, and `.env` is gitignored too — "copy whatever the caller named" is
   a way to hand secrets to an agent.
+- **`marshal_quickstart` MCP tool: a stated "start here" (#102).** A driver facing ~20 tools had no
+  ordering and no decision boundary between the near-duplicates — `run_agent` / `spawn` /
+  `run_many` / `run_workflow` and `status` / `get_run` / `collect_run` / `get_run_log` — and learned
+  "spawn is the long-job one" only by reading every description. The tool returns the four-step loop
+  (`doctor` → `spawn` → `collect_run` → `integrate`), says plainly which run tool blocks and which
+  does not, and states up front that a run's status is about the process exiting, not about the work
+  being right. It is a tool rather than a docs link because a driver reads tool descriptions.
+  `docs/mcp-tools.md` also stops hardcoding a tool count (it was already stale by one) and no longer
+  claims *every* tool takes a `workspace` — the global tools do not. A test checks the quickstart's
+  claims against the real registered signatures, because an orientation tool that overclaims is the
+  same defect as `succeeded` and `configured`, just in prose: two drafts asserted that `integrate`
+  is the only thing that reaches your branch, when a workflow with an `auto: true` integrate phase
+  does too.
+- **`list_workspaces` reports recency (#104).** With fifteen registered repos the list was
+  unnavigable by name alone — `provo` from `domo` from `lore` meant opening each. `last_activity_at`
+  is the most recent write to that workspace's run ledger, which is how anyone actually finds the
+  repo they were just working in. It is a directory **stat**, not a ledger parse: `describe()`
+  builds no services and reads no run records, and a full parse per row would turn a cheap listing
+  into real work. Named for what it measures — a record's last write, not a run's start time —
+  rather than the `last_run_at` the report asked for, since the two are not the same thing.
+
+- **`list_clients` says which clients it dropped, and why (#74).** A client whose backend CLI was
+  unavailable was filtered out with no error and no reason - the reporter noticed only incidentally.
+  Marshal already knew and warned on stderr, but an MCP driver never sees stderr, so from its side
+  the client silently vanished. The listing now carries `skipped: [{name, backend, reason}]`, and an
+  unknown backend name reads differently from an installed-but-absent CLI, because those have
+  different fixes.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
