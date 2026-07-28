@@ -18,15 +18,21 @@ List repos this server can target.
 |-----------|------|---------|-------------|
 | *(none)* | | | |
 
-**Returns:** `list[dict]` — one row per workspace:
+**Returns:** `list[dict]` — one row per workspace.
+
+`ready` is a claim about *configuration*, not about the machine: it does not probe whether those
+clients' backend CLIs are installed or authenticated. That is `doctor`, which costs subprocesses
+this listing deliberately avoids.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Workspace name (`default` for `MARSHAL_REPO`). |
 | `path` | string | Absolute repo root. |
 | `config_path` | string | Path to `fleet.config.yaml`. |
-| `configured` | bool | Whether the config file exists. |
+| `configured` | bool | Whether the config **file exists** — nothing more. Not a readiness signal; use `ready`. |
 | `client_count` | int | Number of declared clients (0 if missing/broken config). |
+| `ready` | bool | Whether this workspace can actually take a run: a config that loads and declares at least one client. This is the field to branch on. |
+| `ready_reason` | string \| null | Why `ready` is false — `no config file at <path>`, `config does not load: <error>`, or `config declares no clients`. `null` when ready. |
 | `default` | bool | True for the default workspace. |
 
 ### `add_workspace`
