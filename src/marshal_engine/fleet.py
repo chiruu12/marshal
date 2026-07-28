@@ -163,6 +163,27 @@ def _require_context_files(wt: Worktree, context_files: list[str]) -> None:
         )
 
 
+def with_liveness(rec: RunRecord) -> RunRecord:
+    """Return ``rec`` with ``agent_alive`` filled in for the moment of this call.
+
+    Answers the one question a status read cannot: is the agent still working, or has it finished
+    without the outcome being written yet? Terminal records get None - the run is over, so liveness
+    is not meaningful - as does a record whose pid identity cannot be established, because "some
+    process exists at that number" is not evidence our agent does.
+
+    A module-level function, not a Fleet method, because probing a pid needs nothing but the record.
+    Tying it to a Fleet meant a workspace whose service had not been built yet - a fresh server, or
+    any workspace not touched this session - reported `null` for a verifiably live agent, which is
+    exactly the "cannot tell active work from a finished one" the field is for. Reconciliation is
+    different: it MUTATES the ledger, so it is rightly gated on owning the fleet lock.
+    """
+    if _is_terminal(rec):
+        return rec
+    if rec.pid is None or not rec.pid_start_time:
+        return rec  # nothing to probe, or nothing to verify a probe against
+    return rec.model_copy(update={"agent_alive": _pid_is_verifiably_ours(rec)})
+
+
 def _still_running(rec: RunRecord) -> bool:
     """update_if predicate: stamp a terminal status only if the run hasn't already reached one
     (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
@@ -1041,18 +1062,8 @@ class Fleet:
         return record
 
     def with_liveness(self, rec: RunRecord) -> RunRecord:
-        """Return ``rec`` with ``agent_alive`` filled in for the moment of this call.
-
-        Answers the one question a status read cannot: is the agent still working, or has it
-        finished without the outcome being written yet? Terminal records get None - the run is over,
-        so liveness is not a meaningful thing to report - as does a record whose pid identity cannot
-        be established, because "some process exists at that number" is not evidence our agent does.
-        """
-        if _is_terminal(rec):
-            return rec
-        if rec.pid is None or not rec.pid_start_time:
-            return rec  # nothing to probe, or nothing to verify a probe against
-        return rec.model_copy(update={"agent_alive": _pid_is_verifiably_ours(rec)})
+        """Instance-side alias for ``with_liveness`` - see the module-level function."""
+        return with_liveness(rec)
 
     def _cancel_requested(self, run_id: str) -> bool:
         """Whether a cancel has been asked for - via the in-process handle or a terminal record.

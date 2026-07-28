@@ -1516,42 +1516,26 @@ def test_recency_does_not_parse_run_records(tmp_path: Path) -> None:
     assert row["last_activity_at"] is not None
 
 
-def test_ledger_runs_fills_in_agent_liveness(tmp_path: Path) -> None:
-    """REGRESSION: MCP `status` reads the ledger here rather than through MarshalService, so
-    `agent_alive` came back null on the one surface a driver actually polls - the whole point of the
-    field (telling "still working" from "finished, outcome not yet written") lost exactly where it
-    was needed. Same bypass that the reconciliation hook had to fix."""
+def test_ledger_runs_reports_liveness_without_a_built_service(tmp_path: Path) -> None:
+    """REGRESSION: liveness was gated on a cached Fleet, so a fresh server - or any workspace not
+    touched this session - reported `null` for a verifiably LIVE agent. Probing a pid needs only
+    the record, so it must not depend on whether a service happens to be built. (Reconciliation is
+    different: it mutates the ledger and is rightly gated on owning the fleet lock.)"""
+    from marshal_engine.fleet import _pid_start_time
 
-    class _StubFleet:
-        session_start = None
-        budget_gate = None
-
-        def reconcile_orphans(self) -> None:
-            pass
-
-        def with_liveness(self, rec: RunRecord) -> RunRecord:
-            return rec.model_copy(update={"agent_alive": True})
-
-    class _StubService:
-        def __init__(self) -> None:
-            self.fleet = _StubFleet()
-
-    a = tmp_path / "a"
-    a.mkdir()
-    _write_run(a, "r-a")
-    reg = WorkspaceRegistry(
-        [WorkspaceDef("default", a, a / "c.yaml")],
-        builder=_explode,
-        prebuilt={"default": _StubService()},  # type: ignore[dict-item]
-    )
-    assert [r.agent_alive for _, r in reg.ledger_runs()] == [True]
-
-
-def test_ledger_runs_leaves_liveness_unknown_without_a_fleet(tmp_path: Path) -> None:
-    """No Fleet in this process means nothing can probe - `None` is the honest answer, and it must
-    not be mistaken for "the agent is dead"."""
-    a = tmp_path / "a"
-    a.mkdir()
-    _write_run(a, "r-a")
-    reg = WorkspaceRegistry([WorkspaceDef("default", a, a / "c.yaml")], builder=_explode)
-    assert [r.agent_alive for _, r in reg.ledger_runs()] == [None]
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        a = tmp_path / "a"
+        a.mkdir()
+        FleetState(a / ".marshal" / "runs").add(
+            RunRecord(
+                run_id="live.echo.x", task_id="t", backend="echo", status="running",
+                pid=holder.pid, pid_start_time=_pid_start_time(holder.pid),
+            )
+        )
+        # builder=_explode: no service is ever built, which is the whole point.
+        reg = WorkspaceRegistry([WorkspaceDef("default", a, a / "c.yaml")], builder=_explode)
+        assert [r.agent_alive for _, r in reg.ledger_runs()] == [True]
+    finally:
+        holder.kill()
+        holder.wait()
