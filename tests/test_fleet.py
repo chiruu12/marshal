@@ -2482,3 +2482,24 @@ def test_a_tracked_context_file_still_runs(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="ctx2", goal="use it", context_files=["notes.md"]))
     assert rec.status != RunStatus.FAILED.value
+
+
+def test_an_absolute_context_path_is_refused(repo: Path) -> None:
+    """REGRESSION: `Path("/wt") / "/etc/passwd"` is `/etc/passwd` - an absolute path silently
+    discards the base. It exists, so an existence-only check passed it and injected a host path
+    into the agent's prompt, aimed outside the boundary the worktree exists to enforce. A check
+    that accepts that is worse than no check: it makes the path look validated."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="outside the worktree"):
+        fleet.run("writer", TaskSpec(id="abs", goal="x", context_files=["/etc/hosts"]))
+    assert fleet.state.list() == []
+
+
+def test_a_traversing_context_path_is_refused(repo: Path) -> None:
+    """`../` walks out of the worktree the same way an absolute path does."""
+    outside = repo.parent / "outside.txt"
+    outside.write_text("not for the agent")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="outside the worktree"):
+        fleet.run("writer", TaskSpec(id="trav", goal="x", context_files=["../../outside.txt"]))
+    assert fleet.state.list() == []

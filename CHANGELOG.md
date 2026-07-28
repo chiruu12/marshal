@@ -89,7 +89,10 @@ versions may include breaking API changes until 1.0.
   naming the missing paths, and the worktree is torn down rather than left behind. Failing is
   deliberate over silently copying the file in: copying puts untracked content into a checkout whose
   purpose is to mirror the repo, and `.env` is gitignored too — "copy whatever the caller named" is
-  a way to hand secrets to an agent.
+  a way to hand secrets to an agent. Containment is checked first and matters more: `Path(wt) /
+  "/etc/passwd"` is `/etc/passwd` (an absolute path discards the base) and `../` walks out the same
+  way, so an existence-only check would have passed both and pointed the agent at host files. An
+  absolute or traversing `context_files` entry is now refused.
 - **`marshal_quickstart` MCP tool: a stated "start here" (#102).** A driver facing ~20 tools had no
   ordering and no decision boundary between the near-duplicates — `run_agent` / `spawn` /
   `run_many` / `run_workflow` and `status` / `get_run` / `collect_run` / `get_run_log` — and learned

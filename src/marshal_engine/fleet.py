@@ -133,15 +133,34 @@ def _require_context_files(wt: Worktree, context_files: list[str]) -> None:
     into a worktree whose whole purpose is to mirror the repo - and `.env` is gitignored too, so
     "copy whatever the caller named" is a way to hand secrets to an agent. Fail-closed matches
     task_id validation, worktree containment, and read-only reviewer routing.
+
+    Containment is checked BEFORE existence, and is the more important half. ``Path("/wt") /
+    "/etc/passwd"`` is ``/etc/passwd`` - an absolute path silently discards the base - and ``../``
+    walks out the same way. Both exist, so an existence-only check would pass them and then inject
+    the path into the agent's prompt, pointing it at host files the worktree boundary is there to
+    keep out. A check that accepts those is worse than no check: it makes the path look validated.
     """
-    missing = [f for f in context_files if not (wt.path / f).exists()]
-    if not missing:
-        return
-    raise ValueError(
-        f"context_files not present in the worktree: {', '.join(sorted(missing))}. "
-        f"A worktree holds tracked files only, so gitignored or untracked paths are absent - "
-        f"commit them, or put the content in the goal text instead of pointing at a path."
-    )
+    outside: list[str] = []
+    missing: list[str] = []
+    base = wt.path.resolve()
+    for f in context_files:
+        candidate = (base / f).resolve()
+        if candidate != base and base not in candidate.parents:
+            outside.append(f)
+        elif not candidate.exists():
+            missing.append(f)
+    if outside:
+        raise ValueError(
+            f"context_files outside the worktree: {', '.join(sorted(outside))}. "
+            f"Paths must be relative to the repo root and stay inside it - the worktree is the "
+            f"isolation boundary, so absolute paths and '..' are refused."
+        )
+    if missing:
+        raise ValueError(
+            f"context_files not present in the worktree: {', '.join(sorted(missing))}. "
+            f"A worktree holds tracked files only, so gitignored or untracked paths are absent - "
+            f"commit them, or put the content in the goal text instead of pointing at a path."
+        )
 
 
 def _still_running(rec: RunRecord) -> bool:
