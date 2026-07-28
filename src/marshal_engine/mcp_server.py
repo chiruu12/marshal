@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeVar
 
@@ -42,6 +42,7 @@ from .scaffold import scaffold_fleet_config
 from .service import MarshalService
 from .state import compact_run, filter_runs
 from .teams import TeamSubject
+from .usage import UsageWindow, usage_window_since
 from .workspaces import (
     DEFAULT_WORKSPACE,
     WorkspaceDef,
@@ -60,7 +61,7 @@ _ALLOW_MCP_REGISTRATION_ENV = "MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION"
 # title + type). Reused across the tools and the run_many Job model.
 _DESC_CLIENT = "Name of a configured client (from list_clients)."
 _DESC_MODEL = "Optional model override; when set with a client, replaces the client's resolved model. When set with `backend` (ad-hoc), is the model to run."
-_DESC_BACKEND = "Optional bare backend name for an ad-hoc spawn (e.g. 'opencode', 'claude-code'); bypasses fleet.config.yaml. Ignored if `client` is also set."
+_DESC_BACKEND = "Optional bare backend name for an ad-hoc spawn (e.g. 'opencode', 'claude-code'); bypasses fleet.config.yaml. Mutually exclusive with `client` - passing both is refused, not silently resolved."
 _DESC_DURATION = (
     "Optional per-spawn timeout override. A preset name (short=300s, medium=1200s, large=6000s, "
     "long=24000s) or a positive integer of seconds. When set, it overrides the resolved timeout."
@@ -70,7 +71,7 @@ _DESC_TASK_ID = (
     "Optional grouping id; runs sharing a task_id can be compared head-to-head by report(). "
     "Must be a safe path segment ([A-Za-z0-9._-], no leading '.'/'-'); see SECURITY.md."
 )
-_DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt)."
+_DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt). Each must be TRACKED in git: the worktree holds tracked files only, so a gitignored/untracked path fails the spawn instead of silently reaching the agent as an unopenable path."
 _DESC_BASE_BRANCH = (
     "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
     "chain dependent work off a prior run's branch."
@@ -124,19 +125,6 @@ def build_service() -> MarshalService:
         missing_config="legacy",
         config_warnings="plain",
     )
-
-
-def _window_since(session_start: datetime, now: datetime, window: str) -> datetime | None:
-    """Map a `usage` window name to the [since, now) start (UTC). None for "all" (no filter)."""
-    if window == "all":
-        return None
-    if window == "session":
-        return session_start
-    if window == "week":
-        return now - timedelta(days=7)
-    if window == "month":
-        return now - timedelta(days=30)
-    raise ValueError(f"unknown usage window: {window!r} (use session|week|month|all)")
 
 
 def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
@@ -193,6 +181,56 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         name, svc = await offload(registry.require_run, run_id, workspace)
         result = await offload(fn, svc, *args, **kwargs)
         return tag(dump_result(result), name)
+
+    @app.tool()
+    async def marshal_quickstart() -> dict[str, Any]:
+        """START HERE. The canonical four-step loop, and which tool to pick when several look alike.
+
+        Read this before choosing among the run-ish tools (run_agent / spawn / run_many /
+        run_workflow) or the status-ish ones (status / get_run / collect_run / get_run_log).
+        """
+        return {
+            "what_marshal_is": (
+                "One agent spawns and coordinates a fleet of sub-agents, each in its own isolated "
+                "git worktree, with per-provider cost tracking. Code delegation is the "
+                "best-developed path, not the only one."
+            ),
+            "the_loop": [
+                "1. doctor - is this workspace ready? Catches a missing CLI, a broken config, and "
+                "a backend that recently failed on billing, BEFORE you spend a run.",
+                "2. spawn (or run_agent) - start the work.",
+                "3. collect_run - read the diff. A run's status says it exited cleanly, NOT that "
+                "the work is correct. Always read the diff before step 4.",
+                "4. integrate - merge that run's branch into yours. One run at a time.",
+            ],
+            "which_run_tool": {
+                "run_agent": "Blocks until the run finishes. Use for short work you want inline.",
+                "spawn": "Returns immediately with a RUNNING record. Use for anything long - it "
+                "does not hold your turn. Poll with get_run, stop with cancel_run.",
+                "run_many": "Several jobs in parallel, one per worktree. Returns when all finish.",
+                "run_workflow": "A declarative recipe (fan-out, gates, integrate) from a YAML file.",
+            },
+            "which_status_tool": {
+                "status": "List runs. Filtered and compact by default - pass `limit`, `status`, "
+                "`task_id`, `since_hours`. Check `agent_alive` to tell 'still working' from "
+                "'finished, outcome not yet written'.",
+                "get_run": "One run's full record, including its final text.",
+                "collect_run": "One run's DIFF - what it actually changed. This is the review step.",
+                "get_run_log": "One run's raw stdout/stderr. For diagnosing a failure.",
+            },
+            "safety": (
+                "Runs are isolated in their own worktrees; a bad run costs a worktree, not your "
+                "repo. Two things reach your branch: `integrate`, and `run_workflow` when the "
+                "recipe declares an integrate phase with `auto: true` - read a workflow before "
+                "running it. `succeeded` means the process exited 0, which is not a claim about "
+                "correctness, so review the diff first."
+            ),
+            "multi_repo": (
+                "Workspace-scoped tools take an optional `workspace` (the global ones - this tool, "
+                "list_workspaces, add_workspace - do not). list_workspaces shows what is registered "
+                "and whether each is `ready`, with a reason when it is not."
+            ),
+        }
 
     @app.tool()
     async def list_workspaces() -> list[dict[str, Any]]:
@@ -441,17 +479,24 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     @app.tool()
     async def integrate(
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
+        message: Annotated[str | None, Field(description=(
+            "Commit message for the run's work. Write it in the target repo's own convention - "
+            "you reviewed the diff, so you are the one who knows what it did. Omitted, it falls "
+            "back to 'marshal: integrate <run_id>', which describes the tooling rather than the "
+            "change and usually has to be rewritten afterwards."
+        ))] = None,
         cleanup: Annotated[bool, Field(description="Remove the worktree after a successful merge.")] = False,
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
         """Merge a run's worktree branch into its workspace's current branch.
 
         REVIEW THE DIFF FIRST with collect_run - `succeeded` means the process exited cleanly, NOT
-        that the code is correct. Integrate one run at a time. Outcome status is one of: merged |
-        conflict (aborted, repo left clean) | blocked (target dirty/detached, or the run is still
-        running - fix and retry) | empty (nothing to integrate) | error (a git op needs a human)."""
+        that the code is correct. Integrate one run at a time. Pass `message` to commit in the
+        repo's own convention. Outcome status is one of: merged | conflict (aborted, repo left
+        clean) | blocked (target dirty/detached, or the run is still running - fix and retry) |
+        empty (nothing to integrate) | error (a git op needs a human)."""
         return await run_call(
-            run_id, workspace, lambda svc: svc.integrate(run_id, cleanup=cleanup),
+            run_id, workspace, lambda svc: svc.integrate(run_id, message=message, cleanup=cleanup),
         )
 
     @app.tool()
@@ -636,10 +681,11 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     @app.tool()
     async def usage(
         window: Annotated[
-            Literal["session", "week", "month", "all"],
+            UsageWindow,
             Field(description=(
-                "Time window: 'session' (since the MCP server started - the Fleet's session_start), "
-                "'week' (last 7d), 'month' (last 30d), 'all' (the full ledger, default). The "
+                "Time window: 'session' (since the MCP server started - the Fleet's "
+                "session_start), 'day' (last 24h), 'week' (last 7d), 'month' (last 30d), "
+                "'all' (the full ledger, default). Same set as `marshal usage --window`. The "
                 "resolved window and `since` are echoed back in the response."
             )),
         ] = "all",
@@ -653,7 +699,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         `enforce: true` may refuse subsequent matching spawns on that workspace)."""
         svc = await offload(registry.get, workspace)
         now = datetime.now(timezone.utc)
-        since = _window_since(svc.session_start, now, window)
+        since = usage_window_since(window, session_start=svc.session_start, now=now)
         summary = await offload(svc.usage, since, None)
         budgets = await offload(svc.budget_status, now)
         payload = {

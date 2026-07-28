@@ -455,11 +455,12 @@ def test_get_run_log_round_trips_via_call_tool(
 def test_usage_window_param_is_in_schema(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The new `window` parameter must be on the tool schema (so a driver can pass session/week/month/all).
+    # The `window` parameter must be on the tool schema with the canonical USAGE_WINDOWS set.
     pytest.importorskip("mcp")
     import asyncio
 
     from marshal_engine.mcp_server import build_app
+    from marshal_engine.usage import USAGE_WINDOWS
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -468,7 +469,7 @@ def test_usage_window_param_is_in_schema(
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
     props = tools["usage"].inputSchema["properties"]
     assert "window" in props
-    assert set(props["window"]["enum"]) == {"session", "week", "month", "all"}
+    assert set(props["window"]["enum"]) == set(USAGE_WINDOWS)
 
 
 def test_usage_window_param_mapping(
@@ -530,6 +531,12 @@ def test_usage_window_param_mapping(
     assert out_month["window"] == "month"
     assert out_month["totals"]["runs"] == 1
 
+    # day = last 24h; the 2020 event is excluded
+    out_day = _call("day")
+    assert out_day["window"] == "day"
+    assert out_day["since"] is not None
+    assert out_day["totals"]["runs"] == 1
+
     # session = since = svc.session_start (an event stamped at `now` is within the session window)
     out_session = _call("session")
     assert out_session["window"] == "session"
@@ -541,3 +548,74 @@ def test_usage_window_param_mapping(
     assert out_session["totals"]["runs"] in (0, 1)  # 0 if `now` < session_start, 1 otherwise
     # Windowed JSON includes the new by_backend_model key
     assert "by_backend_model" in out_session
+
+
+def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A driver seeing ~20 tools had no stated ordering and no decision boundary between the four
+    run-ish and four status-ish tools - it learned "spawn is the long one" only by reading each
+    description. This tool is where that orientation lives, because a driver reads tool
+    descriptions, not the README."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+
+    names = {t.name for t in asyncio.run(app.list_tools())}
+    assert "marshal_quickstart" in names
+
+    _, payload = asyncio.run(app.call_tool("marshal_quickstart", {}))
+    # The four-step spine, in order.
+    steps = " ".join(payload["the_loop"])
+    for tool in ("doctor", "spawn", "collect_run", "integrate"):
+        assert tool in steps, f"the canonical loop does not mention {tool}"
+    # Every lookalike is disambiguated, which is the actual complaint.
+    assert {"run_agent", "spawn", "run_many", "run_workflow"} <= set(payload["which_run_tool"])
+    assert {"status", "get_run", "collect_run", "get_run_log"} <= set(payload["which_status_tool"])
+    # The blocking-vs-async distinction is stated, not left to be inferred from the names.
+    assert "Blocks" in payload["which_run_tool"]["run_agent"]
+    assert "does not hold your turn" in payload["which_run_tool"]["spawn"]
+    # And the caveat that every reviewer flagged is stated up front, not buried.
+    assert "not a claim about" in payload["safety"]
+
+
+def test_quickstart_claims_are_true_of_the_actual_tool_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An orientation tool that overclaims is worse than none - it is the same defect as
+    `succeeded` and `configured`, just in prose. Two earlier drafts said "integrate is the ONLY
+    step that touches your branch" (a workflow with an `auto: true` integrate phase also does) and
+    "every tool takes an optional workspace" (the global tools do not). Pin both against the real
+    registered signatures rather than against what the text asserts."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    _, payload = asyncio.run(app.call_tool("marshal_quickstart", {}))
+
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    takes_workspace = {
+        name for name, t in tools.items()
+        if "workspace" in (t.inputSchema or {}).get("properties", {})
+    }
+    globals_ = {"marshal_quickstart", "list_workspaces", "add_workspace"}
+    assert not (globals_ & takes_workspace), "a global tool grew a workspace param"
+    assert takes_workspace, "no tool takes workspace - the claim would be vacuous"
+    # So the text must NOT say "every tool".
+    assert "Every tool takes" not in payload["multi_repo"]
+
+    # `run_workflow` can integrate, so integrate is not the only path to the user's branch.
+    assert "run_workflow" in tools
+    assert "only step that touches" not in " ".join(payload["the_loop"])
+    assert "run_workflow" in payload["safety"]

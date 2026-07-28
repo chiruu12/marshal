@@ -1,12 +1,26 @@
 # MCP tool reference
 
-The Marshal MCP server (`marshal mcp`) exposes **24 tools** (counted from `@app.tool` in
-`mcp_server.py`). Every action/query tool accepts an optional `workspace` parameter (defaults to
-`"default"`). Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
+The Marshal MCP server (`marshal mcp`) exposes the tools documented below (the normative list is
+`@app.tool` in `mcp_server.py`). **New to Marshal? Call `marshal_quickstart` first** — it names the
+four-step loop and says which tool to pick when several look alike. Workspace-scoped tools accept an optional `workspace` parameter (defaults to `"default"`);
+the global ones — `marshal_quickstart`, `list_workspaces`, `add_workspace` — do not. Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
 owning workspace by scanning each repo's ledger, with an optional `workspace` hint to skip the scan.
 
 Results from workspace-scoped tools include a top-level `"workspace"` field naming the repo they came
 from.
+
+## Orientation
+
+### `marshal_quickstart`
+
+The canonical loop and the decision boundary between the lookalike tools. No parameters.
+
+**Returns:** `{ what_marshal_is, the_loop, which_run_tool, which_status_tool, safety, multi_repo }`.
+
+Exists because a driver facing ~20 tools has no stated ordering: several do near-identical things
+(`run_agent` / `spawn` / `run_many` / `run_workflow`; `status` / `get_run` / `collect_run` /
+`get_run_log`) and the blocking-vs-async split is not visible in the names. A driver reads tool
+descriptions, not this file — so the orientation lives where it will actually be read.
 
 ## Workspace
 
@@ -18,15 +32,22 @@ List repos this server can target.
 |-----------|------|---------|-------------|
 | *(none)* | | | |
 
-**Returns:** `list[dict]` — one row per workspace:
+**Returns:** `list[dict]` — one row per workspace.
+
+`ready` is a claim about *configuration*, not about the machine: it does not probe whether those
+clients' backend CLIs are installed or authenticated. That is `doctor`, which costs subprocesses
+this listing deliberately avoids.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Workspace name (`default` for `MARSHAL_REPO`). |
 | `path` | string | Absolute repo root. |
 | `config_path` | string | Path to `fleet.config.yaml`. |
-| `configured` | bool | Whether the config file exists. |
+| `configured` | bool | Whether the config **file exists** — nothing more. Not a readiness signal; use `ready`. |
 | `client_count` | int | Number of declared clients (0 if missing/broken config). |
+| `ready` | bool | Whether this workspace can actually take a run: a config that loads and declares at least one client. This is the field to branch on. |
+| `last_activity_at` | string \| null | ISO-8601 UTC of the most recent write to this workspace's run ledger — how you find the repo you were just working in when a dozen are registered. `null` means no runs recorded. Named for what it measures: a record's last write (a run starting, updating, or finishing), not a start time. |
+| `ready_reason` | string \| null | Why `ready` is false — `no config file at <path>`, `config does not load: <error>`, or `config declares no clients`. `null` when ready. |
 | `default` | bool | True for the default workspace. |
 
 ### `add_workspace`
@@ -59,9 +80,13 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Target workspace. |
 
-**Returns:** `{ clients, driver_context, workspace }`
+**Returns:** `{ clients, skipped, driver_context, workspace }`
 
 - `clients`: `[{ name, backend, model, permission, permission_fidelity }]`
+- `skipped`: `[{ name, backend, reason }]` — clients declared in the config that are **not usable
+  right now**, and why (backend CLI absent, or a backend name that does not exist). Previously
+  these were filtered out silently: Marshal warned on stderr, which an MCP driver never sees, so
+  the client just vanished from the list with no error.
 - `permission_fidelity`: `enforced-denies` \| `boundary-only` — what `safe-edit` actually enforces for this client's backend (see `docs/design.md` §5 / `SECURITY.md`)
 - `driver_context`: string \| null — from `fleet.config.yaml` `context.driver`
 
@@ -80,6 +105,12 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 Preflight the selected workspace (toolchain, repo, config, per-backend CLI + auth, and static
 `permission:<backend>` fidelity checks). Read-only. `permission:*` is `ok` for `enforced-denies`
 and `warn` for `boundary-only` (never a failure); it appears even when the CLI probe fails.
+
+A `quota:<backend>` **warn** appears when recent runs on that backend failed for billing or quota
+reasons, with the count and the latest error. It is derived from this workspace's run ledger, not
+from a provider API — so it reports what actually happened rather than predicting. **Its absence is
+not a quota clearance:** doctor cannot see provider balances, and a backend that is installed,
+authenticated, and out of credit still passes every other check.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -101,10 +132,10 @@ Run a task in an isolated worktree; **blocks** until finished.
 | `goal` | string | *(required)* | Natural-language task. |
 | `client` | string \| null | `null` | Configured client name. Omit for ad-hoc spawn (set `backend`). |
 | `task_id` | string \| null | `null` | Grouping id for `report()`. Must be a safe path segment (`[A-Za-z0-9._-]`, no leading `.`/`-`; see `SECURITY.md`); hostile values fail closed before any worktree is created. |
-| `context_files` | list[string] \| null | `null` | Repo-relative paths injected into the prompt. |
+| `context_files` | list[string] \| null | `null` | Repo-relative paths injected into the prompt. Each must be **relative to the repo root** and exist **in the worktree**, which holds tracked files only. Absolute paths and `..` are refused (the worktree is the isolation boundary); a gitignored or untracked path fails the spawn rather than handing the agent a file it cannot open. |
 | `base_branch` | string \| null | `null` | Branch to base the worktree on (default: current HEAD). Use after `commit_run` to chain work. |
 | `model` | string \| null | `null` | Override the client's resolved model, or the model for an ad-hoc spawn. |
-| `backend` | string \| null | `null` | Bare backend for ad-hoc spawn (e.g. `opencode`). Ignored when `client` is set. |
+| `backend` | string \| null | `null` | Bare backend for ad-hoc spawn (e.g. `opencode`). **Mutually exclusive with `client`** — passing both is an error, not a precedence rule. To use a configured client with a different model, pass `client` + `model`. |
 | `duration` | string \| int \| null | `null` | Per-spawn timeout override (preset name or positive seconds). |
 | `workspace` | string \| null | `null` | Target workspace. |
 
@@ -357,6 +388,7 @@ Merge a run's worktree branch into the workspace's current branch. Review with `
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `run_id` | string | *(required)* | Run id. |
+| `message` | string \| null | `null` | Commit message for the run's work, in the target repo's own convention. Omitted, it falls back to `marshal: integrate <run_id>` — which names the tooling, not the change. |
 | `cleanup` | bool | `false` | Remove the worktree after a successful merge. |
 | `workspace` | string \| null | `null` | Workspace hint. |
 
@@ -417,7 +449,7 @@ mode. Budgets in the payload come from that workspace's `fleet.config.yaml` alon
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `window` | `"session"` \| `"week"` \| `"month"` \| `"all"` | `"all"` | Time window (`session` = since MCP server started). |
+| `window` | `"session"` \| `"day"` \| `"week"` \| `"month"` \| `"all"` | `"all"` | Time window (`session` = since MCP server started / Fleet `session_start`; `day` = last 24h). Same set as `marshal usage --window`. |
 | `workspace` | string \| null | `null` | Target workspace. |
 
 **Returns:**
