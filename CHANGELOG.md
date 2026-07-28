@@ -52,6 +52,14 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **Conflicting routing is refused instead of silently resolved (#101).** Passing both `client` and
+  `backend` names two different answers to "what runs this", and the loser was dropped without a
+  word — so a run executed on a backend the caller never asked for and nothing in the result said
+  so. It now raises, naming both values and the two valid shapes. `client` + `model` is deliberately
+  NOT covered: that is a coherent request (this client's backend, that model) and stays a supported
+  override. The MCP `backend` description said "ignored if `client` is also set"; documenting a
+  silent override does not make it safe.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
