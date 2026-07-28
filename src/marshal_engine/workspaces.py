@@ -682,6 +682,15 @@ class WorkspaceRegistry:
         targets = [name] if name else list(self._defs)
         out: list[tuple[str, RunRecord]] = []
         for wsname in targets:
+            # Reading ledgers without building a service is the point of this method, but a
+            # workspace whose Fleet ALREADY exists here may be holding a reconciliation it had to
+            # defer at startup - and this is the surface where a stale RUNNING gets believed. Only
+            # cached workspaces are touched: where no Fleet was ever built, nothing reaped in the
+            # first place, so there is nothing to finish.
+            cached = self._cache.get(wsname)
+            fleet = getattr(cached[0], "fleet", None) if cached else None
+            if fleet is not None:
+                fleet.reconcile_orphans()
             for rec in FleetState(self._runs_dir(self._defs[wsname])).list():
                 out.append((wsname, rec))
         return out
