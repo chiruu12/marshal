@@ -141,6 +141,22 @@ class CodingAgentBackend(ABC):
         """
         return None
 
+    def available_models(self) -> list[str] | None:
+        """Model ids this backend's CLI reports it can run, or None if it cannot be asked.
+
+        A **read-only convenience**, so a driver does not have to leave the tool and shell out to
+        `cursor-agent models` to find out what it may configure - which is exactly what happened in
+        the field, on both sides of a single day.
+
+        None means "this backend exposes no way to ask", which is NOT the same as "no models"; a
+        caller must be able to tell those apart. Implementations must be side-effect-light and never
+        raise: return None on any failure (missing binary, unauthenticated, unparseable output).
+
+        This never feeds routing. Clients own backend+model; this is a catalogue you read, and the
+        distinction is what keeps a probe from quietly becoming configuration.
+        """
+        return None
+
     def verifies_auth(self) -> bool:
         """True if account_info() doubles as an authenticated-only probe.
 
