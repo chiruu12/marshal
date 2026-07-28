@@ -56,7 +56,7 @@ class _FakeBackend(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, exit_code=exit_code)
 
 
 def _git_repo(path: Path) -> Path:

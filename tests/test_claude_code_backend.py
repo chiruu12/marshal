@@ -88,7 +88,7 @@ def test_parse_output_success_keeps_native_cost(backend: ClaudeCodeBackend) -> N
         }
     )
     res = backend.parse_output(stdout, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.session_id == "abc-123"
     assert res.text == "done the thing"
     assert res.usage is not None

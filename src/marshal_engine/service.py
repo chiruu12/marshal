@@ -576,11 +576,11 @@ class MarshalService:
         # admin-api cost (e.g. EastRouter), or an estimate. Never an "unavailable" one.
         priced = [
             r for r in rows
-            if r.status == RunStatus.SUCCEEDED.value
+            if r.status == RunStatus.EXITED_CLEAN.value
             and r.source in (UsageSource.NATIVE, UsageSource.ADMIN_API, UsageSource.ESTIMATED)
         ]
         cheapest = min(priced, key=lambda r: r.cost_usd).client if priced else None
-        timed = [r for r in rows if r.status == RunStatus.SUCCEEDED.value and r.duration_ms > 0]
+        timed = [r for r in rows if r.status == RunStatus.EXITED_CLEAN.value and r.duration_ms > 0]
         fastest = min(timed, key=lambda r: r.duration_ms).client if timed else None
         return BenchmarkResult(
             task_id=task_id, goal=goal, strategies=rows, cheapest=cheapest, fastest=fastest

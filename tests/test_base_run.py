@@ -45,7 +45,7 @@ class _Dummy(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             exit_code=exit_code,
             raw_stdout=raw_stdout,
@@ -60,7 +60,7 @@ def _task() -> TaskSpec:
 def test_run_success(tmp_path: Path) -> None:
     b = _Dummy([sys.executable, "-c", "print('hi')"])
     res = b.run(_task(), RunOpts(cwd=tmp_path))
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "hi"
 
 
@@ -70,7 +70,7 @@ def test_run_scrubs_driver_virtual_env(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("VIRTUAL_ENV", "/driver/.venv")
     b = _Dummy([sys.executable, "-c", "import os; print(os.environ.get('VIRTUAL_ENV', 'UNSET'))"])
     res = b.run(_task(), RunOpts(cwd=tmp_path))
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "UNSET"  # scrubbed from the child env
     # extra_env still wins if a caller deliberately sets it
     b2 = _Dummy([sys.executable, "-c", "import os; print(os.environ.get('VIRTUAL_ENV', 'UNSET'))"])
@@ -86,7 +86,7 @@ def test_run_calls_prepare_before_spawn(tmp_path: Path) -> None:
             calls.append(Path(opts.cwd))
 
     res = _Prep([sys.executable, "-c", "print('hi')"]).run(_task(), RunOpts(cwd=tmp_path))
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert calls == [tmp_path]  # prepare ran, with the run's cwd
 
 
@@ -105,7 +105,7 @@ def test_run_prepare_extra_env_reaches_child(tmp_path: Path) -> None:
         ]
     )
     res = b.run(_task(), RunOpts(cwd=tmp_path, extra_env={"KEEP": "1"}))
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "from-prepare"
 
 
@@ -188,7 +188,7 @@ def test_run_stdin_closed_does_not_hang(tmp_path: Path) -> None:
     # If stdin were a TTY/open pipe this would block forever; DEVNULL gives EOF immediately.
     b = _Dummy([sys.executable, "-c", "import sys; sys.stdin.read(); print('eof-ok')"])
     res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=10))
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "eof-ok"
 
 
@@ -246,7 +246,7 @@ class _PartialUsage(CodingAgentBackend):
                     backend="partial", input_tokens=int(line.split("=")[1]), source=UsageSource.NATIVE
                 )
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             usage=usage,
             exit_code=exit_code,
         )

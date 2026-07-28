@@ -532,7 +532,7 @@ class TeamRunner:
                 ) from exc
             note = (
                 ""
-                if status == RunStatus.SUCCEEDED.value
+                if status == RunStatus.EXITED_CLEAN.value
                 else f"run status {status or 'unknown'} - this run did NOT succeed; you are "
                 "reviewing an unsuccessful candidate, not finished work"
             )
@@ -629,9 +629,9 @@ class TeamRunner:
                     )
                 )
                 continue
-            done = rec.status == RunStatus.SUCCEEDED.value and bool((rec.text or "").strip())
+            done = rec.status == RunStatus.EXITED_CLEAN.value and bool((rec.text or "").strip())
             note = ""
-            if rec.status != RunStatus.SUCCEEDED.value:
+            if rec.status != RunStatus.EXITED_CLEAN.value:
                 note = f"run did not succeed ({rec.status}); any partial output is unreliable"
             elif not (rec.text or "").strip():
                 note = "the run succeeded but produced no report text"

@@ -62,7 +62,7 @@ class StubService:
             task_id=task_id or "t",
             backend="opencode",
             client=client,
-            status=self._statuses.get(client, "succeeded"),
+            status=self._statuses.get(client, "exited_clean"),
         )
 
     def run_many(
@@ -257,7 +257,7 @@ def test_runner_auto_integrate_only_succeeded() -> None:
             PhaseSpec(name="merge", run="integrate", auto=True),
         ],
     )
-    svc = StubService(_config("a", "b"), statuses={"a": "succeeded", "b": "failed"})
+    svc = StubService(_config("a", "b"), statuses={"a": "exited_clean", "b": "failed"})
     result = WorkflowRunner(svc).run(spec, {"t": "go"})
 
     integrated = [c[1] for c in svc.calls if c[0] == "integrate"]

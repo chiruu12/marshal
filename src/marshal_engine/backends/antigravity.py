@@ -233,7 +233,7 @@ class AntigravityBackend(CodingAgentBackend):
             )
         # Plain-text output; no machine-readable usage/session available.
         return AgentResult(
-            status=RunStatus.SUCCEEDED,
+            status=RunStatus.EXITED_CLEAN,
             text=raw_stdout.strip(),
             usage=UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE),
             exit_code=exit_code,

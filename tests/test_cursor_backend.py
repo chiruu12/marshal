@@ -185,7 +185,7 @@ def test_run_safe_edit_overlay_live_then_removed(
     wt = tmp_path / "wt"
     wt.mkdir()
     res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
-    assert res.status is RunStatus.SUCCEEDED, res.error  # fake exits 1 if any deny was missing
+    assert res.status is RunStatus.EXITED_CLEAN, res.error  # fake exits 1 if any deny was missing
     assert (wt / "out.txt").read_text() == "hi"
     assert not (wt / ".cursor").exists()  # overlay + created dir both removed
 
@@ -202,7 +202,7 @@ def test_run_safe_edit_restores_existing_config_bytes_and_mode(
     cli.write_bytes(original)
     os.chmod(cli, 0o600)
     res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
-    assert res.status is RunStatus.SUCCEEDED, res.error
+    assert res.status is RunStatus.EXITED_CLEAN, res.error
     assert cli.read_bytes() == original
     assert stat.S_IMODE(cli.stat().st_mode) == 0o600
 
@@ -229,7 +229,7 @@ def test_run_safe_edit_discards_agent_edit_to_config(
     original = b'{"permissions": {"deny": ["WebFetch(evil.example)"]}}'
     cli.write_bytes(original)
     res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
-    assert res.status is RunStatus.SUCCEEDED, res.error
+    assert res.status is RunStatus.EXITED_CLEAN, res.error
     assert cli.read_bytes() == original
 
 
@@ -372,7 +372,7 @@ def test_run_read_only_skips_transaction(
     wt = tmp_path / "wt"
     wt.mkdir()
     res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.READ_ONLY))
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert not (wt / ".cursor").exists()
 
 
@@ -447,7 +447,7 @@ def test_parse_output_stream_concatenates_assistant_deltas(backend: CursorBacken
     truncated = "I'll summarize the audit now."
     out = "\n".join(_assistant_event(c) for c in chunks) + "\n" + _result_event(truncated)
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "".join(chunks)
     assert res.text != truncated
     assert res.session_id == "uuid-9"
@@ -457,7 +457,7 @@ def test_parse_output_prefers_stream_over_truncated_result(backend: CursorBacken
     full = "A" * 500
     out = _assistant_event(full) + "\n" + _result_event(full[-50:])
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == full
 
 
@@ -477,14 +477,14 @@ def test_parse_output_skips_malformed_lines(backend: CursorBackend) -> None:
         + _result_event("kept")
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "kept "
 
 
 def test_parse_output_success(backend: CursorBackend) -> None:
     out = '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"uuid-9"}'
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "done"
     assert res.session_id == "uuid-9"
 

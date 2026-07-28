@@ -51,7 +51,7 @@ class _Printer(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text=raw_stdout.strip(), exit_code=exit_code)
 
 
 class _PerTaskWriter(CodingAgentBackend):
@@ -72,7 +72,7 @@ class _PerTaskWriter(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             usage=UsageRecord(backend="writer", cost_usd=0.001, source=UsageSource.NATIVE),
             exit_code=exit_code,
@@ -103,7 +103,7 @@ class _Committer(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             exit_code=exit_code,
         )
@@ -124,7 +124,7 @@ class _NoOp(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text="", exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text="", exit_code=exit_code)
 
 
 class _Exploder(CodingAgentBackend):
@@ -163,7 +163,7 @@ class _LongSleeper(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             exit_code=exit_code,
         )
@@ -191,7 +191,7 @@ class _PeakCounter(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text="ok", exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok", exit_code=exit_code)
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
         with self._lock:
@@ -200,7 +200,7 @@ class _PeakCounter(CodingAgentBackend):
         time.sleep(0.2)
         with self._lock:
             self.active -= 1
-        return AgentResult(status=RunStatus.SUCCEEDED, text="ok", exit_code=0)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok", exit_code=0)
 
 
 def _init_repo(root: Path) -> None:
@@ -255,9 +255,9 @@ def test_state_concurrent_updates_same_run_no_crash(tmp_path: Path) -> None:
 
 def test_state_update_if_respects_predicate(tmp_path: Path) -> None:
     st = FleetState(tmp_path / "runs")
-    st.add(RunRecord(run_id="r1", task_id="t", backend="b", status="succeeded"))
+    st.add(RunRecord(run_id="r1", task_id="t", backend="b", status="exited_clean"))
     out = st.update_if("r1", lambda r: r.status == "running", status="cancelled")
-    assert out.status == "succeeded"  # predicate false -> no overwrite of a terminal status
+    assert out.status == "exited_clean"  # predicate false -> no overwrite of a terminal status
     st.update("r1", status="running")
     out = st.update_if("r1", lambda r: r.status == "running", status="cancelled")
     assert out.status == "cancelled"  # predicate true -> updated
@@ -289,7 +289,7 @@ def test_on_pid_failure_does_not_escape(tmp_path: Path, capsys: pytest.CaptureFi
         raise RuntimeError("pid record failed")
 
     res = _Printer().run(TaskSpec(id="t", goal="x"), RunOpts(cwd=tmp_path, on_pid=boom, timeout_s=30))
-    assert res.status is RunStatus.SUCCEEDED  # the callback error didn't escape (would skip communicate)
+    assert res.status is RunStatus.EXITED_CLEAN  # the callback error didn't escape (would skip communicate)
     assert "on_pid callback failed" in capsys.readouterr().err
 
 
@@ -319,7 +319,7 @@ def test_run_many_mixed_batch_survives_a_failure(repo: Path) -> None:
     )
     by_task = {r.task_id: r for r in recs}
     assert [r.task_id for r in recs] == ["ok", "bad"]  # order preserved
-    assert by_task["ok"].status == "succeeded"
+    assert by_task["ok"].status == "exited_clean"
     assert by_task["bad"].status == "failed"
 
 
@@ -339,7 +339,7 @@ def test_integrate_reports_committed_and_uncommitted_files(repo: Path) -> None:
     # an uncommitted one), not just the last uncommitted delta.
     fleet = Fleet(repo, {"committer": _Committer()})
     rec = fleet.run("committer", TaskSpec(id="c1", goal="x"))
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     res = fleet.integrate(rec.run_id)
     assert res.status == "merged"
     assert set(res.changed_files) == {"A.txt", "B.txt"}

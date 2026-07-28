@@ -30,13 +30,13 @@ def test_cancel_non_running_is_noop(tmp_path: Path) -> None:
             run_id="t.x.a1",
             task_id="t",
             backend="x",
-            status="succeeded",
+            status="exited_clean",
             started_at="2026-01-01T00:00:00Z",
             ended_at="2026-01-01T00:01:00Z",
         )
     )
     rec = fleet.cancel_run("t.x.a1")
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
 
 
 def test_cancel_running_with_pid_kills_and_marks_cancelled(
@@ -153,7 +153,7 @@ def test_cancel_running_race_natural_finish_no_overwrite(
         run_id="t.x.a5",
         task_id="t",
         backend="x",
-        status="succeeded",
+        status="exited_clean",
         started_at="2026-01-01T00:00:00Z",
         ended_at="2026-01-01T00:00:30Z",
         pid=12345,
@@ -176,7 +176,7 @@ def test_cancel_running_race_natural_finish_no_overwrite(
     finally:
         _unregister_inflight_run(fleet.state.dir, "t.x.a5")
     assert killed == [12345], "the kill was never attempted, so there was no race to lose"
-    assert rec.status == "succeeded"  # NOT overwritten to cancelled
+    assert rec.status == "exited_clean"  # NOT overwritten to cancelled
     assert call_count == 2  # exactly two reads: before and after the kill attempt
 
 

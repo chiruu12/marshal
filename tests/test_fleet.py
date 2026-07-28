@@ -52,7 +52,7 @@ class _Talker(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text=self._message, exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text=self._message, exit_code=exit_code)
 
 
 class _Writer(CodingAgentBackend):
@@ -71,7 +71,7 @@ class _Writer(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             usage=UsageRecord(
                 backend="writer",
@@ -102,7 +102,7 @@ class _Patcher(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             exit_code=exit_code,
         )
 
@@ -125,7 +125,7 @@ class _Sleeper(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             exit_code=exit_code,
         )
@@ -155,7 +155,7 @@ class _SelfCommitter(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             exit_code=exit_code,
         )
@@ -185,7 +185,7 @@ class _Committer(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             exit_code=exit_code,
         )
@@ -209,7 +209,7 @@ class _NoOp(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             exit_code=exit_code,
         )
@@ -233,7 +233,7 @@ class _Tokened(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED,
+            status=RunStatus.EXITED_CLEAN,
             text=raw_stdout.strip(),
             usage=UsageRecord(
                 backend="tok",
@@ -264,7 +264,7 @@ class _SilentWriter(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),  # empty - the only success signal is the file it wrote
             exit_code=exit_code,
         )
@@ -288,7 +288,7 @@ class _NativeZero(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED,
+            status=RunStatus.EXITED_CLEAN,
             text=raw_stdout.strip(),
             usage=UsageRecord(
                 backend="nz",
@@ -324,7 +324,7 @@ class _LimitedPerms(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             exit_code=exit_code,
         )
 
@@ -376,7 +376,7 @@ class _Loudy(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if not self._fail else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if not self._fail else RunStatus.FAILED,
             text="short",
             raw_stdout=self._stdout,
             raw_stderr=self._stderr,
@@ -414,7 +414,7 @@ class _Flaky(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED)
+        return AgentResult(status=RunStatus.EXITED_CLEAN)
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
         err = self._errors[self.calls] if self.calls < len(self._errors) else None
@@ -422,7 +422,7 @@ class _Flaky(CodingAgentBackend):
         if err is None:
             (opts.cwd / "ok.txt").write_text("ok")  # a real change -> SUCCEEDED, not EMPTY
             return AgentResult(
-                status=RunStatus.SUCCEEDED,
+                status=RunStatus.EXITED_CLEAN,
                 text="ok",
                 usage=UsageRecord(
                     backend="flaky", input_tokens=1, output_tokens=1, source=UsageSource.NATIVE
@@ -459,7 +459,7 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
         permission=PermissionMode.SAFE_EDIT,
         ts="2026-06-19T00:00:00Z",
     )
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.cost_usd == 0.001
     assert rec.text == "done"  # the agent's final message is persisted for review
     assert rec.run_id.startswith("t1.writer.")  # task.backend.<uuid> - globally unique
@@ -480,7 +480,7 @@ def test_fleet_run_records_state_usage_and_writes(repo: Path) -> None:
 def test_verify_pass_keeps_succeeded(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "print('gate ok')"])
     rec = fleet.run("writer", TaskSpec(id="v1", goal="x"))
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.verify_passed is True
     assert "gate ok" in rec.verify_output
 
@@ -544,7 +544,7 @@ def test_transient_failure_is_retried_then_succeeds(repo: Path) -> None:
     backend = _Flaky(["opencode: database is locked"])  # fail once (transient), then succeed
     fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
     rec = fleet.run("flaky", TaskSpec(id="t", goal="x"))
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.attempts == 2          # one retry was needed
     assert backend.calls == 2
 
@@ -743,7 +743,7 @@ def test_fleet_log_write_failure_does_not_break_run(
 
     monkeypatch.setattr(fleet.logs, "write", _boom)
     rec = fleet.run("writer", TaskSpec(id="lg3", goal="x"))
-    assert rec.status == "succeeded"  # run succeeded, log write swallowed
+    assert rec.status == "exited_clean"  # run succeeded, log write swallowed
 
 
 def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
@@ -752,7 +752,7 @@ def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
     records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
 
     assert [r.task_id for r in records] == [f"m{i}" for i in range(6)]  # input order preserved
-    assert all(r.status == "succeeded" for r in records)
+    assert all(r.status == "exited_clean" for r in records)
     assert len({r.worktree for r in records}) == 6                      # each in its own worktree
     for r in records:
         assert (Path(r.worktree or "") / "out.txt").read_text() == "hi"
@@ -765,7 +765,7 @@ def test_run_many_runs_concurrently(repo: Path) -> None:
     start = time.monotonic()
     records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
     elapsed = time.monotonic() - start
-    assert all(r.status == "succeeded" for r in records)
+    assert all(r.status == "exited_clean" for r in records)
     # Sequential would be ≥ ~2s of sleep alone (4 × 0.5s). Bound is loose enough for
     # CI/load jitter while still proving overlap.
     assert elapsed < 1.9
@@ -787,7 +787,7 @@ def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> N
             if rec and rec.status != "running":
                 break
             time.sleep(0.05)
-        assert rec is not None and rec.status == "succeeded"  # finished in the background
+        assert rec is not None and rec.status == "exited_clean"  # finished in the background
     finally:
         fleet.shutdown()
 
@@ -831,7 +831,7 @@ def test_clean_run_with_no_work_is_empty(repo: Path) -> None:
 def test_write_only_success_is_not_empty(repo: Path) -> None:
     fleet = Fleet(repo, {"silent": _SilentWriter()})
     rec = fleet.run("silent", TaskSpec(id="s1", goal="x"))
-    assert rec.status == "succeeded"  # empty text but a real diff -> success, not EMPTY
+    assert rec.status == "exited_clean"  # empty text but a real diff -> success, not EMPTY
 
 
 def test_status_succeeds_when_changed_files_unknown(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -842,14 +842,14 @@ def test_status_succeeds_when_changed_files_unknown(repo: Path, monkeypatch: pyt
 
     monkeypatch.setattr(fleet.worktrees, "changed_files", _boom)
     rec = fleet.run("noop", TaskSpec(id="we1", goal="x"))
-    assert rec.status == "succeeded"  # can't determine work -> don't mislabel a success as empty
+    assert rec.status == "exited_clean"  # can't determine work -> don't mislabel a success as empty
 
 
 def test_tokened_run_gets_estimated_cost(repo: Path) -> None:
     prices = PriceTable({"m": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
     fleet = Fleet(repo, {"tok": _Tokened()}, prices=prices)
     rec = fleet.run("tok", TaskSpec(id="p1", goal="x"))
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.cost_usd == 10.0          # 1M input tokens @ $10/Mtok
     assert rec.source == "estimated"
     assert rec.duration_ms >= 0
@@ -960,7 +960,7 @@ def test_usage_api_resolver_failure_is_safe(repo: Path) -> None:
     prices = PriceTable({"z-ai/glm-5.1": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
     fleet = Fleet(repo, {"tok": _Tokened()}, prices=prices, cost_resolvers={"eastrouter": boom})
     rec = fleet.run("tok", TaskSpec(id="er3", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
-    assert rec.status == "succeeded"     # a resolver crash never fails a finished run...
+    assert rec.status == "exited_clean"     # a resolver crash never fails a finished run...
     assert rec.source == "estimated"     # ...and never corrupts the cost
     assert rec.cost_usd == 10.0
 
@@ -1446,7 +1446,7 @@ class _Metered(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             usage=UsageRecord(
                 backend="metered",
@@ -1479,7 +1479,7 @@ def _seed_run_event(
             backend=backend,
             client=client,
             cost_usd=cost,
-            status="succeeded",
+            status="exited_clean",
             source="native",
         )
     )
@@ -1682,7 +1682,7 @@ def test_enforce_budget_blocks_concurrent_matching_spawn(repo: Path) -> None:
         TaskSpec(id="c", goal="x"),
         permission=PermissionMode.SAFE_EDIT,
     )
-    assert follow.status == RunStatus.SUCCEEDED.value
+    assert follow.status == RunStatus.EXITED_CLEAN.value
 
 
 def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> None:
@@ -1775,7 +1775,7 @@ def test_startup_leaves_terminal_record_unchanged(repo: Path) -> None:
         run_id=run_id,
         task_id="done",
         backend="writer",
-        status="succeeded",
+        status="exited_clean",
         started_at="2026-01-01T00:00:00Z",
         ended_at="2026-01-01T00:01:00Z",
         pid=11111,
@@ -1993,7 +1993,7 @@ def test_cursor_real_work_integrates_without_policy_leakage(
     )
     fleet = Fleet(repo, {"cursor": CursorBackend()})
     rec = fleet.run("cursor", TaskSpec(id="ci1", goal="x"), permission=PermissionMode.SAFE_EDIT)
-    assert rec.status == "succeeded", rec.error
+    assert rec.status == "exited_clean", rec.error
     collected = fleet.collect_run(rec.run_id)
     assert collected.changed_files == ["out.txt"]     # the overlay is not agent work
     assert ".cursor" not in collected.diff
@@ -2016,7 +2016,7 @@ def test_cursor_commit_run_excludes_policy_overlay(
     )
     fleet = Fleet(repo, {"cursor": CursorBackend()})
     rec = fleet.run("cursor", TaskSpec(id="cm1", goal="x"), permission=PermissionMode.SAFE_EDIT)
-    assert rec.status == "succeeded", rec.error
+    assert rec.status == "exited_clean", rec.error
     result = fleet.commit_run(rec.run_id)
     assert result.status == "committed"
     assert _git(repo, "diff", "--name-only", "HEAD", result.commit or "").split() == ["out.txt"]
@@ -2398,7 +2398,7 @@ def test_startup_reap_skips_validation_for_terminal_records(repo: Path) -> None:
     )
     fleet = Fleet(repo, {"writer": _Writer()})
     assert fleet.state.get("stale.writer.x").status == RunStatus.FAILED.value
-    assert fleet.state.get("weird").status == "succeeded"  # untouched
+    assert fleet.state.get("weird").status == "exited_clean"  # untouched
 
 
 def test_base_commit_matches_what_the_worktree_was_actually_cut_from(repo: Path) -> None:
@@ -2568,7 +2568,7 @@ def test_clean_dry_run_reports_unknown_rather_than_zero_when_it_cannot_tell(repo
             run_id="nobranch.writer.x",
             task_id="nobranch",
             backend="writer",
-            status="succeeded",
+            status="exited_clean",
             ended_at="2026-01-01T00:00:00+00:00",
             branch=None,  # nothing to compare against
         )
@@ -3029,7 +3029,7 @@ def test_collect_run_returns_the_final_message_when_no_files_changed(repo: Path)
     That is what pushed drivers to make agents write files they did not need to."""
     fleet = Fleet(repo, {"talker": _Talker("the findings, in full")})
     rec = fleet.run("talker", TaskSpec(id="report", goal="research it"))
-    assert rec.status == RunStatus.SUCCEEDED.value, "text alone is a success"
+    assert rec.status == RunStatus.EXITED_CLEAN.value, "text alone is a success"
 
     got = fleet.collect_run(rec.run_id)
     assert got.produced == "text"

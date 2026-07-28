@@ -97,13 +97,13 @@ def test_compose_prompt_includes_context(backend: AntigravityBackend) -> None:
 
 def test_parse_output_success_text(backend: AntigravityBackend) -> None:
     res = backend.parse_output("  pong  \n", "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "pong"
 
 
 def test_parse_output_success_usage_unavailable(backend: AntigravityBackend) -> None:
     res = backend.parse_output("ok", "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.usage is not None
     assert res.usage.backend == "antigravity"
     assert res.usage.source is UsageSource.UNAVAILABLE
@@ -248,7 +248,7 @@ def test_run_removes_trust_entry_after_completion(
     wt = tmp_path / "wt"
     wt.mkdir()
     res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt))
-    assert res.status is RunStatus.SUCCEEDED, res.error
+    assert res.status is RunStatus.EXITED_CLEAN, res.error
     assert not backend.settings_path.exists() or json.loads(backend.settings_path.read_text()).get(
         "trustedWorkspaces", []
     ) == []
@@ -267,7 +267,7 @@ def test_run_preserves_user_trusted_paths_after_completion(
         json.dumps({"trustedWorkspaces": [str(user_wt.resolve())]}), encoding="utf-8"
     )
     res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt))
-    assert res.status is RunStatus.SUCCEEDED, res.error
+    assert res.status is RunStatus.EXITED_CLEAN, res.error
     data = json.loads(backend.settings_path.read_text())
     assert data["trustedWorkspaces"] == [str(user_wt.resolve())]
     assert str(wt.resolve()) not in data["trustedWorkspaces"]

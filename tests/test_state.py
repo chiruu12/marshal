@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from marshal_engine.state import FleetState, RunRecord
+from marshal_engine.types import RunStatus
 
 
 def test_agent_liveness_is_never_written_to_the_ledger(tmp_path: Path) -> None:
@@ -31,8 +32,8 @@ def test_add_get_update_list(tmp_path: Path) -> None:
     got = st.get("r1")
     assert got is not None and got.status == "running"
 
-    updated = st.update("r1", status="succeeded", cost_usd=0.02)
-    assert updated.status == "succeeded"
+    updated = st.update("r1", status="exited_clean", cost_usd=0.02)
+    assert updated.status == "exited_clean"
     assert updated.cost_usd == 0.02
     assert len(st.list()) == 1
     assert st.get("missing") is None
@@ -97,19 +98,19 @@ def test_update_if_predicate_false_does_not_modify_record(tmp_path: Path) -> Non
     # Locks the invariant: a `cancel_run` racing a naturally-finished run must NEVER clobber
     # the natural "succeeded" status with "cancelled" (and vice versa).
     st = FleetState(tmp_path / "runs")
-    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="succeeded"))
+    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="exited_clean"))
     path = next((tmp_path / "runs").iterdir())
     mtime_before = path.stat().st_mtime
 
     # Predicate returns False: nothing should be written.
     result = st.update_if("r1", lambda r: False, status="cancelled")
-    assert result.status == "succeeded"  # the un-modified record
+    assert result.status == "exited_clean"  # the un-modified record
 
     mtime_after = path.stat().st_mtime
     assert mtime_before == mtime_after  # file untouched, predicate short-circuited the write
 
     # And: the file is still readable as the original record
-    assert st.get("r1").status == "succeeded"
+    assert st.get("r1").status == "exited_clean"
 
 
 def test_update_if_predicate_true_writes_and_returns_new(tmp_path: Path) -> None:
@@ -117,8 +118,8 @@ def test_update_if_predicate_true_writes_and_returns_new(tmp_path: Path) -> None
     # the new field. Locks the contract: update_if returns the new record on success, not None.
     st = FleetState(tmp_path / "runs")
     st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running"))
-    result = st.update_if("r1", lambda r: r.status == "running", status="succeeded", cost_usd=0.5)
-    assert result.status == "succeeded"
+    result = st.update_if("r1", lambda r: r.status == "running", status="exited_clean", cost_usd=0.5)
+    assert result.status == "exited_clean"
     assert result.cost_usd == 0.5
 
 
@@ -132,8 +133,34 @@ def test_add_with_existing_run_id_clobbers(tmp_path: Path) -> None:
     # refactor that turns add() into a strict create has to make a deliberate decision.
     st = FleetState(tmp_path / "runs")
     st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running", cost_usd=0.1))
-    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="succeeded", cost_usd=0.9))
+    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="exited_clean", cost_usd=0.9))
     recs = st.list()
     assert len(recs) == 1
-    assert recs[0].status == "succeeded"
+    assert recs[0].status == "exited_clean"
     assert recs[0].cost_usd == 0.9
+
+
+def test_a_pre_rename_record_still_loads(tmp_path: Path) -> None:
+    """`succeeded` became `exited_clean` because the old word claimed more than it checked - the
+    process exited 0, which is not a statement about correctness. Records written before that are
+    facts about what happened and are NOT rewritten: they are reinterpreted on read."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "old.json").write_text(
+        '{"run_id":"old","task_id":"t","backend":"b","status":"succeeded"}', encoding="utf-8"
+    )
+    rec = FleetState(runs).get("old")
+    assert rec is not None
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+
+
+def test_migrating_a_status_on_read_does_not_rewrite_the_file(tmp_path: Path) -> None:
+    """Reading a ledger must never mutate it. A record is evidence; silently editing history to
+    match a new vocabulary is exactly what the two-layer usage split exists to prevent."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    path = runs / "old.json"
+    original = '{"run_id":"old","task_id":"t","backend":"b","status":"succeeded"}'
+    path.write_text(original, encoding="utf-8")
+    FleetState(runs).get("old")
+    assert path.read_text(encoding="utf-8") == original

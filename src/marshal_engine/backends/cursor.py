@@ -301,7 +301,7 @@ class CursorBackend(CodingAgentBackend):
             )
 
         return AgentResult(
-            status=RunStatus.FAILED if is_error else RunStatus.SUCCEEDED,
+            status=RunStatus.FAILED if is_error else RunStatus.EXITED_CLEAN,
             text=text,
             session_id=session_id,
             usage=usage,

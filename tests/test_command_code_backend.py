@@ -71,7 +71,7 @@ def test_compose_prompt_includes_context_files(backend: CommandCodeBackend) -> N
 
 def test_parse_output_success(backend: CommandCodeBackend) -> None:
     res = backend.parse_output("pong\n", "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "pong"
     assert res.usage is not None and res.usage.source is UsageSource.UNAVAILABLE
     assert res.error is None

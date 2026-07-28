@@ -20,7 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
+
+from .types import canonical_status
 
 
 class RunRecord(BaseModel):
@@ -74,6 +76,17 @@ class RunRecord(BaseModel):
     # from "finished, outcome not yet written", and guessing wrong misreports a run's outcome.
     # Persisting it would recreate exactly that bug: a stored liveness is stale the moment it lands.
     agent_alive: bool | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _migrate_status(cls, value: Any) -> Any:
+        """Accept the pre-rename spelling on read; write the new one.
+
+        `succeeded` overclaimed - it means the process exited 0, not that the work is right. Ledgers
+        written before the rename are not rewritten: they load as `exited_clean` and are written
+        back that way the next time the record is updated.
+        """
+        return canonical_status(value) if isinstance(value, str) else value
 
 
 #: Fields computed when a record is READ and deliberately kept out of the ledger. The ledger holds

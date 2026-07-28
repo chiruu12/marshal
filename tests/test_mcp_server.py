@@ -253,7 +253,7 @@ def test_status_is_compact_and_reports_what_it_left_out(
                 run_id=f"r{i}.echo.x",
                 task_id="t" if i < 3 else "other",
                 backend="echo",
-                status="succeeded",
+                status="exited_clean",
                 started_at=f"2026-01-0{i + 1}T00:00:00+00:00",
                 text="x" * 5000,  # the bulk this view exists to drop
             )
@@ -350,7 +350,7 @@ def test_spawn_base_branch_reaches_task_spec_via_mcp(
             return []
 
         def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-            return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text=raw_stdout.strip(), exit_code=exit_code)
 
     def git(*args: str, cwd: Path) -> None:
         subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
@@ -437,7 +437,7 @@ def test_get_run_log_round_trips_via_call_tool(
     # short-circuits to log=null without ever consulting RunLogStore).
     from marshal_engine.state import RunRecord
     svc.fleet.state.add(
-        RunRecord(run_id="synthetic.run", task_id="synthetic", backend="cursor", status="succeeded")
+        RunRecord(run_id="synthetic.run", task_id="synthetic", backend="cursor", status="exited_clean")
     )
 
     app = build_app(svc)
