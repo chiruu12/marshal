@@ -59,6 +59,15 @@ versions may include breaking API changes until 1.0.
   the run's own base, not the current branch; and both surfaces now say that `failed` is overloaded
   (agent failure vs orphaned at startup) and how to tell them apart. The `cancel_run` reference
   still described the pre-handle identity check and has been corrected.
+- **PyPI publication prep.** Release workflow publishes via Trusted Publishing (OIDC) only on a
+  published GitHub Release or manual `workflow_dispatch` (never on branch push); packaging metadata
+  / hatch sdist excludes tightened for a clean wheel (`marshal_engine` + `py.typed` +
+  `data/prices.yaml`).
+
+### Documentation
+- **Release process for PyPI.** `CONTRIBUTING.md` documents version bumps, promoting CHANGELOG
+  `[Unreleased]`, artifact smoke-checks (`uv build` + throwaway venv `marshal --version`), and the
+  one-time PyPI Trusted Publisher setup (`marshal`, fallback `marshal-orchestrator`).
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
   multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
   session clocks stay per-workspace (no registry spend/budget merge; intentional non-goal). Rewrite

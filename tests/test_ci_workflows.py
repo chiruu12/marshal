@@ -39,8 +39,42 @@ def test_ci_workflow_is_least_privilege() -> None:
 
 
 def test_release_workflow_permissions_are_minimal() -> None:
-    # Release creates a GitHub Release (needs contents:write) and nothing more.
-    assert _load(_RELEASE).get("permissions") == {"contents": "write"}
+    # PyPI Trusted Publishing needs id-token:write; contents stay read-only (no broad write token).
+    assert _load(_RELEASE).get("permissions") == {
+        "contents": "read",
+        "id-token": "write",
+    }
+
+
+def test_release_workflow_is_not_triggered_by_branch_push() -> None:
+    # Publishing must be human-gated: published GitHub Release and/or workflow_dispatch only.
+    # PyYAML parses the workflow key `on:` as boolean True.
+    wf = _load(_RELEASE)
+    on = wf.get("on", wf.get(True))
+    assert isinstance(on, dict)
+    assert "push" not in on
+    assert "pull_request" not in on
+    assert "release" in on
+    assert "workflow_dispatch" in on
+    release_types = on["release"].get("types") if isinstance(on["release"], dict) else None
+    assert release_types == ["published"]
+
+
+def test_release_publishes_with_trusted_publishing_not_a_token_secret() -> None:
+    # OIDC trusted publishing: use gh-action-pypi-publish and never wire a PyPI API token secret.
+    wf = _load(_RELEASE)
+    steps = _steps(wf)
+    publish_steps = [s for s in steps if "pypi-publish" in str(s.get("uses") or "")]
+    assert publish_steps, "release.yml must publish with pypa/gh-action-pypi-publish"
+    run_blob = "\n".join(str(s.get("run") or "") for s in steps)
+    assert "PYPI_API_TOKEN" not in run_blob
+    assert "TWINE_PASSWORD" not in run_blob
+    for step in publish_steps:
+        with_block = step.get("with") or {}
+        for key in ("password", "user", "api-token"):
+            assert key not in with_block
+    env = wf["jobs"]["release"].get("environment")
+    assert env == "pypi" or (isinstance(env, dict) and env.get("name") == "pypi")
 
 
 def test_all_workflow_actions_are_pinned() -> None:
