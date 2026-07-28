@@ -9,6 +9,11 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Documentation
+- **Marshal ↔ Chauffeur freeze line (#49).** Document the mechanism-vs-judgment boundary:
+  engine inventory (worktrees, run loop, ledger, primitives), what stays in Skills/Chauffeur,
+  grandfathered sequencers (`workflow.py`, `teams.py`), the three-question admission test, and
+  what Chauffeur is expected to replace. Normative detail in `docs/chauffeur-future.md`; inventory
+  table in `docs/design.md` §12.
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
   multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
   session clocks stay per-workspace (no registry spend/budget merge; intentional non-goal). Rewrite
