@@ -484,7 +484,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `run_id` | string | Unique id. |
 | `task_id` | string | Grouping id. |
 | `backend` | string | Backend that ran. |
-| `status` | string | `queued` \| `running` \| `succeeded` \| `empty` \| `failed` \| `timed_out` \| `cancelled` \| `verify_failed` — a `failed` with `error` mentioning *orphaned at startup* means the supervising process died before the run finished (not an agent failure); `pid` is cleared |
+| `status` | string | `queued` \| `running` \| `exited_clean` (the process exited 0 — **not** a claim that the work is correct; review the diff) \| `empty` \| `failed` \| `timed_out` \| `cancelled` \| `verify_failed` — a `failed` with `error` mentioning *orphaned at startup* means the supervising process died before the run finished (not an agent failure); `pid` is cleared |
 | `client` | string \| null | Client name (null for ad-hoc spawns). |
 | `model` | string \| null | Model used. |
 | `worktree` | string \| null | Worktree path. |
@@ -510,6 +510,6 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `verify_passed` | bool \| null | `null` = no gate ran; `false` with `verify_failed` status. |
 | `verify_output` | string | Tail of verify command output. |
 
-Only `succeeded` runs are integration candidates. `empty` ran clean but produced no work — do not
+Only `exited_clean` runs are integration candidates. `empty` ran clean but produced no work — do not
 integrate. `verify_failed` produced work but the repo's `verify:` gate rejected it — review the
 diff and `verify_output` before deciding.

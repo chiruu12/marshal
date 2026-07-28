@@ -214,6 +214,28 @@ versions may include breaking API changes until 1.0.
   sharpest form of the delta. Marshal does not own that config, but it does own whether the
   difference is visible on the result.
 
+### Changed
+- **`succeeded` is now `exited_clean`.** Every field review said the same thing about that word: it
+  claims more than it checks. The run's process exited 0; whether the work is *correct* is a
+  separate question only a diff review or the `verify:` gate answers. Both the `integrate`
+  docstring and `CLAUDE.md` had to shout that caveat — and as one reviewer put it, *when a
+  description has to shout a caveat, the API shape is wrong.* The new name states exactly what was
+  observed, so the warning stops being load-bearing.
+
+  **Nothing on disk is rewritten.** A stored status is a fact about what happened, so history is
+  reinterpreted on read, never edited: both `RunRecord` and `UsageEvent` accept the old spelling and
+  return the new one. The **usage ledger** matters as much as the run records here — it is
+  append-only, so every event predating the rename still says `succeeded`, and a reader that only
+  knew the new word would silently stop counting those runs and quietly change every historical
+  cost-per-succeeded figure. One shared alias table (`types.canonical_status`) serves both, so the
+  two stores cannot drift apart.
+
+  **Deliberately unchanged:** the usage ledger's `succeeded` / `cost_per_succeeded` *metric* names.
+  They count runs that exited clean, and renaming them would break the `usage` JSON surface for a
+  cosmetic gain — the complaint was about a per-run **status** overclaiming, not about a counter.
+  The residual mismatch (status `exited_clean`, metric `succeeded`) is a known trade, not an
+  oversight.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is

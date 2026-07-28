@@ -28,7 +28,7 @@ def test_only_failed_status_is_transient() -> None:
     assert not is_transient_failure(
         AgentResult(status=RunStatus.TIMED_OUT, error="rate limit hit before the timeout")
     )
-    assert not is_transient_failure(AgentResult(status=RunStatus.SUCCEEDED))
+    assert not is_transient_failure(AgentResult(status=RunStatus.EXITED_CLEAN))
 
 
 def test_backoff_grows_geometrically() -> None:

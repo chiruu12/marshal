@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator, Field
 
-from .types import AgentResult, RunStatus, UsageRecord, UsageSource
+from .types import AgentResult, RunStatus, UsageRecord, UsageSource, canonical_status
 
 # Canonical usage time-window vocabulary shared by CLI (`marshal usage --window`) and MCP
 # (`usage(window=...)`). Both surfaces must accept exactly this set — never diverge.
@@ -62,6 +62,18 @@ class UsageEvent(BaseModel):
     duration_ms: int = 0
     status: str = ""
     source: str = UsageSource.UNAVAILABLE.value
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _migrate_status(cls, value: Any) -> Any:
+        """Accept a pre-rename spelling from the ledger.
+
+        The ledger is append-only, so every event written before `succeeded` became `exited_clean`
+        still carries the old word. Without this, those runs would silently stop counting as
+        successes and every historical cost-per-succeeded figure would change - the ledger's whole
+        point is that recorded facts do not move under you.
+        """
+        return canonical_status(value) if isinstance(value, str) else value
 
     @classmethod
     def from_result(
@@ -225,7 +237,7 @@ def _in_window(e: UsageEvent, since: datetime | None, until: datetime | None) ->
 
 def _add(bucket: Bucket, e: UsageEvent) -> None:
     bucket.runs += 1
-    if e.status == RunStatus.SUCCEEDED.value:
+    if e.status == RunStatus.EXITED_CLEAN.value:
         bucket.succeeded += 1
     bucket.cost_usd = round(bucket.cost_usd + e.cost_usd, 6)
     if e.source == UsageSource.NATIVE.value:

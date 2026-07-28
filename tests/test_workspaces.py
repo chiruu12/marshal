@@ -71,7 +71,7 @@ class _Echo(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip() or "ok",
             usage=UsageRecord(backend="echo", cost_usd=0.001, source=UsageSource.NATIVE),
             exit_code=exit_code,
@@ -100,7 +100,7 @@ class _Slow(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text="ok", exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok", exit_code=exit_code)
 
     def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
         with self._lock:
@@ -109,7 +109,7 @@ class _Slow(CodingAgentBackend):
         time.sleep(0.25)
         with self._lock:
             self.active -= 1
-        return AgentResult(status=RunStatus.SUCCEEDED, text="ok", exit_code=0)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok", exit_code=0)
 
 
 def _explode(wdef: WorkspaceDef) -> MarshalService:
@@ -135,7 +135,7 @@ def _echo_service(repo: Path, run_gate: threading.Semaphore | None = None) -> Ma
 
 def _write_run(repo: Path, run_id: str, task_id: str = "t") -> None:
     FleetState(repo / ".marshal" / "runs").add(
-        RunRecord(run_id=run_id, task_id=task_id, backend="echo", status="succeeded")
+        RunRecord(run_id=run_id, task_id=task_id, backend="echo", status="exited_clean")
     )
 
 
@@ -244,7 +244,7 @@ def test_run_gate_caps_concurrency_across_runs(tmp_path: Path) -> None:
     cfg = FleetConfig(clients={f"w{i}": ClientConfig(name=f"w{i}", backend="slow") for i in range(3)})
     svc = MarshalService(repo, cfg, backends={"slow": backend}, run_gate=threading.BoundedSemaphore(1))
     recs = svc.run_many([{"client": f"w{i}", "goal": "g", "task_id": f"j{i}"} for i in range(3)], max_concurrency=3)
-    assert all(r.status == "succeeded" for r in recs)
+    assert all(r.status == "exited_clean" for r in recs)
     assert backend.peak == 1  # the shared gate serialized them despite max_concurrency=3
 
 
@@ -925,7 +925,7 @@ def test_registry_rebuild_preserves_inflight_run(tmp_path: Path) -> None:
             break
         time.sleep(0.05)
     got = new.get_run(rec.run_id)
-    assert got is not None and got.status == "succeeded"
+    assert got is not None and got.status == "exited_clean"
 
 
 # --- registry: durable runtime (enforce gate + session clock) across hot-reload ----------------
@@ -991,9 +991,9 @@ def test_enforce_budget_survives_midflight_config_reload(tmp_path: Path) -> None
     # the shared gate slot), so the check below is deterministic rather than status-poll racy.
     old.shutdown()
     finished = new.get_run(rec.run_id)
-    assert finished is not None and finished.status == "succeeded"
+    assert finished is not None and finished.status == "exited_clean"
     third = new.run_agent("worker", "third", task_id="t3")  # release freed the shared slot
-    assert third.status == "succeeded"
+    assert third.status == "exited_clean"
 
 
 def test_session_clock_and_spend_survive_config_reload(tmp_path: Path) -> None:
@@ -1309,7 +1309,7 @@ def test_mcp_round_trip_run_query_cancel(tmp_path: Path) -> None:
     assert "boundary-only" in perm_checks[0]["detail"]
 
     rec = _call(app, "run_agent", {"client": "worker", "goal": "x", "task_id": "t1", "workspace": "beta"})
-    assert rec["workspace"] == "beta" and rec["status"] == "succeeded"
+    assert rec["workspace"] == "beta" and rec["status"] == "exited_clean"
     assert Path(rec["worktree"]).resolve().is_relative_to(repo_b.resolve())
     rid = rec["run_id"]
 
@@ -1339,7 +1339,7 @@ def test_mcp_round_trip_many_benchmark_integrate(tmp_path: Path) -> None:
     app, _reg, _a, _b = _two_ws_app(tmp_path)
 
     rm = _call(app, "run_many", {"jobs": [{"client": "worker", "goal": "g", "task_id": "j1"}], "workspace": "beta"})
-    assert rm[0]["workspace"] == "beta" and rm[0]["status"] == "succeeded"
+    assert rm[0]["workspace"] == "beta" and rm[0]["status"] == "exited_clean"
 
     bench = _call(app, "benchmark", {"goal": "b", "clients": ["worker"], "task_id": "bench1", "workspace": "beta"})
     assert bench["workspace"] == "beta" and bench["task_id"] == "bench1"
@@ -1379,8 +1379,8 @@ def test_registry_run_many_mixed_workspaces(tmp_path: Path) -> None:
         stagger_s=0,
     )
     assert len(paired) == 2
-    assert paired[0][0] == "default" and paired[0][1].status == "succeeded"
-    assert paired[1][0] == "beta" and paired[1][1].status == "succeeded"
+    assert paired[0][0] == "default" and paired[0][1].status == "exited_clean"
+    assert paired[1][0] == "beta" and paired[1][1].status == "exited_clean"
     assert Path(paired[0][1].worktree).resolve().is_relative_to(repo_a.resolve())
     assert Path(paired[1][1].worktree).resolve().is_relative_to(repo_b.resolve())
     # Ledgers stay per-workspace (no shared run state).
@@ -1449,8 +1449,8 @@ def test_mcp_run_many_mixed_workspaces(tmp_path: Path) -> None:
         },
     )
     assert len(rm) == 2
-    assert rm[0]["workspace"] == "default" and rm[0]["status"] == "succeeded"
-    assert rm[1]["workspace"] == "beta" and rm[1]["status"] == "succeeded"
+    assert rm[0]["workspace"] == "default" and rm[0]["status"] == "exited_clean"
+    assert rm[1]["workspace"] == "beta" and rm[1]["status"] == "exited_clean"
     assert Path(rm[0]["worktree"]).resolve().is_relative_to(repo_a.resolve())
     assert Path(rm[1]["worktree"]).resolve().is_relative_to(repo_b.resolve())
 

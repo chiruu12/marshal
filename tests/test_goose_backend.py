@@ -130,7 +130,7 @@ def test_parse_output_stream_json_success(backend: GooseBackend) -> None:
         ]
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert "Result: OK" in res.text
     assert res.usage is not None
     assert res.usage.input_tokens == 100
@@ -149,7 +149,7 @@ def test_parse_output_stream_json_delta_chunks(backend: GooseBackend) -> None:
         ]
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "pong"
     assert res.usage is not None
     assert res.usage.input_tokens == 8
@@ -163,7 +163,7 @@ def test_parse_output_cost_zero_only_unavailable(backend: GooseBackend) -> None:
     for cost in (0, 0.0):
         out = f'{{"type":"complete","cost":{cost}}}'
         res = backend.parse_output(out, "", 0)
-        assert res.status is RunStatus.SUCCEEDED
+        assert res.status is RunStatus.EXITED_CLEAN
         assert res.usage is None
 
 
@@ -174,7 +174,7 @@ def test_parse_output_cost_zero_with_tokens_unavailable(backend: GooseBackend) -
         '{"type":"complete","input_tokens":100,"output_tokens":10,"cost":0}'
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.usage is not None
     assert res.usage.input_tokens == 100
     assert res.usage.output_tokens == 10
@@ -191,7 +191,7 @@ def test_parse_output_bulk_json_cost_zero_with_tokens_unavailable(
         '"metadata":{"cost":0,"input_tokens":40,"output_tokens":5,"status":"completed"}}'
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "ok"
     assert res.usage is not None
     assert res.usage.input_tokens == 40
@@ -216,7 +216,7 @@ def test_parse_output_bulk_json_success(backend: GooseBackend) -> None:
         '"metadata":{"total_tokens":12,"status":"completed"}}'
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "pong"
     assert res.usage is not None
     assert res.usage.output_tokens == 12
@@ -272,7 +272,7 @@ def test_parse_output_malformed_json_ignored(backend: GooseBackend) -> None:
         ]
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert "start" in res.text and "end" in res.text
 
 

@@ -219,7 +219,7 @@ class OpenCodeBackend(CodingAgentBackend):
         return self._parse_event_stream(raw_stdout, raw_stderr, exit_code)
 
     def finalize(self, result: AgentResult) -> AgentResult:
-        if result.session_id and result.status is RunStatus.SUCCEEDED:
+        if result.session_id and result.status is RunStatus.EXITED_CLEAN:
             reconciled = self._reconcile_from_export(result.session_id)
             if reconciled is not None:
                 if reconciled.get("text") is not None:
@@ -284,7 +284,7 @@ class OpenCodeBackend(CodingAgentBackend):
 
         ok = exit_code == 0 and error_msg is None
         return AgentResult(
-            status=RunStatus.SUCCEEDED if ok else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if ok else RunStatus.FAILED,
             text="".join(text_parts).strip(),
             session_id=session_id,
             usage=usage if found_usage else None,

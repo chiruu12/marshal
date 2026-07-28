@@ -339,7 +339,7 @@ class WorkflowRunner:
                 runs_by_index[idx] = run_ids
                 for r in records:
                     status_by_run[r.run_id] = r.status
-                    if r.status != RunStatus.SUCCEEDED.value:
+                    if r.status != RunStatus.EXITED_CLEAN.value:
                         notes.append(f"{r.run_id}: run did not succeed ({r.status})")
                         next_actions.append(
                             f"inspect failed run: {r.run_id} (client {r.client}, {r.status})"
@@ -387,7 +387,7 @@ class WorkflowRunner:
                 runs_by_index[idx] = [rec.run_id]
                 status_by_run[rec.run_id] = rec.status
                 notes = []
-                if rec.status != RunStatus.SUCCEEDED.value:
+                if rec.status != RunStatus.EXITED_CLEAN.value:
                     notes.append(f"{rec.run_id}: run did not succeed ({rec.status})")
                     next_actions.append(
                         f"inspect failed run: {rec.run_id} (client {rec.client}, {rec.status})"
@@ -421,7 +421,7 @@ class WorkflowRunner:
                 )
             else:  # integrate
                 source_ids = runs_by_index[resolve_source(spec, idx)]
-                candidates = [rid for rid in source_ids if status_by_run.get(rid) == RunStatus.SUCCEEDED.value]
+                candidates = [rid for rid in source_ids if status_by_run.get(rid) == RunStatus.EXITED_CLEAN.value]
                 pr = PhaseResult(name=phase.name, run=phase.run)
                 if not phase.auto:
                     # default safety gate: never merge automatically; hand candidates to the driver.

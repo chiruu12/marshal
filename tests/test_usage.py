@@ -44,7 +44,7 @@ def test_record_appends_and_summarizes(tmp_path: Path) -> None:
 
 def test_from_result_builds_event() -> None:
     res = AgentResult(
-        status=RunStatus.SUCCEEDED,
+        status=RunStatus.EXITED_CLEAN,
         usage=UsageRecord(
             backend="opencode",
             input_tokens=50,
@@ -59,7 +59,7 @@ def test_from_result_builds_event() -> None:
     assert ev.backend == "opencode"
     assert ev.input_tokens == 50
     assert ev.cost_usd == 0.005
-    assert ev.status == "succeeded"
+    assert ev.status == "exited_clean"
     assert ev.source == "native"
     assert ev.model == "opencode-go/glm-5.2"
 
@@ -87,8 +87,8 @@ def test_empty_tracker(tmp_path: Path) -> None:
 
 def test_cost_per_outcome_and_source_split(tmp_path: Path) -> None:
     t = UsageTracker(tmp_path / "usage")
-    t.record(_ev(run_id="r1", cost_usd=0.02, status="succeeded", source="native"))
-    t.record(_ev(run_id="r2", cost_usd=0.04, status="succeeded", source="estimated"))
+    t.record(_ev(run_id="r1", cost_usd=0.02, status="exited_clean", source="native"))
+    t.record(_ev(run_id="r2", cost_usd=0.04, status="exited_clean", source="estimated"))
     t.record(_ev(run_id="r3", cost_usd=0.00, status="empty", source="unavailable"))  # cost, no success
 
     tot = t.summary().totals
@@ -105,9 +105,9 @@ def test_admin_api_cost_has_its_own_bucket(tmp_path: Path) -> None:
     # Regression: a real provider admin-api cost (EastRouter) is its own ground-truth bucket and the
     # source buckets sum to the total (admin-api cost was previously dropped from native+estimated).
     t = UsageTracker(tmp_path / "usage")
-    t.record(_ev(run_id="r1", cost_usd=0.01, status="succeeded", source="native"))
-    t.record(_ev(run_id="r2", cost_usd=0.02, status="succeeded", source="admin-api"))
-    t.record(_ev(run_id="r3", cost_usd=0.04, status="succeeded", source="estimated"))
+    t.record(_ev(run_id="r1", cost_usd=0.01, status="exited_clean", source="native"))
+    t.record(_ev(run_id="r2", cost_usd=0.02, status="exited_clean", source="admin-api"))
+    t.record(_ev(run_id="r3", cost_usd=0.04, status="exited_clean", source="estimated"))
     tot = t.summary().totals
     assert abs(tot.cost_admin_api - 0.02) < 1e-9
     assert abs((tot.cost_native + tot.cost_admin_api + tot.cost_estimated) - tot.cost_usd) < 1e-9
@@ -115,7 +115,7 @@ def test_admin_api_cost_has_its_own_bucket(tmp_path: Path) -> None:
 
 def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None:
     t = UsageTracker(tmp_path / "usage")
-    t.record(_ev(run_id="s", cost_usd=0.02, status="succeeded", source="native"))
+    t.record(_ev(run_id="s", cost_usd=0.02, status="exited_clean", source="native"))
     t.record(_ev(run_id="e", cost_usd=0.03, status="empty", source="estimated"))  # burned tokens, no success
 
     tot = t.summary().totals
@@ -276,3 +276,23 @@ def test_by_backend_model_aggregates_in_the_same_loop(tmp_path: Path) -> None:
     # The model-less event lands under <backend>/- and matches the by_backend view for that backend
     assert s.by_backend_model["cursor/-"].runs == 1
     assert s.by_backend_model["cursor/-"].runs == s.by_backend["cursor"].runs
+
+
+def test_pre_rename_ledger_events_still_count_as_successes(tmp_path: Path) -> None:
+    """The ledger is APPEND-ONLY, so every event written before `succeeded` became `exited_clean`
+    still carries the old word. A reader that only knew the new spelling would silently stop
+    counting those runs — quietly changing every historical cost-per-succeeded figure. The whole
+    point of the ledger is that recorded facts do not move under you."""
+    from marshal_engine.usage import UsageTracker
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        '{"ts":"2026-01-01T00:00:00+00:00","run_id":"old","backend":"cursor",'
+        '"cost_usd":0.10,"status":"succeeded","source":"native"}\n',
+        encoding="utf-8",
+    )
+    summary = UsageTracker(u).summary()
+    assert summary.totals.runs == 1
+    assert summary.totals.succeeded == 1, "a pre-rename success stopped counting"
+    assert summary.totals.cost_per_succeeded == 0.1

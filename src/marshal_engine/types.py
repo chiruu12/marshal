@@ -43,10 +43,38 @@ class PermissionFidelity(str, Enum):
     BOUNDARY_ONLY = "boundary-only"
 
 
+#: Persisted status spellings that have been renamed, mapped to their current value. Applied when
+#: READING any stored status - run records and the usage ledger alike. Nothing on disk is rewritten:
+#: a stored status is a fact about what happened, so history is reinterpreted, never edited.
+#:
+#: The usage ledger matters as much as the run records here. It is append-only, so every event
+#: written before the rename says "succeeded"; a reader that only knew the new spelling would
+#: silently stop counting those runs and quietly change every historical cost-per-succeeded figure.
+STATUS_ALIASES: dict[str, str] = {"succeeded": "exited_clean"}
+
+
+def canonical_status(value: str) -> str:
+    """The current spelling of a stored status string. Unknown values pass through unchanged."""
+    return STATUS_ALIASES.get(value, value)
+
+
 class RunStatus(str, Enum):
+    """Run outcomes. NOTE the deliberate weakness of `EXITED_CLEAN`.
+
+    It was `succeeded`, and every field review said the same thing about that word: it claims more
+    than it checks. The run's process exited 0; whether the work is *correct* is a separate question
+    that only a diff review (or the `verify:` gate) answers. The integrate docstring and CLAUDE.md
+    both had to shout that caveat, and - as one reviewer put it - when a description has to shout a
+    caveat, the shape is wrong. `exited_clean` says exactly what was observed, so the warning is no
+    longer load-bearing.
+
+    Records written before the rename carry `"succeeded"`; `RunRecord` migrates them on read (see
+    `state.py`). Nothing rewrites history on disk.
+    """
+
     QUEUED = "queued"
     RUNNING = "running"
-    SUCCEEDED = "succeeded"
+    EXITED_CLEAN = "exited_clean"
     EMPTY = "empty"           # exited clean but produced no work; counts in $/run, not $/succeeded
     FAILED = "failed"
     TIMED_OUT = "timed_out"
@@ -148,4 +176,4 @@ class AgentResult(BaseModel):
 
     @property
     def ok(self) -> bool:
-        return self.status is RunStatus.SUCCEEDED
+        return self.status is RunStatus.EXITED_CLEAN

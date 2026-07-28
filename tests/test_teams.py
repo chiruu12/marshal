@@ -76,7 +76,7 @@ class StubService:
         run_many_raises: bool = False,
         drop_records: int = 0,
         reverse_records: bool = False,
-        run_status: str = "succeeded",
+        run_status: str = "exited_clean",
         collect_raises: type[Exception] | None = None,
     ) -> None:
         self.config = config
@@ -105,7 +105,7 @@ class StubService:
                 task_id=job["task_id"],
                 backend="opencode",
                 client=job["client"],
-                status=self.statuses[i] if i < len(self.statuses) else "succeeded",
+                status=self.statuses[i] if i < len(self.statuses) else "exited_clean",
                 text=self.texts[i] if i < len(self.texts) else "## Bottom line\nlooks fine",
             )
             for i, job in enumerate(jobs)
@@ -653,7 +653,7 @@ def test_unified_report_calls_out_reviewers_that_did_not_report() -> None:
 def test_role_report_is_standalone_and_attributes_its_author() -> None:
     md = render_role_report(
         RoleReview(
-            role="tests", client="ro-b", run_id="r1", status="succeeded", completed=True,
+            role="tests", client="ro-b", run_id="r1", status="exited_clean", completed=True,
             review="## Bottom line\nthin coverage",
         ),
         team="gate",

@@ -1024,7 +1024,7 @@ class Fleet:
             verify_passed: bool | None = None
             verify_output = ""
             if (
-                status is RunStatus.SUCCEEDED
+                status is RunStatus.EXITED_CLEAN
                 and self.worktrees.verify_cmd
                 and self._worktree_has_changes(wt)
             ):
@@ -1259,15 +1259,15 @@ class Fleet:
 
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
         """A clean exit that produced no work (no text, no file changes) is EMPTY, not success."""
-        if result.status is not RunStatus.SUCCEEDED:
+        if result.status is not RunStatus.EXITED_CLEAN:
             return result.status
         if result.text.strip():
-            return RunStatus.SUCCEEDED
+            return RunStatus.EXITED_CLEAN
         try:
             changed = self.worktrees.changed_files(wt)
         except WorktreeError:
-            return RunStatus.SUCCEEDED  # can't tell -> don't mislabel a success as empty
-        return RunStatus.SUCCEEDED if changed else RunStatus.EMPTY
+            return RunStatus.EXITED_CLEAN  # can't tell -> don't mislabel a success as empty
+        return RunStatus.EXITED_CLEAN if changed else RunStatus.EMPTY
 
     def _collect_target(self, rec: RunRecord | None = None) -> str:
         """Merge-base reference for a run's committed work.

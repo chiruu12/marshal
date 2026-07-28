@@ -157,7 +157,7 @@ def test_parse_output_success_with_usage(backend: OpenCodeBackend) -> None:
         ]
     )
     res = backend.parse_output(out, "", 0)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "Hello world"
     assert res.usage is not None
     assert res.usage.input_tokens == 100
@@ -225,7 +225,7 @@ def test_reconcile_recovers_dropped_text(
     }
     _patch_export(monkeypatch, proc=_stub_export(export))
     res = _finalize(backend, out)
-    assert res.status is RunStatus.SUCCEEDED
+    assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "full report restored."  # export overrode the live stream's "partial "
 
 

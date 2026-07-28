@@ -122,7 +122,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
 
         ok = exit_code == 0 and not is_error
         return AgentResult(
-            status=RunStatus.SUCCEEDED if ok else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if ok else RunStatus.FAILED,
             text=text,
             session_id=session_id,
             usage=_extract_usage(obj, self.name),

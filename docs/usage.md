@@ -16,7 +16,7 @@ MCP server, as a CLI, or as a Python library.
 | **driver** | The agent (e.g. Claude Code) that plans the work and calls Marshal. It keeps the expensive reasoning. |
 | **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, antigravity). Chosen per call, never global. |
 | **client** | A named worker in `fleet.config.yaml` pinning a backend + model + permission. You route tasks to clients by name. |
-| **run** | One execution of a client on a task; ends `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`. |
+| **run** | One execution of a client on a task; ends `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`. |
 | **worktree** | The isolated git checkout **one run** works in (under `.marshal/worktrees/`). The safety boundary — main is untouched until you integrate. |
 | **workspace** | A **whole repo** the server can target. Distinct from *worktree*: a workspace holds many runs, each in its own worktree. One server can target several workspaces (`list_workspaces`, `workspace=`). |
 | **integrate** | Merge a run's worktree branch back into the target repo's current branch (the only step that touches it). |
@@ -84,8 +84,8 @@ clients:
   exponential backoff. Set `0` to disable. Genuine task failures and timeouts are **never** retried
   (a timeout retry just burns another full window). A retried run records its `attempts` count.
 - **`verify`** (optional, top-level): a gate command run in the worktree **after** a run that would
-  otherwise be `succeeded` and actually changed files (e.g. the repo's full test suite). Text-only
-  replies are never gated. A non-zero exit marks the run `verify_failed` instead of `succeeded`; the
+  otherwise be `exited_clean` and actually changed files (e.g. the repo's full test suite). Text-only
+  replies are never gated. A non-zero exit marks the run `verify_failed` instead of `exited_clean`; the
   worktree and diff are kept for review, and the command's output tail lands on the run record
   (`verify_output`). Same string-or-argv shape, env hygiene, and allowlist rules as `worktree_setup`.
   Executes worktree content the agent may have modified — see `SECURITY.md`.
@@ -240,12 +240,12 @@ the default workspace.
 | `cancel_run(run_id)` | Stop a running agent (process-group `SIGTERM`); returns the updated record. Only signals runs **this process started** — for one started by a process that has since died it stamps the record `cancelled` without ending the agent, and `error` says so. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
-| `get_run(run_id)` | Fetch one run record (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
+| `get_run(run_id)` | Fetch one run record (status ∈ `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
 | `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). Review before integrating. |
 | `commit_run(run_id, message?)` | Freeze a finished run's work onto its own branch (your branch untouched) so a dependent run can `spawn` with `base_branch` = that branch. Outcome ∈ `committed`/`clean`/`blocked`/`error`. |
 | `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
 | `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. Scope-mode cleans also reap orphaned worktree dirs (`orphans_removed`). Returns `{removed, orphans_removed, skipped, errors, dry_run}`. |
-| `status()` | List all runs with status + cost (status ∈ `succeeded`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
+| `status()` | List all runs with status + cost (status ∈ `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
 | `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read token columns and a native/admin-api/estimated cost split). `window` ∈ `session` (since the MCP server started) \| `day` (last 24h) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger) — same set as `marshal usage --window`. The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd / enforce` (soft-warn by default; `enforce: true` refuses over-cap spawns and serializes matching in-flight spawns). |
 | `get_run_log(run_id)` | The full raw stdout/stderr persisted for a run (under `<base>/logs/<run_id>.log`), or `null` when no log was written. The 16KB-truncated `text` on the run record is the agent's *final message*; the log preserves the *whole* stream so a driver can inspect what the agent actually did (esp. on a failure). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. Returns `{workflows, errors, workspace}` — malformed recipe files land in `errors` (filename → message). |

@@ -131,7 +131,7 @@ class CommandCodeBackend(CodingAgentBackend):
 
         ok = exit_code == 0
         return AgentResult(
-            status=RunStatus.SUCCEEDED if ok else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if ok else RunStatus.FAILED,
             text=text,
             usage=usage,
             error=None if ok else (raw_stderr.strip() or f"command-code exited {exit_code}"),

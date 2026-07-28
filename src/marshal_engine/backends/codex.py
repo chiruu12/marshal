@@ -138,7 +138,7 @@ class CodexBackend(CodingAgentBackend):
 
         ok = exit_code == 0 and error_msg is None
         return AgentResult(
-            status=RunStatus.SUCCEEDED if ok else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if ok else RunStatus.FAILED,
             text="\n".join(text_parts).strip(),
             session_id=session_id,
             usage=usage if found_tokens else None,

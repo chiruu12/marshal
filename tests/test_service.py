@@ -51,7 +51,7 @@ class _Echo(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             usage=UsageRecord(backend="echo", cost_usd=0.002, source=UsageSource.NATIVE),
             exit_code=exit_code,
@@ -76,7 +76,7 @@ class _Pricey(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return AgentResult(
-            status=RunStatus.SUCCEEDED if exit_code == 0 else RunStatus.FAILED,
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
             text=raw_stdout.strip(),
             usage=UsageRecord(backend="pricey", cost_usd=0.05, source=UsageSource.NATIVE),
             exit_code=exit_code,
@@ -100,7 +100,7 @@ class _Unpriced(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text=raw_stdout.strip(), exit_code=exit_code)
 
 
 class _Capture(CodingAgentBackend):
@@ -124,7 +124,7 @@ class _Capture(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text=raw_stdout.strip(), exit_code=exit_code)
 
 
 class _Missing(CodingAgentBackend):
@@ -144,7 +144,7 @@ class _Missing(CodingAgentBackend):
         return []
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        return AgentResult(status=RunStatus.SUCCEEDED, text=raw_stdout.strip(), exit_code=exit_code)
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text=raw_stdout.strip(), exit_code=exit_code)
 
 
 def _init_repo(root: Path) -> None:
@@ -236,7 +236,7 @@ def test_config_verify_reaches_fleet_and_gates_runs(repo: Path) -> None:
     rec = svc.run_agent("worker", "do something", task_id="tv")
     # _Echo replies with text but changes no files: succeeded, and the gate is SKIPPED - a
     # text-only reply cannot have broken the repo, so no test run is burned on it.
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.verify_passed is None
 
 
@@ -273,7 +273,7 @@ def test_list_clients_permission_fidelity_from_backend_capabilities(repo: Path) 
             return []
 
         def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-            return AgentResult(status=RunStatus.SUCCEEDED, text="ok", exit_code=exit_code)
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok", exit_code=exit_code)
 
     cfg = FleetConfig(
         clients={
@@ -300,7 +300,7 @@ def test_list_clients_surfaces_driver_context(repo: Path) -> None:
 def test_run_agent_records(repo: Path) -> None:
     svc = _svc(repo)
     rec = svc.run_agent("worker", "do something", task_id="t1")
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.run_id.startswith("t1.echo.")  # task.backend.<uuid>
     assert svc.get_run(rec.run_id) is not None
     assert svc.status()[0].run_id == rec.run_id
@@ -525,7 +525,7 @@ def test_benchmark_compares_strategies(repo: Path) -> None:
 
     assert result.task_id == "b1"
     assert {s.client for s in result.strategies} == {"cheap", "dear"}
-    assert all(s.status == "succeeded" for s in result.strategies)
+    assert all(s.status == "exited_clean" for s in result.strategies)
     assert result.cheapest == "cheap"          # 0.002 < 0.05, both costs native (known)
     assert result.fastest in {"cheap", "dear"}
     assert len({s.run_id for s in result.strategies}) == 2  # distinct runs, shared task_id
@@ -554,11 +554,11 @@ def test_report_admin_api_cost_competes_for_cheapest(repo: Path) -> None:
     svc = _svc(repo)
     svc.fleet.state.add(
         RunRecord(run_id="b.cheap", task_id="b", backend="x", client="cheap",
-                  status="succeeded", cost_usd=0.01, source="admin-api")
+                  status="exited_clean", cost_usd=0.01, source="admin-api")
     )
     svc.fleet.state.add(
         RunRecord(run_id="b.dear", task_id="b", backend="x", client="dear",
-                  status="succeeded", cost_usd=0.05, source="native")
+                  status="exited_clean", cost_usd=0.05, source="native")
     )
     result = svc.report("b")
     assert result.cheapest == "cheap"  # the admin-api run is the cheapest comparable strategy
@@ -573,7 +573,7 @@ def test_run_many_runs_each_client_job(repo: Path) -> None:
     ]
     records = svc.run_many(jobs, max_concurrency=3)
     assert [r.task_id for r in records] == ["j1", "j2", "j3"]
-    assert all(r.status == "succeeded" for r in records)
+    assert all(r.status == "exited_clean" for r in records)
     assert len(svc.status()) == 3
 
 
@@ -582,7 +582,7 @@ def test_spawn_records_running_then_finishes(repo: Path) -> None:
     try:
         rec = svc.spawn("worker", "do x", task_id="sp1")
         assert rec.run_id.startswith("sp1.echo.")
-        assert rec.status in ("running", "succeeded")  # RUNNING at spawn; may finish fast
+        assert rec.status in ("running", "exited_clean")  # RUNNING at spawn; may finish fast
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             got = svc.get_run(rec.run_id)
@@ -590,7 +590,7 @@ def test_spawn_records_running_then_finishes(repo: Path) -> None:
                 break
             time.sleep(0.05)
         got = svc.get_run(rec.run_id)
-        assert got is not None and got.status == "succeeded"
+        assert got is not None and got.status == "exited_clean"
     finally:
         svc.shutdown()
 
@@ -696,7 +696,7 @@ def test_skipped_client_heals_when_backend_appears(repo: Path) -> None:
 
     be.available = True
     rec = svc.run_agent("late", "go", task_id="t2")  # heals on resolution, then runs
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert svc.skipped_clients == []
 
 
@@ -833,7 +833,7 @@ def test_run_agent_model_override_on_configured_client(repo: Path) -> None:
     )
     svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
     rec = svc.run_agent("worker", "do x", task_id="t1", model="override")
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.model == "override"  # override reaches the persisted record
 
     # And without the override, the client's resolved model is used.
@@ -846,7 +846,7 @@ def test_run_agent_adhoc_backend_runs_without_configured_client(repo: Path) -> N
     cfg = FleetConfig()  # no clients
     svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
     rec = svc.run_agent(backend="echo", goal="do x", task_id="t1", model="adhoc-model")
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     assert rec.backend == "echo"
     assert rec.model == "adhoc-model"
     assert rec.client == "adhoc-echo"
@@ -965,7 +965,7 @@ def test_run_agent_duration_reaches_run_record(repo: Path) -> None:
     )
     svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
     rec = svc.run_agent("worker", "x", task_id="t1", duration="long")
-    assert rec.status == "succeeded"
+    assert rec.status == "exited_clean"
     # The Fleet doesn't echo timeout back on the record (it lives on the RunRequest), but we can
     # assert the side-effect: a record with this task_id exists and the override didn't error.
     assert rec.run_id.startswith("t1.echo.")
@@ -980,7 +980,7 @@ def test_spawn_duration_reaches_run_record(repo: Path) -> None:
     try:
         rec = svc.spawn("worker", "x", task_id="sp1", duration="medium")
         assert rec.run_id.startswith("sp1.echo.")
-        assert rec.status in ("running", "succeeded")
+        assert rec.status in ("running", "exited_clean")
     finally:
         svc.shutdown()
 
@@ -1000,7 +1000,7 @@ def test_run_many_per_job_duration(repo: Path) -> None:
     ]
     records = svc.run_many(jobs, max_concurrency=2)
     assert [r.task_id for r in records] == ["j1", "j2"]
-    assert all(r.status == "succeeded" for r in records)
+    assert all(r.status == "exited_clean" for r in records)
 
 
 def test_run_many_duration_invalid_preset_fails_fast(repo: Path) -> None:

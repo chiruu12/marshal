@@ -84,7 +84,7 @@ def test_usage_defaults_resolve_against_repo_not_cwd(
     (u / "events.jsonl").write_text(
         UsageEvent(
             ts=datetime.now(timezone.utc).isoformat(),
-            run_id="r1", backend="opencode", cost_usd=0.42, status="succeeded", source="native",
+            run_id="r1", backend="opencode", cost_usd=0.42, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
     monkeypatch.chdir(subdir)
@@ -110,7 +110,7 @@ def test_usage_json_includes_breakdowns_and_window(tmp_path: Path, capsys: pytes
         UsageEvent(
             ts=datetime.now(timezone.utc).isoformat(),
             run_id="r1", backend="opencode", model="<provider>/<model-a>",
-            cost_usd=0.01, input_tokens=100, output_tokens=10, status="succeeded", source="native",
+            cost_usd=0.01, input_tokens=100, output_tokens=10, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
     ret = cli.main(["usage", "--json", "--dir", str(u), "--window", "week"])
@@ -141,7 +141,7 @@ def test_usage_human_surfaces_by_model_and_tokens(
             ts=datetime.now(timezone.utc).isoformat(),
             run_id="r1", backend="opencode", model="<provider>/<model-a>",
             client="worker", cost_usd=0.01, input_tokens=100, output_tokens=10,
-            cache_read_tokens=5, status="succeeded", source="native",
+            cache_read_tokens=5, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
     ret = cli.main(["usage", "--dir", str(u)])
@@ -199,7 +199,7 @@ def test_usage_session_window_states_cli_caveat(
     (u / "events.jsonl").write_text(
         UsageEvent(
             ts=datetime.now(timezone.utc).isoformat(),
-            run_id="r1", backend="opencode", cost_usd=0.50, status="succeeded", source="native",
+            run_id="r1", backend="opencode", cost_usd=0.50, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
     ret = cli.main(["usage", "--dir", str(u), "--window", "session"])
@@ -544,7 +544,7 @@ def test_usage_json_includes_budgets_when_configured(
         UsageEvent(
             ts=datetime.now(timezone.utc).isoformat(),
             run_id="r1", backend="opencode", client="worker", model="<provider>/<model-a>",
-            cost_usd=0.40, status="succeeded", source="native",
+            cost_usd=0.40, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
     cfg = tmp_path / "fleet.config.yaml"
@@ -785,7 +785,7 @@ def test_status_since_hours_filters(tmp_path: Path, capsys: pytest.CaptureFixtur
 
     runs = tmp_path / "runs"
     state = FleetState(runs)
-    state.add(RunRecord(run_id="old.e.1", task_id="t", backend="echo", status="succeeded",
+    state.add(RunRecord(run_id="old.e.1", task_id="t", backend="echo", status="exited_clean",
                         started_at="2020-01-01T00:00:00+00:00"))
 
     ret = cli.main(["status", "--json", "--state", str(runs), "--since-hours", "1"])

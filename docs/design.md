@@ -287,7 +287,7 @@ as a runtime backstop in `setup()` / `verify()`.
 
 **Verify gate.** The optional top-level `verify` command (e.g. `uv run pytest -q`) is
 `worktree_setup`'s post-run counterpart: it runs in the worktree after a run that would otherwise
-be `succeeded` *and changed files* (agents love passing their own narrower test subset while
+be `exited_clean` *and changed files* (agents love passing their own narrower test subset while
 breaking the repo gate). A non-zero exit/timeout demotes the run to `verify_failed` - the worktree
 and diff are KEPT for review (unlike a setup failure, verify never tears down), and the command's
 output tail lands on the run record (`verify_passed` / `verify_output`). Runs with no gate
@@ -331,7 +331,7 @@ agent runs. A `fan_out` phase first drops any client whose backend CLI is unavai
 `client_available` probe - the fifth method on the `WorkflowService` Protocol) and runs with whatever
 fleet remains, raising only if **all** are unavailable; non-succeeded runs surface as phase notes +
 `next_actions`. **Integration is gated off by default** (`auto: false`): a workflow surfaces succeeded
-runs as candidates with `next_actions`, and the driver merges the good ones after review - `succeeded`
+runs as candidates with `next_actions`, and the driver merges the good ones after review - `exited_clean`
 is not `correct`. The judgment (which recipe, when to merge) stays in the `marshal-workflow` Skill;
 the engine only sequences. Discover/validate with `marshal workflows`; run via `run_workflow`.
 
