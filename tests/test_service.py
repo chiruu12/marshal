@@ -1049,3 +1049,24 @@ def test_an_unknown_backend_reads_differently_from_an_uninstalled_one(repo: Path
     svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
     reason = svc.list_clients().skipped[0].reason
     assert "not a known backend" in reason
+
+
+def test_integrate_message_reaches_the_commit(repo: Path) -> None:
+    """REGRESSION (#75): the Fleet accepted `message`, but the service and the MCP tool both
+    dropped it - so every integrate landed as "marshal: integrate <run_id>", describing the tooling
+    rather than the change. The reporter reset and recommitted after every single one, about
+    fifteen times. `commit_run` had taken a message all along; `integrate` just never passed it on."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "make a change")
+    # Give the run something to land.
+    (Path(rec.worktree) / "new.txt").write_text("work product\n")
+
+    result = svc.integrate(rec.run_id, message="Add the thing the agent was asked for")
+    assert result.status == "merged", result.message
+
+    log = subprocess.run(
+        ["git", "-C", str(repo), "log", "-2", "--format=%s"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "Add the thing the agent was asked for" in log
+    assert "marshal: integrate" not in log, "the tooling-shaped default won anyway"

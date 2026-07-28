@@ -372,6 +372,7 @@ Merge a run's worktree branch into the workspace's current branch. Review with `
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `run_id` | string | *(required)* | Run id. |
+| `message` | string \| null | `null` | Commit message for the run's work, in the target repo's own convention. Omitted, it falls back to `marshal: integrate <run_id>` — which names the tooling, not the change. |
 | `cleanup` | bool | `false` | Remove the worktree after a successful merge. |
 | `workspace` | string \| null | `null` | Workspace hint. |
 

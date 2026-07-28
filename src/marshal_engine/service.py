@@ -591,8 +591,13 @@ class MarshalService:
     def cancel_run(self, run_id: str) -> RunRecord:
         return self.fleet.cancel_run(run_id)
 
-    def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult:
-        return self.fleet.integrate(run_id, cleanup=cleanup)
+    def integrate(
+        self, run_id: str, *, message: str | None = None, cleanup: bool = False
+    ) -> IntegrateResult:
+        # `message` was already supported by the Fleet but stopped here, so no caller could reach
+        # it: every integrate landed as "marshal: integrate <run_id>", describing the tooling
+        # instead of the change, and had to be rewritten by hand afterwards.
+        return self.fleet.integrate(run_id, message=message, cleanup=cleanup)
 
     def clean(
         self,
