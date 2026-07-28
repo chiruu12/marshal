@@ -13,6 +13,7 @@ import fcntl
 import json
 import logging
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -916,8 +917,12 @@ class Fleet:
                     base_commit=resolved_base_commit,
                     # What this worktree's environment came from. `None` means it was provisioned
                     # by nothing - a bare checkout - which is the sharpest form of the delta.
+                    # shlex.join, not " ".join: the scaffolded form is `sh -c "cd sub && uv sync"`,
+                    # and a plain join renders that as `sh -c cd sub && uv sync` - a DIFFERENT
+                    # command. Provenance that misdescribes what ran is worse than none, since the
+                    # whole point of this field is letting a driver trust where a number came from.
                     worktree_setup=(
-                        " ".join(self.worktrees.setup_cmd) if self.worktrees.setup_cmd else None
+                        shlex.join(self.worktrees.setup_cmd) if self.worktrees.setup_cmd else None
                     ),
                     started_at=started,
                 )
