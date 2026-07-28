@@ -2,8 +2,8 @@
 
 The Marshal MCP server (`marshal mcp`) exposes the tools documented below (the normative list is
 `@app.tool` in `mcp_server.py`). **New to Marshal? Call `marshal_quickstart` first** — it names the
-four-step loop and says which tool to pick when several look alike. Every action/query tool accepts an optional `workspace` parameter (defaults to
-`"default"`). Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
+four-step loop and says which tool to pick when several look alike. Workspace-scoped tools accept an optional `workspace` parameter (defaults to `"default"`);
+the global ones — `marshal_quickstart`, `list_workspaces`, `add_workspace` — do not. Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
 owning workspace by scanning each repo's ledger, with an optional `workspace` hint to skip the scan.
 
 Results from workspace-scoped tools include a top-level `"workspace"` field naming the repo they came

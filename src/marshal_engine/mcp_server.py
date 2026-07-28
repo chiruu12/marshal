@@ -200,8 +200,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
                 "2. spawn (or run_agent) - start the work.",
                 "3. collect_run - read the diff. A run's status says it exited cleanly, NOT that "
                 "the work is correct. Always read the diff before step 4.",
-                "4. integrate - merge that run's branch. The only step that touches your branch. "
-                "One run at a time.",
+                "4. integrate - merge that run's branch into yours. One run at a time.",
             ],
             "which_run_tool": {
                 "run_agent": "Blocks until the run finishes. Use for short work you want inline.",
@@ -219,13 +218,16 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
                 "get_run_log": "One run's raw stdout/stderr. For diagnosing a failure.",
             },
             "safety": (
-                "Nothing touches your branch until you call integrate. A bad run costs a worktree, "
-                "not your repo. `succeeded` means the process exited 0 - it is not a claim about "
-                "correctness, so review the diff."
+                "Runs are isolated in their own worktrees; a bad run costs a worktree, not your "
+                "repo. Two things reach your branch: `integrate`, and `run_workflow` when the "
+                "recipe declares an integrate phase with `auto: true` - read a workflow before "
+                "running it. `succeeded` means the process exited 0, which is not a claim about "
+                "correctness, so review the diff first."
             ),
             "multi_repo": (
-                "Every tool takes an optional `workspace`. list_workspaces shows what is "
-                "registered and whether each is `ready` (with a reason when it is not)."
+                "Workspace-scoped tools take an optional `workspace` (the global ones - this tool, "
+                "list_workspaces, add_workspace - do not). list_workspaces shows what is registered "
+                "and whether each is `ready`, with a reason when it is not."
             ),
         }
 

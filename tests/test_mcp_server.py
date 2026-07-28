@@ -535,3 +535,39 @@ def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
     assert "does not hold your turn" in payload["which_run_tool"]["spawn"]
     # And the caveat that every reviewer flagged is stated up front, not buried.
     assert "not a claim about" in payload["safety"]
+
+
+def test_quickstart_claims_are_true_of_the_actual_tool_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An orientation tool that overclaims is worse than none - it is the same defect as
+    `succeeded` and `configured`, just in prose. Two earlier drafts said "integrate is the ONLY
+    step that touches your branch" (a workflow with an `auto: true` integrate phase also does) and
+    "every tool takes an optional workspace" (the global tools do not). Pin both against the real
+    registered signatures rather than against what the text asserts."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    _, payload = asyncio.run(app.call_tool("marshal_quickstart", {}))
+
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    takes_workspace = {
+        name for name, t in tools.items()
+        if "workspace" in (t.inputSchema or {}).get("properties", {})
+    }
+    globals_ = {"marshal_quickstart", "list_workspaces", "add_workspace"}
+    assert not (globals_ & takes_workspace), "a global tool grew a workspace param"
+    assert takes_workspace, "no tool takes workspace - the claim would be vacuous"
+    # So the text must NOT say "every tool".
+    assert "Every tool takes" not in payload["multi_repo"]
+
+    # `run_workflow` can integrate, so integrate is not the only path to the user's branch.
+    assert "run_workflow" in tools
+    assert "only step that touches" not in " ".join(payload["the_loop"])
+    assert "run_workflow" in payload["safety"]

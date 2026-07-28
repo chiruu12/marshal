@@ -81,7 +81,12 @@ versions may include breaking API changes until 1.0.
   (`doctor` → `spawn` → `collect_run` → `integrate`), says plainly which run tool blocks and which
   does not, and states up front that a run's status is about the process exiting, not about the work
   being right. It is a tool rather than a docs link because a driver reads tool descriptions.
-  `docs/mcp-tools.md` also stops hardcoding a tool count (it was already stale by one).
+  `docs/mcp-tools.md` also stops hardcoding a tool count (it was already stale by one) and no longer
+  claims *every* tool takes a `workspace` — the global tools do not. A test checks the quickstart's
+  claims against the real registered signatures, because an orientation tool that overclaims is the
+  same defect as `succeeded` and `configured`, just in prose: two drafts asserted that `integrate`
+  is the only thing that reaches your branch, when a workflow with an `auto: true` integrate phase
+  does too.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
