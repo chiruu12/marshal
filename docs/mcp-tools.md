@@ -277,9 +277,9 @@ Read-only diff collection; nothing is merged.
 | `worktree` | string \| null | Worktree path. |
 | `changed_files` | list[string] | Paths with uncommitted changes in the worktree. |
 | `diff` | string | Unified diff of uncommitted work (working tree vs HEAD). |
-| `committed_changed_files` | list[string] | Files changed in commits on the run branch since the merge-base with the current branch. |
-| `committed_diff` | string | Unified diff of those commits (`target...branch`). |
-| `commit_count` | integer | Number of commits on the run branch not reachable from the current branch. |
+| `committed_changed_files` | list[string] | Files changed in commits on the run branch since the run's **own** base (`base_commit`, falling back to `base_branch`, then — for records predating both — the current branch, or the checked-out commit `HEAD` when the repo is in detached HEAD) — deliberately not the currently checked-out branch, which may have moved since the run started. |
+| `committed_diff` | string | Unified diff of those commits (`base...branch`). |
+| `commit_count` | integer | Number of commits on the run branch not reachable from that base. |
 
 ### `status`
 
@@ -292,10 +292,17 @@ workspaces for visibility; it is **not** a merged usage/budget view (see `usage`
 
 ### `cancel_run`
 
-SIGTERM the agent process group when the recorded `pid` + `pid_start_time` identity is positively
-verified as still ours. Skips the signal (but still marks `cancelled` with an explanatory `error`
-and clears `pid`) when identity mismatches or cannot be verified — unlike startup reaping, cancel
-fails closed on unverifiable identity so a reused pid is never signalled.
+SIGTERM the agent process group — but only for a **live child of the server process handling the
+call**. Signalling goes through an in-process handle that tracks the child from spawn until it is
+reaped; the OS cannot recycle a child's pid before its parent reaps it, so within that window the
+pid unambiguously belongs to the agent.
+
+- A cancel arriving **before** the pid is known is applied the moment it is, so the agent is stopped
+  rather than left running behind an already-terminal record.
+- A cancel **after** the child is reaped does not signal at all.
+- A run started by a **different (or dead) process** is stamped `cancelled` without a signal, with
+  the reason on `error` and `pid` cleared. Guessing at a pid this process does not own risks
+  SIGTERM to an unrelated process group. Such an orphaned agent must be ended by hand.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -428,6 +435,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `worktree` | string \| null | Worktree path. |
 | `branch` | string \| null | Worktree branch. |
 | `base_branch` | string \| null | Branch the worktree was cut from at spawn time. |
+| `base_commit` | string \| null | The commit that branch pointed at when the run was spawned, read from the created worktree. A branch name is mutable; this is what the run actually branched from, and what `collect_run` compares against. |
 | `cost_usd` | float | Recorded cost. |
 | `input_tokens` | int | |
 | `output_tokens` | int | |
@@ -440,6 +448,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `merged_into` | string \| null | Branch after integrate. |
 | `commit` | string \| null | Branch tip after `commit_run`. |
 | `pid` | int \| null | Agent subprocess pid (while running). |
+| `pid_start_time` | string \| null | OS-reported start time of `pid`. A pid alone is not an identity — the OS reuses pids — so startup reconciliation verifies the pair before deciding a recorded run is still alive. |
 | `attempts` | int | Backend invocations (> 1 means transient retries). |
 | `verify_passed` | bool \| null | `null` = no gate ran; `false` with `verify_failed` status. |
 | `verify_output` | string | Tail of verify command output. |

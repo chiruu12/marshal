@@ -53,6 +53,12 @@ versions may include breaking API changes until 1.0.
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
 ### Documentation
+- **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
+  are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
+  described in the layout section; `collect_run`'s committed fields state that they compare against
+  the run's own base, not the current branch; and both surfaces now say that `failed` is overloaded
+  (agent failure vs orphaned at startup) and how to tell them apart. The `cancel_run` reference
+  still described the pre-handle identity check and has been corrected.
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
   multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
   session clocks stay per-workspace (no registry spend/budget merge; intentional non-goal). Rewrite
