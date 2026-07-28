@@ -449,6 +449,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `commit` | string \| null | Branch tip after `commit_run`. |
 | `pid` | int \| null | Agent subprocess pid (while running). |
 | `pid_start_time` | string \| null | OS-reported start time of `pid`. A pid alone is not an identity — the OS reuses pids — so startup reconciliation verifies the pair before deciding a recorded run is still alive. |
+| `agent_alive` | bool \| null | **Derived when you read the record, never stored.** Is the agent process alive *right now*: distinguishes "still working" from "finished, outcome not yet written" without shelling out to `kill -0` (which a driver should not do anyway — pids are reused, so a live pid is not proof the agent lives). `null` means unknown, not dead: the run is terminal (the question is moot), no pid is recorded, or its identity could not be verified. Never persisted — a stored liveness is stale the instant it lands. |
 | `attempts` | int | Backend invocations (> 1 means transient retries). |
 | `verify_passed` | bool \| null | `null` = no gate ran; `false` with `verify_failed` status. |
 | `verify_output` | string | Tail of verify command output. |

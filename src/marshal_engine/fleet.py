@@ -983,6 +983,35 @@ class Fleet:
             self.worktrees.remove(wt)
         return record
 
+    def with_liveness(self, rec: RunRecord) -> RunRecord:
+        """Return ``rec`` with ``agent_alive`` filled in for the moment of this call.
+
+        Answers the one question a status read cannot: is the agent still working, or has it
+        finished without the outcome being written yet? Terminal records get None - the run is over,
+        so liveness is not a meaningful thing to report - as does a record whose pid identity cannot
+        be established, because "some process exists at that number" is not evidence our agent does.
+        """
+        if _is_terminal(rec):
+            return rec
+        if rec.pid is None or not rec.pid_start_time:
+            return rec  # nothing to probe, or nothing to verify a probe against
+        return rec.model_copy(update={"agent_alive": _pid_is_verifiably_ours(rec)})
+
+    def _cancel_requested(self, run_id: str) -> bool:
+        """Whether a cancel has been asked for - via the in-process handle or a terminal record.
+
+        Both are checked: the handle covers a cancel this process received, and the record covers
+        one another process stamped (which cannot signal us, but still means nobody wants more
+        work done for this run).
+        """
+        handle = _inflight_handle(self.state.dir, run_id)
+        if handle is not None:
+            with _active_runs_guard:
+                if handle.cancel_requested:
+                    return True
+        rec = self.state.get(run_id)
+        return rec is not None and _is_terminal(rec)
+
     def _run_with_retries(
         self, backend: CodingAgentBackend, task: TaskSpec, opts: RunOpts, run_id: str
     ) -> tuple[AgentResult, int]:
@@ -992,11 +1021,18 @@ class Fleet:
         attempts: the markers we retry on (DB lock, rate limit, 5xx, connection errors) happen at
         startup/transport time, before an agent writes anything, so there is nothing to reset. A
         genuine task failure or a timeout is returned as-is - never retried.
+
+        A requested cancel ends the loop. SIGTERM can surface as a transport-shaped error, so
+        without this check a cancelled run would sleep and spawn a WHOLE new attempt - backend
+        setup and all - which the pending cancel then kills on arrival. That put a second writer in
+        the worktree after the record already read `cancelled`.
         """
         attempt = 1
         while True:
             result = backend.run(task, opts)
             if attempt >= self.retries.max_attempts or not is_transient_failure(result):
+                return result, attempt
+            if self._cancel_requested(run_id):
                 return result, attempt
             delay = self.retries.delay_for(attempt)
             print(

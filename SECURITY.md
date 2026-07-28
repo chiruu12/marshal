@@ -116,8 +116,10 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   Code (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar), Goose (`safe-edit`/`yolo` both
   `GOOSE_MODE=auto`), Antigravity (`prepare()` briefly adds the run worktree to host-global
   `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`; `run()` removes it on
-  completion; malformed settings fail closed; residual: parallel Antigravity runs still share and
-  serialize on that global file; no PTY wrapper; stdout can be swallowed without a TTY; no distinct
+  completion, with in-process reference counting so overlapping runs cannot revoke each other's
+  grant early; malformed settings fail closed; residual: parallel Antigravity runs still share and
+  serialize on that global file, and a run whose teardown never executed - a hard kill, or a run
+  later reaped as an orphan - leaves its path trusted until the worktree is removed by `clean`; no PTY wrapper; stdout can be swallowed without a TTY; no distinct
   safe-edit scoping beyond the run-scoped trust grant), and Claude Code (`acceptEdits` with no
   Marshal deny layer). Worktree isolation remains the hard boundary for those adapters and for
   everything the curated denies do not cover. See `permission_fidelity` on `list_clients` /

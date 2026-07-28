@@ -52,6 +52,15 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **`agent_alive` on the run record (#71).** A driver reading `running` could not tell "still
+  working" from "finished, outcome not yet written" — the field report that prompted this had the
+  driver conclude a run failed when it had succeeded, and say so. `status`/`get_run` now derive
+  whether the agent process is alive at the moment of the read. `null` means *unknown*, never dead:
+  the run is terminal, no pid is recorded, or its identity could not be verified. It is computed on
+  read and deliberately never persisted — a stored liveness is stale the instant it lands, which is
+  the very failure being fixed. It also removes the reason to shell out to `kill -0`, which is not
+  sound anyway: pids are reused, so a live pid is not proof the agent lives.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
@@ -104,6 +113,14 @@ versions may include breaking API changes until 1.0.
   to exit. The lock now records the holder's start time too and verifies the pair. A lock written by
   an older version has no start time, and is treated as held while alive, so upgrading never causes
   a takeover it should not make.
+- **A cancel ends the retry loop (#89).** The loop never consulted the cancel state, and SIGTERM
+  can surface as a transport-shaped error — so a cancelled run classified it as transient, slept,
+  and spawned a whole new attempt (backend setup and all) that the pending cancel then killed on
+  arrival. That briefly put a second writer in the worktree *after* the record read `cancelled`.
+- **Cancel tests now exercise the path they claim to (#90).** Three tests were written against the
+  previous identity-checked cancel and never updated: with no in-process handle registered they
+  never reached `killpg` at all, so the kill race and its `ProcessLookupError` branch were covered
+  in name only, and one still asserted against `pid_start_time` stubs that cancel no longer reads.
 - **A reap is decided and committed atomically.** The scan read each record without a lock while
   the write only re-checked "still not finished", so a pid stamped in that gap — the run's own
   process finally reporting in — was overwritten anyway. The whole decision now lives in one
@@ -139,7 +156,11 @@ versions may include breaking API changes until 1.0.
   durable trust entries in the host-global agy settings file: `run()` removes the run's worktree
   path on completion (best-effort; warns on stderr if cleanup cannot read/write the file). A
   malformed or unreadable settings file is preserved and fails the run closed instead of being
-  replaced with `{}`.
+  replaced with `{}`. Removal is reference-counted in-process and the count is claimed under the
+  same lock that writes the entry, so overlapping Antigravity runs cannot revoke each other's grant
+  early, and Marshal only ever removes a path it introduced. A run whose teardown never executed —
+  a hard kill, or one later reaped as an orphan — still leaves its path trusted until `clean`
+  removes the worktree; reaping makes the record read terminal without doing that cleanup.
 - **A worktree removed mid-review no longer escapes as a raw exception.** Collecting a team's
   review subject races `clean`: the worktree can vanish at three different points, and each raises
   a different type - `ValueError` (already gone at resolution), `WorktreeError` (gone after

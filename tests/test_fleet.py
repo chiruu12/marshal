@@ -535,6 +535,34 @@ def test_non_transient_failure_is_not_retried(repo: Path) -> None:
     assert backend.calls == 1
 
 
+def test_a_cancel_stops_the_retry_loop(repo: Path) -> None:
+    """REGRESSION (#89): the retry loop never consulted the cancel state. SIGTERM can surface as a
+    transport-shaped error, so a cancelled run slept and spawned a WHOLE new attempt - backend
+    setup and all - which the pending cancel then killed on arrival, putting a second writer in the
+    worktree after the record already read `cancelled`."""
+
+    class _CancelsItself(_Flaky):
+        def __init__(self, fleet_ref: dict[str, Fleet]) -> None:
+            super().__init__(["opencode: database is locked"] * 4)  # always transient
+            self._fleet_ref = fleet_ref
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+            result = super().run(task, opts)
+            # A cancel lands while attempt 1 is finishing, exactly like the real race.
+            fleet = self._fleet_ref["f"]
+            for rec in fleet.state.list():
+                if rec.status == RunStatus.RUNNING.value:
+                    fleet.cancel_run(rec.run_id)
+            return result
+
+    ref: dict[str, Fleet] = {}
+    backend = _CancelsItself(ref)
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    ref["f"] = fleet
+    fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    assert backend.calls == 1, "a cancelled run spawned another attempt"
+
+
 def test_transient_retries_are_bounded(repo: Path) -> None:
     backend = _Flaky(["rate limit", "rate limit", "rate limit", "rate limit"])  # never recovers
     fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
@@ -2219,13 +2247,16 @@ def test_cancel_signals_a_verified_live_run(
         holder.wait(timeout=10)
 
 
-def test_cancel_does_not_signal_a_run_with_no_recorded_identity(
+def test_cancel_does_not_signal_a_run_this_process_did_not_start(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fail CLOSED on cancel (unlike reaper): without a verifiable identity, do not killpg.
+    """Fail CLOSED on cancel (unlike the reaper): with no in-process handle, never killpg.
 
-    Signalling the wrong process is the harm; a stale record left running until explicit cancel
-    is acceptable. The run is still terminal-stamped cancelled with an explanatory error.
+    The gate is the handle, not the recorded `pid_start_time` - an earlier design verified the
+    pid pair and signalled on a match, and the name of this test still described that. Only a
+    child of THIS process has a pid the OS cannot have recycled yet; anything else might now be an
+    unrelated process group, and signalling it is the harm. The run is still stamped cancelled with
+    an explanatory error.
     """
     import os
 

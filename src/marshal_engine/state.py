@@ -56,6 +56,19 @@ class RunRecord(BaseModel):
     # not would-be-succeeded, or no file changes to gate); False pairs with status `verify_failed`.
     verify_passed: bool | None = None
     verify_output: str = ""  # tail-truncated verify command output (failures print last)
+    # DERIVED ON READ, never persisted (see FleetState._write). Whether the agent process is alive
+    # right now: True/False when the pid's identity could be checked, None when it could not (no
+    # pid recorded, or the probe is unavailable) - and None on any terminal record, where the
+    # question is meaningless. A driver reading `running` cannot otherwise tell "still working"
+    # from "finished, outcome not yet written", and guessing wrong misreports a run's outcome.
+    # Persisting it would recreate exactly that bug: a stored liveness is stale the moment it lands.
+    agent_alive: bool | None = None
+
+
+#: Fields computed when a record is READ and deliberately kept out of the ledger. The ledger holds
+#: facts about what happened; these are answers about right now, and storing one would guarantee it
+#: is wrong later.
+_DERIVED_FIELDS = {"agent_alive"}
 
 
 class FleetState:
@@ -87,7 +100,10 @@ class FleetState:
         fd, tmp = tempfile.mkstemp(dir=str(self.dir), prefix=f"{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(record.model_dump_json(indent=2))
+                # `agent_alive` is a live probe, never a fact about the past: writing it would put
+                # a value in the ledger that is stale the instant it lands. It is recomputed by
+                # whoever reads the record.
+                fh.write(record.model_dump_json(indent=2, exclude=_DERIVED_FIELDS))
             os.replace(tmp, path)  # atomic: a reader sees either the old file or the whole new one
         except BaseException:
             with contextlib.suppress(OSError):

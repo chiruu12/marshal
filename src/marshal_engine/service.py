@@ -524,7 +524,8 @@ class MarshalService:
 
     def get_run(self, run_id: str) -> RunRecord | None:
         self.fleet.reconcile_orphans()
-        return self.fleet.state.get(run_id)
+        rec = self.fleet.state.get(run_id)
+        return self.fleet.with_liveness(rec) if rec is not None else None
 
     def run_log(self, run_id: str) -> str | None:
         """The full raw stdout/stderr persisted for a run, or None if no log was written.
@@ -576,7 +577,7 @@ class MarshalService:
 
     def status(self) -> list[RunRecord]:
         self.fleet.reconcile_orphans()
-        return self.fleet.state.list()
+        return [self.fleet.with_liveness(r) for r in self.fleet.state.list()]
 
     def usage(
         self,

@@ -35,6 +35,10 @@ Honest gaps from research (these shape what we expose):
     sweep removes it. Deliberately NOT mitigated with atexit hooks or a cross-process ledger; that
     machinery would cost more than the problem, and the fail-closed "no bookkeeping means do not
     revoke" rule is the safety bias we want.
+    Note how this composes with orphan reaping: reaping stamps the record `failed` but removes
+    neither the worktree nor the trust entry, so the grant outlives a run that now *reads* finished.
+    Nothing is newly unsafe - it is the same residual as any hard kill - but a terminal-looking
+    record makes it easy to assume the cleanup already happened. `clean` is still what reclaims it.
 
 Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-opus-4.6, gpt-oss-120b.
 """
