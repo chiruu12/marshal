@@ -28,6 +28,10 @@ versions may include breaking API changes until 1.0.
   treated as authenticated.
 
 ### Added
+- **Gemini CLI backend adapter (`backends/gemini.py`).** Headless `gemini -p` with
+  `--output-format json` and `--approval-mode` mapping for the three non-prompting tiers;
+  token counts parsed from JSON `stats` with cost `unavailable` (no fabricated $0). Registered
+  as `gemini`; contract-tested offline — not live-verified (CLI absent in CI/worktree).
 - **Fail-closed doctor auth probes for remaining backends (#43).** Claude Code
   (`claude auth status`), Command Code (`command-code status --json`; config.json alone is not
   auth), OpenCode (`opencode auth list`), and Codex (`codex login status`) set `verifies_auth` so

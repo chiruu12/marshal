@@ -13,6 +13,7 @@ from .backends.claude_code import ClaudeCodeBackend
 from .backends.codex import CodexBackend
 from .backends.command_code import CommandCodeBackend
 from .backends.cursor import CursorBackend
+from .backends.gemini import GeminiBackend
 from .backends.goose import GooseBackend
 from .backends.opencode import OpenCodeBackend
 
@@ -24,6 +25,7 @@ _FACTORIES: dict[str, Callable[[], CodingAgentBackend]] = {
     "antigravity": AntigravityBackend,
     "claude-code": ClaudeCodeBackend,
     "goose": GooseBackend,
+    "gemini": GeminiBackend,
 }
 
 

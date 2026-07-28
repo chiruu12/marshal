@@ -11,7 +11,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 |--------|----------------|-------|
 | `types.py` | Shared Pydantic models + enums | done |
 | `backends/base.py` | Abstract backend + safe `run()` (no-stdin, hard timeout) | done |
-| `backends/{cursor,opencode,codex,command_code,antigravity,claude_code,goose}.py` | Seven adapters off one base class | done |
+| `backends/{cursor,opencode,codex,command_code,antigravity,claude_code,goose,gemini}.py` | Eight adapters off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
 | `pricing.py` | Token → cost price table (the `ESTIMATED` path) | done |
@@ -50,6 +50,7 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
 | Antigravity | yes | verified (reply) | verified** | none |
 | Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
+| Gemini | no (adapter only) | not live-verified | not live-verified | tokens in JSON stats when present; cost `unavailable` |
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
 writes land and the JSONL parser extracts text + tokens correctly. A Codex client routed through
@@ -160,5 +161,5 @@ layout (root vs nested `pyproject.toml`/`package.json`/`go.mod`/`Cargo.toml`); (
 reaping** - scope-mode `clean` reconciles `.marshal/worktrees` against the ledger and reaps dirs
 with no (readable) run record (`orphans_removed`); (6) resolution errors carry actionable hints
 (ad-hoc `backend=` escape hatch, `doctor`, `add_workspace`).
-Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini
-backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
+Remaining: Antigravity native usage; Cursor admin-API usage; Gemini live verification;
+PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
