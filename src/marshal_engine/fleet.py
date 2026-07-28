@@ -1185,9 +1185,9 @@ class Fleet:
         concurrently. Submissions are spaced by ``stagger_s`` to ease the Cursor concurrent-launch
         file-lock race. A single run's failure is captured as a FAILED record and never aborts the
         batch. Returns one ``RunManyJobResult`` per input job, in input order; ``then`` is absent
-        (with ``then_skipped`` set) when the primary failed, has no branch, produced no diff
-        (``commit_run`` status ``clean`` — tree already clean, no new commit needed), or
-        ``commit_run`` could not freeze the primary's work for chaining.
+        (with ``then_skipped`` set) when the primary failed, has no branch, the primary's branch
+        has no commits beyond its base, or ``commit_run`` could not freeze the primary's work
+        (status ``blocked`` / ``error``).
         """
         results: list[RunManyJobResult | None] = [None] * len(jobs)
         with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
@@ -1212,16 +1212,22 @@ class Fleet:
         if commit.status in ("blocked", "error"):
             msg = commit.message or commit.status
             return RunManyJobResult(primary=primary, then_skipped=f"commit_run: {msg}")
-        # ``clean`` = no new commit needed (tree already clean). Not a freeze failure — there is
-        # simply no diff for a follow-up (typically a reviewer) to inspect.
-        # ``clean`` = no new commit needed (tree already clean). Not a freeze failure — there is
-        # simply no diff for a follow-up (typically a reviewer) to inspect.
-        if commit.status == "clean":
+        # Decide from branch tip vs spawn base — not commit_run's status word.
+        # ``clean`` means "no new commit needed" (tree already clean), NOT "branch empty";
+        # an agent that self-committed leaves a clean tree with real commits beyond base.
+        branch = primary.branch
+        # `_then_skip_reason` already rejected a branchless primary; re-check rather than assert,
+        # since `python -O` strips asserts and would leave branch_tip() taking None.
+        if branch is None:
+            return RunManyJobResult(primary=primary, then_skipped="primary run has no branch")
+        tip = self.worktrees.branch_tip(branch)
+        # Missing base_commit is not evidence of no diff — prefer running the follow-up.
+        if primary.base_commit is not None and tip == primary.base_commit:
             return RunManyJobResult(
                 primary=primary,
                 then_skipped=(
                     "primary produced no diff to review "
-                    "(no new commit needed — tree already clean)"
+                    "(branch has no commits beyond its base)"
                 ),
             )
         then_task = job.then.task.model_copy(update={"base_branch": primary.branch})

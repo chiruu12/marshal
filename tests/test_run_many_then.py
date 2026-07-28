@@ -171,6 +171,37 @@ class _CountingReader(CodingAgentBackend):
         )
 
 
+class _SelfCommitter(CodingAgentBackend):
+    """Writes a file and commits it inside the worktree (agent self-commit → clean tree)."""
+
+    name = "selfcommit"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess;"
+            "open('out.txt','w').write('hi');"
+            "subprocess.run(['git','add','out.txt'], check=True);"
+            "subprocess.run(['git','commit','-m','agent work'], check=True);"
+            "print('done')"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode):  # noqa: ANN001
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
 def _init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=path, check=True, capture_output=True)
@@ -252,6 +283,44 @@ def test_then_skipped_when_primary_exits_clean_with_no_diff(repo: Path) -> None:
     assert results[0].then_skipped is not None
     assert "no diff" in results[0].then_skipped
     assert counter.invocations == 0
+
+
+def test_then_runs_when_primary_self_committed(repo: Path) -> None:
+    """Self-committed primary leaves a clean tree; follow-up must still run and see the work."""
+
+    class _SeeingCounter(_CountingReader):
+        name = "seer"
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            self.invocations += 1
+            return [
+                sys.executable,
+                "-c",
+                "import pathlib; assert pathlib.Path('out.txt').read_text() == 'hi'; print('saw work')",
+            ]
+
+    seer = _SeeingCounter()
+    fleet = Fleet(repo, {"selfcommit": _SelfCommitter(), "seer": seer})
+    results = fleet.run_many(
+        [
+            RunManyJob(
+                request=RunRequest(
+                    backend_name="selfcommit",
+                    task=TaskSpec(id="build", goal="x"),
+                ),
+                then=RunRequest(
+                    backend_name="seer",
+                    task=TaskSpec(id="review", goal="review"),
+                ),
+            )
+        ],
+        stagger_s=0,
+    )
+    assert results[0].primary.status == "exited_clean"
+    assert results[0].then is not None
+    assert results[0].then.status == "exited_clean"
+    assert results[0].then_skipped is None
+    assert seer.invocations >= 1  # build_invocation may be probed more than once
 
 
 def test_then_runs_against_committed_primary_work(repo: Path) -> None:
