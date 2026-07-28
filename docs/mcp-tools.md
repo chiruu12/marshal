@@ -32,6 +32,7 @@ this listing deliberately avoids.
 | `configured` | bool | Whether the config **file exists** — nothing more. Not a readiness signal; use `ready`. |
 | `client_count` | int | Number of declared clients (0 if missing/broken config). |
 | `ready` | bool | Whether this workspace can actually take a run: a config that loads and declares at least one client. This is the field to branch on. |
+| `last_activity_at` | string \| null | ISO-8601 UTC of the most recent write to this workspace's run ledger — how you find the repo you were just working in when a dozen are registered. `null` means no runs recorded. Named for what it measures: a record's last write (a run starting, updating, or finishing), not a start time. |
 | `ready_reason` | string \| null | Why `ready` is false — `no config file at <path>`, `config does not load: <error>`, or `config declares no clients`. `null` when ready. |
 | `default` | bool | True for the default workspace. |
 
