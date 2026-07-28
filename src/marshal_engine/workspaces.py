@@ -45,7 +45,7 @@ from .budgets import EnforceBudgetGate
 from .config import ConfigError, FleetConfig, load_config, validate
 from .layout import runs_dir
 from .scaffold import detect_project_markers, scaffold_fleet_config
-from .fleet import RunRequest, with_liveness
+from .fleet import RunManyJobResult, with_liveness
 from .service import MarshalService
 from .state import FleetState, RunRecord
 
@@ -639,35 +639,34 @@ class WorkspaceRegistry:
         max_concurrency: int = 4,
         default_workspace: str | None = None,
         stagger_s: float = 0.1,
-    ) -> list[tuple[str, RunRecord]]:
+    ) -> list[tuple[str, RunManyJobResult]]:
         """Fan out run_many jobs across workspaces under one concurrency cap.
 
         Each job may carry an optional ``workspace`` key; omitted jobs use ``default_workspace``
-        (or ``default``). Unknown workspaces and invalid job specs fail fast before any agent
-        starts. Each workspace keeps its own config, worktrees, and ledger — only the thread pool
-        (and the process-wide ``run_gate``, when set) is shared. Returns ``(workspace, record)``
-        pairs in the same order as ``jobs``.
+        (or ``default``). Unknown workspaces and invalid job specs (including ``then``) fail fast
+        before any agent starts. Each workspace keeps its own config, worktrees, and ledger — only
+        the thread pool (and the process-wide ``run_gate``, when set) is shared. Returns
+        ``(workspace, RunManyJobResult)`` pairs in the same order as ``jobs``.
         """
-        prepared: list[tuple[str, MarshalService, RunRequest]] = []
+        prepared: list[tuple[str, MarshalService, Any]] = []
         for job in jobs:
             raw_ws = job.get("workspace")
             ws = raw_ws if isinstance(raw_ws, str) and raw_ws else (default_workspace or DEFAULT_WORKSPACE)
             svc = self.get(ws)  # ValueError on unknown workspace
-            body = {k: v for k, v in job.items() if k != "workspace"}
-            prepared.append((ws, svc, svc.job_request(body)))
+            prepared.append((ws, svc, svc.run_many_job(job)))
 
         if not prepared:
             return []
 
-        results: list[tuple[str, RunRecord] | None] = [None] * len(prepared)
+        results: list[tuple[str, RunManyJobResult] | None] = [None] * len(prepared)
         with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
             futures: dict[Any, tuple[int, str]] = {}
-            for i, (ws, svc, req) in enumerate(prepared):
+            for i, (ws, svc, chain) in enumerate(prepared):
                 if stagger_s and i:
                     time.sleep(stagger_s)
-                futures[pool.submit(svc.run_request_captured, req)] = (i, ws)
+                futures[pool.submit(svc.run_many_chain_captured, chain)] = (i, ws)
             for fut, (i, ws) in futures.items():
-                results[i] = (ws, fut.result())  # run_request_captured never raises
+                results[i] = (ws, fut.result())  # run_many_chain_captured never raises
         return [r for r in results if r is not None]
 
     def ledger_runs(self, name: str | None = None) -> list[tuple[str, RunRecord]]:

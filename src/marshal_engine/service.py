@@ -37,6 +37,8 @@ from .fleet import (
     EnforceBudgetGate,
     Fleet,
     IntegrateResult,
+    RunManyJob,
+    RunManyJobResult,
     RunRequest,
     StrategyResult,
 )
@@ -101,6 +103,20 @@ class SkippedClient(BaseModel):
     name: str
     backend: str
     reason: str
+
+
+class RunFile(BaseModel):
+    """One file read out of a run's worktree, with an explicit truncation flag.
+
+    `truncated` is never implicit: a driver acting on a prefix of a report while believing it had
+    the whole thing is the failure this field exists to prevent.
+    """
+
+    run_id: str
+    path: str
+    content: str
+    truncated: bool
+    size_bytes: int
 
 
 class ClientList(BaseModel):
@@ -483,35 +499,48 @@ class MarshalService:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
         Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?,
-        read_paths?, model?, backend?, duration?}``. Used by single-repo ``run_many`` and the
-        registry's cross-workspace fan-out so validation stays fail-fast before any worktree is
-        created.
+        read_paths?, model?, backend?, duration?}``. Strips ``then`` and ``workspace``
+        (registry-only). Used by single-repo ``run_many`` and the registry's cross-workspace
+        fan-out so validation stays fail-fast before any worktree is created.
         """
+        body = {k: v for k, v in job.items() if k not in ("then", "workspace")}
         return self._request_for(
-            job.get("client"),
-            job["goal"],
-            job.get("task_id"),
-            job.get("context_files"),
-            job.get("read_paths"),
-            model=job.get("model"),
-            backend=job.get("backend"),
-            duration=job.get("duration"),
+            body.get("client"),
+            body["goal"],
+            body.get("task_id"),
+            body.get("context_files"),
+            body.get("read_paths"),
+            model=body.get("model"),
+            backend=body.get("backend"),
+            duration=body.get("duration"),
         )
+
+    def run_many_job(self, job: dict[str, Any]) -> RunManyJob:
+        """Validate one run_many job dict (including optional ``then``) into a ``RunManyJob``."""
+        then_raw = job.get("then")
+        then_req = self.job_request(then_raw) if then_raw else None
+        return RunManyJob(request=self.job_request(job), then=then_req)
 
     def run_request_captured(self, req: RunRequest) -> RunRecord:
         """Run one request; capture any failure as a FAILED record (batch-safe, never raises)."""
         return self.fleet._run_request(req)
 
-    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
-        """Run several clients in parallel. Each job is
-        {client, goal, task_id?, context_files?, read_paths?, model?, backend?, duration?}.
+    def run_many_chain_captured(self, job: RunManyJob) -> RunManyJobResult:
+        """Run one run_many chain; capture failures as FAILED records (batch-safe, never raises)."""
+        return self.fleet._run_many_chain(job)
 
-        Client names are validated up front, so a typo fails fast before any run starts. A job may
-        also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's
-        optional `duration` (preset name or positive seconds) overrides the resolved timeout_s.
+    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
+        """Run several clients in parallel. Each job is
+        {client, goal, task_id?, context_files?, read_paths?, model?, backend?, duration?, then?}.
+
+        Optional ``then`` is the same field set as a job; it runs in the same worker as soon as that
+        job's primary finishes (does not wait for sibling jobs). Client names and ``then`` specs are
+        validated up front, so a typo fails fast before any run starts. A job may also be specified
+        ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's optional `duration`
+        (preset name or positive seconds) overrides the resolved timeout_s.
         """
-        requests = [self.job_request(j) for j in jobs]
-        return self.fleet.run_many(requests, max_concurrency=max_concurrency)
+        prepared = [self.run_many_job(j) for j in jobs]
+        return self.fleet.run_many(prepared, max_concurrency=max_concurrency)
 
     def spawn(
         self,
@@ -607,6 +636,73 @@ class MarshalService:
         exists (e.g. a run predating log storage, or a backend that crashed before producing one).
         """
         return self.fleet.logs.read(run_id)
+
+    def read_run_file(self, run_id: str, path: str, *, max_bytes: int = 200_000) -> RunFile:
+        """Read ONE file out of a run's worktree, so its output can reach the next agent.
+
+        The gap this closes: an agent that produces a report has no way to hand it to the next run.
+        `collect_run` returns the whole diff (the wrong granularity, and it re-derives content the
+        driver already knows it wants), and `context_files` deliberately refuses paths outside the
+        target worktree - correctly, since that guard is what keeps a run inside its boundary.
+
+        This is a READ. It copies nothing and starts nothing, so the driver stays the one deciding
+        what the next agent sees - which is where that judgement belongs, because the driver is what
+        reviewed the output. To have a later run BUILD ON earlier work rather than read its
+        conclusions, use `commit_run` + `base_branch` chaining instead; that is a different need.
+
+        Containment is enforced the same way as `context_files`: an absolute path or one that
+        escapes via `..` is refused, because `Path(wt) / "/etc/passwd"` is `/etc/passwd`.
+        """
+        rec = self.fleet.state.get(run_id)
+        if rec is None:
+            raise ValueError(f"no such run: {run_id!r}")
+        if not rec.worktree:
+            raise ValueError(f"run {run_id!r} has no worktree to read from")
+        base = Path(rec.worktree).resolve()
+        if not base.exists():
+            raise ValueError(
+                f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
+            )
+        target = (base / path).resolve()
+        if target != base and base not in target.parents:
+            raise ValueError(
+                f"path {path!r} resolves outside run {run_id!r}'s worktree - it must be relative "
+                f"to the worktree root and stay inside it"
+            )
+        if not target.is_file():
+            # Re-check the worktree: a `clean` landing between the guard above and here makes every
+            # path inside it "not a file", which would blame the caller's path for the worktree
+            # being gone. Same state, same diagnostic, whenever the caller arrived.
+            if not base.exists():
+                raise ValueError(
+                    f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
+                )
+            raise ValueError(f"{path!r} is not a file in run {run_id!r}'s worktree")
+        # Read only what we will return (+1 byte to detect truncation), never the whole file.
+        # `read_bytes()` would load an agent-produced artifact of ANY size into the MCP server's
+        # memory before slicing it - the caller picks the path, so the size is not ours to assume.
+        # `size_bytes` comes from stat(), so the reported size stays exact regardless.
+        # The checks above are a snapshot: `clean` can remove the worktree between them and this
+        # read. Report that as the SAME cleaned-worktree error the pre-check raises, rather than
+        # leaking a raw OSError - one state must not produce two different diagnostics depending on
+        # which microsecond the caller arrived in.
+        try:
+            size_bytes = target.stat().st_size
+            with target.open("rb") as stream:
+                raw = stream.read(max_bytes + 1)
+        except OSError as exc:
+            if not base.exists():
+                raise ValueError(
+                    f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
+                ) from exc
+            raise ValueError(f"cannot read {path!r} in run {run_id!r}'s worktree: {exc}") from exc
+        # Truncate rather than hand back something unbounded - and SAY SO, because silently
+        # returning a prefix would let a driver act on a partial report believing it was whole.
+        truncated = len(raw) > max_bytes
+        body = raw[:max_bytes].decode("utf-8", errors="replace")
+        return RunFile(
+            run_id=run_id, path=path, content=body, truncated=truncated, size_bytes=size_bytes
+        )
 
     def collect_run(self, run_id: str) -> CollectResult:
         return self.fleet.collect_run(run_id)

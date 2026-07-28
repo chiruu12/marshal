@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from marshal_engine.config import ClientConfig, ConfigError, FleetConfig
-from marshal_engine.fleet import CollectResult, IntegrateResult
+from marshal_engine.fleet import CollectResult, IntegrateResult, RunManyJobResult
 from marshal_engine.state import RunRecord
 from marshal_engine.workflow import (
     PhaseSpec,
@@ -67,9 +67,12 @@ class StubService:
 
     def run_many(
         self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4
-    ) -> list[RunRecord]:
+    ) -> list[RunManyJobResult]:
         self.calls.append(("run_many", max_concurrency, [j["client"] for j in jobs], jobs[0]["task_id"]))
-        return [self._make(j["client"], j.get("task_id")) for j in jobs]
+        return [
+            RunManyJobResult(primary=self._make(j["client"], j.get("task_id")))
+            for j in jobs
+        ]
 
     def run_agent(self, client_name: str, goal: str, *, task_id: str | None = None) -> RunRecord:
         self.calls.append(("run_agent", client_name, task_id))

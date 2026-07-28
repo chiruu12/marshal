@@ -8,7 +8,11 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **Per-job `then` follow-up on `run_many` (#103).** A job may carry optional `then: {client?, backend?, model?, goal, duration?, …}` — the same field set as a job. As soon as that job's primary reaches a terminal state, the follow-up starts in the **same worker** (not a second barrier). The follow-up worktree is based on the primary's branch after `commit_run`-style freezing so the agent sees the primary's diff. Skipped (with `then_skipped` on the result) when the primary failed, has no branch, or the primary's branch has no commits beyond its base (covers text-only primaries; still runs when the agent self-committed and left a clean tree). Freeze failures (`commit_run` blocked/error) are reported separately in `then_skipped`. `max_concurrency` caps workers (chains), not individual runs within a chain. MCP `run_many`, `MarshalService.run_many`, and the registry fan-out all expose this.
+
 ### Changed
+- **BREAKING: `run_many` return shape (#103).** Previously `run_many` returned `list[RunRecord]` (one flat run record per input job — the primary). It now returns `list[RunManyJobResult]`, one `{primary, then?, then_skipped?}` object per input job. Callers that treated list elements as `RunRecord` must read `.primary` (and optionally `.then` / `.then_skipped` for the follow-up). Same shape on MCP `run_many`, `MarshalService.run_many`, CLI batch output, and the registry fan-out.
 - **The MCP server targets `mcp` 2.0 (#119).** 2.0.0 removed `mcp.server.fastmcp`; the replacement
   is `mcp.server.mcpserver.MCPServer`. The two names are **disjoint** — no release ships both, and
   1.29.0 emits no deprecation warning on the way out — so there is no pin that satisfies both APIs
@@ -225,6 +229,21 @@ versions may include breaking API changes until 1.0.
   feeds routing: the catalog is curated metadata a human wrote, a probe is whatever a CLI said just
   now, and flattening the two would let a probe drift into looking like configuration.
 
+- **`read_run_file` — one agent's artifact can reach the next (#80).** A run that produces a report
+  had no way to hand it on: `collect_run` returns the whole diff (wrong granularity) and
+  `context_files` refuses paths outside the target worktree, correctly, since that guard is what
+  keeps a run inside its boundary. Reading one named file closes the gap. It copies nothing and
+  starts nothing, so the driver stays the one deciding what the next agent sees — which is where the
+  judgement belongs, because the driver is what reviewed the output. The win is **fidelity** more
+  than time: the next agent reads what the first actually wrote instead of a paraphrase. Same
+  containment as `context_files`, and `truncated` is explicit — silently returning a prefix would
+  let a driver act on part of a report believing it was whole. The read is bounded to what it
+  returns rather than slurping the file first — the caller picks the path, so an agent-produced
+  artifact of any size would otherwise land in the MCP server's memory; `size_bytes` still reports
+  the true size, from `stat()`. A `clean` landing mid-read reports the documented cleaned-worktree
+  error rather than a raw `OSError` or a misleading "not a file" - one state must not produce two
+  diagnostics depending on which microsecond the caller arrived in. To build ON a run's code rather than read its conclusions,
+  `commit_run` + `base_branch` chaining remains the answer.
 - **Marshal describes itself as what it is (#98).** Asked to fan out 12-14 agents for research, a
   driver **did not reach for Marshal** and explained why: the description was framed entirely around
   producing diffs, so its own self-description routed the work elsewhere. It never got as far as the
