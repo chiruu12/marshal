@@ -1128,3 +1128,53 @@ def test_integrate_message_reaches_the_commit(repo: Path) -> None:
     ).stdout
     assert "Add the thing the agent was asked for" in log
     assert "marshal: integrate" not in log, "the tooling-shaped default won anyway"
+
+
+class _Cataloged(_Echo):
+    """A backend whose CLI can be asked what it runs."""
+
+    name = "cataloged"
+
+    def available_models(self) -> list[str] | None:
+        return ["fast-1", "slow-2"]
+
+
+class _Opaque(_Echo):
+    """A backend with no way to ask - None, which is NOT 'it has no models'."""
+
+    name = "opaque"
+
+    def available_models(self) -> list[str] | None:
+        return None
+
+
+def test_list_models_proxies_the_backend_when_no_catalog_is_configured(repo: Path) -> None:
+    """REGRESSION (#78): `list_models` returned `{"models": []}` with no catalog, so a driver left
+    Marshal and ran `cursor-agent models` in a shell to learn what it could route at. We did the
+    same thing ourselves the same day."""
+    cfg = FleetConfig(clients={"w": ClientConfig(name="w", backend="cataloged")})
+    svc = MarshalService(repo, cfg, backends={"cataloged": _Cataloged()})
+    listing = svc.list_models()
+    assert listing.models == [], "no catalog is configured"
+    assert listing.backend_models["cataloged"] == ["fast-1", "slow-2"]
+
+
+def test_a_backend_that_cannot_be_asked_reports_none_not_empty(repo: Path) -> None:
+    """`None` means "no way to ask"; `[]` would claim the backend runs nothing. A driver has to be
+    able to tell those apart before concluding it cannot route anywhere."""
+    cfg = FleetConfig(clients={"w": ClientConfig(name="w", backend="opaque")})
+    svc = MarshalService(repo, cfg, backends={"opaque": _Opaque()})
+    assert svc.list_models().backend_models["opaque"] is None
+
+
+def test_a_configured_catalog_suppresses_the_probe(repo: Path) -> None:
+    """The catalog is the curated answer and stands alone; probing costs a subprocess per backend,
+    and the two are kept in separate fields so a live probe never reads as configuration."""
+    cfg = FleetConfig(
+        clients={"w": ClientConfig(name="w", backend="cataloged")},
+        models=[ModelSpec(id="curated/one", backends=["cataloged"])],
+    )
+    svc = MarshalService(repo, cfg, backends={"cataloged": _Cataloged()})
+    listing = svc.list_models()
+    assert [m.id for m in listing.models] == ["curated/one"]
+    assert listing.backend_models == {}

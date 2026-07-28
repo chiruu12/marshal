@@ -99,6 +99,11 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 **Returns:** `{ models, driver_context, workspace }`
 
 - `models`: `[{ id, backends, cost, quota_type, notes }]` — the optional `models:` catalog (metadata only)
+- `backend_models`: `{ backend: [model_id] | null }` — model ids each configured backend's CLI
+  reports, populated **only when no `models:` catalog is configured**. `null` for a backend means
+  it exposes no way to ask, which is not the same as "it has no models". Kept separate from
+  `models` on purpose: the catalog is curated metadata a human wrote, this is whatever a CLI said
+  just now — and neither drives routing, which clients own.
 
 ### `doctor`
 

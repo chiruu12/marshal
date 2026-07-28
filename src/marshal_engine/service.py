@@ -120,6 +120,15 @@ class ModelList(BaseModel):
     """
 
     models: list[ModelSpec]
+    # Model ids the configured backends' CLIs report, keyed by backend. Populated ONLY when no
+    # `models:` catalog is configured - a driver otherwise had to leave Marshal and run
+    # `cursor-agent models` in a shell to learn what it could route at. `None` for a backend means
+    # it exposes no way to ask, which is NOT "it has no models"; a caller must tell those apart.
+    #
+    # Kept as a SEPARATE field, never merged into `models`: the catalog is curated metadata a human
+    # wrote, this is whatever a CLI said just now. Flattening them would erase that difference and
+    # let a probe drift into looking like configuration.
+    backend_models: dict[str, list[str] | None] = {}
     driver_context: str | None = None
 
 
@@ -222,8 +231,17 @@ class MarshalService:
         # Mirror list_clients: the catalog from FleetConfig (the same dict the CLI/MCP surface)
         # plus the fleet's driver context, so a driver can render fleet-level instructions
         # alongside the model sheet.
+        # Probing costs a subprocess per backend, so only do it when the catalog is empty - which
+        # is exactly the case that sent a driver to a shell. A configured catalog is the curated
+        # answer and stands on its own.
+        probed: dict[str, list[str] | None] = {}
+        if not self.config.models:
+            for name in sorted({c.backend for c in self._clients.values()}):
+                backend = self.fleet.backends.get(name)
+                probed[name] = backend.available_models() if backend is not None else None
         return ModelList(
             models=list(self.config.models),
+            backend_models=probed,
             driver_context=self.config.context.driver,
         )
 
@@ -572,6 +590,7 @@ class MarshalService:
         self.fleet.reconcile_orphans()
         rec = self.fleet.state.get(run_id)
         return self.fleet.with_liveness(rec) if rec is not None else None
+        return self.fleet.state.get(run_id)
 
     def run_log(self, run_id: str) -> str | None:
         """The full raw stdout/stderr persisted for a run, or None if no log was written.
@@ -629,6 +648,7 @@ class MarshalService:
     def status(self) -> list[RunRecord]:
         self.fleet.reconcile_orphans()
         return [self.fleet.with_liveness(r) for r in self.fleet.state.list()]
+        return self.fleet.state.list()
 
     def usage(
         self,

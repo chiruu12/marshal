@@ -144,6 +144,15 @@ versions may include breaking API changes until 1.0.
   `message` from the start, which made this an inconsistency in our own surface rather than a
   missing capability. The driver reviewed the diff, so the driver is who should write the message.
 
+- **`list_models` proxies the backend's own list when no catalog is configured (#78).** It returned
+  `{"models": []}`, so a driver left Marshal and ran `cursor-agent models` in a shell to find out
+  what it could route at - we did exactly the same thing ourselves the same day, to confirm two
+  model ids before pointing a fleet at them. Backends can now report what their CLI says they run
+  (implemented for Cursor, verified against the real output: 193 ids). `null` for a backend means it
+  cannot be asked, not that it runs nothing. It stays in a separate `backend_models` field and never
+  feeds routing: the catalog is curated metadata a human wrote, a probe is whatever a CLI said just
+  now, and flattening the two would let a probe drift into looking like configuration.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
