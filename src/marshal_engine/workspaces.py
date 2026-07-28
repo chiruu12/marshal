@@ -659,23 +659,44 @@ class WorkspaceRegistry:
         return out
 
     def describe(self) -> list[dict[str, Any]]:
-        """list_workspaces payload: name, path, config_path, configured?, client_count, default?.
+        """list_workspaces payload: name, path, config_path, configured, client_count, ready,
+        ready_reason, default.
 
         Reads each config to count declared clients (no subprocess, no service build); a broken
         config reports 0 clients rather than raising.
+
+        ``configured`` only ever meant "a config file exists at this path", but every reader took
+        it for "usable" - a workspace with an empty or unparseable config looked identical to a
+        working one, and a driver that trusted it got nothing back and had to fall back to an ad-hoc
+        spawn. ``ready`` is the field that answers the question people were actually asking, and
+        ``ready_reason`` says WHY when it is false, because "no config", "config does not parse",
+        and "config declares no clients" need different fixes.
+
+        ``ready`` is still a claim about *configuration*, not about the machine: it does not probe
+        whether those clients' backend CLIs are installed or authenticated (that is ``doctor``, and
+        it costs subprocesses this listing deliberately avoids).
         """
         self._refresh()
         rows: list[dict[str, Any]] = []
         for name, wdef in self._defs.items():
             configured = wdef.config_path.exists()
             client_count = 0
-            if configured:
+            ready_reason: str | None = None
+            if not configured:
+                ready_reason = f"no config file at {wdef.config_path}"
+            else:
                 try:
                     client_count = len(load_config(wdef.config_path).clients)
-                except (ConfigError, OSError, ValueError, yaml.YAMLError):
+                except (ConfigError, OSError, ValueError, yaml.YAMLError) as exc:
                     # A broken/unreadable/binary config reports 0 clients rather than crashing
-                    # list_workspaces - the whole point is per-repo graceful degradation.
+                    # list_workspaces - the whole point is per-repo graceful degradation. Carry the
+                    # parse error into the reason: "0 clients" and "this file is broken" are very
+                    # different problems and collapsing them just moves the guessing.
                     client_count = 0
+                    ready_reason = f"config does not load: {exc}"
+                else:
+                    if client_count == 0:
+                        ready_reason = "config declares no clients"
             rows.append(
                 {
                     "name": name,
@@ -683,6 +704,8 @@ class WorkspaceRegistry:
                     "config_path": str(wdef.config_path),
                     "configured": configured,
                     "client_count": client_count,
+                    "ready": ready_reason is None,
+                    "ready_reason": ready_reason,
                     "default": name == DEFAULT_WORKSPACE,
                 }
             )

@@ -515,7 +515,9 @@ def _cmd_workspace(args: argparse.Namespace) -> int:
     print(f"registry: {workspaces_file_path()}")
     for r in rows:
         flag = " (default)" if r["default"] else ""
-        cfg = f"{r['client_count']} clients" if r["configured"] else "no config"
+        # Show why a workspace is unusable, not just that a config file happens to exist: "0
+        # clients" and "config does not load" look identical otherwise, and both look like "ready".
+        cfg = f"{r['client_count']} clients" if r["ready"] else f"NOT READY: {r['ready_reason']}"
         print(f"  {r['name']:14}{flag:10} {cfg:12} {r['path']}")
     return 0
 

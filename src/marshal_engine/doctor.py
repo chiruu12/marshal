@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -33,7 +34,9 @@ from .config import (
     resolve_secret,
     setup_command_refusal,
 )
+from .layout import runs_dir
 from .registry import default_backends, make_backend
+from .state import FleetState, RunRecord
 from .types import PermissionFidelity
 
 OK = "ok"
@@ -56,6 +59,80 @@ BACKEND_HINTS: dict[str, str] = {
 }
 
 MIN_PYTHON = (3, 11)
+
+
+#: Substrings that mark a run failure as "the provider refused because the account is out of money
+#: or allowance", as opposed to the task being wrong. Matched case-insensitively against a run
+#: record's `error`. Deliberately conservative: a false positive tells an operator their billing is
+#: broken when it is not, which is its own wasted detour.
+#:
+#: Rate limiting is deliberately NOT here. "429" and "rate limit" mean *slow down*, not *pay* - the
+#: retry policy already backs off and retries them, and pointing an operator at "top up or switch
+#: providers" for throttling sends them to the wrong remedy entirely. This check is about money.
+_QUOTA_MARKERS = (
+    "insufficient balance",
+    "insufficient credit",
+    "insufficient_quota",
+    "quota exceeded",
+    "exceeded your current quota",
+    "out of credits",
+    "payment required",
+    "billing",
+    "subscription",
+)
+
+#: How far back the ledger is read for the quota check. Long enough to catch "I hit this earlier
+#: today", short enough that last week's since-topped-up balance is not still shouting.
+_QUOTA_WINDOW_HOURS = 24.0
+
+
+def recent_quota_failures(
+    repo: Path, *, now: datetime | None = None, hours: float = _QUOTA_WINDOW_HOURS
+) -> dict[str, tuple[int, str]]:
+    """Backends whose recent runs failed for billing/quota reasons -> (count, latest error).
+
+    Derived entirely from the run ledger we already keep, so it needs no provider API and cannot
+    itself be wrong about the provider's state: it reports what actually happened, not a prediction.
+    A backend absent from the result has no such failures recorded - which is **not** the same as
+    "its quota is healthy", and the check must never say otherwise.
+    """
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=hours)
+    # backend -> (count, when of the newest, that run's error)
+    seen: dict[str, tuple[int, datetime, str]] = {}
+    for rec in FleetState(runs_dir(repo)).list():
+        if not rec.error or not _looks_like_quota(rec.error):
+            continue
+        when = _ended_at(rec)
+        if when is None or when < cutoff:
+            continue
+        count, newest_when, newest_error = seen.get(rec.backend, (0, cutoff, ""))
+        if when >= newest_when or not newest_error:
+            newest_when, newest_error = when, rec.error
+        seen[rec.backend] = (count + 1, newest_when, newest_error)
+    return {backend: (count, error) for backend, (count, _, error) in seen.items()}
+
+
+def _one_line(text: str, limit: int = 120) -> str:
+    """First line of an error, clipped - a doctor row is a summary, not a log."""
+    first = _first_line(text)
+    return first if len(first) <= limit else first[: limit - 1] + "\u2026"
+
+
+def _looks_like_quota(error: str) -> bool:
+    lowered = error.lower()
+    return any(marker in lowered for marker in _QUOTA_MARKERS)
+
+
+def _ended_at(rec: RunRecord) -> datetime | None:
+    for stamp in (rec.ended_at, rec.started_at):
+        if not stamp:
+            continue
+        try:
+            parsed = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
 
 
 class Check(BaseModel):
@@ -226,6 +303,23 @@ def run_checks(
                     else "",
                 )
             )
+
+    # --- provider quota / billing (from the ledger, not a provider API) -----------------------
+    # `doctor` green used to mean "CLI present and authed", which two field reports independently
+    # mistook for "ready to run" - both discovered an exhausted balance by spending a run. A
+    # backend can be installed, logged in, and out of credit. Only the failures actually recorded
+    # are reported: silence here means nothing was seen, never that quota was checked and is fine.
+    for backend_name, (count, last_error) in sorted(recent_quota_failures(repo).items()):
+        checks.append(
+            Check(
+                f"quota:{backend_name}",
+                WARN,
+                f"{count} run(s) failed on billing/quota in the last "
+                f"{int(_QUOTA_WINDOW_HOURS)}h - latest: {_one_line(last_error)}",
+                "top up or switch this backend's provider, or route to another client; "
+                "doctor cannot see provider balances, only what past runs reported",
+            )
+        )
 
     # --- mcp extra ---------------------------------------------------------------------------
     has_mcp = importlib.util.find_spec("mcp") is not None

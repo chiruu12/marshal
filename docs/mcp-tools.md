@@ -18,15 +18,21 @@ List repos this server can target.
 |-----------|------|---------|-------------|
 | *(none)* | | | |
 
-**Returns:** `list[dict]` — one row per workspace:
+**Returns:** `list[dict]` — one row per workspace.
+
+`ready` is a claim about *configuration*, not about the machine: it does not probe whether those
+clients' backend CLIs are installed or authenticated. That is `doctor`, which costs subprocesses
+this listing deliberately avoids.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Workspace name (`default` for `MARSHAL_REPO`). |
 | `path` | string | Absolute repo root. |
 | `config_path` | string | Path to `fleet.config.yaml`. |
-| `configured` | bool | Whether the config file exists. |
+| `configured` | bool | Whether the config **file exists** — nothing more. Not a readiness signal; use `ready`. |
 | `client_count` | int | Number of declared clients (0 if missing/broken config). |
+| `ready` | bool | Whether this workspace can actually take a run: a config that loads and declares at least one client. This is the field to branch on. |
+| `ready_reason` | string \| null | Why `ready` is false — `no config file at <path>`, `config does not load: <error>`, or `config declares no clients`. `null` when ready. |
 | `default` | bool | True for the default workspace. |
 
 ### `add_workspace`
@@ -80,6 +86,12 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 Preflight the selected workspace (toolchain, repo, config, per-backend CLI + auth, and static
 `permission:<backend>` fidelity checks). Read-only. `permission:*` is `ok` for `enforced-denies`
 and `warn` for `boundary-only` (never a failure); it appears even when the CLI probe fails.
+
+A `quota:<backend>` **warn** appears when recent runs on that backend failed for billing or quota
+reasons, with the count and the latest error. It is derived from this workspace's run ledger, not
+from a provider API — so it reports what actually happened rather than predicting. **Its absence is
+not a quota clearance:** doctor cannot see provider balances, and a backend that is installed,
+authenticated, and out of credit still passes every other check.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

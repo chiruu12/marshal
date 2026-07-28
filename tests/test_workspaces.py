@@ -360,9 +360,39 @@ def test_describe_reports_configured_and_counts(tmp_path: Path) -> None:
     assert rows["default"]["configured"] is True
     assert rows["default"]["client_count"] == 1
     assert rows["default"]["default"] is True
+    assert rows["default"]["ready"] is True
+    assert rows["default"]["ready_reason"] is None
     assert rows["beta"]["configured"] is False
     assert rows["beta"]["client_count"] == 0
     assert rows["beta"]["default"] is False
+    assert rows["beta"]["ready"] is False
+    assert "no config file" in rows["beta"]["ready_reason"]
+
+
+def test_a_config_with_no_clients_is_not_ready(tmp_path: Path) -> None:
+    """REGRESSION: `configured: true` meant only "a file exists there". A driver read it as "usable",
+    ran against the workspace, got nothing, and had to fall back to an ad-hoc spawn. `ready` answers
+    the question that was actually being asked, and says why when the answer is no."""
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "fleet.config.yaml").write_text("clients: {}\n")  # a real, valid, useless config
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
+    row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
+    assert row["configured"] is True, "the file does exist - that field keeps its old meaning"
+    assert row["ready"] is False
+    assert "no clients" in row["ready_reason"]
+
+
+def test_an_unparseable_config_says_so_rather_than_reporting_zero_clients(tmp_path: Path) -> None:
+    """"0 clients" and "this file is broken" need different fixes; collapsing them to one number
+    just moves the guessing onto the reader."""
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "fleet.config.yaml").write_text("clients: [broken: yaml: here")
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
+    row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
+    assert row["ready"] is False
+    assert "does not load" in row["ready_reason"]
 
 
 def test_describe_survives_malformed_config(tmp_path: Path) -> None:
