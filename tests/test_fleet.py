@@ -3609,11 +3609,20 @@ def _replace_dir_with_ordinary(victim: Path, populate: Callable[[Path], None]) -
     separately-created directory gives it a genuinely different inode on every platform, which is
     the case the pin is there to catch.
     """
-    _clear_dir(victim)
-    victim.rmdir()
+    # Build the replacement BEFORE removing the victim. Creating it afterwards lets the OS hand
+    # back the just-freed inode (Linux does this readily), and rename preserves it - so the
+    # replacement would carry the victim's identity and the pin would have nothing to detect.
     stand_in = victim.parent / f"{victim.name}.replacement"
     stand_in.mkdir()
     populate(stand_in)
+    victim_id = victim.stat().st_ino
+    stand_in_id = stand_in.stat().st_ino
+    assert victim_id != stand_in_id, (
+        "test premise broken: replacement reused the victim's inode, so this cannot exercise "
+        "the identity pin"
+    )
+    _clear_dir(victim)
+    victim.rmdir()
     stand_in.rename(victim)
 
 
