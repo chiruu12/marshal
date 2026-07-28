@@ -1019,3 +1019,33 @@ def test_client_and_model_together_stays_a_supported_override(repo: Path) -> Non
     assert req.backend_name == "echo"
     assert req.model == "some/other-model"
     assert req.client == "worker"
+
+
+def test_list_clients_names_the_clients_it_dropped_and_why(repo: Path) -> None:
+    """REGRESSION (#74): a client whose backend CLI is unavailable was filtered out of
+    `list_clients` with no error and no reason. Marshal knew - it warns on stderr - but an MCP
+    driver never sees stderr, so from its side the client silently vanished and it noticed only
+    incidentally."""
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(name="worker", backend="echo"),
+            "ghost": ClientConfig(name="ghost", backend="missing"),
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo(), "missing": _Missing()})
+
+    listing = svc.list_clients()
+    assert [c.name for c in listing.clients] == ["worker"]
+    dropped = {s.name: s for s in listing.skipped}
+    assert "ghost" in dropped, "the dropped client is still invisible to the driver"
+    assert dropped["ghost"].backend == "missing"
+    assert "not available on PATH" in dropped["ghost"].reason
+
+
+def test_an_unknown_backend_reads_differently_from_an_uninstalled_one(repo: Path) -> None:
+    """"You typed a backend that does not exist" and "that CLI is not installed" have different
+    fixes; collapsing them to one message makes the driver guess which it is."""
+    cfg = FleetConfig(clients={"typo": ClientConfig(name="typo", backend="opencodee")})
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    reason = svc.list_clients().skipped[0].reason
+    assert "not a known backend" in reason

@@ -80,9 +80,13 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Target workspace. |
 
-**Returns:** `{ clients, driver_context, workspace }`
+**Returns:** `{ clients, skipped, driver_context, workspace }`
 
 - `clients`: `[{ name, backend, model, permission, permission_fidelity }]`
+- `skipped`: `[{ name, backend, reason }]` — clients declared in the config that are **not usable
+  right now**, and why (backend CLI absent, or a backend name that does not exist). Previously
+  these were filtered out silently: Marshal warned on stderr, which an MCP driver never sees, so
+  the client just vanished from the list with no error.
 - `permission_fidelity`: `enforced-denies` \| `boundary-only` — what `safe-edit` actually enforces for this client's backend (see `docs/design.md` §5 / `SECURITY.md`)
 - `driver_context`: string \| null — from `fleet.config.yaml` `context.driver`
 

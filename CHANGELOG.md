@@ -102,6 +102,13 @@ versions may include breaking API changes until 1.0.
   into real work. Named for what it measures — a record's last write, not a run's start time —
   rather than the `last_run_at` the report asked for, since the two are not the same thing.
 
+- **`list_clients` says which clients it dropped, and why (#74).** A client whose backend CLI was
+  unavailable was filtered out with no error and no reason - the reporter noticed only incidentally.
+  Marshal already knew and warned on stderr, but an MCP driver never sees stderr, so from its side
+  the client silently vanished. The listing now carries `skipped: [{name, backend, reason}]`, and an
+  unknown backend name reads differently from an installed-but-absent CLI, because those have
+  different fixes.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
