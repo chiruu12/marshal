@@ -316,6 +316,8 @@ Read-only diff collection; nothing is merged.
 | `committed_changed_files` | list[string] | Files changed in commits on the run branch since the run's **own** base (`base_commit`, falling back to `base_branch`, then — for records predating both — the current branch, or the checked-out commit `HEAD` when the repo is in detached HEAD) — deliberately not the currently checked-out branch, which may have moved since the run started. |
 | `committed_diff` | string | Unified diff of those commits (`base...branch`). |
 | `commit_count` | integer | Number of commits on the run branch not reachable from that base. |
+| `produced` | string | `diff` (files changed) \| `text` (no files, but the agent replied) \| `nothing` (neither). **Branch on this** rather than inferring intent from which container is empty — guessing from emptiness is what made research runs read as failures. |
+| `text` | string | The agent's final message — populated **only** when `produced == "text"`. When there is a diff, the diff is the artifact and repeating the message would bloat every reply. |
 
 ### `status`
 

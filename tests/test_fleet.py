@@ -32,6 +32,29 @@ from marshal_engine.state import FleetState, RunRecord
 from marshal_engine.worktree import WorktreeError
 
 
+class _Talker(CodingAgentBackend):
+    """An agent that REPLIES but writes no files - a research or review run."""
+
+    name = "talker"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "pass"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.SUCCEEDED, text=self._message, exit_code=exit_code)
+
+
 class _Writer(CodingAgentBackend):
     name = "writer"
     binary = "python"
@@ -2999,6 +3022,38 @@ def test_a_traversing_context_path_is_refused(repo: Path) -> None:
     assert fleet.state.list() == []
 
 
+def test_collect_run_returns_the_final_message_when_no_files_changed(repo: Path) -> None:
+    """`collect_run` is the tool a driver reaches for first to answer "what did this run produce".
+    For a research or review run the honest answer is prose - the engine already treats text alone
+    as SUCCEEDED - but collect returned an empty diff and stopped, which reads as "it did nothing".
+    That is what pushed drivers to make agents write files they did not need to."""
+    fleet = Fleet(repo, {"talker": _Talker("the findings, in full")})
+    rec = fleet.run("talker", TaskSpec(id="report", goal="research it"))
+    assert rec.status == RunStatus.SUCCEEDED.value, "text alone is a success"
+
+    got = fleet.collect_run(rec.run_id)
+    assert got.produced == "text"
+    assert got.text == "the findings, in full"
+    assert got.changed_files == []
+
+
+def test_collect_run_does_not_duplicate_the_message_when_there_is_a_diff(repo: Path) -> None:
+    """When files changed, the diff IS the artifact; repeating the message would bloat every reply
+    for the common case."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="code", goal="write it"))
+    got = fleet.collect_run(rec.run_id)
+    assert got.produced == "diff"
+    assert got.text == ""
+    assert got.changed_files
+
+
+def test_collect_run_says_nothing_when_a_run_produced_neither(repo: Path) -> None:
+    """`produced` must distinguish "prose" from "genuinely nothing" - a caller should branch on a
+    field, not infer intent from which container happens to be empty."""
+    fleet = Fleet(repo, {"silent": _Talker("")})
+    rec = fleet.run("silent", TaskSpec(id="quiet", goal="x"))
+    assert fleet.collect_run(rec.run_id).produced == "nothing"
 def test_a_run_records_what_provisioned_its_worktree(repo: Path) -> None:
     """REGRESSION (#77): a number from a worktree does not mean the same thing as the same number
     from your checkout, and nothing marked the difference. Agents reported "1308 passed" where the

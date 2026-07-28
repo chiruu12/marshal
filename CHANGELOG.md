@@ -187,6 +187,15 @@ versions may include breaking API changes until 1.0.
   feeds routing: the catalog is curated metadata a human wrote, a probe is whatever a CLI said just
   now, and flattening the two would let a probe drift into looking like configuration.
 
+- **`collect_run` reports a text artifact instead of looking empty (#97, partial).** It is the tool
+  a driver reaches for first to answer "what did this run produce", and for a research or review run
+  the honest answer is prose. The engine already treated text alone as `succeeded`, but collect
+  returned an empty diff and stopped - so a run that had genuinely said something read as one that
+  did nothing, which is what pushed drivers to make agents write files they did not need to. It now
+  carries `produced` (`diff` | `text` | `nothing`) and, for a text run, the final message. Callers
+  branch on a field rather than inferring intent from which container is empty. Structured output -
+  the remaining half of #97 - is deliberately not attempted here: prose you can find beats prose you
+  cannot, and a schema is a separate decision.
 - **The PyPI distribution is `MarshalFleet`.** `[project].name` must equal the name the Trusted
   Publisher is registered under or the upload is rejected, and the registered project is
   `MarshalFleet` (PyPI normalises it to `marshalfleet`). Three names now, each doing one job: the
