@@ -27,13 +27,16 @@ versions may include breaking API changes until 1.0.
   `context_files` only injects repo-relative tracked paths. Drivers were manually copying
   reference material in. `read_paths` on `TaskSpec` / `run_agent` / `spawn` / `run_many` jobs
   (and the MCP tools) accepts absolute paths or paths relative to the **driver's** repo root;
-  each is copied into `<worktree>/.marshal-context/<basename>` (files chmod'd 0o444; directories
-  keep 0o755 so the tree stays removable), and appended to the worktree's `.git/info/exclude`
-  so the copies never appear in the run's diff or `changed_files`. Secret-shaped names
-  (`.env*`, `*.pem`, `id_rsa*`, `id_ed25519*`) and anything under `.ssh` are refused; a missing
-  path fails the spawn (worktree torn down). The declared list is recorded on `RunRecord` so a
-  reviewer can see the run saw more than its worktree. The worker prompt is told read-only
-  reference material is under `.marshal-context/`.
+  each is copied into `<worktree>/.marshal-context/<basename>` (files 0o444, directories 0o555)
+  and appended to the worktree's `.git/info/exclude` so the copies never appear in the run's
+  diff or `changed_files`. Teardown restores owner-write on directories before
+  `git worktree remove` / `rmtree` so immutable dirs cannot strand a worktree. Secret-shaped
+  names (`.env*`, `*.pem`, `id_rsa*`, `id_ed25519*`) and anything under `.ssh` are refused on
+  the declared path **and every descendant** that would be copied; only regular files and
+  directories are accepted (FIFOs/sockets/devices refused so provisioning cannot hang before a
+  run timeout exists). A missing or refused path fails the spawn (worktree torn down). The
+  declared list is recorded on `RunRecord` so a reviewer can see the run saw more than its
+  worktree. The worker prompt is told read-only reference material is under `.marshal-context/`.
 
 - **Adversarial review teams (`teams.py`).** A *team* is a declarative panel of independent,
   read-only reviewers — each role pinned to the client best at its lens — that review one subject

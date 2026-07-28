@@ -7,6 +7,8 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import pytest
@@ -3199,7 +3201,7 @@ def test_read_paths_copies_are_contained_under_marshal_context(repo: Path) -> No
 
 
 def test_read_paths_directory_copies_recursively_readonly(repo: Path) -> None:
-    """Directories are copied recursively; files are read-only, dirs stay removable (#105)."""
+    """Directories are copied recursively; files AND directories have no write bit (#105 P1-B)."""
     src_dir = repo.parent / "docs-pack"
     src_dir.mkdir()
     (src_dir / "a.md").write_text("a")
@@ -3214,20 +3216,18 @@ def test_read_paths_directory_copies_recursively_readonly(repo: Path) -> None:
     dest = Path(rec.worktree) / ".marshal-context" / "docs-pack"
     assert (dest / "a.md").read_text() == "a"
     assert (dest / "sub" / "b.md").read_text() == "b"
-    # Content-level read-only: files have no write bit.
+    # Agent must not be able to unlink/replace enclosed read-only files via a writable dir.
     assert ((dest / "a.md").stat().st_mode & 0o222) == 0
     assert ((dest / "sub" / "b.md").stat().st_mode & 0o222) == 0
-    # Directories keep the write bit so teardown can unlink entries (0o555 breaks clean).
-    assert (dest.stat().st_mode & 0o222) != 0
-    assert ((dest / "sub").stat().st_mode & 0o222) != 0
+    assert (dest.stat().st_mode & 0o222) == 0
+    assert ((dest / "sub").stat().st_mode & 0o222) == 0
 
 
 def test_read_paths_directory_worktree_is_reclaimable_on_clean(repo: Path) -> None:
-    """Regression (#105): a DIRECTORY read_path must not prevent worktree teardown.
+    """Regression (#105 P1-B): DIRECTORY read_paths (0o555 dirs) must not strand teardown.
 
-    chmod'ing copied directories 0o555 makes ``git worktree remove`` / ``rmtree`` fail with
-    Permission denied; discard's ``ignore_errors`` fallback then reports clean SUCCESS while
-    leaking the worktree. Assert the directory is actually gone from disk.
+    Without restoring owner-write before remove/rmtree, discard's ``ignore_errors`` fallback
+    reports clean SUCCESS while leaking the worktree. Assert the directory is actually gone.
     """
     src_dir = repo.parent / "docs-pack-clean"
     src_dir.mkdir()
@@ -3242,10 +3242,104 @@ def test_read_paths_directory_worktree_is_reclaimable_on_clean(repo: Path) -> No
     )
     wt = Path(rec.worktree)
     assert (wt / ".marshal-context" / "docs-pack-clean" / "sub" / "b.md").is_file()
+    # Precondition: dirs really are immutable (otherwise this test wouldn't catch a restore revert).
+    assert ((wt / ".marshal-context" / "docs-pack-clean").stat().st_mode & 0o222) == 0
 
     result = fleet.clean(scope="all")
     assert rec.run_id in result.removed
     assert not wt.exists(), "worktree leaked after clean (directory read_path teardown bug)"
+
+
+def test_read_paths_refuses_secret_descendants_in_directory(repo: Path) -> None:
+    """P1-A (#105): secret-shaped descendants of a declared directory are refused, not copied."""
+    src_dir = repo.parent / "docs-with-secret"
+    sub = src_dir / "sub"
+    sub.mkdir(parents=True)
+    (sub / "ok.md").write_text("fine")
+    secret = sub / ".env"
+    secret.write_text("SECRET=1")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses secret-shaped path:.*sub/\.env") as excinfo:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sec-desc", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert ".env" in str(excinfo.value)
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_ssh_descendants_in_directory(repo: Path) -> None:
+    """P1-A (#105): a ``.ssh`` subdirectory under a declared directory is refused."""
+    src_dir = repo.parent / "docs-with-ssh"
+    ssh = src_dir / "sub" / ".ssh"
+    ssh.mkdir(parents=True)
+    key = ssh / "key"
+    key.write_text("-----BEGIN PRIVATE KEY-----")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses secret-shaped path:.*\.ssh") as excinfo:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-ssh-desc", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert "key" in str(excinfo.value) or ".ssh" in str(excinfo.value)
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_fifo_without_hanging(repo: Path) -> None:
+    """P1-C (#105): a FIFO read_path is refused immediately (must not block forever)."""
+    fifo = repo.parent / "blocker.fifo"
+    os.mkfifo(fifo)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-fifo", goal="x", read_paths=[str(fifo)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match="refuses special file"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung opening a FIFO (P1-C regression)")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_fifo_descendant_without_hanging(repo: Path) -> None:
+    """P1-C (#105): a FIFO inside a declared directory is refused without opening it."""
+    src_dir = repo.parent / "docs-with-fifo"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("fine")
+    fifo = src_dir / "blocker.fifo"
+    os.mkfifo(fifo)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-fifo-dir", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses special file:.*blocker\.fifo"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung opening a FIFO descendant (P1-C regression)")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
 
 
 def test_collect_run_returns_the_final_message_when_no_files_changed(repo: Path) -> None:

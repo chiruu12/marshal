@@ -191,17 +191,54 @@ def _resolve_read_path(raw: str, repo_root: Path) -> Path:
     return (repo_root / p).resolve()
 
 
-def _make_readonly(path: Path) -> None:
-    """chmod copied files read-only (0o444); directories keep 0o755 so the tree stays removable.
+def _iter_read_path_copy_targets(src: Path) -> list[Path]:
+    """Return ``src`` and every descendant that ``copytree``/``copy2`` would touch.
 
-    A directory without the write bit cannot have entries unlinked, so chmod'ing dirs 0o555
-    breaks ``git worktree remove`` / ``shutil.rmtree`` and silently leaks worktrees on clean.
-    File-level read-only is the guarantee that matters; copies are git-excluded anyway.
+    Uses directory listing only (no open), so a FIFO descendant is discoverable without hanging.
+    """
+    targets = [src]
+    if src.is_dir():
+        targets.extend(src.rglob("*"))
+    return targets
+
+
+def _validate_read_path_tree(src: Path, raw: str) -> None:
+    """Refuse secret-shaped or non-file/dir entries under ``src`` before any copy.
+
+    Applied to every path that would be copied, not just the declared root: a directory named
+    innocently can still contain ``.env`` / ``.ssh`` / a FIFO. Raise loudly naming the offender
+    rather than silently skipping - a quietly incomplete tree is the same class of failure
+    ``_require_context_files`` exists to prevent.
+    """
+    for path in _iter_read_path_copy_targets(src):
+        if _is_refused_read_path(path):
+            raise ValueError(
+                f"read_paths refuses secret-shaped path: {path}. "
+                f"Paths matching .env*/*.pem/id_rsa*/id_ed25519* or inside a .ssh directory "
+                f"are never copied into a worktree (including descendants of {raw!r})."
+            )
+        if not path.is_dir() and not path.is_file():
+            raise ValueError(
+                f"read_paths refuses special file: {path}. "
+                f"Only regular files and directories are accepted "
+                f"(FIFOs, sockets, and devices block provisioning before any run timeout; "
+                f"declared as {raw!r})."
+            )
+
+
+def _make_readonly(path: Path) -> None:
+    """chmod copied content immutable for the agent: files 0o444, directories 0o555.
+
+    Directory immutability stops the agent (as owner) from unlinking or replacing enclosed
+    read-only files under the git-excluded ``.marshal-context/``. Teardown restores owner-write
+    on directories in ``WorktreeManager.remove`` / ``discard`` before ``git worktree remove`` /
+    ``rmtree``, so a tree without write bits cannot strand a worktree.
     """
     if path.is_dir():
-        os.chmod(path, 0o755)
+        # 0o555 still allows traversal, so chmod during the walk is safe.
+        os.chmod(path, 0o555)
         for child in path.rglob("*"):
-            os.chmod(child, 0o755 if child.is_dir() else 0o444)
+            os.chmod(child, 0o555 if child.is_dir() else 0o444)
     else:
         os.chmod(path, 0o444)
 
@@ -239,13 +276,15 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
     deliberately outside - absolute, or relative to the driver's repo root. They are copied in so
     the agent can read them without breaking the worktree isolation boundary for writes.
 
-    Secret-shaped paths are refused. The ``_require_context_files`` docstring explains why: copying
-    would put untracked content into a worktree whose purpose is to mirror the repo - and ``.env``
-    is gitignored too, so "copy whatever the caller named" is a way to hand secrets to an agent.
-    Fail-closed matches task_id validation, worktree containment, and read-only reviewer routing.
+    Secret-shaped paths are refused on the declared root **and every descendant** that would be
+    copied (a directory named innocently must not smuggle ``.env`` / keys under ``.ssh``). Only
+    regular files and directories are accepted - FIFOs, sockets, and devices are refused so
+    provisioning cannot block forever before a run record (and its timeout) exists. Fail-closed
+    matches task_id validation, worktree containment, and read-only reviewer routing.
 
-    A missing path fails before any copy. Copied content is excluded from git via
-    ``.git/info/exclude`` so it never pollutes the run's diff.
+    A missing path fails before any copy. Copied files are 0o444 and directories 0o555; teardown
+    restores directory write bits so ``git worktree remove`` still works. Content is excluded
+    from git via ``.git/info/exclude`` so it never pollutes the run's diff.
     """
     if not read_paths:
         return
@@ -253,12 +292,6 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
     resolved: list[tuple[str, Path]] = []
     for raw in read_paths:
         src = _resolve_read_path(raw, repo_root)
-        if _is_refused_read_path(src):
-            raise ValueError(
-                f"read_paths refuses secret-shaped path: {raw!r}. "
-                f"Paths matching .env*/*.pem/id_rsa*/id_ed25519* or inside a .ssh directory "
-                f"are never copied into a worktree."
-            )
         if not src.exists():
             raise ValueError(
                 f"read_paths not found: {raw!r}. "
@@ -271,6 +304,9 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
                 f"read_paths has an unusable basename: {raw!r}. "
                 f"Each path must resolve to a named file or directory."
             )
+        # Validate the whole tree before mkdir/copy so a refused descendant never leaves a
+        # half-copied `.marshal-context/` (and so a FIFO is never opened).
+        _validate_read_path_tree(src, raw)
         resolved.append((raw, src))
 
     dest_root = wt.path / _READ_CONTEXT_DIR

@@ -81,9 +81,10 @@ _DESC_TASK_ID = (
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt). Each must be TRACKED in git: the worktree holds tracked files only, so a gitignored/untracked path fails the spawn instead of silently reaching the agent as an unopenable path."
 _DESC_READ_PATHS = (
     "Optional read-only escape hatch: absolute paths, or paths relative to the driver's repo root, "
-    "copied into the worktree under `.marshal-context/` (chmod read-only, git-excluded from the "
-    "run diff). Secret-shaped names (.env*, *.pem, id_rsa*, id_ed25519*, or anything under .ssh) "
-    "are refused. Missing paths fail the spawn."
+    "copied into the worktree under `.marshal-context/` (files 0o444, directories 0o555; git-excluded "
+    "from the run diff). Secret-shaped names (.env*, *.pem, id_rsa*, id_ed25519*, or anything "
+    "under .ssh) are refused on the path and every descendant; only regular files/directories "
+    "are accepted (FIFOs/sockets/devices refused). Missing or refused paths fail the spawn."
 )
 _DESC_BASE_BRANCH = (
     "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
