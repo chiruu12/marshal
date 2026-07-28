@@ -125,6 +125,13 @@ versions may include breaking API changes until 1.0.
   treated as authenticated.
 
 ### Added
+- **Gemini CLI backend adapter (`backends/gemini.py`).** Headless `gemini -p` with
+  `--output-format json`; token counts parsed from JSON `stats` with cost `unavailable` (no
+  fabricated $0). safe-edit maps to `--approval-mode yolo`, not `auto_edit`: `auto_edit`
+  auto-approves edit tools but still prompts before shell and other non-edit tools, which
+  deadlocks a headless run with closed stdin — so the git worktree is the boundary, the same
+  stance as Command Code and Goose. Registered
+  as `gemini`; contract-tested offline — not live-verified (CLI absent in CI/worktree).
 - **Fail-closed doctor auth probes for remaining backends (#43).** Claude Code
   (`claude auth status`), Command Code (`command-code status --json`; config.json alone is not
   auth), OpenCode (`opencode auth list`), and Codex (`codex login status`) set `verifies_auth` so
