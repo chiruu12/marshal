@@ -365,8 +365,10 @@ def _copy_read_path_tree(
     secret-shaped name / ``.ssh`` component (via the walk's logical path), symlink refusal, and
     regular-file-or-directory-only. Directory descent is fd-relative
     (``O_RDONLY|O_NOFOLLOW|O_DIRECTORY`` + scandir on the fd); after open, ``fstat`` must match
-    the classifying ``lstat``'s ``(st_dev, st_ino)`` so a same-type directory swap between
-    classify and open is refused. Per-file open stays fail-closed
+    the classifying ``lstat``'s ``(st_dev, st_ino)``, which refuses a swap to a DIFFERENT
+    directory. Identity is a secondary check, not the boundary: a delete-then-recreate at the
+    same path can be handed back the same inode (Linux reuses freed inodes readily), so the
+    per-entry policy checks above are what actually contain a swapped tree. Per-file open stays fail-closed
     (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat``). Does not follow or preserve symlinks.
     """
     logical_path = logical if logical is not None else src

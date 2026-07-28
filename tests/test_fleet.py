@@ -3601,11 +3601,20 @@ def _clear_dir(victim: Path) -> None:
 
 
 def _replace_dir_with_ordinary(victim: Path, populate: Callable[[Path], None]) -> None:
-    """Replace ``victim`` with a fresh ordinary directory, then call ``populate(victim)``."""
+    """Replace ``victim`` with a DISTINCT ordinary directory, then call ``populate(victim)``.
+
+    Builds the replacement elsewhere and renames it into place, rather than rmdir + mkdir at the
+    same path: Linux filesystems commonly reuse a just-freed inode, so recreating in place can
+    land the same (st_dev, st_ino) and the identity pin has nothing to detect. Renaming a
+    separately-created directory gives it a genuinely different inode on every platform, which is
+    the case the pin is there to catch.
+    """
     _clear_dir(victim)
     victim.rmdir()
-    victim.mkdir()
-    populate(victim)
+    stand_in = victim.parent / f"{victim.name}.replacement"
+    stand_in.mkdir()
+    populate(stand_in)
+    stand_in.rename(victim)
 
 
 def _arm_same_type_dir_swap_after_validate(
@@ -3801,7 +3810,12 @@ def test_read_paths_refuses_toctou_same_type_dir_swap_fifo_and_symlink(
 def test_read_paths_refuses_toctou_dir_identity_swap(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#105: directory replaced between lstat and open must fail (dev, ino) identity pin."""
+    """#105: a directory replaced by a DIFFERENT directory between lstat and open is refused.
+
+    The pin compares (st_dev, st_ino), so it catches a swap to a distinct directory. It does not
+    catch delete-then-recreate at the same path, where the OS may hand back the same inode — that
+    case is covered by the point-of-use policy checks in the copy walk, not by identity.
+    """
     src_dir = repo.parent / "docs-toctou-identity"
     src_dir.mkdir()
     (src_dir / "ok.md").write_text("validated-ok")

@@ -42,8 +42,9 @@ versions may include breaking API changes until 1.0.
   provisioning cannot hang before a run timeout exists). Policy is enforced during the
   fd-relative copy walk (validation at point of use): every `scandir` entry is re-checked for
   secret-shaped names / `.ssh`, symlinks, and non-file/dir types; each directory's
-  `(st_dev, st_ino)` from the classifying `lstat` must match `fstat` of the opened fd so a
-  same-type directory swap cannot smuggle unvalidated descendants. The up-front tree scan only
+  `(st_dev, st_ino)` from the classifying `lstat` must match `fstat` of the opened fd, refusing
+  a swap to a different directory (identity is a secondary check — a delete-then-recreate can be
+  handed back the same inode, so the per-entry checks are what contain a swapped tree). The up-front tree scan only
   names offenders early before worktree work — it is not the security boundary. Copies also
   open fail-closed (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` for files;
   `O_NOFOLLOW|O_DIRECTORY` for directory descent). A missing or refused path fails the spawn
