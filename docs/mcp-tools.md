@@ -116,7 +116,7 @@ Run a task in an isolated worktree; **blocks** until finished.
 | `context_files` | list[string] \| null | `null` | Repo-relative paths injected into the prompt. |
 | `base_branch` | string \| null | `null` | Branch to base the worktree on (default: current HEAD). Use after `commit_run` to chain work. |
 | `model` | string \| null | `null` | Override the client's resolved model, or the model for an ad-hoc spawn. |
-| `backend` | string \| null | `null` | Bare backend for ad-hoc spawn (e.g. `opencode`). Ignored when `client` is set. |
+| `backend` | string \| null | `null` | Bare backend for ad-hoc spawn (e.g. `opencode`). **Mutually exclusive with `client`** — passing both is an error, not a precedence rule. To use a configured client with a different model, pass `client` + `model`. |
 | `duration` | string \| int \| null | `null` | Per-spawn timeout override (preset name or positive seconds). |
 | `workspace` | string \| null | `null` | Target workspace. |
 
