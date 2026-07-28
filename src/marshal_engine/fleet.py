@@ -255,14 +255,20 @@ def _validate_read_path_tree(src: Path, raw: str) -> None:
             )
 
 
-def _guarded_copy_file(src: Path, dest: Path) -> None:
+def _guarded_copy_file(src: Path, dest: Path, *, dir_fd: int | None = None) -> None:
     """Copy one file through a fail-closed open: no follow, non-blocking, regular-file only.
 
     ``O_NOFOLLOW`` refuses a symlink swapped in after validation; ``O_NONBLOCK`` means opening a
-    FIFO returns instead of blocking; ``fstat`` confirms a regular file before any read.
+    FIFO returns instead of blocking; ``fstat`` confirms a regular file before any read. When
+    ``dir_fd`` is set, opens ``src.name`` relative to that descriptor (no absolute-path reopen).
     """
+    open_name: str | Path = src.name if dir_fd is not None else src
     try:
-        fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = (
+            os.open(open_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+            if dir_fd is not None
+            else os.open(open_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        )
     except OSError as exc:
         raise ValueError(
             f"read_paths refused to open {src}: {exc}. "
@@ -286,29 +292,89 @@ def _guarded_copy_file(src: Path, dest: Path) -> None:
         os.close(fd)
 
 
-def _copy_read_path_tree(src: Path, dest: Path) -> None:
+def _lstat_at(src: Path, *, dir_fd: int | None) -> os.stat_result:
+    """``lstat`` ``src``, or ``src.name`` relative to ``dir_fd`` when set."""
+    if dir_fd is None:
+        return src.lstat()
+    return os.lstat(src.name, dir_fd=dir_fd)
+
+
+def _readlink_at(src: Path, *, dir_fd: int | None) -> str:
+    """``readlink`` ``src``, or ``src.name`` relative to ``dir_fd`` when set."""
+    try:
+        if dir_fd is None:
+            return os.readlink(src)
+        return os.readlink(src.name, dir_fd=dir_fd)
+    except OSError:
+        return "?"
+
+
+def _open_dir_nofollow(src: Path, *, dir_fd: int | None) -> int:
+    """Open a directory with ``O_RDONLY|O_NOFOLLOW|O_DIRECTORY`` (path or relative to ``dir_fd``).
+
+    ``O_NOFOLLOW`` refuses a directory swapped to a symlink; ``O_DIRECTORY`` refuses a
+    non-directory. On failure, raise the same refusal messages as the lstat classification path.
+    """
+    open_name: str | Path = src.name if dir_fd is not None else src
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+    try:
+        if dir_fd is not None:
+            return os.open(open_name, flags, dir_fd=dir_fd)
+        return os.open(open_name, flags)
+    except OSError as exc:
+        try:
+            st_now = _lstat_at(src, dir_fd=dir_fd)
+        except OSError:
+            raise ValueError(
+                f"read_paths refused to open {src}: {exc}. "
+                f"Only regular files are copied (symlinks and special files are refused)."
+            ) from exc
+        if stat.S_ISLNK(st_now.st_mode):
+            raise ValueError(
+                f"read_paths refuses symlink: {src} -> {_readlink_at(src, dir_fd=dir_fd)}. "
+                f"Symlinks inside a declared tree are never copied."
+            ) from exc
+        if not stat.S_ISDIR(st_now.st_mode) and not stat.S_ISREG(st_now.st_mode):
+            raise ValueError(
+                f"read_paths refuses special file: {src}. "
+                f"Only regular files and directories are accepted "
+                f"(FIFOs, sockets, and devices block provisioning before any run timeout)."
+            ) from exc
+        raise ValueError(
+            f"read_paths refused to open {src}: {exc}. "
+            f"Only regular files are copied (symlinks and special files are refused)."
+        ) from exc
+
+
+def _copy_read_path_tree(src: Path, dest: Path, *, dir_fd: int | None = None) -> None:
     """Copy a resolved read_path into ``dest`` without ``shutil.copytree``/``copy2``.
 
-    Walks the tree and uses :func:`_guarded_copy_file` per file so a TOCTOU swap to a symlink or
-    FIFO cannot hang or smuggle content. Does not follow or preserve symlinks.
+    Directory descent is fd-relative: each directory is opened with
+    ``O_RDONLY|O_NOFOLLOW|O_DIRECTORY``, listed via ``os.scandir(dir_fd)``, and children are
+    opened relative to that descriptor — never by reconstructed absolute path — so a directory
+    swapped for a symlink mid-walk cannot redirect the traversal into an unvalidated tree.
+    Per-file open stays fail-closed (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat``, also
+    relative to the parent fd). Does not follow or preserve symlinks.
     """
     try:
-        st = src.lstat()
+        st = _lstat_at(src, dir_fd=dir_fd)
     except OSError as exc:
         raise ValueError(f"read_paths disappeared before copy: {src}: {exc}") from exc
     if stat.S_ISLNK(st.st_mode):
-        try:
-            link_target = os.readlink(src)
-        except OSError:
-            link_target = "?"
         raise ValueError(
-            f"read_paths refuses symlink: {src} -> {link_target}. "
+            f"read_paths refuses symlink: {src} -> {_readlink_at(src, dir_fd=dir_fd)}. "
             f"Symlinks inside a declared tree are never copied."
         )
     if stat.S_ISDIR(st.st_mode):
         dest.mkdir(parents=False, exist_ok=False)
-        for child in sorted(src.iterdir(), key=lambda p: p.name):
-            _copy_read_path_tree(child, dest / child.name)
+        this_fd = _open_dir_nofollow(src, dir_fd=dir_fd)
+        try:
+            with os.scandir(this_fd) as entries:
+                children = sorted(entries, key=lambda e: e.name)
+            for entry in children:
+                _copy_read_path_tree(src / entry.name, dest / entry.name, dir_fd=this_fd)
+        finally:
+            os.close(this_fd)
         return
     if not stat.S_ISREG(st.st_mode):
         raise ValueError(
@@ -316,7 +382,7 @@ def _copy_read_path_tree(src: Path, dest: Path) -> None:
             f"Only regular files and directories are accepted "
             f"(FIFOs, sockets, and devices block provisioning before any run timeout)."
         )
-    _guarded_copy_file(src, dest)
+    _guarded_copy_file(src, dest, dir_fd=dir_fd)
 
 
 def _make_readonly(path: Path) -> None:
@@ -375,9 +441,10 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
     escapes when preserved); the declared root may be a symlink and is resolved first. Only
     regular files and directories are accepted - FIFOs, sockets, and devices are refused so
     provisioning cannot block forever before a run record (and its timeout) exists. Copies open
-    fail-closed (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat``) so a TOCTOU swap after
-    validation cannot hang or follow a link. Fail-closed matches task_id validation, worktree
-    containment, and read-only reviewer routing.
+    fail-closed (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat`` for files; directory descent is
+    fd-relative with ``O_NOFOLLOW|O_DIRECTORY``) so a TOCTOU swap after validation cannot hang
+    or redirect the walk. Fail-closed matches task_id validation, worktree containment, and
+    read-only reviewer routing.
 
     A missing path fails before any copy. Copied files are 0o444 and directories 0o555; teardown
     restores directory write bits so ``git worktree remove`` still works. Content is excluded

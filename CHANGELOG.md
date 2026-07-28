@@ -36,8 +36,9 @@ versions may include breaking API changes until 1.0.
   tree are refused (a symlinked declared root is resolved first, then validated from the real
   path); only regular files and directories are accepted (FIFOs/sockets/devices refused so
   provisioning cannot hang before a run timeout exists). Copies open fail-closed
-  (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat`) so a TOCTOU swap after validation cannot hang
-  or follow a link. A missing or refused path fails the spawn (worktree torn down). The
+  (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` for files; directory descent is fd-relative with
+  `O_NOFOLLOW|O_DIRECTORY` so a directory swapped mid-walk cannot redirect the traversal). A
+  missing or refused path fails the spawn (worktree torn down). The
   declared list is recorded on `RunRecord` so a reviewer can see the run saw more than its
   worktree. The worker prompt is told read-only reference material is under `.marshal-context/`.
 

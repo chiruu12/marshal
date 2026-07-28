@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -3438,6 +3439,152 @@ def test_read_paths_refuses_toctou_fifo_swap(
             pytest.fail("read_paths hung on TOCTOU FIFO swap (validation/copy race)")
     assert fleet.state.list() == []
     worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def _replace_dir_with_symlink(victim: Path, outside: Path) -> None:
+    """Remove ``victim`` (a directory) and replace it with a symlink to ``outside``."""
+    for child in victim.iterdir():
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            # Nested fixture victims are leaves; keep this helper simple and strict.
+            for nested in child.iterdir():
+                nested.unlink()
+            child.rmdir()
+        else:
+            child.unlink()
+    victim.rmdir()
+    victim.symlink_to(outside)
+
+
+def _arm_dir_symlink_swap_after_lstat(
+    monkeypatch: pytest.MonkeyPatch, victim: Path, outside: Path
+) -> None:
+    """Like the FIFO TOCTOU test, but swap after directory *classification*, not after validate.
+
+    Validate-then-swap is caught by the copy's initial ``lstat`` (symlink refused before descent).
+    The hole is between ``lstat`` returning directory mode and path-based ``iterdir``: return the
+    stale directory stat, then replace ``victim`` with a symlink so a path walk follows into
+    ``outside``. Fd-relative ``O_NOFOLLOW|O_DIRECTORY`` open must refuse instead.
+    """
+    real_validate = fleet_mod._validate_read_path_tree
+    real_lstat_at = fleet_mod._lstat_at
+    victim_resolved = victim.resolve()
+    swapped = False
+
+    def _is_victim(src: Path) -> bool:
+        try:
+            return src.resolve() == victim_resolved
+        except OSError:
+            return src.name == victim.name and src.parent.resolve() == victim.parent.resolve()
+
+    def _lstat_at_then_swap(src: Path, *, dir_fd: int | None = None) -> os.stat_result:
+        nonlocal swapped
+        st = real_lstat_at(src, dir_fd=dir_fd)
+        if (
+            not swapped
+            and _is_victim(src)
+            and stat.S_ISDIR(st.st_mode)
+            and not stat.S_ISLNK(st.st_mode)
+        ):
+            _replace_dir_with_symlink(victim, outside)
+            swapped = True
+        return st
+
+    def _validate_then_arm(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+
+
+def test_read_paths_refuses_toctou_dir_symlink_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: a directory swapped to a symlink mid-copy must not smuggle unvalidated content.
+
+    Asserts on the absence of the smuggled *content* under `.marshal-context/`, not only the
+    raised error — the bug is host files reaching the agent.
+    """
+    src_dir = repo.parent / "docs-toctou-root"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("validated-ok")
+    outside = repo.parent / "unvalidated-outside"
+    outside.mkdir()
+    smuggled = "SMUGGLED-TOCTOU-ROOT-CONTENT"
+    (outside / "secret.md").write_text(smuggled)
+
+    _arm_dir_symlink_swap_after_lstat(monkeypatch, src_dir, outside)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-dir", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses symlink|refused to open"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU directory symlink swap")
+
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert smuggled not in leaked.read_text(errors="ignore"), (
+                    f"TOCTOU smuggled content reached {leaked}"
+                )
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_toctou_nested_dir_symlink_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: symlink swap on a *subdirectory* must refuse; exercises fd-relative child open."""
+    src_dir = repo.parent / "docs-toctou-nested"
+    src_dir.mkdir()
+    (src_dir / "root.md").write_text("root-ok")
+    sub = src_dir / "sub"
+    sub.mkdir()
+    (sub / "nested.md").write_text("nested-ok")
+    outside = repo.parent / "unvalidated-nested-outside"
+    outside.mkdir()
+    smuggled = "SMUGGLED-TOCTOU-NESTED-CONTENT"
+    (outside / "leaked.md").write_text(smuggled)
+
+    _arm_dir_symlink_swap_after_lstat(monkeypatch, sub, outside)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-nested", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses symlink|refused to open"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU nested directory symlink swap")
+
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert smuggled not in leaked.read_text(errors="ignore"), (
+                    f"TOCTOU smuggled content reached {leaked}"
+                )
+    assert fleet.state.list() == []
     assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
 
 
