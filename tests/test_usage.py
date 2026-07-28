@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from marshal_engine import AgentResult, RunStatus, UsageRecord, UsageSource
-from marshal_engine.usage import UsageEvent, UsageTracker
+from marshal_engine.usage import (
+    USAGE_WINDOWS,
+    UsageEvent,
+    UsageTracker,
+    usage_window_since,
+)
 
 
 def _ev(**kw: Any) -> UsageEvent:
@@ -117,6 +124,60 @@ def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None
     assert abs(tot.cost_usd - 0.05) < 1e-9            # EMPTY cost is real spend, counted
     assert abs(tot.cost_per_run - 0.025) < 1e-9       # 0.05 / 2
     assert abs(tot.cost_per_succeeded - 0.05) < 1e-9  # 0.05 / 1 - the wasted EMPTY run inflates it
+
+
+# --- usage window vocabulary (CLI ↔ MCP shared mapping) ---------------------------------------
+
+
+def test_usage_window_since_resolves_each_window() -> None:
+    """Shared mapping: `all` → None; every other window → a concrete UTC `since`."""
+    session_start = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 27, 18, 0, 0, tzinfo=timezone.utc)
+
+    assert usage_window_since("all", session_start=session_start, now=now) is None
+    assert usage_window_since("session", session_start=session_start, now=now) == session_start
+    assert usage_window_since("day", session_start=session_start, now=now) == now - timedelta(hours=24)
+    assert usage_window_since("week", session_start=session_start, now=now) == now - timedelta(days=7)
+    assert usage_window_since("month", session_start=session_start, now=now) == now - timedelta(days=30)
+
+    with pytest.raises(ValueError, match="unknown usage window"):
+        usage_window_since("year", session_start=session_start, now=now)
+
+
+def test_usage_windows_match_across_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI `--window` choices and MCP `usage(window=...)` enum must stay identical (and equal
+    USAGE_WINDOWS). This is the lock that keeps the two surfaces from drifting apart again."""
+    import asyncio
+    import re
+
+    from marshal_engine import cli
+    from marshal_engine.mcp_server import build_app, build_service
+
+    expected = set(USAGE_WINDOWS)
+    assert expected == {"session", "day", "week", "month", "all"}
+
+    # CLI: argparse renders `--window {a,b,c,...}` in --help
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["usage", "--help"])
+    assert ei.value.code == 0
+    help_text = capsys.readouterr().out
+    m = re.search(r"--window\s+\{([^}]+)\}", help_text)
+    assert m is not None, f"--window choices missing from help:\n{help_text}"
+    cli_windows = {c.strip() for c in m.group(1).split(",")}
+    assert cli_windows == expected
+
+    # MCP: tool schema enum
+    pytest.importorskip("mcp")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    mcp_windows = set(tools["usage"].inputSchema["properties"]["window"]["enum"])
+    assert mcp_windows == expected
 
 
 # --- time-windowed rollups + per-backend/model breakdown --------------------------------------

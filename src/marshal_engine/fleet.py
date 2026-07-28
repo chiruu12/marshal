@@ -120,6 +120,49 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _require_context_files(wt: Worktree, context_files: list[str]) -> None:
+    """Fail the run if a declared context file is not actually in the worktree.
+
+    A worktree contains TRACKED files. A path that is gitignored - `tmp/`, a build dir, a scratch
+    report - exists in the driver's checkout and simply is not there, so the agent was told to read
+    a file it cannot open. Observed in the field: the agent reported the file "was not present",
+    worked from the surrounding prose instead, and produced something that happened to be adequate.
+    Neither side could tell it had solved a different problem than the one posed.
+
+    Failing is deliberate, over silently copying the file in. Copying would put untracked content
+    into a worktree whose whole purpose is to mirror the repo - and `.env` is gitignored too, so
+    "copy whatever the caller named" is a way to hand secrets to an agent. Fail-closed matches
+    task_id validation, worktree containment, and read-only reviewer routing.
+
+    Containment is checked BEFORE existence, and is the more important half. ``Path("/wt") /
+    "/etc/passwd"`` is ``/etc/passwd`` - an absolute path silently discards the base - and ``../``
+    walks out the same way. Both exist, so an existence-only check would pass them and then inject
+    the path into the agent's prompt, pointing it at host files the worktree boundary is there to
+    keep out. A check that accepts those is worse than no check: it makes the path look validated.
+    """
+    outside: list[str] = []
+    missing: list[str] = []
+    base = wt.path.resolve()
+    for f in context_files:
+        candidate = (base / f).resolve()
+        if candidate != base and base not in candidate.parents:
+            outside.append(f)
+        elif not candidate.exists():
+            missing.append(f)
+    if outside:
+        raise ValueError(
+            f"context_files outside the worktree: {', '.join(sorted(outside))}. "
+            f"Paths must be relative to the repo root and stay inside it - the worktree is the "
+            f"isolation boundary, so absolute paths and '..' are refused."
+        )
+    if missing:
+        raise ValueError(
+            f"context_files not present in the worktree: {', '.join(sorted(missing))}. "
+            f"A worktree holds tracked files only, so gitignored or untracked paths are absent - "
+            f"commit them, or put the content in the goal text instead of pointing at a path."
+        )
+
+
 def _still_running(rec: RunRecord) -> bool:
     """update_if predicate: stamp a terminal status only if the run hasn't already reached one
     (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
@@ -786,6 +829,14 @@ class Fleet:
             # were then computed against a base the agent never had. The created branch's tip IS
             # what it was cut from, so there is no window to lose.
             resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
+            try:
+                _require_context_files(wt, req.task.context_files)
+            except ValueError:
+                # Tear down before propagating: the worktree exists by now, and a rejected spawn
+                # must not leave one behind (same contract `setup()` honours on a failed provision).
+                with contextlib.suppress(WorktreeError):
+                    self.worktrees.discard(str(wt.path), wt.branch)
+                raise
             self.worktrees.setup(wt)
             _register_inflight_run(self.state.dir, run_id)
             self.state.add(

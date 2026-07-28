@@ -52,6 +52,82 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **Conflicting routing is refused instead of silently resolved (#101).** Passing both `client` and
+  `backend` names two different answers to "what runs this", and the loser was dropped without a
+  word — so a run executed on a backend the caller never asked for and nothing in the result said
+  so. It now raises, naming both values and the two valid shapes. `client` + `model` is deliberately
+  NOT covered: that is a coherent request (this client's backend, that model) and stays a supported
+  override. The MCP `backend` description said "ignored if `client` is also set"; documenting a
+  silent override does not make it safe.
+- **`list_workspaces` says whether a workspace is actually usable (#99).** `configured` meant only
+  "a config file exists at this path", and every reader took it for "ready" — a workspace with an
+  empty or unparseable config looked identical to a working one, so a driver ran against it, got
+  nothing, and fell back to an ad-hoc spawn. `ready` now answers the question people were asking,
+  and `ready_reason` says why when it is false: "no config file", "config does not load: <error>",
+  and "config declares no clients" need different fixes, and collapsing them to a `0` just moved
+  the guessing onto the reader. `configured` keeps its old meaning and is documented as the weak
+  claim it always was. `marshal workspace list` prints the reason inline. Note `ready` is a claim
+  about configuration, not the machine — it does not probe backend CLIs; that is `doctor`.
+- **`doctor` surfaces recent billing/quota failures (#95).** It answered "is the CLI installed and
+  logged in?" and presented that as readiness — so a backend that was installed, authed, and out of
+  credit passed green, and the driver learned otherwise by spending a run. Two field reports hit
+  this independently on the same day (an "Insufficient balance" death at 3.5s, and an exhausted
+  premium quota discovered by burning runs). A `quota:<backend>` warn now reports how many recent
+  runs failed on billing/quota grounds and quotes the latest error, derived from the run ledger we
+  already keep — no provider API, and it reports what happened rather than predicting. Its absence
+  is deliberately **not** a clearance: doctor cannot read provider balances, and saying quota looks
+  fine because it was never checked is the same overclaim the field reports were about. Rate
+  limiting is deliberately excluded from the classifier: a 429 means *slow down*, not *pay*, the
+  retry policy already backs off and retries it, and sending an operator to top up over throttling
+  is the wrong remedy.
+
+- **A `context_files` path that is not in the worktree fails the spawn (#73).** A worktree holds
+  tracked files, so a gitignored path — `tmp/`, a build dir, a scratch report — exists in the
+  driver's checkout and simply is not there. The agent was handed a path it could not open; in the
+  reported case it said so, worked from the surrounding prose, and produced something adequate *by
+  luck*, with neither side able to tell it had solved a different problem. The spawn is now refused,
+  naming the missing paths, and the worktree is torn down rather than left behind. Failing is
+  deliberate over silently copying the file in: copying puts untracked content into a checkout whose
+  purpose is to mirror the repo, and `.env` is gitignored too — "copy whatever the caller named" is
+  a way to hand secrets to an agent. Containment is checked first and matters more: `Path(wt) /
+  "/etc/passwd"` is `/etc/passwd` (an absolute path discards the base) and `../` walks out the same
+  way, so an existence-only check would have passed both and pointed the agent at host files. An
+  absolute or traversing `context_files` entry is now refused.
+- **`marshal_quickstart` MCP tool: a stated "start here" (#102).** A driver facing ~20 tools had no
+  ordering and no decision boundary between the near-duplicates — `run_agent` / `spawn` /
+  `run_many` / `run_workflow` and `status` / `get_run` / `collect_run` / `get_run_log` — and learned
+  "spawn is the long-job one" only by reading every description. The tool returns the four-step loop
+  (`doctor` → `spawn` → `collect_run` → `integrate`), says plainly which run tool blocks and which
+  does not, and states up front that a run's status is about the process exiting, not about the work
+  being right. It is a tool rather than a docs link because a driver reads tool descriptions.
+  `docs/mcp-tools.md` also stops hardcoding a tool count (it was already stale by one) and no longer
+  claims *every* tool takes a `workspace` — the global tools do not. A test checks the quickstart's
+  claims against the real registered signatures, because an orientation tool that overclaims is the
+  same defect as `succeeded` and `configured`, just in prose: two drafts asserted that `integrate`
+  is the only thing that reaches your branch, when a workflow with an `auto: true` integrate phase
+  does too.
+- **`list_workspaces` reports recency (#104).** With fifteen registered repos the list was
+  unnavigable by name alone — `provo` from `domo` from `lore` meant opening each. `last_activity_at`
+  is the most recent write to that workspace's run ledger, which is how anyone actually finds the
+  repo they were just working in. It is a directory **stat**, not a ledger parse: `describe()`
+  builds no services and reads no run records, and a full parse per row would turn a cheap listing
+  into real work. Named for what it measures — a record's last write, not a run's start time —
+  rather than the `last_run_at` the report asked for, since the two are not the same thing.
+
+- **`list_clients` says which clients it dropped, and why (#74).** A client whose backend CLI was
+  unavailable was filtered out with no error and no reason - the reporter noticed only incidentally.
+  Marshal already knew and warned on stderr, but an MCP driver never sees stderr, so from its side
+  the client silently vanished. The listing now carries `skipped: [{name, backend, reason}]`, and an
+  unknown backend name reads differently from an installed-but-absent CLI, because those have
+  different fixes.
+
+- **`integrate` takes a commit `message` (#75).** The Fleet accepted one all along; the service and
+  the MCP tool both dropped it, so no caller could reach it and every integrate landed as
+  `marshal: integrate <run_id>` - a message about the tooling rather than the change. The reporter
+  reset and recommitted after every single one, roughly fifteen times. `commit_run` had taken a
+  `message` from the start, which made this an inconsistency in our own surface rather than a
+  missing capability. The driver reviewed the diff, so the driver is who should write the message.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
@@ -59,6 +135,11 @@ versions may include breaking API changes until 1.0.
   the run's own base, not the current branch; and both surfaces now say that `failed` is overloaded
   (agent failure vs orphaned at startup) and how to tell them apart. The `cancel_run` reference
   still described the pre-handle identity check and has been corrected.
+- **Marshal ↔ Chauffeur freeze line (#49).** Document the mechanism-vs-judgment boundary:
+  engine inventory (worktrees, run loop, ledger, primitives), what stays in Skills/Chauffeur,
+  grandfathered sequencers (`workflow.py`, `teams.py`), the three-question admission test, and
+  what Chauffeur is expected to replace. Normative detail in `docs/chauffeur-future.md`; inventory
+  table in `docs/design.md` §12.
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
   multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
   session clocks stay per-workspace (no registry spend/budget merge; intentional non-goal). Rewrite
@@ -139,6 +220,10 @@ versions may include breaking API changes until 1.0.
   variable inherited from the driver/MCP process (not just `VIRTUAL_ENV`/`PYTHONHOME`), so worker
   agents' test suites and `marshal` CLI invocations resolve the worktree instead of the driver's
   repo/config. Callers can still pass `MARSHAL_*` values via `extra`.
+- **CLI and MCP `usage` windows reconciled.** Both surfaces accept the same set
+  (`session|day|week|month|all`) via a shared `usage_window_since` helper. CLI gains `session`
+  (honestly "since this invocation" — help + human output state the caveat; no long-lived Fleet);
+  MCP gains `day` (last 24h). Existing options kept so callers do not break.
 - **Worktree setup allowlist refuses before `git worktree add` (#45).** Non-allowlisted
   `worktree_setup` / `verify` without `allow_unsafe_commands` raise at config load and
   `WorktreeManager` construction, so a static misconfig never creates-then-tears-down worktrees.
@@ -150,6 +235,19 @@ versions may include breaking API changes until 1.0.
   treated as authenticated.
 
 ### Added
+- **Gemini CLI backend adapter (`backends/gemini.py`).** Headless `gemini -p` with
+  `--output-format json`; token counts parsed from JSON `stats` with cost `unavailable` (no
+  fabricated $0). **`read-only` is unsupported and raises** — Gemini has no tier that reliably
+  denies writes headless: `plan` auto-approves `exit_plan_mode` in non-interactive runs and then
+  switches to YOLO to implement the plan, and a settings flag can silently demote it to `default`.
+  Review panels route to `read-only`, so mapping it to something writable would defeat a safety
+  boundary rather than merely degrade it. The session id is read from the top level of the JSON
+  object, where the CLI writes it, so `--resume` actually receives one. safe-edit maps to
+  `--approval-mode yolo`, not `auto_edit`: `auto_edit`
+  auto-approves edit tools but still prompts before shell and other non-edit tools, which
+  deadlocks a headless run with closed stdin — so the git worktree is the boundary, the same
+  stance as Command Code and Goose. Registered
+  as `gemini`; contract-tested offline — not live-verified (CLI absent in CI/worktree).
 - **Fail-closed doctor auth probes for remaining backends (#43).** Claude Code
   (`claude auth status`), Command Code (`command-code status --json`; config.json alone is not
   auth), OpenCode (`opencode auth list`), and Codex (`codex login status`) set `verifies_auth` so

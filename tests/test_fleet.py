@@ -2671,3 +2671,57 @@ def test_a_pid_is_never_written_onto_a_terminal_record(repo: Path) -> None:
         "term.writer.x", lambda r: not r.status == "failed", pid=4242
     )
     assert fleet.state.get("term.writer.x").pid is None
+def test_a_context_file_missing_from_the_worktree_fails_the_spawn(repo: Path) -> None:
+    """REGRESSION (#73): a gitignored path exists in the driver's checkout but NOT in the worktree,
+    which holds tracked files only. The agent was handed a path it could not open, said so, worked
+    from the surrounding prose, and produced something adequate by luck - neither side could tell it
+    had solved a different problem. A silently missing input is worse than a refused spawn."""
+    (repo / ".gitignore").write_text("tmp/\n")
+    scratch = repo / "tmp" / "report.md"
+    scratch.parent.mkdir(parents=True)
+    scratch.write_text("the measurements the agent was supposed to read")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "ignore tmp"], check=True,
+                   capture_output=True)
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="not present in the worktree"):
+        fleet.run("writer", TaskSpec(id="ctx", goal="use it", context_files=["tmp/report.md"]))
+
+    # And the rejected spawn leaves nothing behind.
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_a_tracked_context_file_still_runs(repo: Path) -> None:
+    """The check must not reject the normal case - a committed file IS in the worktree."""
+    (repo / "notes.md").write_text("committed context")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "notes"], check=True,
+                   capture_output=True)
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="ctx2", goal="use it", context_files=["notes.md"]))
+    assert rec.status != RunStatus.FAILED.value
+
+
+def test_an_absolute_context_path_is_refused(repo: Path) -> None:
+    """REGRESSION: `Path("/wt") / "/etc/passwd"` is `/etc/passwd` - an absolute path silently
+    discards the base. It exists, so an existence-only check passed it and injected a host path
+    into the agent's prompt, aimed outside the boundary the worktree exists to enforce. A check
+    that accepts that is worse than no check: it makes the path look validated."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="outside the worktree"):
+        fleet.run("writer", TaskSpec(id="abs", goal="x", context_files=["/etc/hosts"]))
+    assert fleet.state.list() == []
+
+
+def test_a_traversing_context_path_is_refused(repo: Path) -> None:
+    """`../` walks out of the worktree the same way an absolute path does."""
+    outside = repo.parent / "outside.txt"
+    outside.write_text("not for the agent")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="outside the worktree"):
+        fleet.run("writer", TaskSpec(id="trav", goal="x", context_files=["../../outside.txt"]))
+    assert fleet.state.list() == []

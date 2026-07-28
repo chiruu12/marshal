@@ -351,6 +351,13 @@ def _capture_svc(repo: Path, backend: _Capture, *, worker: str | None = None) ->
 def test_run_agent_threads_context_files_to_the_task(repo: Path) -> None:
     # context_files is consumed by every backend's prompt; the service must carry it onto the TaskSpec
     # so a driver can actually point a worker at the files it should see.
+    # The files must be TRACKED: a worktree holds tracked files only, and a path that is not
+    # there now fails the spawn rather than reaching the agent as an unopenable path (#73).
+    for name in ("a.py", "b.py"):
+        (repo / name).write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "ctx"], check=True,
+                   capture_output=True)
     backend = _Capture()
     svc = _capture_svc(repo, backend)
     svc.run_agent("worker", "do x", task_id="t1", context_files=["a.py", "b.py"])
@@ -720,19 +727,17 @@ def test_request_for_adhoc_synthesizes_ephemeral_config(repo: Path) -> None:
     assert req2.model == DEFAULT_OPENCODE_MODEL
 
 
-def test_request_for_both_client_and_backend_prefers_client(repo: Path) -> None:
-    # When both `client_name` and `backend` are given, client wins (backend is ignored). The
-    # client's resolved backend/model are used; `model` still overrides the resolved model.
+def test_request_for_both_client_and_backend_is_a_conflict(repo: Path) -> None:
+    # This test previously asserted the silent precedence (client wins, backend ignored), which
+    # encoded the defect in #101: a caller that named both got a run on a backend it had not asked
+    # for, with nothing saying so. Naming two different answers to "what runs this" is now refused.
     svc = _svc(repo)
-    # The service's "worker" client is backend="echo" with no model. Ad-hoc would be "opencode".
-    # Passing both -> the run uses "echo" (client's), not "opencode".
-    req = svc._request_for("worker", "x", backend="opencode")
+    with pytest.raises(ValueError, match="conflicting routing"):
+        svc._request_for("worker", "x", backend="opencode")
+    # The model override is a separate, coherent case and still applies.
+    req = svc._request_for("worker", "x", model="explicit")
     assert req.backend_name == "echo"
-    assert req.client == "worker"
-    # And the explicit model still overrides whatever the client resolves to.
-    req2 = svc._request_for("worker", "x", backend="opencode", model="explicit")
-    assert req2.backend_name == "echo"
-    assert req2.model == "explicit"
+    assert req.model == "explicit"
 
 
 def test_request_for_neither_client_nor_backend_raises(repo: Path) -> None:
@@ -1001,3 +1006,74 @@ def test_service_no_budgets_returns_empty_list(repo: Path) -> None:
     # Backward-compat: a service built from a config without `budgets:` returns [].
     svc = _svc(repo)
     assert svc.budget_status() == []
+
+
+def test_client_and_backend_together_is_refused_not_silently_resolved(repo: Path) -> None:
+    """REGRESSION (#101): `client` + `backend` are two different answers to "what runs this". The
+    precedence lived in prose, and the loser was dropped silently — so a run executed on a backend
+    the caller never asked for, with nothing in the result saying so."""
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="conflicting routing"):
+        svc.run_agent("worker", "do the thing", backend="opencode")
+
+
+def test_client_and_model_together_stays_a_supported_override(repo: Path) -> None:
+    """The sibling case is NOT a contradiction and must keep working: a client plus a model is a
+    coherent request — run this client's backend against that model. Erroring here would remove a
+    documented capability rather than fix an ambiguity."""
+    svc = _svc(repo)
+    req = svc._request_for("worker", "do the thing", model="some/other-model")
+    assert req.backend_name == "echo"
+    assert req.model == "some/other-model"
+    assert req.client == "worker"
+
+
+def test_list_clients_names_the_clients_it_dropped_and_why(repo: Path) -> None:
+    """REGRESSION (#74): a client whose backend CLI is unavailable was filtered out of
+    `list_clients` with no error and no reason. Marshal knew - it warns on stderr - but an MCP
+    driver never sees stderr, so from its side the client silently vanished and it noticed only
+    incidentally."""
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(name="worker", backend="echo"),
+            "ghost": ClientConfig(name="ghost", backend="missing"),
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo(), "missing": _Missing()})
+
+    listing = svc.list_clients()
+    assert [c.name for c in listing.clients] == ["worker"]
+    dropped = {s.name: s for s in listing.skipped}
+    assert "ghost" in dropped, "the dropped client is still invisible to the driver"
+    assert dropped["ghost"].backend == "missing"
+    assert "not available on PATH" in dropped["ghost"].reason
+
+
+def test_an_unknown_backend_reads_differently_from_an_uninstalled_one(repo: Path) -> None:
+    """"You typed a backend that does not exist" and "that CLI is not installed" have different
+    fixes; collapsing them to one message makes the driver guess which it is."""
+    cfg = FleetConfig(clients={"typo": ClientConfig(name="typo", backend="opencodee")})
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    reason = svc.list_clients().skipped[0].reason
+    assert "not a known backend" in reason
+
+
+def test_integrate_message_reaches_the_commit(repo: Path) -> None:
+    """REGRESSION (#75): the Fleet accepted `message`, but the service and the MCP tool both
+    dropped it - so every integrate landed as "marshal: integrate <run_id>", describing the tooling
+    rather than the change. The reporter reset and recommitted after every single one, about
+    fifteen times. `commit_run` had taken a message all along; `integrate` just never passed it on."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "make a change")
+    # Give the run something to land.
+    (Path(rec.worktree) / "new.txt").write_text("work product\n")
+
+    result = svc.integrate(rec.run_id, message="Add the thing the agent was asked for")
+    assert result.status == "merged", result.message
+
+    log = subprocess.run(
+        ["git", "-C", str(repo), "log", "-2", "--format=%s"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "Add the thing the agent was asked for" in log
+    assert "marshal: integrate" not in log, "the tooling-shaped default won anyway"

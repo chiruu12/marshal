@@ -73,19 +73,19 @@ and wire the MCP server by hand per **[`SETUP.md`](SETUP.md)**.
 
 ## Why Marshal
 
-- **One base class, many backends.** Cursor, OpenCode, Codex, Command Code, Gemini - adding one is a new adapter,
+- **One base class, many backends.** Cursor, OpenCode, Codex, Command Code, Claude Code, Goose, Gemini — adding one is a new adapter,
   not a rewrite. Backend choice is a per-call parameter.
 - **Parallel by default.** Each agent runs in its own git worktree; your main branch stays clean
   until you explicitly integrate.
 - **Per-provider usage tracking.** Token accounting for every backend, plus cost tagged by source:
   **native** where the provider reports it (OpenCode, Claude Code), real **`admin-api`** cost for
   Codex routed through EastRouter (read back from its usage API), **estimated** where a model is
-  priced, and `unavailable` otherwise (Cursor, Antigravity, Command Code, and OpenCode on an unpriced
+  priced, and `unavailable` otherwise (Cursor, Antigravity, Command Code, Gemini, and OpenCode on an unpriced
   custom provider) - never a fake $0. A `usage`
   command most orchestrators don't have - per-backend/client/model/`backend×model` tables with
   input/output/cache-read token columns and a native/admin-api/estimated cost split, time-windowed
-  via `--window day|week|month|all` (CLI) or `window: session|week|month|all` (MCP - `session`
-  means "since the server started"). `marshal doctor` also reports each authenticated backend's
+  via `--window session|day|week|month|all` (same set on CLI and MCP; MCP `session` means
+  "since the server started", CLI `session` means since this invocation). `marshal doctor` also reports each authenticated backend's
   plan tier where the CLI honestly exposes it (e.g. Cursor's subscription tier + current model).
 - **Robust headless execution.** Hard timeouts, no-stdin-deadlock guarantees, and per-backend
   defenses for the real-world hangs and quirks documented in `docs/design.md`.
