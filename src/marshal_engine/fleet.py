@@ -545,6 +545,12 @@ class CollectResult(BaseModel):
     agent made on the run's branch since the merge-base with the collect target are in
     ``committed_changed_files`` / ``committed_diff`` / ``commit_count`` — both sections are
     reported when both exist.
+
+    ``text`` carries the agent's final message when the run changed **no files**. `collect_run` is
+    the reflex for "what did this run produce", and for a research or review run the honest answer
+    is prose, not a diff — without this the tool returns an empty result for a run that succeeded
+    and said something, which reads as "it did nothing". `produced` names which of the two it was,
+    so a caller branches on a field instead of inferring from emptiness.
     """
 
     run_id: str
@@ -555,6 +561,11 @@ class CollectResult(BaseModel):
     committed_changed_files: list[str] = []
     committed_diff: str = ""
     commit_count: int = 0
+    #: "diff" (files changed) | "text" (no files, but the agent replied) | "nothing" (neither).
+    produced: str = "diff"
+    #: The agent's final message. Populated ONLY when `produced == "text"` - when there IS a diff,
+    #: the diff is the artifact and duplicating the message here would just bloat the reply.
+    text: str = ""
 
 
 class IntegrateResult(BaseModel):
@@ -1285,12 +1296,21 @@ class Fleet:
             if commit_count:
                 committed_changed_files = self.worktrees.merged_diff_files(wt.branch, target)
                 committed_diff = self.worktrees.merged_diff(wt.branch, target)
+        # A run with no files changed is not necessarily a run that did nothing: a research or
+        # review agent's artifact is its final message, and the engine already treats text alone as
+        # SUCCEEDED. Returning an empty diff and stopping there made `collect_run` - the tool a
+        # driver reaches for first - report silence for a run that had said something.
+        has_diff = bool(changed_files or committed_changed_files)
+        final_text = "" if has_diff else (rec.text if rec else "")
+        produced = "diff" if has_diff else ("text" if final_text.strip() else "nothing")
         return CollectResult(
             run_id=run_id,
             branch=wt.branch or None,
             worktree=str(wt.path),
             changed_files=changed_files,
             diff=diff,
+            produced=produced,
+            text=final_text,
             committed_changed_files=committed_changed_files,
             committed_diff=committed_diff,
             commit_count=commit_count,
