@@ -81,6 +81,18 @@ versions may include breaking API changes until 1.0.
   retry policy already backs off and retries it, and sending an operator to top up over throttling
   is the wrong remedy.
 
+- **A `context_files` path that is not in the worktree fails the spawn (#73).** A worktree holds
+  tracked files, so a gitignored path — `tmp/`, a build dir, a scratch report — exists in the
+  driver's checkout and simply is not there. The agent was handed a path it could not open; in the
+  reported case it said so, worked from the surrounding prose, and produced something adequate *by
+  luck*, with neither side able to tell it had solved a different problem. The spawn is now refused,
+  naming the missing paths, and the worktree is torn down rather than left behind. Failing is
+  deliberate over silently copying the file in: copying puts untracked content into a checkout whose
+  purpose is to mirror the repo, and `.env` is gitignored too — "copy whatever the caller named" is
+  a way to hand secrets to an agent. Containment is checked first and matters more: `Path(wt) /
+  "/etc/passwd"` is `/etc/passwd` (an absolute path discards the base) and `../` walks out the same
+  way, so an existence-only check would have passed both and pointed the agent at host files. An
+  absolute or traversing `context_files` entry is now refused.
 - **`marshal_quickstart` MCP tool: a stated "start here" (#102).** A driver facing ~20 tools had no
   ordering and no decision boundary between the near-duplicates — `run_agent` / `spawn` /
   `run_many` / `run_workflow` and `status` / `get_run` / `collect_run` / `get_run_log` — and learned
@@ -118,6 +130,12 @@ versions may include breaking API changes until 1.0.
   would delete work, which is the opposite of what the truth justifies. Note the runs this matters
   most for - succeeded but never integrated - are deliberately outside the default `finished` scope,
   so they need `scope="all"` to appear at all.
+- **`integrate` takes a commit `message` (#75).** The Fleet accepted one all along; the service and
+  the MCP tool both dropped it, so no caller could reach it and every integrate landed as
+  `marshal: integrate <run_id>` - a message about the tooling rather than the change. The reporter
+  reset and recommitted after every single one, roughly fifteen times. `commit_run` had taken a
+  `message` from the start, which made this an inconsistency in our own surface rather than a
+  missing capability. The driver reviewed the diff, so the driver is who should write the message.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`

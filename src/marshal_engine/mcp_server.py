@@ -70,7 +70,7 @@ _DESC_TASK_ID = (
     "Optional grouping id; runs sharing a task_id can be compared head-to-head by report(). "
     "Must be a safe path segment ([A-Za-z0-9._-], no leading '.'/'-'); see SECURITY.md."
 )
-_DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt)."
+_DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt). Each must be TRACKED in git: the worktree holds tracked files only, so a gitignored/untracked path fails the spawn instead of silently reaching the agent as an unopenable path."
 _DESC_BASE_BRANCH = (
     "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
     "chain dependent work off a prior run's branch."
@@ -478,17 +478,24 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     @app.tool()
     async def integrate(
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
+        message: Annotated[str | None, Field(description=(
+            "Commit message for the run's work. Write it in the target repo's own convention - "
+            "you reviewed the diff, so you are the one who knows what it did. Omitted, it falls "
+            "back to 'marshal: integrate <run_id>', which describes the tooling rather than the "
+            "change and usually has to be rewritten afterwards."
+        ))] = None,
         cleanup: Annotated[bool, Field(description="Remove the worktree after a successful merge.")] = False,
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
         """Merge a run's worktree branch into its workspace's current branch.
 
         REVIEW THE DIFF FIRST with collect_run - `succeeded` means the process exited cleanly, NOT
-        that the code is correct. Integrate one run at a time. Outcome status is one of: merged |
-        conflict (aborted, repo left clean) | blocked (target dirty/detached, or the run is still
-        running - fix and retry) | empty (nothing to integrate) | error (a git op needs a human)."""
+        that the code is correct. Integrate one run at a time. Pass `message` to commit in the
+        repo's own convention. Outcome status is one of: merged | conflict (aborted, repo left
+        clean) | blocked (target dirty/detached, or the run is still running - fix and retry) |
+        empty (nothing to integrate) | error (a git op needs a human)."""
         return await run_call(
-            run_id, workspace, lambda svc: svc.integrate(run_id, cleanup=cleanup),
+            run_id, workspace, lambda svc: svc.integrate(run_id, message=message, cleanup=cleanup),
         )
 
     @app.tool()

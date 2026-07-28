@@ -132,7 +132,7 @@ Run a task in an isolated worktree; **blocks** until finished.
 | `goal` | string | *(required)* | Natural-language task. |
 | `client` | string \| null | `null` | Configured client name. Omit for ad-hoc spawn (set `backend`). |
 | `task_id` | string \| null | `null` | Grouping id for `report()`. Must be a safe path segment (`[A-Za-z0-9._-]`, no leading `.`/`-`; see `SECURITY.md`); hostile values fail closed before any worktree is created. |
-| `context_files` | list[string] \| null | `null` | Repo-relative paths injected into the prompt. |
+| `context_files` | list[string] \| null | `null` | Repo-relative paths injected into the prompt. Each must be **relative to the repo root** and exist **in the worktree**, which holds tracked files only. Absolute paths and `..` are refused (the worktree is the isolation boundary); a gitignored or untracked path fails the spawn rather than handing the agent a file it cannot open. |
 | `base_branch` | string \| null | `null` | Branch to base the worktree on (default: current HEAD). Use after `commit_run` to chain work. |
 | `model` | string \| null | `null` | Override the client's resolved model, or the model for an ad-hoc spawn. |
 | `backend` | string \| null | `null` | Bare backend for ad-hoc spawn (e.g. `opencode`). **Mutually exclusive with `client`** — passing both is an error, not a precedence rule. To use a configured client with a different model, pass `client` + `model`. |
@@ -372,6 +372,7 @@ Merge a run's worktree branch into the workspace's current branch. Review with `
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `run_id` | string | *(required)* | Run id. |
+| `message` | string \| null | `null` | Commit message for the run's work, in the target repo's own convention. Omitted, it falls back to `marshal: integrate <run_id>` — which names the tooling, not the change. |
 | `cleanup` | bool | `false` | Remove the worktree after a successful merge. |
 | `workspace` | string \| null | `null` | Workspace hint. |
 
