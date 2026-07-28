@@ -496,6 +496,30 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         return await run_call(run_id, workspace, lambda svc: svc.cancel_run(run_id))
 
     @app.tool()
+    async def read_run_file(
+        run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
+        path: Annotated[str, Field(description=(
+            "Path RELATIVE to that run's worktree root. Absolute paths and '..' are refused."
+        ))],
+        workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
+    ) -> dict[str, Any]:
+        """Read one file out of a run's worktree - how one agent's output reaches the next.
+
+        For handing over an ARTIFACT (a report, a findings file, a generated spec): read it here,
+        then put the content in the next run's `goal`. That keeps the handover faithful - the next
+        agent reads what the first actually wrote, instead of the driver's paraphrase of it.
+
+        For building ON a run's code rather than reading its conclusions, use `commit_run` then
+        `spawn(base_branch=<that run's branch>)` instead - the next worktree is cut from the work.
+
+        Returns `{run_id, path, content, truncated, size_bytes}`. Check `truncated`: large files are
+        clipped, and acting on a prefix while believing it is whole is the mistake worth avoiding.
+        """
+        return await run_call(
+            run_id, workspace, lambda svc: svc.read_run_file(run_id, path),
+        )
+
+    @app.tool()
     async def integrate(
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         message: Annotated[str | None, Field(description=(

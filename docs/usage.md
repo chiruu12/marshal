@@ -253,6 +253,7 @@ the default workspace.
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
 | `report(task_id)` | Re-derive a past benchmark's strategy comparison from the ledger (read-only). |
 | `get_run(run_id)` | Fetch one run record (status ∈ `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
+| `read_run_file(run_id, path)` | Read one file out of a run's worktree — how one agent's artifact reaches the next. Returns `{content, truncated, size_bytes}`; check `truncated`. Path must be relative to that worktree and stay inside it. |
 | `collect_run(run_id)` | A run's diff + changed files (read-only; nothing is merged). Review before integrating. |
 | `commit_run(run_id, message?)` | Freeze a finished run's work onto its own branch (your branch untouched) so a dependent run can `spawn` with `base_branch` = that branch. Outcome ∈ `committed`/`clean`/`blocked`/`error`. |
 | `integrate(run_id, cleanup?)` | Merge a run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty`/`error`. |
