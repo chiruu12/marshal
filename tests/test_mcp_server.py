@@ -500,3 +500,38 @@ def test_usage_window_param_mapping(
     assert out_session["totals"]["runs"] in (0, 1)  # 0 if `now` < session_start, 1 otherwise
     # Windowed JSON includes the new by_backend_model key
     assert "by_backend_model" in out_session
+
+
+def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A driver seeing ~20 tools had no stated ordering and no decision boundary between the four
+    run-ish and four status-ish tools - it learned "spawn is the long one" only by reading each
+    description. This tool is where that orientation lives, because a driver reads tool
+    descriptions, not the README."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+
+    names = {t.name for t in asyncio.run(app.list_tools())}
+    assert "marshal_quickstart" in names
+
+    _, payload = asyncio.run(app.call_tool("marshal_quickstart", {}))
+    # The four-step spine, in order.
+    steps = " ".join(payload["the_loop"])
+    for tool in ("doctor", "spawn", "collect_run", "integrate"):
+        assert tool in steps, f"the canonical loop does not mention {tool}"
+    # Every lookalike is disambiguated, which is the actual complaint.
+    assert {"run_agent", "spawn", "run_many", "run_workflow"} <= set(payload["which_run_tool"])
+    assert {"status", "get_run", "collect_run", "get_run_log"} <= set(payload["which_status_tool"])
+    # The blocking-vs-async distinction is stated, not left to be inferred from the names.
+    assert "Blocks" in payload["which_run_tool"]["run_agent"]
+    assert "does not hold your turn" in payload["which_run_tool"]["spawn"]
+    # And the caveat that every reviewer flagged is stated up front, not buried.
+    assert "not a claim about" in payload["safety"]

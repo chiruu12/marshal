@@ -65,6 +65,15 @@ versions may include breaking API changes until 1.0.
   retry policy already backs off and retries it, and sending an operator to top up over throttling
   is the wrong remedy.
 
+- **`marshal_quickstart` MCP tool: a stated "start here" (#102).** A driver facing ~20 tools had no
+  ordering and no decision boundary between the near-duplicates — `run_agent` / `spawn` /
+  `run_many` / `run_workflow` and `status` / `get_run` / `collect_run` / `get_run_log` — and learned
+  "spawn is the long-job one" only by reading every description. The tool returns the four-step loop
+  (`doctor` → `spawn` → `collect_run` → `integrate`), says plainly which run tool blocks and which
+  does not, and states up front that a run's status is about the process exiting, not about the work
+  being right. It is a tool rather than a docs link because a driver reads tool descriptions.
+  `docs/mcp-tools.md` also stops hardcoding a tool count (it was already stale by one).
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
