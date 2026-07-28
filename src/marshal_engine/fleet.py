@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -549,6 +550,12 @@ class CleanResult(BaseModel):
     removed: list[str] = []
     skipped: list[dict[str, str]] = []  # {run_id, reason}
     errors: list[dict[str, str]] = []   # {run_id, error}
+    # DRY RUN ONLY: per-candidate `{run_id, unmerged_commits, merged_into}`. The reported blocker
+    # was never the filters - it was not knowing which worktrees held work nobody had landed:
+    # "I couldn't tell which held unmerged work that wasn't mine", so 84 worktrees accumulated.
+    # Computing it costs a git call per candidate, which is fine for a deliberate preview and is
+    # why it is not on the every-row `status` listing.
+    unmerged: list[dict[str, Any]] = []
     # Worktree dirs under the manager's base_dir with NO (readable) run record - leaked by a
     # hand-pruned or torn ledger file. Reaped by scope-mode cleans (see Fleet.clean).
     orphans_removed: list[str] = []
@@ -1237,6 +1244,20 @@ class Fleet:
             commit=tip,
         )
 
+    def _unmerged_count(self, rec: RunRecord) -> int | None:
+        """Commits on this run's branch that the current branch does not have, or None if unknown.
+
+        None is "cannot tell", never "zero" - the branch is gone, or git could not be asked. A
+        driver deciding whether a worktree is safe to drop must be able to distinguish "nothing to
+        lose" from "I could not find out", because they justify opposite actions.
+        """
+        if not rec.branch:
+            return None
+        try:
+            return self.worktrees.unmerged_commit_count(rec.branch, self.worktrees.current_branch())
+        except WorktreeError:
+            return None
+
     def clean(
         self,
         *,
@@ -1290,6 +1311,12 @@ class Fleet:
         for rec in targets:
             if dry_run:
                 result.removed.append(rec.run_id)
+                # The safety answer, for the one call where the user is deciding rather than acting.
+                result.unmerged.append({
+                    "run_id": rec.run_id,
+                    "unmerged_commits": self._unmerged_count(rec),
+                    "merged_into": rec.merged_into,
+                })
                 continue
             try:
                 self.worktrees.discard(rec.worktree or "", rec.branch)
