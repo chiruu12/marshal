@@ -282,7 +282,13 @@ def _pid_is_verifiably_ours(rec: RunRecord) -> bool:
     unverifiable pid may be a recycled one belonging to something else entirely, and pointing a
     human at it would be worse than saying nothing.
     """
-    return bool(rec.pid) and bool(rec.pid_start_time) and _pid_is_still_ours(rec)
+    # Compares the start times DIRECTLY rather than delegating to `_pid_is_still_ours`: that helper
+    # returns True when the probe is unavailable, which is the fail-open answer. Inheriting it here
+    # would let an unprobeable pid count as "verified" and put a recycled process group into a
+    # `kill` instruction - the exact outcome this function exists to prevent.
+    if not rec.pid or not rec.pid_start_time:
+        return False
+    return _pid_start_time(rec.pid) == rec.pid_start_time
 
 
 def _is_reapable(rec: RunRecord, runs_dir: Path) -> bool:
@@ -1041,6 +1047,12 @@ class Fleet:
                 file=sys.stderr,
             )
             time.sleep(delay)
+            # Re-check AFTER the sleep too. The backoff is the widest window in the whole loop, so
+            # a cancel is most likely to arrive exactly here; checking only before the sleep would
+            # let the loop wake up and spawn a fresh agent into the worktree - and bill for it -
+            # with the record already reading `cancelled`.
+            if self._cancel_requested(run_id):
+                return result, attempt
             attempt += 1
 
     def _execute_bg(self, req: RunRequest, run_id: str, wt: Worktree, ts: str) -> None:

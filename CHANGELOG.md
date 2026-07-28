@@ -112,7 +112,9 @@ versions may include breaking API changes until 1.0.
   says the agent is still running and gives the `kill` command, and `clean` refuses to remove that
   worktree while the process lives. Identity here fails **closed** (pid *and* recorded start time
   must match): reaping assumes ambiguity means "still ours" so it never kills a live run, but
-  pointing a human at an unverified pid could send them after a recycled one. `clean` takes the
+  pointing a human at an unverified pid could send them after a recycled one — and "verified" there
+  means a real start-time comparison, not merely the absence of a contradiction, so a pid whose
+  probe is unavailable never counts as confirmed. `clean` takes the
   opposite bias on purpose: refusing to remove a worktree that *might* still have a writer only
   leaves a directory behind, while removing one that does destroys work in progress — so it spares
   the worktree of any run whose pid is still alive, verified or not. `SECURITY.md` claimed
@@ -128,6 +130,9 @@ versions may include breaking API changes until 1.0.
   can surface as a transport-shaped error — so a cancelled run classified it as transient, slept,
   and spawned a whole new attempt (backend setup and all) that the pending cancel then killed on
   arrival. That briefly put a second writer in the worktree *after* the record read `cancelled`.
+  The state is checked on both sides of the backoff: the sleep is the widest window in the loop, so
+  a cancel is likeliest to arrive exactly there, and checking only before it let the loop wake and
+  spawn a fresh agent — writing and billing — against an already-cancelled record.
 - **Cancel tests now exercise the path they claim to (#90).** Three tests were written against the
   previous identity-checked cancel and never updated: with no in-process handle registered they
   never reached `killpg` at all, so the kill race and its `ProcessLookupError` branch were covered

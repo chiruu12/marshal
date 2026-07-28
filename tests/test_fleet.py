@@ -535,6 +535,38 @@ def test_non_transient_failure_is_not_retried(repo: Path) -> None:
     assert backend.calls == 1
 
 
+def test_a_cancel_during_the_backoff_sleep_stops_the_retry(repo: Path) -> None:
+    """The backoff is the widest window in the loop, so a cancel is most likely to land exactly
+    there. Checking only before the sleep let the loop wake and spawn a fresh agent - writing to
+    the worktree and billing for it - with the record already reading `cancelled`."""
+    import marshal_engine.fleet as fleet_mod
+
+    fleet = Fleet(repo, {"flaky": _Flaky(["opencode: database is locked"] * 4)},
+                  retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    backend = fleet.backends["flaky"]
+
+    # Cancel arrives DURING the sleep: nothing has requested it before the loop starts waiting.
+    real_sleep = fleet_mod.time.sleep
+    cancelled: dict[str, bool] = {"done": False}
+
+    def sleeping_cancel(seconds: float) -> None:
+        real_sleep(seconds)
+        if not cancelled["done"]:
+            cancelled["done"] = True
+            for rec in fleet.state.list():
+                if rec.status == RunStatus.RUNNING.value:
+                    fleet.cancel_run(rec.run_id)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod.time, "sleep", sleeping_cancel)
+    try:
+        fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    finally:
+        monkey.undo()
+
+    assert backend.calls == 1, "a cancel during the backoff still spawned another attempt"
+
+
 def test_a_cancel_stops_the_retry_loop(repo: Path) -> None:
     """REGRESSION (#89): the retry loop never consulted the cancel state. SIGTERM can surface as a
     transport-shaped error, so a cancelled run slept and spawned a WHOLE new attempt - backend
@@ -2757,6 +2789,32 @@ def test_a_recycled_lock_pid_does_not_block_reaping_forever(repo: Path) -> None:
     finally:
         holder.kill()
         holder.wait()
+
+
+def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
+    """REGRESSION: `_pid_is_verifiably_ours` delegated to `_pid_is_still_ours`, which returns True
+    when the start-time probe is unavailable - the fail-OPEN answer. Inheriting that made an
+    unprobeable pid read as *verified*, so cancel would hand an operator a `kill` command for what
+    might be a recycled process group. Verification must mean a real comparison, not the absence of
+    a contradiction."""
+    import marshal_engine.fleet as fleet_mod
+
+    rec = RunRecord(
+        run_id="probe.writer.x",
+        task_id="probe",
+        backend="writer",
+        status="running",
+        pid=4242,
+        pid_start_time="Mon Jan  1 00:00:00 2026",
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod, "_pid_alive", lambda pid: True)  # the process exists...
+    monkey.setattr(fleet_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
+    try:
+        assert fleet_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
+        assert fleet_mod._pid_is_verifiably_ours(rec) is False
+    finally:
+        monkey.undo()
 
 
 def test_an_unverifiable_pid_is_never_named_in_a_kill_instruction(repo: Path) -> None:
