@@ -52,6 +52,31 @@ versions may include breaking API changes until 1.0.
     WARN-level preflight, and the scaffolded `fleet.config.yaml` now suggests commented read-only
     reviewer clients — without one, the first `run_team` a new user tries fails validation.
 
+- **PyPI publication prep.** The release workflow publishes via Trusted Publishing (OIDC) only on a
+  published GitHub Release or a manual `workflow_dispatch` — never on a branch push, and with no API
+  token anywhere. Packaging metadata and hatch sdist excludes are tightened so the wheel carries
+  `marshal_engine` plus `py.typed` and `data/prices.yaml` and nothing else (no `tests/`, `.marshal/`,
+  repo `teams/`, `fleet.config.yaml`, or `docs/internal/`). Every action in the release job is
+  pinned by commit SHA rather than a mutable tag — the job holds `id-token: write`, so any step in
+  it can reach the publishing credential — and the run refuses to publish unless it is on a tag
+  whose name matches the built version, which also catches a release cut without a version bump.
+  The build backend is version-pinned (it is resolved at build time, not from `uv.lock`, so an
+  unconstrained one makes the artifact non-reproducible), and a concurrency group stops two runs
+  racing the same irreplaceable upload. Documented plainly: `workflow_dispatch` runs the workflow
+  file **as it exists on the selected ref**, so the in-workflow guards can be edited away on a
+  branch and PyPI validates only the workflow filename and environment — GitHub Environment
+  protection is the one control that does not live inside the ref being published, and is required
+  rather than recommended. The workflow targets the `PYPI` environment, matched to the one actually
+  configured on the repo (required reviewer, plus a deployment policy limited to `v*` **tags** with
+  no branch policies). A contract test pins that name: environment names are case-sensitive and a
+  mismatch fails *silently* — the run resolves to a different, non-existent environment, so its
+  reviewers and tag policy do not apply and its secrets are out of scope. The guard reads the tag through `env:` rather than interpolating
+  `github.ref_name` into the script — a git tag may legally contain shell metacharacters, and a
+  crafted one would otherwise execute commands inside the `id-token: write` job, before the very
+  check meant to stop it. It compares against the version of the **built wheel**, not
+  `marshal_engine.__version__`: hatchling builds from `[project].version`, so checking the source
+  constant would verify a value the artifact need not carry, and a drift between the two would pass
+  the guard while PyPI received a version the tag never claimed.
 - **Conflicting routing is refused instead of silently resolved (#101).** Passing both `client` and
   `backend` names two different answers to "what runs this", and the loser was dropped without a
   word — so a run executed on a backend the caller never asked for and nothing in the result said
@@ -158,6 +183,9 @@ versions may include breaking API changes until 1.0.
   grandfathered sequencers (`workflow.py`, `teams.py`), the three-question admission test, and
   what Chauffeur is expected to replace. Normative detail in `docs/chauffeur-future.md`; inventory
   table in `docs/design.md` §12.
+- **Release process for PyPI.** `CONTRIBUTING.md` documents version bumps, promoting CHANGELOG
+  `[Unreleased]`, artifact smoke-checks (`uv build` + throwaway venv `marshal --version`), and the
+  one-time PyPI Trusted Publisher setup (`marshal`, fallback `marshal-orchestrator`).
 - **Cross-workspace usage/budget contract + budget enforce honesty (#44).** Document that
   multi-workspace MCP shares concurrency only — ledgers, budgets, `EnforceBudgetGate`, and
   session clocks stay per-workspace (no registry spend/budget merge; intentional non-goal). Rewrite

@@ -6,7 +6,18 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "chiruu12" }]
-keywords = ["agents", "orchestration", "mcp", "cursor", "opencode", "codex", "antigravity", "claude-code", "headless", "coding-agent"]
+keywords = [
+    "agents",
+    "orchestration",
+    "mcp",
+    "cursor",
+    "opencode",
+    "codex",
+    "antigravity",
+    "claude-code",
+    "headless",
+    "coding-agent",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -17,14 +28,16 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Build Tools",
     "Operating System :: POSIX",
+    "Typing :: Typed",
 ]
 dependencies = [
     "pydantic>=2.13.4",
     "pyyaml>=6.0",
 ]
 
-# NOTE: distribution name is "marshal"; the IMPORT package is `marshal_engine`.
-# A top-level package literally named `marshal` would shadow the stdlib builtin and fail to import.
+# Distribution name is `marshal` when that name is free on PyPI; fallback is
+# `marshal-orchestrator`. The IMPORT package is always `marshal_engine` — a
+# top-level package literally named `marshal` would shadow the stdlib builtin.
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.28.1"]
@@ -46,11 +59,26 @@ Issues = "https://github.com/chiruu12/marshal/issues"
 Changelog = "https://github.com/chiruu12/marshal/blob/main/CHANGELOG.md"
 
 [build-system]
-requires = ["hatchling"]
+# Pinned: the build backend is resolved at build time, NOT from uv.lock (which tracks runtime deps),
+# so an unconstrained backend makes the published artifact non-reproducible.
+requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# Wheel ships only the import package (incl. py.typed + data/prices.yaml).
 packages = ["src/marshal_engine"]
+
+[tool.hatch.build.targets.sdist]
+# Rebuild needs src/, tests/, lockfile, and project metadata. Keep local IDE /
+# runtime paths out of the tarball (they are gitignored or not part of the package).
+exclude = [
+    "/.cursor",
+    "/.marshal",
+    "/teams",
+    "/marshal-runs",
+    "/dist",
+    "/build",
+]
 
 [tool.ruff]
 line-length = 100
