@@ -171,6 +171,16 @@ versions may include breaking API changes until 1.0.
   feeds routing: the catalog is curated metadata a human wrote, a probe is whatever a CLI said just
   now, and flattening the two would let a probe drift into looking like configuration.
 
+- **A run records what provisioned its worktree (#77).** Agents reported "1308 passed" where the
+  workspace showed "1351 passed, 0 skipped" - a bare `uv sync` had left the project's extras
+  uninstalled - and it took **three occurrences** before a driver with full context recognised the
+  pattern. In the reporter's words, *"a number that means something different in two worlds, with
+  nothing marking it, is a trap the tool sets."* We hit the same class ourselves the same day: six
+  `test_cli.py` failures that occur only inside a worktree. `worktree_setup` on the run record names
+  the command the environment came from, and `null` says the worktree was a bare checkout - the
+  sharpest form of the delta. Marshal does not own that config, but it does own whether the
+  difference is visible on the result.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is

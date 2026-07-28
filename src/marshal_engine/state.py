@@ -56,6 +56,16 @@ class RunRecord(BaseModel):
     # not would-be-succeeded, or no file changes to gate); False pairs with status `verify_failed`.
     verify_passed: bool | None = None
     verify_output: str = ""  # tail-truncated verify command output (failures print last)
+    # The command that provisioned this run's worktree, or None when none was configured (the
+    # worktree is then a bare checkout: no venv, no extras, no gitignored data dirs).
+    #
+    # Recorded because a NUMBER from a worktree does not mean the same thing as the same number
+    # from your checkout, and nothing marked the difference. Reported in the field: agents said
+    # "1308 passed" where the workspace showed "1351 passed, 0 skipped" - a bare `uv sync` had left
+    # the extras uninstalled - and it took three occurrences before a driver with full context
+    # recognised the pattern. Marshal does not own `worktree_setup` (it is the user's config), but
+    # it does own whether the difference is visible on the result.
+    worktree_setup: str | None = None
 
 
 class FleetState:

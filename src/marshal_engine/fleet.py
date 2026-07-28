@@ -858,6 +858,11 @@ class Fleet:
                     branch=wt.branch,
                     base_branch=resolved_base,
                     base_commit=resolved_base_commit,
+                    # What this worktree's environment came from. `None` means it was provisioned
+                    # by nothing - a bare checkout - which is the sharpest form of the delta.
+                    worktree_setup=(
+                        " ".join(self.worktrees.setup_cmd) if self.worktrees.setup_cmd else None
+                    ),
                     started_at=started,
                 )
             )
