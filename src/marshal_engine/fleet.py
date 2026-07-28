@@ -672,6 +672,21 @@ class RunRequest(BaseModel):
     usage_api: str | None = None  # provider usage-API for real cost (e.g. "eastrouter"); see eastrouter.py
 
 
+class RunManyJob(BaseModel):
+    """One ``run_many`` slot: a primary request and an optional in-worker ``then`` follow-up."""
+
+    request: RunRequest
+    then: RunRequest | None = None
+
+
+class RunManyJobResult(BaseModel):
+    """Outcome of one ``run_many`` job. ``then`` is set only when the follow-up actually ran."""
+
+    primary: RunRecord
+    then: RunRecord | None = None
+    then_skipped: str | None = None  # why ``then`` was not run (primary failed, no branch, …)
+
+
 class Fleet:
     def __init__(
         self,
@@ -1154,28 +1169,59 @@ class Fleet:
 
     def run_many(
         self,
-        requests: list[RunRequest],
+        jobs: list[RunManyJob],
         *,
         max_concurrency: int = 4,
         stagger_s: float = 0.1,
-    ) -> list[RunRecord]:
-        """Run a batch of requests concurrently in isolated worktrees; block until all finish.
+    ) -> list[RunManyJobResult]:
+        """Run a batch of jobs concurrently; block until every chain finishes.
 
-        Concurrency is capped at `max_concurrency` (each agent CLI is 150-400 MB, so an uncapped
-        fan-out OOMs the host). Submissions are spaced by `stagger_s` to ease the Cursor
-        concurrent-launch file-lock race. A single request's failure is captured as a FAILED record
-        and never aborts the batch. Records are returned in the same order as `requests`.
+        Each job runs its primary request, then — when the job carries a ``then`` follow-up — runs
+        that follow-up in the **same worker** as soon as the primary reaches a terminal state. A
+        follow-up does **not** wait for sibling primaries (unlike a second barrier).
+
+        ``max_concurrency`` caps thread-pool workers. Each worker runs one chain at a time (primary,
+        then optionally ``then`` back-to-back), so at most ``max_concurrency`` agent processes run
+        concurrently. Submissions are spaced by ``stagger_s`` to ease the Cursor concurrent-launch
+        file-lock race. A single run's failure is captured as a FAILED record and never aborts the
+        batch. Returns one ``RunManyJobResult`` per input job, in input order; ``then`` is absent
+        (with ``then_skipped`` set) when the primary failed, has no branch, or ``commit_run`` could
+        not freeze the primary's work for chaining.
         """
-        results: list[RunRecord | None] = [None] * len(requests)
+        results: list[RunManyJobResult | None] = [None] * len(jobs)
         with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
             futures = {}
-            for i, req in enumerate(requests):
+            for i, job in enumerate(jobs):
                 if stagger_s and i:
                     time.sleep(stagger_s)
-                futures[pool.submit(self._run_request, req)] = i
+                futures[pool.submit(self._run_many_chain, job)] = i
             for fut in futures:
-                results[futures[fut]] = fut.result()  # _run_request never raises
+                results[futures[fut]] = fut.result()  # _run_many_chain never raises
         return [r for r in results if r is not None]
+
+    def _run_many_chain(self, job: RunManyJob) -> RunManyJobResult:
+        """Run one primary request and its optional ``then`` follow-up in this worker."""
+        primary = self._run_request(job.request)
+        if job.then is None:
+            return RunManyJobResult(primary=primary)
+        skip = self._then_skip_reason(primary)
+        if skip:
+            return RunManyJobResult(primary=primary, then_skipped=skip)
+        commit = self.commit_run(primary.run_id)
+        if commit.status in ("blocked", "error"):
+            msg = commit.message or commit.status
+            return RunManyJobResult(primary=primary, then_skipped=f"commit_run: {msg}")
+        then_task = job.then.task.model_copy(update={"base_branch": primary.branch})
+        then_req = job.then.model_copy(update={"task": then_task})
+        then_rec = self._run_request(then_req)
+        return RunManyJobResult(primary=primary, then=then_rec)
+
+    def _then_skip_reason(self, primary: RunRecord) -> str | None:
+        if primary.status != RunStatus.EXITED_CLEAN.value:
+            return f"primary run did not succeed ({primary.status})"
+        if not primary.branch:
+            return "primary run has no branch"
+        return None
 
     def _run_request(self, req: RunRequest) -> RunRecord:
         """run_request one request, capturing any failure as a FAILED record so a batch survives it."""

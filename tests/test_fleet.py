@@ -25,7 +25,7 @@ from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
-from marshal_engine.fleet import Fleet, RunRequest, _active_runs_guard, _register_inflight_run
+from marshal_engine.fleet import Fleet, RunManyJob, RunRequest, _active_runs_guard, _register_inflight_run
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
 from marshal_engine.state import FleetState, RunRecord
@@ -748,24 +748,24 @@ def test_fleet_log_write_failure_does_not_break_run(
 
 def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
-    reqs = [RunRequest(backend_name="writer", task=TaskSpec(id=f"m{i}", goal="x")) for i in range(6)]
-    records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
+    reqs = [RunManyJob(request=RunRequest(backend_name="writer", task=TaskSpec(id=f"m{i}", goal="x"))) for i in range(6)]
+    results = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
 
-    assert [r.task_id for r in records] == [f"m{i}" for i in range(6)]  # input order preserved
-    assert all(r.status == "exited_clean" for r in records)
-    assert len({r.worktree for r in records}) == 6                      # each in its own worktree
-    for r in records:
-        assert (Path(r.worktree or "") / "out.txt").read_text() == "hi"
+    assert [r.primary.task_id for r in results] == [f"m{i}" for i in range(6)]  # input order preserved
+    assert all(r.primary.status == "exited_clean" for r in results)
+    assert len({r.primary.worktree for r in results}) == 6                      # each in its own worktree
+    for r in results:
+        assert (Path(r.primary.worktree or "") / "out.txt").read_text() == "hi"
     assert len(fleet.state.list()) == 6                                 # all persisted, none lost
 
 
 def test_run_many_runs_concurrently(repo: Path) -> None:
     fleet = Fleet(repo, {"sleeper": _Sleeper()})  # each run sleeps ~0.5s
-    reqs = [RunRequest(backend_name="sleeper", task=TaskSpec(id=f"s{i}", goal="x")) for i in range(4)]
+    reqs = [RunManyJob(request=RunRequest(backend_name="sleeper", task=TaskSpec(id=f"s{i}", goal="x"))) for i in range(4)]
     start = time.monotonic()
-    records = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
+    results = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
     elapsed = time.monotonic() - start
-    assert all(r.status == "exited_clean" for r in records)
+    assert all(r.primary.status == "exited_clean" for r in results)
     # Sequential would be ≥ ~2s of sleep alone (4 × 0.5s). Bound is loose enough for
     # CI/load jitter while still proving overlap.
     assert elapsed < 1.9
@@ -886,9 +886,9 @@ def test_run_many_preserves_usage_api(repo: Path) -> None:
         model="z-ai/glm-5.1",
         usage_api="eastrouter",
     )
-    records = fleet.run_many([req])
-    assert len(records) == 1
-    rec = records[0]
+    results = fleet.run_many([RunManyJob(request=req)])
+    assert len(results) == 1
+    rec = results[0].primary
     assert rec.source == "admin-api"
     assert rec.cost_usd == 0.42
     assert seen["input_tokens"] == 1_000_000

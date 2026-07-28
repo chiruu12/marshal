@@ -244,7 +244,7 @@ def test_run_gate_caps_concurrency_across_runs(tmp_path: Path) -> None:
     cfg = FleetConfig(clients={f"w{i}": ClientConfig(name=f"w{i}", backend="slow") for i in range(3)})
     svc = MarshalService(repo, cfg, backends={"slow": backend}, run_gate=threading.BoundedSemaphore(1))
     recs = svc.run_many([{"client": f"w{i}", "goal": "g", "task_id": f"j{i}"} for i in range(3)], max_concurrency=3)
-    assert all(r.status == "exited_clean" for r in recs)
+    assert all(r.primary.status == "exited_clean" for r in recs)
     assert backend.peak == 1  # the shared gate serialized them despite max_concurrency=3
 
 
@@ -1340,7 +1340,7 @@ def test_mcp_round_trip_many_benchmark_integrate(tmp_path: Path) -> None:
     app, _reg, _a, _b = _two_ws_app(tmp_path)
 
     rm = _call(app, "run_many", {"jobs": [{"client": "worker", "goal": "g", "task_id": "j1"}], "workspace": "beta"})
-    assert rm[0]["workspace"] == "beta" and rm[0]["status"] == "exited_clean"
+    assert rm[0]["workspace"] == "beta" and rm[0]["primary"]["status"] == "exited_clean"
 
     bench = _call(app, "benchmark", {"goal": "b", "clients": ["worker"], "task_id": "bench1", "workspace": "beta"})
     assert bench["workspace"] == "beta" and bench["task_id"] == "bench1"
@@ -1380,13 +1380,13 @@ def test_registry_run_many_mixed_workspaces(tmp_path: Path) -> None:
         stagger_s=0,
     )
     assert len(paired) == 2
-    assert paired[0][0] == "default" and paired[0][1].status == "exited_clean"
-    assert paired[1][0] == "beta" and paired[1][1].status == "exited_clean"
-    assert Path(paired[0][1].worktree).resolve().is_relative_to(repo_a.resolve())
-    assert Path(paired[1][1].worktree).resolve().is_relative_to(repo_b.resolve())
+    assert paired[0][0] == "default" and paired[0][1].primary.status == "exited_clean"
+    assert paired[1][0] == "beta" and paired[1][1].primary.status == "exited_clean"
+    assert Path(paired[0][1].primary.worktree).resolve().is_relative_to(repo_a.resolve())
+    assert Path(paired[1][1].primary.worktree).resolve().is_relative_to(repo_b.resolve())
     # Ledgers stay per-workspace (no shared run state).
-    assert {r.run_id for r in FleetState(repo_a / ".marshal" / "runs").list()} == {paired[0][1].run_id}
-    assert {r.run_id for r in FleetState(repo_b / ".marshal" / "runs").list()} == {paired[1][1].run_id}
+    assert {r.run_id for r in FleetState(repo_a / ".marshal" / "runs").list()} == {paired[0][1].primary.run_id}
+    assert {r.run_id for r in FleetState(repo_b / ".marshal" / "runs").list()} == {paired[1][1].primary.run_id}
 
 
 def test_registry_run_many_unknown_workspace_fails_fast(tmp_path: Path) -> None:
@@ -1450,10 +1450,10 @@ def test_mcp_run_many_mixed_workspaces(tmp_path: Path) -> None:
         },
     )
     assert len(rm) == 2
-    assert rm[0]["workspace"] == "default" and rm[0]["status"] == "exited_clean"
-    assert rm[1]["workspace"] == "beta" and rm[1]["status"] == "exited_clean"
-    assert Path(rm[0]["worktree"]).resolve().is_relative_to(repo_a.resolve())
-    assert Path(rm[1]["worktree"]).resolve().is_relative_to(repo_b.resolve())
+    assert rm[0]["workspace"] == "default" and rm[0]["primary"]["status"] == "exited_clean"
+    assert rm[1]["workspace"] == "beta" and rm[1]["primary"]["status"] == "exited_clean"
+    assert Path(rm[0]["primary"]["worktree"]).resolve().is_relative_to(repo_a.resolve())
+    assert Path(rm[1]["primary"]["worktree"]).resolve().is_relative_to(repo_b.resolve())
 
 
 def test_mcp_run_many_unknown_workspace_errors(tmp_path: Path) -> None:

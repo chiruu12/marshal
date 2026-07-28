@@ -98,7 +98,8 @@ class Job(BaseModel):
     ``workspace`` (default workspace when omitted). Mixed-workspace batches share one concurrency
     cap; each workspace keeps its own config, worktrees, and ledger. A job may also be specified
     ad-hoc (omit ``client``, set ``backend`` + optional ``model``) for harness-first routing without
-    a configured fleet.config.yaml client.
+    a configured fleet.config.yaml client. Optional ``then`` runs a follow-up in the same worker as
+    soon as this job's primary finishes (see ``run_many``).
     """
 
     client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
@@ -108,6 +109,16 @@ class Job(BaseModel):
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
+    then: Annotated[
+        "ThenJob | None",
+        Field(
+            description=(
+                "Optional follow-up run in the same worker after this job's primary finishes. "
+                "Same fields as a job (no nested `then` or `workspace`). Skipped when the primary "
+                "failed or has no branch."
+            )
+        ),
+    ] = None
     workspace: Annotated[
         str | None,
         Field(
@@ -117,6 +128,21 @@ class Job(BaseModel):
             )
         ),
     ] = None
+
+
+class ThenJob(BaseModel):
+    """Follow-up stage for a run_many job (same field set as Job, minus workspace/then)."""
+
+    client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
+    goal: Annotated[str, Field(description=_DESC_GOAL)]
+    task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None
+    context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
+    model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
+    backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
+    duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
+
+
+Job.model_rebuild()
 
 
 def build_service() -> MarshalService:
@@ -226,7 +252,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
                 "run_agent": "Blocks until the run finishes. Use for short work you want inline.",
                 "spawn": "Returns immediately with a RUNNING record. Use for anything long - it "
                 "does not hold your turn. Poll with get_run, stop with cancel_run.",
-                "run_many": "Several jobs in parallel, one per worktree. Returns when all finish.",
+                "run_many": "Several jobs in parallel (optional per-job then chains). Returns when all chains finish.",
                 "run_workflow": "A declarative recipe (fan-out, gates, integrate) from a YAML file.",
             },
             "which_status_tool": {
@@ -365,15 +391,28 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> list[dict[str, Any]]:
         """Run several jobs in parallel, each in its own worktree. Jobs may target different
         registered workspaces via per-job `workspace` (call-level `workspace` is the default for
-        jobs that omit it). Returns all run records, each tagged with the workspace it ran in.
-        Ledgers and worktrees stay per-workspace; only the concurrency cap is shared."""
+        jobs that omit it). Optional per-job `then` runs a follow-up in the same worker as soon as
+        that job's primary finishes — it does not wait for sibling jobs. Returns one result object
+        per input job (input order), each tagged with the workspace it ran in. Ledgers and worktrees
+        stay per-workspace; only the concurrency cap is shared."""
         paired = await offload(
             registry.run_many,
             [j.model_dump() for j in jobs],
             max_concurrency=max_concurrency,
             default_workspace=workspace,
         )
-        return [tag(r.model_dump(mode="json"), ws) for ws, r in paired]
+
+        def dump_chain(result: Any) -> dict[str, Any]:
+            if isinstance(result, BaseModel):
+                return result.model_dump(mode="json")
+            assert isinstance(result, dict)
+            return result
+
+        out: list[dict[str, Any]] = []
+        for ws, chain in paired:
+            payload = dump_chain(chain)
+            out.append(tag(payload, ws))
+        return out
 
     @app.tool()
     async def spawn(

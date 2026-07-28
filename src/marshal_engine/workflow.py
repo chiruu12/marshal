@@ -30,7 +30,7 @@ from .config import ConfigError, FleetConfig
 from .types import RunStatus
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
-    from .fleet import CollectResult, IntegrateResult
+    from .fleet import CollectResult, IntegrateResult, RunManyJobResult
     from .state import RunRecord
 
 _GENERATIVE = ("fan_out", "agent")
@@ -271,7 +271,7 @@ class WorkflowService(Protocol):
 
     config: FleetConfig
 
-    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]: ...
+    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]: ...
     def run_agent(self, client_name: str, goal: str, *, task_id: str | None = None) -> RunRecord: ...
     def collect_run(self, run_id: str) -> CollectResult: ...
     def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult: ...
@@ -320,7 +320,8 @@ class WorkflowRunner:
                 # driver needs the full picture. Record the failure as a phase note + next
                 # action, mark had_error, and keep going so subsequent phases still execute.
                 try:
-                    records = self.service.run_many(jobs, max_concurrency=max_concurrency)
+                    batch = self.service.run_many(jobs, max_concurrency=max_concurrency)
+                    records = [r.primary for r in batch]
                 except Exception as exc:  # noqa: BLE001 - the runner swallows + reports, doesn't crash
                     had_error = True
                     msg = f"phase {idx} ({label}): run_many failed: {exc}"
