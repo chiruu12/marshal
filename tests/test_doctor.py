@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.doctor import FAIL, OK, WARN, run_checks, summarize
+from marshal_engine.layout import runs_dir
+from marshal_engine.state import FleetState, RunRecord
 from marshal_engine.types import (
     AgentResult,
     Capabilities,
@@ -510,3 +513,67 @@ def test_doctor_omits_the_teams_check_when_no_teams_exist(tmp_path: Path) -> Non
     (repo / "fleet.config.yaml").write_text("clients: {}\n")
     checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
     assert not [c for c in checks if c.name == "teams"]
+
+
+def _quota_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "fleet.config.yaml").write_text("clients: {}\n")
+    return repo
+
+
+def _record(**kw: object) -> RunRecord:
+    base = {"task_id": "t", "backend": "cursor", "status": "failed"}
+    return RunRecord(**{**base, **kw})  # type: ignore[arg-type]
+
+
+def test_doctor_warns_when_recent_runs_failed_on_billing(tmp_path: Path) -> None:
+    """`doctor` green used to mean "CLI present and authed", which two field reports independently
+    mistook for "ready to run" - both found an exhausted balance only by spending a run. The
+    ledger already knows; surface it."""
+    repo = _quota_repo(tmp_path)
+    runs = FleetState(runs_dir(repo))
+    now = datetime.now(timezone.utc)
+    runs.add(_record(
+        run_id="a.cursor.1",
+        error="cursor-agent: Insufficient balance. Please top up.",
+        ended_at=(now - timedelta(hours=2)).isoformat(),
+    ))
+    runs.add(_record(
+        run_id="b.cursor.2",
+        error="quota exceeded for premium models",
+        ended_at=(now - timedelta(hours=1)).isoformat(),
+    ))
+
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    quota = [c for c in checks if c.name == "quota:cursor"]
+    assert quota and quota[0].status == WARN
+    assert "2 run(s)" in quota[0].detail
+    assert "quota exceeded" in quota[0].detail, "should quote the most recent failure"
+
+
+def test_doctor_stays_silent_when_no_billing_failures_were_recorded(tmp_path: Path) -> None:
+    """Silence means "nothing was seen", and must never be dressed up as "quota verified healthy" -
+    doctor cannot read provider balances, and claiming otherwise is the overclaim being fixed."""
+    repo = _quota_repo(tmp_path)
+    runs = FleetState(runs_dir(repo))
+    runs.add(_record(
+        run_id="a.cursor.1",
+        error="AssertionError: expected 2 got 3",  # a real task failure, not billing
+        ended_at=datetime.now(timezone.utc).isoformat(),
+    ))
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    assert not [c for c in checks if c.name.startswith("quota:")]
+
+
+def test_doctor_ignores_billing_failures_outside_the_window(tmp_path: Path) -> None:
+    """A balance topped up last week should not still be shouting."""
+    repo = _quota_repo(tmp_path)
+    runs = FleetState(runs_dir(repo))
+    runs.add(_record(
+        run_id="old.cursor.1",
+        error="Insufficient balance",
+        ended_at=(datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),
+    ))
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    assert not [c for c in checks if c.name.startswith("quota:")]
