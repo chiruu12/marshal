@@ -109,6 +109,16 @@ versions may include breaking API changes until 1.0.
   unknown backend name reads differently from an installed-but-absent CLI, because those have
   different fixes.
 
+- **`clean --dry-run` says which worktrees hold unmerged work (#76).** The reporter had 84
+  worktrees and cleaned none of them: *"I couldn't tell which held unmerged work that wasn't mine."*
+  The filters they asked for (`scope`, `older_than_hours`, `dry_run`) already existed and were never
+  the blocker - the missing thing was the safety signal, and no amount of filtering substitutes for
+  it. A dry run now reports `unmerged_commits` per candidate. `null` means **cannot tell** (no
+  branch, or git could not be asked), never zero: a driver reading absence as "nothing to lose"
+  would delete work, which is the opposite of what the truth justifies. Note the runs this matters
+  most for - succeeded but never integrated - are deliberately outside the default `finished` scope,
+  so they need `scope="all"` to appear at all.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is

@@ -2447,3 +2447,39 @@ def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
 
     fleet.cancel_run(run_id)
     assert killed == [2222], "the retry's agent was not signalled"
+
+
+def test_clean_dry_run_says_which_worktrees_hold_unmerged_work(repo: Path) -> None:
+    """REGRESSION (#76): 84 worktrees accumulated because the filters were never the blocker -
+    "I couldn't tell which held unmerged work that wasn't mine" was. The preview now answers that
+    where the decision is actually made."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="unmerged", goal="x"))
+    # The writer backend leaves a file; commit it onto the run's branch so it is genuinely unmerged.
+    fleet.commit_run(rec.run_id, message="work nobody has landed")
+
+    # scope="all" is the realistic case: an unmerged succeeded run is deliberately NOT in the
+    # default scope, so the worktrees the reporter was staring at are exactly these.
+    preview = fleet.clean(scope="all", dry_run=True)
+    rows = {r["run_id"]: r for r in preview.unmerged}
+    assert rec.run_id in rows, "the preview did not report on a candidate"
+    assert rows[rec.run_id]["unmerged_commits"] >= 1
+    assert rows[rec.run_id]["merged_into"] is None
+
+
+def test_clean_dry_run_reports_unknown_rather_than_zero_when_it_cannot_tell(repo: Path) -> None:
+    """`None` must mean "cannot tell", never "nothing to lose" - a driver reading absence as zero
+    would delete work, which is the opposite of the action the truth justifies."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.state.add(
+        RunRecord(
+            run_id="nobranch.writer.x",
+            task_id="nobranch",
+            backend="writer",
+            status="succeeded",
+            ended_at="2026-01-01T00:00:00+00:00",
+            branch=None,  # nothing to compare against
+        )
+    )
+    rows = {r["run_id"]: r for r in fleet.clean(scope="all", dry_run=True).unmerged}
+    assert rows["nobranch.writer.x"]["unmerged_commits"] is None
