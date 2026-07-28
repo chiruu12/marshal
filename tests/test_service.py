@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import time
@@ -1178,3 +1179,114 @@ def test_a_configured_catalog_suppresses_the_probe(repo: Path) -> None:
     listing = svc.list_models()
     assert [m.id for m in listing.models] == ["curated/one"]
     assert listing.backend_models == {}
+
+
+def test_read_run_file_hands_one_agents_artifact_to_the_driver(repo: Path) -> None:
+    """#80: an agent that produces a report had no way to hand it on. `collect_run` returns the
+    whole diff (wrong granularity) and `context_files` refuses paths outside the target worktree
+    (correctly - that guard is what keeps a run inside its boundary)."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "produce a report")
+    (Path(rec.worktree) / "REPORT.md").write_text("findings the next agent needs\n")
+
+    got = svc.read_run_file(rec.run_id, "REPORT.md")
+    assert got.content == "findings the next agent needs\n"
+    assert got.truncated is False
+    assert got.run_id == rec.run_id
+
+
+def test_read_run_file_reports_a_mid_read_clean_as_the_cleaned_worktree_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The existence/is_file checks are a snapshot; `clean` can land between them and the read.
+
+    One state must not yield two diagnostics depending on which microsecond the caller arrived in -
+    a raw FileNotFoundError here instead of the documented cleaned-worktree ValueError leaves the
+    driver unable to branch on the condition it was told to expect.
+    """
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "produce a report")
+    wt = Path(rec.worktree)
+    (wt / "REPORT.md").write_text("findings\n")
+
+    real_stat = Path.stat
+
+    def stat_but_clean_first(self: Path, *a: object, **kw: object) -> object:
+        # Simulate the concurrent `clean` landing after the guards, before the read.
+        if self.name == "REPORT.md" and wt.exists():
+            shutil.rmtree(wt)
+        return real_stat(self, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", stat_but_clean_first)
+    with pytest.raises(ValueError, match="worktree is gone"):
+        svc.read_run_file(rec.run_id, "REPORT.md")
+
+
+def test_read_run_file_refuses_a_path_outside_the_worktree(repo: Path) -> None:
+    """`Path(wt) / "/etc/passwd"` is `/etc/passwd` - an absolute path discards the base, and `..`
+    walks out. Same containment the context_files guard enforces, for the same reason."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "x")
+    for bad in ("/etc/hosts", "../../escape.txt"):
+        with pytest.raises(ValueError, match="outside"):
+            svc.read_run_file(rec.run_id, bad)
+
+
+def test_read_run_file_says_when_it_truncated(repo: Path) -> None:
+    """Silently returning a prefix would let a driver act on part of a report believing it had the
+    whole thing - the exact class of "a value that means less than it appears" these reviews are
+    about."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "x")
+    (Path(rec.worktree) / "BIG.md").write_text("x" * 5000)
+
+    got = svc.read_run_file(rec.run_id, "BIG.md", max_bytes=100)
+    assert got.truncated is True
+    assert len(got.content) == 100
+    assert got.size_bytes == 5000, "the real size is reported, not the clipped one"
+
+
+def test_read_run_file_never_loads_more_than_it_returns(repo: Path) -> None:
+    """`read_bytes()` would pull an agent-produced artifact of ANY size into the MCP server's
+    memory before slicing it, and the caller picks the path - so the size is not ours to assume.
+    Asserting `truncated` is not enough: that passes even when the whole file was loaded first.
+    This pins the *read* itself."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "x")
+    (Path(rec.worktree) / "HUGE.md").write_text("y" * 100_000)
+
+    reads: list[int] = []
+    real_open = Path.open
+
+    def spy(self, *a, **kw):  # type: ignore[no-untyped-def]
+        stream = real_open(self, *a, **kw)
+        if self.name == "HUGE.md":
+            real_read = stream.read
+
+            def counting(n=-1):  # type: ignore[no-untyped-def]
+                data = real_read(n)
+                reads.append(len(data))
+                return data
+
+            stream.read = counting  # type: ignore[method-assign]
+        return stream
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(Path, "open", spy)
+    try:
+        got = svc.read_run_file(rec.run_id, "HUGE.md", max_bytes=500)
+    finally:
+        monkey.undo()
+
+    assert got.truncated is True
+    assert got.size_bytes == 100_000, "the true size is still reported, from stat()"
+    assert max(reads) <= 501, f"read {max(reads)} bytes to return 500"
+
+
+def test_read_run_file_on_a_cleaned_worktree_says_so(repo: Path) -> None:
+    """"The worktree is gone" and "the file is not there" are different problems."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "x")
+    svc.clean(scope="all")
+    with pytest.raises(ValueError, match="gone"):
+        svc.read_run_file(rec.run_id, "anything.md")

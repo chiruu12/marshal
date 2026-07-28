@@ -344,6 +344,33 @@ capped list as the whole ledger would draw exactly the wrong conclusion.
 Omitting `workspace` aggregates run *records* across workspaces for visibility; it is **not** a
 merged usage/budget view (see `usage`).
 
+### `read_run_file`
+
+Read one file out of a run's worktree — how one agent's output reaches the next.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `run_id` | string | *(required)* | The run whose worktree to read from. |
+| `path` | string | *(required)* | Path **relative to that run's worktree root**. Absolute paths and `..` are refused — `Path(wt) / "/etc/passwd"` is `/etc/passwd`, so the containment check is the same one `context_files` applies. |
+| `workspace` | string \| null | `null` | Workspace hint. |
+
+**Returns:** `{ run_id, path, content, truncated, size_bytes }`.
+
+**Check `truncated`.** Large files are clipped and `size_bytes` reports the real size; acting on a
+prefix while believing it is whole is the mistake this flag exists to prevent.
+
+**Which handover do you want?**
+
+- **Read an artifact** (a report, findings, a generated spec) → `read_run_file`, then put the
+  content in the next run's `goal`. The next agent reads what the first actually wrote, rather than
+  the driver's paraphrase of it.
+- **Build on the code** → `commit_run` then `spawn(base_branch=<that run's branch>)`. The next
+  worktree is cut from the work itself.
+
+This is a read: it copies nothing and starts nothing, so the driver stays the one deciding what the
+next agent sees — which is where that judgement belongs, since the driver is what reviewed the
+output.
+
 ### `cancel_run`
 
 SIGTERM the agent process group — but only for a **live child of the server process handling the
