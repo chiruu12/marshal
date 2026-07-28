@@ -78,7 +78,10 @@ versions may include breaking API changes until 1.0.
   decided immediately (its liveness is knowable, so waiting would only keep a dead run reported as
   RUNNING), and a record skipped for being young is re-examined on the next `status`/`get_run`
   rather than only at the next Fleet construction — otherwise a genuine orphan that happened to be
-  young at startup would read RUNNING for the whole life of a long-running server.
+  young at startup would read RUNNING for the whole life of a long-running server. Multi-workspace
+  MCP `status` reads ledgers directly rather than through the service, so it finishes a pending
+  reconciliation for any workspace whose Fleet already exists in the process (it still never builds
+  one to do so — where no Fleet was built, nothing reaped).
 - **A pid is never written onto a terminal record.** After such a reap, the pid callback stamped a
   live pid onto the `failed` record, producing a record that claimed a running process for a run it
   said was dead. The write is now conditional on the run still being non-terminal.

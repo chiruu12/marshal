@@ -350,6 +350,45 @@ def test_ledger_runs_aggregates_and_scopes(tmp_path: Path) -> None:
         reg.ledger_runs("ghost")
 
 
+def test_ledger_runs_finishes_a_deferred_reconciliation(tmp_path: Path) -> None:
+    """REGRESSION: MCP `status` reads ledgers here rather than through MarshalService, so a
+    reconciliation the Fleet deferred at startup was never finished on the one surface a driver
+    actually polls - the orphan kept reading RUNNING however long the server lived."""
+
+    class _StubFleet:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.session_start = None  # seeded into the runtime cache at registry construction
+            self.budget_gate = None
+
+        def reconcile_orphans(self) -> None:
+            self.calls += 1
+
+    class _StubService:
+        def __init__(self) -> None:
+            self.fleet = _StubFleet()
+
+    a = tmp_path / "a"
+    a.mkdir()
+    _write_run(a, "r-a")
+    defs = [WorkspaceDef("default", a, a / "c.yaml")]
+    svc = _StubService()
+    reg = WorkspaceRegistry(defs, builder=_explode, prebuilt={"default": svc})  # type: ignore[dict-item]
+
+    assert {r.run_id for _, r in reg.ledger_runs()} == {"r-a"}
+    assert svc.fleet.calls == 1, "the ledger read did not finish the deferred reconciliation"
+
+
+def test_ledger_runs_does_not_build_a_service_to_reconcile(tmp_path: Path) -> None:
+    """A workspace with no Fleet in this process never built one, so nothing reaped and there is
+    nothing to finish - reading its ledger must stay build-free."""
+    a = tmp_path / "a"
+    a.mkdir()
+    _write_run(a, "r-a")
+    reg = WorkspaceRegistry([WorkspaceDef("default", a, a / "c.yaml")], builder=_explode)
+    assert {r.run_id for _, r in reg.ledger_runs()} == {"r-a"}  # _explode would raise on a build
+
+
 def test_describe_reports_configured_and_counts(tmp_path: Path) -> None:
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
