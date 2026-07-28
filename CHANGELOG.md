@@ -81,7 +81,23 @@ versions may include breaking API changes until 1.0.
   young at startup would read RUNNING for the whole life of a long-running server. Multi-workspace
   MCP `status` reads ledgers directly rather than through the service, so it finishes a pending
   reconciliation for any workspace whose Fleet already exists in the process (it still never builds
-  one to do so — where no Fleet was built, nothing reaped).
+  one to do so — where no Fleet was built, nothing reaped). A record skipped because its agent was
+  still alive is queued for re-check the same way: "alive right now" is a snapshot, and without this
+  a run whose agent outlived its supervisor and then exited stayed `running` until the server
+  restarted. Two cases remain undecidable by design and are documented rather than guessed at:
+  `marshal status` is a raw ledger read that never reconciles (a short-lived CLI mutating run state
+  is the original bug), and a record carrying neither a pid nor a parseable `started_at` has no
+  evidence either way — it stays visible and honest until `cancel_run`.
+- **A reap is decided and committed atomically.** The scan read each record without a lock while
+  the write only re-checked "still not finished", so a pid stamped in that gap — the run's own
+  process finally reporting in — was overwritten anyway. The whole decision now lives in one
+  predicate that runs again inside `update_if`, under the run's own lock, so a reap can never be
+  authorised by one test and committed against another.
+- **Reconciliation can no longer be lost.** It is no longer gated on a flag fixed at construction:
+  such a flag can only ever be cleared, so an orphan created *after* it cleared was never looked at
+  again. A denied `fleet.lock` claim is now retried on the next read rather than remembered as
+  permanent — ownership can be refused merely because a short-lived CLI held the guard for that
+  instant, which previously left a long-running server that never reconciled again.
 - **A pid is never written onto a terminal record.** After such a reap, the pid callback stamped a
   live pid onto the `failed` record, producing a record that claimed a running process for a run it
   said was dead. The write is now conditional on the run still being non-terminal.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -27,7 +28,7 @@ from marshal_engine.eastrouter import ExternalCost
 from marshal_engine.fleet import Fleet, RunRequest, _active_runs_guard, _register_inflight_run
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
-from marshal_engine.state import RunRecord
+from marshal_engine.state import FleetState, RunRecord
 from marshal_engine.worktree import WorktreeError
 
 
@@ -2540,14 +2541,123 @@ def test_a_deferred_orphan_is_reconciled_on_a_later_read(repo: Path) -> None:
     )
     fleet = Fleet(repo, {"writer": _Writer()})
     assert fleet.state.get("defer.writer.x").status == RunStatus.RUNNING.value
-    assert fleet._reap_deferred, "the skip was not remembered for a re-check"
 
     # Age the record past the window, then read again the way a driver polling status would.
     aged = datetime.now(timezone.utc) - timedelta(seconds=_REAP_GRACE_S + 60)
     fleet.state.update("defer.writer.x", started_at=aged.isoformat())
     fleet.reconcile_orphans()
     assert fleet.state.get("defer.writer.x").status == RunStatus.FAILED.value
-    assert not fleet._reap_deferred, "nothing is left deferred once the record is decided"
+
+
+def test_an_orphan_whose_agent_dies_later_is_still_reaped(repo: Path) -> None:
+    """REGRESSION: a record skipped because its agent was still alive was not put on the re-check
+    list, so when that agent later exited nothing noticed - the run read RUNNING for the whole life
+    of the server. 'Alive right now' is a snapshot, not a verdict."""
+    import marshal_engine.fleet as fleet_mod
+
+    alive = {"yes": True}
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod, "_pid_is_still_ours", lambda rec: alive["yes"])
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="outlived.writer.x",
+                task_id="outlived",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00+00:00",  # old enough that grace never applies
+                pid=4242,
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        assert fleet.state.get("outlived.writer.x").status == RunStatus.RUNNING.value
+
+        alive["yes"] = False  # the surviving agent finally exits
+        fleet.reconcile_orphans()
+        assert fleet.state.get("outlived.writer.x").status == RunStatus.FAILED.value
+    finally:
+        monkey.undo()
+
+
+def test_a_fleet_denied_the_lock_at_startup_can_still_reconcile_later(repo: Path) -> None:
+    """REGRESSION: losing the claim once disabled reconciliation for the whole life of the Fleet.
+    The claim can fail merely because a short-lived CLI held the guard at that instant, so a
+    long-running server could end up never reconciling again. It retries instead."""
+    import marshal_engine.fleet as fleet_mod
+
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id="denied.writer.x",
+            task_id="denied",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    real_claim = fleet_mod._claim_fleet_lock
+    denied_once = {"done": False}
+
+    def claim(path: Path) -> bool:
+        if not denied_once["done"]:
+            denied_once["done"] = True
+            return False  # another process held the guard for this instant
+        return real_claim(path)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod, "_claim_fleet_lock", claim)
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        assert fleet.state.get("denied.writer.x").status == RunStatus.RUNNING.value
+        fleet.reconcile_orphans()  # the claim is retried here
+    finally:
+        monkey.undo()
+
+    assert fleet.state.get("denied.writer.x").status == RunStatus.FAILED.value
+
+
+def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
+    """REGRESSION (TOCTOU): the scan read the record without a lock and the commit only re-checked
+    'still non-terminal'. A pid stamped in that gap - the record's own process finally reporting -
+    was overwritten anyway, which is the original production bug at a narrower window. The commit
+    now re-runs the full reap decision under the run's lock."""
+    import marshal_engine.fleet as fleet_mod
+
+    run_id = "toctou.writer.x"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="toctou",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00+00:00",  # past grace: the scan will decide to reap
+        ),
+    )
+    state = FleetState(repo / ".marshal" / "runs")
+
+    # The record gains a live pid after the scan decides but before the write commits.
+    real = fleet_mod._is_reapable
+    calls = {"n": 0}
+
+    def racing(rec: RunRecord, runs_dir: Path) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            state.update(run_id, pid=os.getpid(), pid_start_time=None)
+            return True  # the scan's (now stale) decision
+        return real(rec, runs_dir)  # the commit-time re-check sees the pid
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod, "_is_reapable", racing)
+    try:
+        Fleet(repo, {"writer": _Writer()})
+    finally:
+        monkey.undo()
+
+    rec = state.get(run_id)
+    assert rec.status == RunStatus.RUNNING.value, "a run was reaped after its pid arrived"
+    assert rec.pid == os.getpid(), "the reap cleared a live pid"
 
 
 def test_a_pid_is_never_written_onto_a_terminal_record(repo: Path) -> None:

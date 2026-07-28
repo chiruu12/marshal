@@ -260,7 +260,7 @@ marshal backends           # list backends, availability, and permission_fidelit
 marshal models             # list the optional `models:` catalog from fleet.config.yaml
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
 marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once
-marshal status             # list fleet runs
+marshal status             # list fleet runs (raw ledger read - see the note below)
 marshal logs <run_id>      # print the persisted stdout/stderr for one run (full, not truncated)
 marshal clean              # tear down finished runs' worktrees + branches (--scope/--dry-run/--older-than)
 marshal usage              # per-provider usage summary (--window day|week|month|all, --json)
@@ -275,7 +275,14 @@ marshal mcp                # run the MCP server over stdio
 ```
 
 `usage`, `status`, `logs`, and `models` accept `--repo` (default: `$MARSHAL_REPO` or cwd) to target a
-repo without the MCP workspace registry. `run`/`spawn` accept `--repo`, `--config`, `--client` (or
+repo without the MCP workspace registry.
+
+**`marshal status` reads the ledger raw and never changes it.** It builds no Fleet, so it does not
+reconcile: a run whose supervising process died can still read `running` here until a process that
+holds `.marshal/fleet.lock` next reconciles (the MCP server does this on `status`/`get_run`). This is
+deliberate — a short-lived CLI that reconciles is exactly what once stamped live agents `failed`, so
+the CLI observes and the lock holder decides. If a `running` row looks stale, check the MCP `status`
+or `cancel_run` it; do not assume the agent is alive. `run`/`spawn` accept `--repo`, `--config`, `--client` (or
 ad-hoc `--backend` + `--model`), and `--duration` (preset or seconds).
 
 **Config path matters.** `run`/`spawn` resolve clients from `<repo>/fleet.config.yaml` (or

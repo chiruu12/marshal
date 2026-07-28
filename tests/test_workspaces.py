@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -377,6 +377,39 @@ def test_ledger_runs_finishes_a_deferred_reconciliation(tmp_path: Path) -> None:
 
     assert {r.run_id for _, r in reg.ledger_runs()} == {"r-a"}
     assert svc.fleet.calls == 1, "the ledger read did not finish the deferred reconciliation"
+
+
+def test_a_deferred_orphan_reaches_failed_through_a_real_ledger_read(tmp_path: Path) -> None:
+    """End-to-end companion to the stubbed hook test: a REAL Fleet defers a young orphan, and a
+    later real `ledger_runs()` (what MCP status calls) is what finally stamps it `failed`. The stub
+    test proves the hook fires; this proves the hook does something."""
+    from marshal_engine.fleet import _REAP_GRACE_S
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    runs = FleetState(repo / ".marshal" / "runs")
+    runs.add(
+        RunRecord(
+            run_id="orph.echo.x",
+            task_id="orph",
+            backend="echo",
+            status="running",  # left behind by a supervisor that is gone
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+
+    svc = _echo_service(repo)  # real MarshalService -> real Fleet -> startup reap defers it
+    assert runs.get("orph.echo.x").status == "running"
+
+    defs = [WorkspaceDef("default", repo, repo / "fleet.config.yaml")]
+    reg = WorkspaceRegistry(defs, builder=_explode, prebuilt={"default": svc})
+
+    aged = datetime.now(timezone.utc) - timedelta(seconds=_REAP_GRACE_S + 60)
+    runs.update("orph.echo.x", started_at=aged.isoformat())
+
+    rows = {r.run_id: r.status for _, r in reg.ledger_runs()}
+    assert rows["orph.echo.x"] == "failed", "a real ledger read did not finish the reconciliation"
 
 
 def test_ledger_runs_does_not_build_a_service_to_reconcile(tmp_path: Path) -> None:
