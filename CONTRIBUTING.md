@@ -154,13 +154,13 @@ From a clean checkout of the release commit:
 
 ```bash
 uv build
-unzip -l dist/marshal-*-py3-none-any.whl | grep -E 'marshal_engine/(py\.typed|data/prices\.yaml)'
+unzip -l dist/marshalfleet-*-py3-none-any.whl | grep -E 'marshal_engine/(py\.typed|data/prices\.yaml)'
 # Wheel must NOT contain tests/, .marshal/, teams/, or fleet.config.yaml
-tar -tzf dist/marshal-*.tar.gz | head   # sdist must include src/, tests/, pyproject.toml, README, LICENSE
+tar -tzf dist/marshalfleet-*.tar.gz | head   # sdist must include src/, tests/, pyproject.toml, README, LICENSE
 
 TMP=$(mktemp -d)
 uv venv "$TMP/venv"
-uv pip install --python "$TMP/venv/bin/python" dist/marshal-*-py3-none-any.whl
+uv pip install --python "$TMP/venv/bin/python" dist/marshalfleet-*-py3-none-any.whl
 "$TMP/venv/bin/marshal" --version   # expect: marshal <version>
 rm -rf "$TMP"
 ```
