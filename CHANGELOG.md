@@ -73,6 +73,18 @@ versions may include breaking API changes until 1.0.
   `marshal_engine.__version__`: hatchling builds from `[project].version`, so checking the source
   constant would verify a value the artifact need not carry, and a drift between the two would pass
   the guard while PyPI received a version the tag never claimed.
+- **`doctor` surfaces recent billing/quota failures (#95).** It answered "is the CLI installed and
+  logged in?" and presented that as readiness — so a backend that was installed, authed, and out of
+  credit passed green, and the driver learned otherwise by spending a run. Two field reports hit
+  this independently on the same day (an "Insufficient balance" death at 3.5s, and an exhausted
+  premium quota discovered by burning runs). A `quota:<backend>` warn now reports how many recent
+  runs failed on billing/quota grounds and quotes the latest error, derived from the run ledger we
+  already keep — no provider API, and it reports what happened rather than predicting. Its absence
+  is deliberately **not** a clearance: doctor cannot read provider balances, and saying quota looks
+  fine because it was never checked is the same overclaim the field reports were about. Rate
+  limiting is deliberately excluded from the classifier: a 429 means *slow down*, not *pay*, the
+  retry policy already backs off and retries it, and sending an operator to top up over throttling
+  is the wrong remedy.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
@@ -150,6 +162,19 @@ versions may include breaking API changes until 1.0.
   treated as authenticated.
 
 ### Added
+- **Gemini CLI backend adapter (`backends/gemini.py`).** Headless `gemini -p` with
+  `--output-format json`; token counts parsed from JSON `stats` with cost `unavailable` (no
+  fabricated $0). **`read-only` is unsupported and raises** — Gemini has no tier that reliably
+  denies writes headless: `plan` auto-approves `exit_plan_mode` in non-interactive runs and then
+  switches to YOLO to implement the plan, and a settings flag can silently demote it to `default`.
+  Review panels route to `read-only`, so mapping it to something writable would defeat a safety
+  boundary rather than merely degrade it. The session id is read from the top level of the JSON
+  object, where the CLI writes it, so `--resume` actually receives one. safe-edit maps to
+  `--approval-mode yolo`, not `auto_edit`: `auto_edit`
+  auto-approves edit tools but still prompts before shell and other non-edit tools, which
+  deadlocks a headless run with closed stdin — so the git worktree is the boundary, the same
+  stance as Command Code and Goose. Registered
+  as `gemini`; contract-tested offline — not live-verified (CLI absent in CI/worktree).
 - **Fail-closed doctor auth probes for remaining backends (#43).** Claude Code
   (`claude auth status`), Command Code (`command-code status --json`; config.json alone is not
   auth), OpenCode (`opencode auth list`), and Codex (`codex login status`) set `verifies_auth` so
