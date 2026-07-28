@@ -167,9 +167,10 @@ rm -rf "$TMP"
 
 ### Publish
 
-1. Confirm the PyPI project name is still available as `marshal`, or change
-   `[project].name` to `marshal-orchestrator` before the first publish (import package stays
-   `marshal_engine`).
+1. The PyPI project is **`MarshalFleet`** and `[project].name` must match it exactly — PyPI
+   normalises case and `-`/`_`, so `MarshalFleet` == `marshalfleet`, but a different name is
+   rejected at upload. The import package stays `marshal_engine` (a top-level `marshal` would
+   shadow the stdlib module) and the console script stays `marshal`.
 2. Ensure Trusted Publishing is configured on PyPI for this repo’s `release.yml` and the `pypi`
    GitHub Environment named **`PYPI`** (see the comment block at the top of `.github/workflows/release.yml`). The name is case-sensitive and must match `environment:` in the workflow exactly — a mismatch resolves to a different, non-existent environment, so the protection rules silently do not apply.
    **Configure that environment’s protection rules** — required reviewers, and deployment branches

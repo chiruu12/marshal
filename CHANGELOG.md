@@ -187,6 +187,15 @@ versions may include breaking API changes until 1.0.
   feeds routing: the catalog is curated metadata a human wrote, a probe is whatever a CLI said just
   now, and flattening the two would let a probe drift into looking like configuration.
 
+- **The PyPI distribution is `MarshalFleet`.** `[project].name` must equal the name the Trusted
+  Publisher is registered under or the upload is rejected, and the registered project is
+  `MarshalFleet` (PyPI normalises it to `marshalfleet`). Three names now, each doing one job: the
+  **distribution** is `MarshalFleet` (what `pip install` takes), the **import package** stays
+  `marshal_engine` (a top-level `marshal` would shadow the stdlib module), and the **console
+  script** stays `marshal` (what you type). Verified end to end: the wheel builds as
+  `marshalfleet-0.0.1`, installs into a clean venv, and `marshal --version` still works - as does
+  the release guard that parses the version out of the wheel filename.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
