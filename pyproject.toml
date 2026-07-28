@@ -59,7 +59,9 @@ Issues = "https://github.com/chiruu12/marshal/issues"
 Changelog = "https://github.com/chiruu12/marshal/blob/main/CHANGELOG.md"
 
 [build-system]
-requires = ["hatchling"]
+# Pinned: the build backend is resolved at build time, NOT from uv.lock (which tracks runtime deps),
+# so an unconstrained backend makes the published artifact non-reproducible.
+requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

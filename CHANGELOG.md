@@ -60,6 +60,13 @@ versions may include breaking API changes until 1.0.
   pinned by commit SHA rather than a mutable tag — the job holds `id-token: write`, so any step in
   it can reach the publishing credential — and the run refuses to publish unless it is on a tag
   whose name matches the built version, which also catches a release cut without a version bump.
+  The build backend is version-pinned (it is resolved at build time, not from `uv.lock`, so an
+  unconstrained one makes the artifact non-reproducible), and a concurrency group stops two runs
+  racing the same irreplaceable upload. Documented plainly: `workflow_dispatch` runs the workflow
+  file **as it exists on the selected ref**, so the in-workflow guards can be edited away on a
+  branch and PyPI validates only the workflow filename and environment — GitHub Environment
+  protection is the one control that does not live inside the ref being published, and is required
+  rather than recommended.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`

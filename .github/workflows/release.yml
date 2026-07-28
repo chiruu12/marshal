@@ -4,8 +4,13 @@ name: Release
 # workflow_dispatch. Never on push to a branch / tag.
 #
 # Maintainer setup (one-time) for PyPI Trusted Publishing (OIDC) — no API token:
-# 1. Create a GitHub Environment named `pypi` on this repo (optional protection
-#    rules / required reviewers recommended so dispatch cannot publish alone).
+# 1. Create a GitHub Environment named `pypi` on this repo AND configure protection
+#    rules (required reviewers, deployment branches limited to `v*` tags).
+#    Treat this as REQUIRED, not optional. `workflow_dispatch` runs the workflow
+#    file as it exists ON THE SELECTED REF, so the tag/version guard below — and
+#    the gate above it — can be edited away on an attacker-controlled branch. PyPI
+#    validates the workflow *filename* and environment, never the step contents.
+#    Environment protection is the only gate that lives outside the ref being built.
 # 2. On https://pypi.org/manage/account/publishing/ (or the project’s Publishing
 #    settings once it exists), add a Trusted Publisher:
 #      PyPI project name: marshal   # or marshal-orchestrator if `marshal` is taken
@@ -25,6 +30,12 @@ on:
 permissions:
   contents: read
   id-token: write  # required for PyPI Trusted Publishing (OIDC)
+
+# A PyPI version can never be replaced, so two runs racing the same upload is not a retry - it is
+# one confusing partial failure. Never cancel in progress: killing a run mid-upload is worse.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:

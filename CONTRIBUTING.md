@@ -172,6 +172,11 @@ rm -rf "$TMP"
    `marshal_engine`).
 2. Ensure Trusted Publishing is configured on PyPI for this repo’s `release.yml` and the `pypi`
    GitHub Environment (see the comment block at the top of `.github/workflows/release.yml`).
+   **Configure that environment’s protection rules** — required reviewers, and deployment branches
+   limited to `v*` tags. This is not belt-and-braces: `workflow_dispatch` runs the workflow file as
+   it exists on the ref you select, so the in-workflow tag/version guard can be removed on a branch,
+   and PyPI checks only the workflow filename and environment name. Environment protection is the
+   one control that does not live inside the ref being published.
 3. Create and **publish** a GitHub Release for tag `v<version>`. Publishing the Release is the
    human action that triggers the PyPI upload. A manual `workflow_dispatch` works too, but it must
    select the **tag**, not a branch: the workflow refuses to publish from a non-tag ref, and
