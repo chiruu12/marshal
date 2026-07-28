@@ -18,12 +18,22 @@ Documented `stats` shapes vary by CLI version: newer builds nest per-model token
 fabricates cost — Gemini JSON documents tokens but not USD, so usage stays `unavailable` for
 cost even when tokens are present.
 
-`--approval-mode default` prompts for tool approval and deadlocks headless runs, and so does
-`auto_edit`: it auto-approves edit tools but still asks before shell and other non-edit tools, and
-a headless run with closed stdin has nothing to answer with. So safe-edit maps to `yolo` with the
-git worktree as the enforced boundary - the same stance as Command Code and Goose, where the
-headless auto-accept tier is likewise unusable. `permission_fidelity` is `boundary-only` (no
-Marshal deny layer; worktree isolation is the safety boundary).
+Only `yolo` is mapped, and Gemini offers **no read-only tier Marshal can honour**:
+
+- `default` and `auto_edit` both wait on a human for at least some tools. Headless with closed
+  stdin that is not usable - upstream now denies rather than hangs, but a silently crippled agent
+  is no better than a hung one. So safe-edit maps to `yolo` with the git worktree as the enforced
+  boundary, the same stance as Command Code and Goose.
+- `plan` looks like read-only and is not. Upstream auto-approves `exit_plan_mode` in
+  non-interactive runs and then **switches to YOLO** to implement the plan, and if `plan` is
+  disabled in user settings the CLI silently falls back to `default`. Either path turns a run the
+  caller asked to be read-only into one that writes. Offering it would be worse than refusing:
+  `read-only` is what review panels route to, so a lie here defeats a safety boundary rather than
+  merely degrading it. `read-only` is therefore unsupported and raises.
+
+`permission_fidelity` is `boundary-only` (no Marshal deny layer; worktree isolation is the boundary).
+`--skip-trust` is load-bearing, not cosmetic: in an untrusted folder the CLI silently overrides any
+non-`default` approval mode back to `default`, so without it the `yolo` above would not stick.
 
 Doctor stays path-only: no cheap authenticated-only probe is wired (verify `gemini auth` or
 equivalent against a real install before adding `account_info`/`verifies_auth`).
@@ -57,18 +67,15 @@ class GeminiBackend(CodingAgentBackend):
         sessions=True,  # `--resume` accepts a session id (documented CLI reference)
         server_mode=False,
         native_usage=True,  # tokens in JSON stats when present; cost is never reported
-        permission_modes=frozenset(
-            {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
-        ),
+        # No READ_ONLY: `plan` escalates to YOLO headless (see the module docstring). Declaring a
+        # read-only tier we cannot enforce is worse than declaring none.
+        permission_modes=frozenset({PermissionMode.SAFE_EDIT, PermissionMode.YOLO}),
         permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
     )
 
-    # Marshal tiers -> Gemini `--approval-mode` (documented choices; verify against `gemini --help`).
-    # safe-edit deliberately does NOT use `auto_edit`: it prompts for non-edit tools, which is a
-    # deadlock headless (see the module docstring). VERIFY: `plan` is absent from the official
-    # `--approval-mode` list and appears only in newer material, so read-only is version-sensitive.
+    # Marshal tiers -> Gemini `--approval-mode`. Neither `auto_edit` (waits on a human) nor `plan`
+    # (escalates to yolo on plan exit) is mapped; see the module docstring for why.
     _PERMISSION: dict[PermissionMode, list[str]] = {
-        PermissionMode.READ_ONLY: ["--approval-mode", "plan"],
         PermissionMode.SAFE_EDIT: ["--approval-mode", "yolo"],
         PermissionMode.YOLO: ["--approval-mode", "yolo"],
     }
@@ -107,7 +114,9 @@ class GeminiBackend(CodingAgentBackend):
 
         response = obj.get("response")
         text = response.strip() if isinstance(response, str) else ""
-        session_id = _extract_session_id(obj.get("stats"))
+        # Top level first: that is where the CLI's JSON formatter puts it. `stats` is checked only
+        # as a fallback for other builds - it carries per-model metrics, not session identity.
+        session_id = _extract_session_id(obj) or _extract_session_id(obj.get("stats"))
         usage = _extract_usage(obj.get("stats"), self.name)
 
         ok = exit_code == 0 and error_msg is None
@@ -149,7 +158,7 @@ def _parse_result(raw: str) -> dict[str, Any] | None:
 
 
 def _extract_session_id(stats: Any) -> str | None:
-    """Best-effort session id from stats; field names unverified without a live CLI."""
+    """Best-effort session id from a JSON object. Called on the top-level object first."""
     if not isinstance(stats, dict):
         return None
     for key in ("sessionId", "session_id", "id"):
