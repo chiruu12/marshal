@@ -2302,7 +2302,10 @@ def test_startup_reap_skips_validation_for_terminal_records(repo: Path) -> None:
     )
     _write_run_record(
         repo,
-        RunRecord(run_id="stale.writer.x", task_id="stale", backend="writer", status="running"),
+        RunRecord(
+            run_id="stale.writer.x", task_id="stale", backend="writer", status="running",
+            started_at="2026-01-01T00:00:00+00:00",  # old enough to be past the reap grace period
+        ),
     )
     fleet = Fleet(repo, {"writer": _Writer()})
     assert fleet.state.get("stale.writer.x").status == RunStatus.FAILED.value
@@ -2447,3 +2450,64 @@ def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
 
     fleet.cancel_run(run_id)
     assert killed == [2222], "the retry's agent was not signalled"
+
+
+def test_a_just_started_run_is_never_reaped(repo: Path) -> None:
+    """REGRESSION (observed in production): a short-lived process reconciled while a long-lived
+    server had just started runs. Those records were RUNNING with no pid yet, so nothing protected
+    them - two live agents were stamped `failed` seconds after spawning, one still running when
+    its record said it had died."""
+    from datetime import datetime, timezone
+
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id="fresh.writer.deadbeef",
+            task_id="fresh",
+            backend="writer",
+            status="running",
+            started_at=datetime.now(timezone.utc).isoformat(),  # just now, pid not yet stamped
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.state.get("fresh.writer.deadbeef")
+    assert rec.status == RunStatus.RUNNING.value, "a run started moments ago was reaped"
+
+
+def test_an_old_orphan_is_still_reaped(repo: Path) -> None:
+    """The grace period must not disable reaping - only delay judgement."""
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id="old.writer.deadbeef",
+            task_id="old",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get("old.writer.deadbeef").status == RunStatus.FAILED.value
+
+
+def test_a_record_with_no_start_time_is_not_reaped(repo: Path) -> None:
+    """An unreadable timestamp is not evidence the run is dead."""
+    _write_run_record(
+        repo,
+        RunRecord(run_id="nots.writer.x", task_id="nots", backend="writer", status="running"),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get("nots.writer.x").status == RunStatus.RUNNING.value
+
+
+def test_a_pid_is_never_written_onto_a_terminal_record(repo: Path) -> None:
+    """REGRESSION: after a reap, `_record_pid` stamped a live pid onto the `failed` record - a
+    record claiming a running process for a run it says is dead."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.state.add(
+        RunRecord(run_id="term.writer.x", task_id="term", backend="writer", status="failed")
+    )
+    fleet.state.update_if(
+        "term.writer.x", lambda r: not r.status == "failed", pid=4242
+    )
+    assert fleet.state.get("term.writer.x").pid is None

@@ -67,6 +67,17 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **Startup reconciliation no longer reaps runs another process just started.** Observed in
+  production, not theorised: two live agents were stamped `failed` ("orphaned at startup") seconds
+  after spawning, one of them still running when its record claimed it had died. A run is persisted
+  RUNNING a moment before its pid is stamped, so a short-lived process reconciling in that window
+  finds a record with no pid and nothing to protect it — the in-process registry only covers runs
+  the *same* process started, and the lock only helps once its holder is alive and current. A
+  non-terminal record younger than the reap grace period is now left alone; a genuinely orphaned
+  run is reaped moments later instead.
+- **A pid is never written onto a terminal record.** After such a reap, the pid callback stamped a
+  live pid onto the `failed` record, producing a record that claimed a running process for a run it
+  said was dead. The write is now conditional on the run still being non-terminal.
 - **`cancel_run` signals only a live child of the current process.** Signalling goes through an
   in-process handle tracking the child from spawn until it is reaped — the OS cannot recycle a
   child's pid before its parent reaps it, so within that window the pid is unambiguous. A cancel

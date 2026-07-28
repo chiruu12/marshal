@@ -150,6 +150,15 @@ def _is_terminal(rec: RunRecord) -> bool:
     return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
 
 
+#: A non-terminal record younger than this is never reaped. Reconciliation runs in whatever process
+#: happens to start next, and a run is persisted RUNNING a moment before its pid is stamped - so a
+#: short-lived CLI can otherwise reap a long-lived server's just-started run, which has no pid yet
+#: to protect it. Observed in practice: two live agents stamped ``failed`` seconds after spawning,
+#: one still running when the record said it had died. A genuinely orphaned run is reaped moments
+#: later instead; nothing is lost by waiting.
+_REAP_GRACE_S = 180.0
+
+
 #: Stale non-terminal runs reaped at Fleet startup are stamped ``failed``: the supervising process
 #: vanished before Marshal recorded an outcome, so we cannot honestly claim success, cancellation,
 #: or timeout. ``error`` carries the reap reason; ``pid`` is cleared so ``cancel_run`` can never
@@ -157,6 +166,24 @@ def _is_terminal(rec: RunRecord) -> bool:
 _ORPHAN_REAP_ERROR = (
     "fleet: run orphaned at startup (supervising process exited before run completed)"
 )
+
+
+def _started_within_grace(rec: RunRecord, *, now: datetime | None = None) -> bool:
+    """True when ``rec`` started too recently to be judged orphaned.
+
+    A record with no parseable ``started_at`` is treated as young (do not reap): an unreadable
+    timestamp is not evidence that the run is dead.
+    """
+    if not rec.started_at:
+        return True
+    try:
+        started = datetime.fromisoformat(rec.started_at)
+    except ValueError:
+        return True
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(timezone.utc)
+    return (reference - started).total_seconds() < _REAP_GRACE_S
 
 
 def _pid_alive(pid: int) -> bool:
@@ -251,6 +278,8 @@ def _reap_orphaned_runs(state: FleetState) -> None:
             continue
         if _inflight_in_this_process(state.dir, rec.run_id):
             continue  # another Fleet in this process still owns the run (config hot-reload)
+        if _started_within_grace(rec):
+            continue  # too young to judge: another process may have just started it
         if _pid_is_still_ours(rec):
             continue  # our agent is genuinely still running (MCP died, the child survived)
         try:
@@ -756,7 +785,15 @@ class Fleet:
             def _record_pid(pid: int) -> None:
                 # Stamp the pid together with its start time: the pair is an identity a later
                 # process can verify, where a bare pid can be silently reused by the OS.
-                self.state.update(run_id, pid=pid, pid_start_time=_pid_start_time(pid))
+                # `update_if` because the record may already have been terminal-stamped (e.g.
+                # reaped by another process): writing a live pid onto a `failed` record produces a
+                # record that claims a running process for a run it says is dead.
+                self.state.update_if(
+                    run_id,
+                    lambda r: not _is_terminal(r),
+                    pid=pid,
+                    pid_start_time=_pid_start_time(pid),
+                )
                 if handle is None:
                     return
                 pending_cancel = _publish_pid(handle, pid)
