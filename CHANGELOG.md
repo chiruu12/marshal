@@ -35,12 +35,17 @@ versions may include breaking API changes until 1.0.
   the declared path **and every descendant** that would be copied; symlinks inside a declared
   tree are refused (a symlinked declared root is resolved first, then validated from the real
   path); only regular files and directories are accepted (FIFOs/sockets/devices refused so
-  provisioning cannot hang before a run timeout exists). Copies open fail-closed
-  (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` for files; directory descent is fd-relative with
-  `O_NOFOLLOW|O_DIRECTORY` so a directory swapped mid-walk cannot redirect the traversal). A
-  missing or refused path fails the spawn (worktree torn down). The
-  declared list is recorded on `RunRecord` so a reviewer can see the run saw more than its
-  worktree. The worker prompt is told read-only reference material is under `.marshal-context/`.
+  provisioning cannot hang before a run timeout exists). Policy is enforced during the
+  fd-relative copy walk (validation at point of use): every `scandir` entry is re-checked for
+  secret-shaped names / `.ssh`, symlinks, and non-file/dir types; each directory's
+  `(st_dev, st_ino)` from the classifying `lstat` must match `fstat` of the opened fd so a
+  same-type directory swap cannot smuggle unvalidated descendants. The up-front tree scan only
+  names offenders early before worktree work — it is not the security boundary. Copies also
+  open fail-closed (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` for files;
+  `O_NOFOLLOW|O_DIRECTORY` for directory descent). A missing or refused path fails the spawn
+  (worktree torn down). The declared list is recorded on `RunRecord` so a reviewer can see the
+  run saw more than its worktree. The worker prompt is told read-only reference material is
+  under `.marshal-context/`.
 
 - **Adversarial review teams (`teams.py`).** A *team* is a declarative panel of independent,
   read-only reviewers — each role pinned to the client best at its lens — that review one subject

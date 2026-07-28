@@ -216,7 +216,12 @@ def _iter_read_path_copy_targets(src: Path) -> list[Path]:
 
 
 def _validate_read_path_tree(src: Path, raw: str) -> None:
-    """Refuse secret-shaped, symlink, or non-file/dir entries under ``src`` before any copy.
+    """Up-front pass: refuse secret-shaped / symlink / special entries, naming the offender early.
+
+    This is **not** the security boundary. A TOCTOU swap after this pass can still replace the
+    tree; ``_copy_read_path_tree`` re-applies the same policy at the point of use (fd-relative
+    walk) and pins directory identity by ``(st_dev, st_ino)``. Keep both: this pass for a clear
+    error before any worktree work; the copy walk to enforce.
 
     Applied to every path that would be copied, not just the declared root: a directory named
     innocently can still contain ``.env`` / ``.ssh`` / a FIFO / a symlink. Raise loudly naming
@@ -346,16 +351,31 @@ def _open_dir_nofollow(src: Path, *, dir_fd: int | None) -> int:
         ) from exc
 
 
-def _copy_read_path_tree(src: Path, dest: Path, *, dir_fd: int | None = None) -> None:
-    """Copy a resolved read_path into ``dest`` without ``shutil.copytree``/``copy2``.
+def _copy_read_path_tree(
+    src: Path,
+    dest: Path,
+    *,
+    dir_fd: int | None = None,
+    logical: Path | None = None,
+) -> None:
+    """Copy a resolved read_path into ``dest``; enforce read_paths policy at the point of use.
 
-    Directory descent is fd-relative: each directory is opened with
-    ``O_RDONLY|O_NOFOLLOW|O_DIRECTORY``, listed via ``os.scandir(dir_fd)``, and children are
-    opened relative to that descriptor — never by reconstructed absolute path — so a directory
-    swapped for a symlink mid-walk cannot redirect the traversal into an unvalidated tree.
-    Per-file open stays fail-closed (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat``, also
-    relative to the parent fd). Does not follow or preserve symlinks.
+    This walk is the security boundary (``_validate_read_path_tree`` is only an early-naming
+    pass). Every entry discovered via ``os.scandir(dir_fd)`` is checked before copy or descent:
+    secret-shaped name / ``.ssh`` component (via the walk's logical path), symlink refusal, and
+    regular-file-or-directory-only. Directory descent is fd-relative
+    (``O_RDONLY|O_NOFOLLOW|O_DIRECTORY`` + scandir on the fd); after open, ``fstat`` must match
+    the classifying ``lstat``'s ``(st_dev, st_ino)`` so a same-type directory swap between
+    classify and open is refused. Per-file open stays fail-closed
+    (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat``). Does not follow or preserve symlinks.
     """
+    logical_path = logical if logical is not None else src
+    if _is_refused_read_path(logical_path):
+        raise ValueError(
+            f"read_paths refuses secret-shaped path: {logical_path}. "
+            f"Paths matching .env*/*.pem/id_rsa*/id_ed25519* or inside a .ssh directory "
+            f"are never copied into a worktree."
+        )
     try:
         st = _lstat_at(src, dir_fd=dir_fd)
     except OSError as exc:
@@ -366,13 +386,26 @@ def _copy_read_path_tree(src: Path, dest: Path, *, dir_fd: int | None = None) ->
             f"Symlinks inside a declared tree are never copied."
         )
     if stat.S_ISDIR(st.st_mode):
+        expected_id = (st.st_dev, st.st_ino)
         dest.mkdir(parents=False, exist_ok=False)
         this_fd = _open_dir_nofollow(src, dir_fd=dir_fd)
         try:
+            opened = os.fstat(this_fd)
+            if (opened.st_dev, opened.st_ino) != expected_id:
+                raise ValueError(
+                    f"read_paths refuses swapped directory: {src}. "
+                    f"Directory was replaced between classification and open."
+                )
             with os.scandir(this_fd) as entries:
                 children = sorted(entries, key=lambda e: e.name)
             for entry in children:
-                _copy_read_path_tree(src / entry.name, dest / entry.name, dir_fd=this_fd)
+                # Policy at point of use — do not trust the up-front validate pass.
+                _copy_read_path_tree(
+                    src / entry.name,
+                    dest / entry.name,
+                    dir_fd=this_fd,
+                    logical=logical_path / entry.name,
+                )
         finally:
             os.close(this_fd)
         return
@@ -440,11 +473,13 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
     inside a declared tree are refused (a link either smuggles host content when dereferenced or
     escapes when preserved); the declared root may be a symlink and is resolved first. Only
     regular files and directories are accepted - FIFOs, sockets, and devices are refused so
-    provisioning cannot block forever before a run record (and its timeout) exists. Copies open
-    fail-closed (``O_RDONLY|O_NOFOLLOW|O_NONBLOCK`` + ``fstat`` for files; directory descent is
-    fd-relative with ``O_NOFOLLOW|O_DIRECTORY``) so a TOCTOU swap after validation cannot hang
-    or redirect the walk. Fail-closed matches task_id validation, worktree containment, and
-    read-only reviewer routing.
+    provisioning cannot block forever before a run record (and its timeout) exists. Policy is
+    enforced during the fd-relative copy walk (validation at point of use): every scandir entry
+    is re-checked, and each directory's ``(st_dev, st_ino)`` from the classifying ``lstat`` must
+    match ``fstat`` of the opened fd so a same-type directory swap cannot smuggle unvalidated
+    descendants. The up-front ``_validate_read_path_tree`` pass only names offenders early —
+    it is not the security boundary. Fail-closed matches task_id validation, worktree
+    containment, and read-only reviewer routing.
 
     A missing path fails before any copy. Copied files are 0o444 and directories 0o555; teardown
     restores directory write bits so ``git worktree remove`` still works. Content is excluded
@@ -468,8 +503,8 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
                 f"read_paths has an unusable basename: {raw!r}. "
                 f"Each path must resolve to a named file or directory."
             )
-        # Up-front tree validation names the offender clearly; the guarded copy below is the
-        # fail-closed backstop if an entry changes between this pass and the open.
+        # Early naming only — not the security boundary. Policy is enforced in
+        # _copy_read_path_tree (at point of use) with directory (dev, ino) pinning.
         _validate_read_path_tree(src, raw)
         resolved.append((raw, src))
 
