@@ -775,3 +775,23 @@ def test_run_and_spawn_catch_worktree_error(
     assert "not a git repository" in capsys.readouterr().err
     assert cli._cmd_run_like(args, spawn=True) == 1
     assert "not a git repository" in capsys.readouterr().err
+
+
+def test_status_since_hours_filters(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`--since-hours` is its own branch and shipped briefly with a NameError in it - the suite
+    stayed green because no test exercised the filter. An unexercised branch is an untested one
+    however many tests pass around it."""
+    from marshal_engine.state import FleetState, RunRecord
+
+    runs = tmp_path / "runs"
+    state = FleetState(runs)
+    state.add(RunRecord(run_id="old.e.1", task_id="t", backend="echo", status="succeeded",
+                        started_at="2020-01-01T00:00:00+00:00"))
+
+    ret = cli.main(["status", "--json", "--state", str(runs), "--since-hours", "1"])
+    assert ret == 0
+    assert json.loads(capsys.readouterr()[0])["matched"] == 0
+
+    ret = cli.main(["status", "--json", "--state", str(runs), "--since-hours", "999999"])
+    assert ret == 0
+    assert json.loads(capsys.readouterr()[0])["matched"] == 1

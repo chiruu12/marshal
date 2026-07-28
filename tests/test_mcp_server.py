@@ -273,6 +273,10 @@ def test_status_is_compact_and_reports_what_it_left_out(
 
     assert call(task_id="t")["matched"] == 3
     assert call(status="failed")["matched"] == 0
+    # `since_hours` is its own branch and was briefly shipped with a NameError in it: the whole
+    # suite stayed green because nothing exercised the filter. Cover it.
+    assert call(since_hours=1.0)["matched"] == 0, "all five runs are dated 2026-01, well outside 1h"
+    assert call(since_hours=24 * 365 * 100)["matched"] == 5
     assert "text" in call(limit=1, full=True)["runs"][0]
 
 
