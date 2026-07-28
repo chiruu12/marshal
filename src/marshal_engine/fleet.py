@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import fnmatch
 import json
 import logging
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -163,6 +165,145 @@ def _require_context_files(wt: Worktree, context_files: list[str]) -> None:
             f"A worktree holds tracked files only, so gitignored or untracked paths are absent - "
             f"commit them, or put the content in the goal text instead of pointing at a path."
         )
+
+
+# Destination directory inside each worktree for declared read_paths copies. Appended to
+# `.git/info/exclude` so the copies never appear in the run's diff or changed_files.
+_READ_CONTEXT_DIR = ".marshal-context"
+
+# Fail-closed secret shapes. Same hazard as silently copying for context_files: gitignored secrets
+# (`.env`, keys under `.ssh`) exist on the driver's machine and must not be handed to an agent.
+_READ_PATH_SECRET_NAME_GLOBS = (".env*", "*.pem", "id_rsa*", "id_ed25519*")
+
+
+def _is_refused_read_path(path: Path) -> bool:
+    """True when ``path`` matches a secret-shaped name or lives under a ``.ssh`` directory."""
+    if any(part == ".ssh" for part in path.parts):
+        return True
+    return any(fnmatch.fnmatch(path.name, pat) for pat in _READ_PATH_SECRET_NAME_GLOBS)
+
+
+def _resolve_read_path(raw: str, repo_root: Path) -> Path:
+    """Resolve a declared read_path: absolute as-is, else relative to the driver's repo root."""
+    p = Path(raw)
+    if p.is_absolute():
+        return p.resolve()
+    return (repo_root / p).resolve()
+
+
+def _make_readonly(path: Path) -> None:
+    """chmod copied files read-only (0o444); directories keep 0o755 so the tree stays removable.
+
+    A directory without the write bit cannot have entries unlinked, so chmod'ing dirs 0o555
+    breaks ``git worktree remove`` / ``shutil.rmtree`` and silently leaks worktrees on clean.
+    File-level read-only is the guarantee that matters; copies are git-excluded anyway.
+    """
+    if path.is_dir():
+        os.chmod(path, 0o755)
+        for child in path.rglob("*"):
+            os.chmod(child, 0o755 if child.is_dir() else 0o444)
+    else:
+        os.chmod(path, 0o444)
+
+
+def _append_exclude(wt: Worktree, entry: str) -> None:
+    """Append ``entry`` to the worktree's ``info/exclude`` if not already present."""
+    proc = subprocess.run(
+        ["git", "-C", str(wt.path), "rev-parse", "--git-path", "info/exclude"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise ValueError(
+            f"could not resolve worktree exclude file: {proc.stderr.strip() or proc.stdout.strip()}"
+        )
+    exclude = Path(proc.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = wt.path / exclude
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    if entry in existing.splitlines():
+        return
+    with exclude.open("a") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write(f"{entry}\n")
+
+
+def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) -> None:
+    """Copy declared outside-worktree paths into ``.marshal-context/`` as read-only.
+
+    Unlike ``context_files`` (which must already be *in* the worktree), ``read_paths`` are
+    deliberately outside - absolute, or relative to the driver's repo root. They are copied in so
+    the agent can read them without breaking the worktree isolation boundary for writes.
+
+    Secret-shaped paths are refused. The ``_require_context_files`` docstring explains why: copying
+    would put untracked content into a worktree whose purpose is to mirror the repo - and ``.env``
+    is gitignored too, so "copy whatever the caller named" is a way to hand secrets to an agent.
+    Fail-closed matches task_id validation, worktree containment, and read-only reviewer routing.
+
+    A missing path fails before any copy. Copied content is excluded from git via
+    ``.git/info/exclude`` so it never pollutes the run's diff.
+    """
+    if not read_paths:
+        return
+
+    resolved: list[tuple[str, Path]] = []
+    for raw in read_paths:
+        src = _resolve_read_path(raw, repo_root)
+        if _is_refused_read_path(src):
+            raise ValueError(
+                f"read_paths refuses secret-shaped path: {raw!r}. "
+                f"Paths matching .env*/*.pem/id_rsa*/id_ed25519* or inside a .ssh directory "
+                f"are never copied into a worktree."
+            )
+        if not src.exists():
+            raise ValueError(
+                f"read_paths not found: {raw!r}. "
+                f"Paths must exist (absolute, or relative to the driver's repo root) before the "
+                f"run is provisioned."
+            )
+        name = src.name
+        if name in ("", ".", ".."):
+            raise ValueError(
+                f"read_paths has an unusable basename: {raw!r}. "
+                f"Each path must resolve to a named file or directory."
+            )
+        resolved.append((raw, src))
+
+    dest_root = wt.path / _READ_CONTEXT_DIR
+    # Containment: every copy lands under `.marshal-context/` inside this worktree.
+    dest_root = dest_root.resolve()
+    base = wt.path.resolve()
+    if dest_root != base and base not in dest_root.parents:
+        raise ValueError(
+            f"read_paths destination escaped the worktree: {dest_root}"
+        )
+    dest_root.mkdir(parents=True, exist_ok=True)
+
+    seen_names: dict[str, str] = {}
+    for raw, src in resolved:
+        name = src.name
+        if name in seen_names:
+            raise ValueError(
+                f"read_paths basename collision: {raw!r} and {seen_names[name]!r} both map to "
+                f".marshal-context/{name}."
+            )
+        seen_names[name] = raw
+        dest = (dest_root / name).resolve()
+        if dest != dest_root and dest_root not in dest.parents:
+            raise ValueError(
+                f"read_paths destination escaped .marshal-context/: {raw!r} -> {dest}"
+            )
+        if src.is_dir():
+            shutil.copytree(src, dest, dirs_exist_ok=False)
+        else:
+            shutil.copy2(src, dest)
+        _make_readonly(dest)
+
+    _append_exclude(wt, f"{_READ_CONTEXT_DIR}/")
 
 
 def with_liveness(rec: RunRecord) -> RunRecord:
@@ -906,6 +1047,7 @@ class Fleet:
             resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
             try:
                 _require_context_files(wt, req.task.context_files)
+                _provision_read_paths(wt, self.repo_root, req.task.read_paths)
             except ValueError:
                 # Tear down before propagating: the worktree exists by now, and a rejected spawn
                 # must not leave one behind (same contract `setup()` honours on a failed provision).
@@ -935,6 +1077,7 @@ class Fleet:
                     worktree_setup=(
                         shlex.join(self.worktrees.setup_cmd) if self.worktrees.setup_cmd else None
                     ),
+                    read_paths=list(req.task.read_paths),
                     started_at=started,
                 )
             )

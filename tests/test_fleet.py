@@ -3022,6 +3022,232 @@ def test_a_traversing_context_path_is_refused(repo: Path) -> None:
     assert fleet.state.list() == []
 
 
+class _ContextReader(CodingAgentBackend):
+    """Reads `.marshal-context/<name>` and writes its contents to out.txt (proves readability)."""
+
+    name = "ctxreader"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, basename: str = "notes.md") -> None:
+        self._basename = basename
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        # Read the provisioned copy, then write a real tracked change so collect_run has a diff
+        # that must NOT include `.marshal-context`.
+        code = (
+            "from pathlib import Path\n"
+            f"src = Path('.marshal-context') / {self._basename!r}\n"
+            "text = src.read_text()\n"
+            "Path('out.txt').write_text(text)\n"
+            "print(text)\n"
+        )
+        return [sys.executable, "-c", code]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+def test_read_paths_copies_file_readable_inside_worktree(repo: Path) -> None:
+    """Happy path (#105): a driver-declared path outside the worktree is copied under
+    `.marshal-context/` and the agent can read it."""
+    outside = repo.parent / "driver-notes.md"
+    outside.write_text("secret-to-the-worktree-but-declared")
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("driver-notes.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp1", goal="use the notes", read_paths=[str(outside)]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.text == "secret-to-the-worktree-but-declared"
+    copied = Path(rec.worktree) / ".marshal-context" / "driver-notes.md"
+    assert copied.is_file()
+    assert copied.read_text() == "secret-to-the-worktree-but-declared"
+    # Read-only for the owner (and everyone): no write bit.
+    assert (copied.stat().st_mode & 0o222) == 0
+
+
+def test_read_paths_relative_to_driver_repo_root(repo: Path) -> None:
+    """Relative read_paths resolve against the driver's repo root, not the worktree."""
+    # A gitignored file in the driver checkout - invisible in a fresh worktree, but declared.
+    (repo / ".gitignore").write_text("scratch/\n")
+    scratch = repo / "scratch" / "brief.md"
+    scratch.parent.mkdir()
+    scratch.write_text("from-driver-checkout")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "ignore scratch"],
+        check=True,
+        capture_output=True,
+    )
+
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("brief.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp-rel", goal="use brief", read_paths=["scratch/brief.md"]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.text == "from-driver-checkout"
+
+
+def test_read_paths_do_not_pollute_diff_or_changed_files(repo: Path) -> None:
+    """CRITICAL (#105): provisioned copies must never appear in the run's diff / changed_files."""
+    outside = repo.parent / "ref.md"
+    outside.write_text("reference material")
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("ref.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp-diff", goal="write from ref", read_paths=[str(outside)]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+
+    got = fleet.collect_run(rec.run_id)
+    assert "out.txt" in got.changed_files
+    assert not any(".marshal-context" in p for p in got.changed_files)
+    assert ".marshal-context" not in got.diff
+
+
+def test_read_paths_surface_on_the_run_record(repo: Path) -> None:
+    """A reviewer must see that the run was allowed to read more than its worktree (#105)."""
+    outside = repo.parent / "extra.md"
+    outside.write_text("extra")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    declared = [str(outside)]
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-rec", goal="x", read_paths=declared),
+    )
+    assert rec.read_paths == declared
+    reloaded = fleet.state.get(rec.run_id)
+    assert reloaded is not None
+    assert reloaded.read_paths == declared
+
+
+@pytest.mark.parametrize(
+    "name",
+    [".env", ".env.local", "cert.pem", "id_rsa", "id_rsa.pub", "id_ed25519", "id_ed25519.pub"],
+)
+def test_read_paths_refuses_secret_named_files(repo: Path, name: str) -> None:
+    """Fail-closed: secret-shaped basenames are never copied into a worktree (#105)."""
+    secret = repo.parent / name
+    secret.write_text("do-not-copy")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="refuses secret-shaped path"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sec", goal="x", read_paths=[str(secret)]),
+        )
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_paths_inside_ssh_directory(repo: Path) -> None:
+    """Anything under a `.ssh` directory is refused, regardless of basename (#105)."""
+    ssh_dir = repo.parent / ".ssh"
+    ssh_dir.mkdir()
+    key = ssh_dir / "config"
+    key.write_text("Host *")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="refuses secret-shaped path"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-ssh", goal="x", read_paths=[str(key)]),
+        )
+    assert fleet.state.list() == []
+
+
+def test_read_paths_missing_path_fails_and_tears_down(repo: Path) -> None:
+    """A missing path fails the spawn; the half-made worktree is discarded (#105)."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="read_paths not found"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-miss", goal="x", read_paths=["no/such/file.md"]),
+        )
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_copies_are_contained_under_marshal_context(repo: Path) -> None:
+    """Containment: every copy lands under `<worktree>/.marshal-context/<basename>` only."""
+    outside = repo.parent / "nested" / "doc.md"
+    outside.parent.mkdir()
+    outside.write_text("nested")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-contain", goal="x", read_paths=[str(outside)]),
+    )
+    wt = Path(rec.worktree)
+    dest = wt / ".marshal-context" / "doc.md"
+    assert dest.is_file()
+    assert dest.resolve().is_relative_to((wt / ".marshal-context").resolve())
+    # Must not also land at the original nested relative path inside the worktree.
+    assert not (wt / "nested" / "doc.md").exists()
+
+
+def test_read_paths_directory_copies_recursively_readonly(repo: Path) -> None:
+    """Directories are copied recursively; files are read-only, dirs stay removable (#105)."""
+    src_dir = repo.parent / "docs-pack"
+    src_dir.mkdir()
+    (src_dir / "a.md").write_text("a")
+    sub = src_dir / "sub"
+    sub.mkdir()
+    (sub / "b.md").write_text("b")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-dir", goal="x", read_paths=[str(src_dir)]),
+    )
+    dest = Path(rec.worktree) / ".marshal-context" / "docs-pack"
+    assert (dest / "a.md").read_text() == "a"
+    assert (dest / "sub" / "b.md").read_text() == "b"
+    # Content-level read-only: files have no write bit.
+    assert ((dest / "a.md").stat().st_mode & 0o222) == 0
+    assert ((dest / "sub" / "b.md").stat().st_mode & 0o222) == 0
+    # Directories keep the write bit so teardown can unlink entries (0o555 breaks clean).
+    assert (dest.stat().st_mode & 0o222) != 0
+    assert ((dest / "sub").stat().st_mode & 0o222) != 0
+
+
+def test_read_paths_directory_worktree_is_reclaimable_on_clean(repo: Path) -> None:
+    """Regression (#105): a DIRECTORY read_path must not prevent worktree teardown.
+
+    chmod'ing copied directories 0o555 makes ``git worktree remove`` / ``rmtree`` fail with
+    Permission denied; discard's ``ignore_errors`` fallback then reports clean SUCCESS while
+    leaking the worktree. Assert the directory is actually gone from disk.
+    """
+    src_dir = repo.parent / "docs-pack-clean"
+    src_dir.mkdir()
+    (src_dir / "a.md").write_text("a")
+    sub = src_dir / "sub"
+    sub.mkdir()
+    (sub / "b.md").write_text("b")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-dir-clean", goal="x", read_paths=[str(src_dir)]),
+    )
+    wt = Path(rec.worktree)
+    assert (wt / ".marshal-context" / "docs-pack-clean" / "sub" / "b.md").is_file()
+
+    result = fleet.clean(scope="all")
+    assert rec.run_id in result.removed
+    assert not wt.exists(), "worktree leaked after clean (directory read_path teardown bug)"
+
+
 def test_collect_run_returns_the_final_message_when_no_files_changed(repo: Path) -> None:
     """`collect_run` is the tool a driver reaches for first to answer "what did this run produce".
     For a research or review run the honest answer is prose - the engine already treats text alone

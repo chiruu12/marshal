@@ -238,6 +238,11 @@ class CursorBackend(CodingAgentBackend):
         if task.context_files:
             mentions = " ".join(f"@{f}" for f in task.context_files)
             prompt = f"{prompt}\n\nRelevant context: {mentions}"
+        if task.read_paths:
+            prompt = (
+                f"{prompt}\n\nRead-only reference material is available under "
+                f".marshal-context/ (do not modify those files)."
+            )
         return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:

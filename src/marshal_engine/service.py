@@ -269,6 +269,7 @@ class MarshalService:
         goal: str,
         task_id: str | None = None,
         context_files: list[str] | None = None,
+        read_paths: list[str] | None = None,
         *,
         base_branch: str | None = None,
         model: str | None = None,
@@ -298,6 +299,7 @@ class MarshalService:
                 id=task_id if task_id is not None else uuid.uuid4().hex[:8],
                 goal=self._compose_goal(goal),
                 context_files=context_files or [],
+                read_paths=read_paths or [],
                 base_branch=base_branch,
             )
         except ValidationError as exc:
@@ -456,13 +458,14 @@ class MarshalService:
         *,
         task_id: str | None = None,
         context_files: list[str] | None = None,
+        read_paths: list[str] | None = None,
         base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
     ) -> RunRecord:
         req = self._request_for(
-            client_name, goal, task_id, context_files,
+            client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )
@@ -479,15 +482,17 @@ class MarshalService:
     def job_request(self, job: dict[str, Any]) -> RunRequest:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
-        Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?, model?,
-        backend?, duration?}``. Used by single-repo ``run_many`` and the registry's cross-workspace
-        fan-out so validation stays fail-fast before any worktree is created.
+        Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?,
+        read_paths?, model?, backend?, duration?}``. Used by single-repo ``run_many`` and the
+        registry's cross-workspace fan-out so validation stays fail-fast before any worktree is
+        created.
         """
         return self._request_for(
             job.get("client"),
             job["goal"],
             job.get("task_id"),
             job.get("context_files"),
+            job.get("read_paths"),
             model=job.get("model"),
             backend=job.get("backend"),
             duration=job.get("duration"),
@@ -499,7 +504,7 @@ class MarshalService:
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
         """Run several clients in parallel. Each job is
-        {client, goal, task_id?, context_files?, model?, backend?, duration?}.
+        {client, goal, task_id?, context_files?, read_paths?, model?, backend?, duration?}.
 
         Client names are validated up front, so a typo fails fast before any run starts. A job may
         also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's
@@ -515,6 +520,7 @@ class MarshalService:
         *,
         task_id: str | None = None,
         context_files: list[str] | None = None,
+        read_paths: list[str] | None = None,
         base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
@@ -522,7 +528,7 @@ class MarshalService:
     ) -> RunRecord:
         """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
         req = self._request_for(
-            client_name, goal, task_id, context_files,
+            client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )

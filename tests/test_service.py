@@ -474,6 +474,36 @@ def test_run_many_threads_context_files_per_job(repo: Path) -> None:
     assert backend.tasks[-1].context_files == ["x.py"]
 
 
+def test_run_agent_threads_read_paths_to_the_task(repo: Path) -> None:
+    # read_paths is the declared outside-worktree escape hatch; the service must carry it onto
+    # the TaskSpec via the shared `_request_for` builder (#105).
+    outside = repo.parent / "brief.md"
+    outside.write_text("brief")
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_agent("worker", "do x", task_id="t1", read_paths=[str(outside)])
+    assert backend.tasks[-1].read_paths == [str(outside)]
+
+
+def test_run_many_threads_read_paths_per_job(repo: Path) -> None:
+    outside = repo.parent / "pack.md"
+    outside.write_text("pack")
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_many(
+        [{"client": "worker", "goal": "g", "task_id": "j1", "read_paths": [str(outside)]}]
+    )
+    assert backend.tasks[-1].read_paths == [str(outside)]
+
+
+def test_job_request_threads_read_paths(repo: Path) -> None:
+    svc = _svc(repo)
+    req = svc.job_request(
+        {"client": "worker", "goal": "g", "read_paths": ["/tmp/x.md"]}
+    )
+    assert req.task.read_paths == ["/tmp/x.md"]
+
+
 def test_run_agent_does_not_stamp_client_name_into_role(repo: Path) -> None:
     # `role` is a semantic routing role, not the client name; the client is tracked separately.
     backend = _Capture()

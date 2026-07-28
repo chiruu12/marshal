@@ -79,6 +79,12 @@ _DESC_TASK_ID = (
     "Must be a safe path segment ([A-Za-z0-9._-], no leading '.'/'-'); see SECURITY.md."
 )
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt). Each must be TRACKED in git: the worktree holds tracked files only, so a gitignored/untracked path fails the spawn instead of silently reaching the agent as an unopenable path."
+_DESC_READ_PATHS = (
+    "Optional read-only escape hatch: absolute paths, or paths relative to the driver's repo root, "
+    "copied into the worktree under `.marshal-context/` (chmod read-only, git-excluded from the "
+    "run diff). Secret-shaped names (.env*, *.pem, id_rsa*, id_ed25519*, or anything under .ssh) "
+    "are refused. Missing paths fail the spawn."
+)
 _DESC_BASE_BRANCH = (
     "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
     "chain dependent work off a prior run's branch."
@@ -105,6 +111,7 @@ class Job(BaseModel):
     goal: Annotated[str, Field(description=_DESC_GOAL)]
     task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
+    read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
@@ -327,6 +334,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None,
         base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
@@ -345,7 +353,8 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
             workspace,
             lambda svc: svc.run_agent(
                 client, goal, task_id=task_id, context_files=context_files,
-                base_branch=base_branch, model=model, backend=backend, duration=duration,
+                read_paths=read_paths, base_branch=base_branch, model=model,
+                backend=backend, duration=duration,
             ),
         )
 
@@ -381,6 +390,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
+        read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None,
         base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
@@ -395,7 +405,8 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
             workspace,
             lambda svc: svc.spawn(
                 client, goal, task_id=task_id, context_files=context_files,
-                base_branch=base_branch, model=model, backend=backend, duration=duration,
+                read_paths=read_paths, base_branch=base_branch, model=model,
+                backend=backend, duration=duration,
             ),
         )
 

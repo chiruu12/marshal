@@ -69,6 +69,9 @@ class RunRecord(BaseModel):
     # recognised the pattern. Marshal does not own `worktree_setup` (it is the user's config), but
     # it does own whether the difference is visible on the result.
     worktree_setup: str | None = None
+    # Declared outside-worktree paths this run was allowed to read (copied under `.marshal-context/`).
+    # Empty means the run saw only its worktree. Surfaced so a reviewer can tell when a run saw more.
+    read_paths: list[str] = []
     # DERIVED ON READ, never persisted (see FleetState._write). Whether the agent process is alive
     # right now: True/False when the pid's identity could be checked, None when it could not (no
     # pid recorded, or the probe is unavailable) - and None on any terminal record, where the

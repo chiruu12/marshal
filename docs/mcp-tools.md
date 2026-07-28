@@ -138,6 +138,7 @@ Run a task in an isolated worktree; **blocks** until finished.
 | `client` | string \| null | `null` | Configured client name. Omit for ad-hoc spawn (set `backend`). |
 | `task_id` | string \| null | `null` | Grouping id for `report()`. Must be a safe path segment (`[A-Za-z0-9._-]`, no leading `.`/`-`; see `SECURITY.md`); hostile values fail closed before any worktree is created. |
 | `context_files` | list[string] \| null | `null` | Repo-relative paths injected into the prompt. Each must be **relative to the repo root** and exist **in the worktree**, which holds tracked files only. Absolute paths and `..` are refused (the worktree is the isolation boundary); a gitignored or untracked path fails the spawn rather than handing the agent a file it cannot open. |
+| `read_paths` | list[string] \| null | `null` | Read-only escape hatch for material **outside** the worktree. Absolute paths, or paths relative to the **driver's** repo root, are copied into `<worktree>/.marshal-context/<basename>` (chmod read-only) and git-excluded so they never appear in the run's diff. The worker prompt is told reference material is under `.marshal-context/`. Secret-shaped names (`.env*`, `*.pem`, `id_rsa*`, `id_ed25519*`) and anything under a `.ssh` directory are refused. A missing path fails the spawn. Surfaced on the run record so a reviewer can see the run saw more than its worktree. |
 | `base_branch` | string \| null | `null` | Branch to base the worktree on (default: current HEAD). Use after `commit_run` to chain work. |
 | `model` | string \| null | `null` | Override the client's resolved model, or the model for an ad-hoc spawn. |
 | `backend` | string \| null | `null` | Bare backend for ad-hoc spawn (e.g. `opencode`). **Mutually exclusive with `client`** — passing both is an error, not a precedence rule. To use a configured client with a different model, pass `client` + `model`. |
@@ -162,7 +163,7 @@ no cross-workspace ledger merge. Budgets, `EnforceBudgetGate`, and session clock
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, context_files?, model?, backend?, duration?, workspace? }`. Omit `client` and set `backend` for ad-hoc spawns. Per-job `workspace` overrides the call-level default. |
+| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, context_files?, read_paths?, model?, backend?, duration?, workspace? }`. Omit `client` and set `backend` for ad-hoc spawns. Per-job `workspace` overrides the call-level default. |
 | `max_concurrency` | int | `4` | Max jobs running at once across the whole batch (all workspaces). |
 | `workspace` | string \| null | `null` | Default workspace for jobs that omit per-job `workspace`. |
 
@@ -506,6 +507,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `pid_start_time` | string \| null | OS-reported start time of `pid`. A pid alone is not an identity — the OS reuses pids — so startup reconciliation verifies the pair before deciding a recorded run is still alive. |
 | `agent_alive` | bool \| null | **Derived when you read the record, never stored.** Is the agent process alive *right now*: distinguishes "still working" from "finished, outcome not yet written" without shelling out to `kill -0` (which a driver should not do anyway — pids are reused, so a live pid is not proof the agent lives). `null` means unknown, not dead: the run is terminal (the question is moot), no pid is recorded, or its identity could not be verified. Never persisted — a stored liveness is stale the instant it lands. |
 | `worktree_setup` | string \| null | The command that provisioned this run's worktree, or `null` when none was configured — meaning a **bare checkout**: no venv, no extras, no gitignored data directories. **Read this before comparing any number the agent reports against your own checkout.** A test count from a worktree provisioned by a bare `uv sync` is not the same measurement as one from a workspace with extras installed, and the two look identical written down. |
+| `read_paths` | list[string] | Declared outside-worktree paths this run was allowed to read (copied under `.marshal-context/`). Empty means the run saw only its worktree. |
 | `attempts` | int | Backend invocations (> 1 means transient retries). |
 | `verify_passed` | bool \| null | `null` = no gate ran; `false` with `verify_failed` status. |
 | `verify_output` | string | Tail of verify command output. |
