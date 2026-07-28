@@ -587,6 +587,38 @@ def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
     assert "does not hold your turn" in payload["which_run_tool"]["spawn"]
     # And the caveat that every reviewer flagged is stated up front, not buried.
     assert "not a claim about" in payload["safety"]
+    # A driver asked for a 12-agent research fan-out read this framing and went elsewhere, because
+    # the description implied code-only through collect_run/integrate/worktrees. It must say what
+    # Marshal is, AND name the limit that actually caused the misread rather than hiding it.
+    assert "fleet primitive" in payload["what_marshal_is"]
+    assert "not the only one" in payload["what_marshal_is"]
+    # An earlier draft claimed a read-and-reason run "ends `empty`". It does not: `text` alone is
+    # enough for SUCCEEDED (see `_authoritative_status`), and the message is on the record. Saying
+    # otherwise pushed drivers to write files they did not need to. Assert the corrected claim.
+    assert "get_run" in payload["non_code_runs"]
+    assert "collect_run" in payload["non_code_runs"], "must name collect_run's `produced` field"
+
+
+def test_no_marshal_surface_claims_a_text_run_ends_empty() -> None:
+    """The wrong claim was fixed in the quickstart but survived in the module docstring - a partial
+    correction is how a false statement outlives its own retraction. `_authoritative_status` returns
+    SUCCEEDED on text alone, so nothing may say otherwise anywhere a driver or user reads."""
+    import marshal_engine.mcp_server as srv
+
+    # EVERY surface, not a sample. Scoping this to three files is how the claim survived a second
+    # round: it was corrected in the quickstart, then the module docstring, and was still sitting in
+    # the CHANGELOG. A partial sweep of a false statement is how it outlives its own retraction.
+    surfaces = {"mcp_server docstring": srv.__doc__ or ""}
+    for name in ("README.md", "CHANGELOG.md", "CLAUDE.md", "SECURITY.md", "CONTRIBUTING.md"):
+        surfaces[name] = Path(name).read_text(encoding="utf-8")
+    for doc in sorted(Path("docs").rglob("*.md")):
+        if "internal" in doc.parts:
+            continue  # local-only notes; they record the history of the mistake on purpose
+        surfaces[str(doc)] = doc.read_text(encoding="utf-8")
+    for where, text in surfaces.items():
+        lowered = text.lower()
+        assert "ends `empty`" not in lowered, f"{where} still claims a text run ends empty"
+        assert "produces an `empty` diff" not in lowered, f"{where} still claims an empty diff"
 
 
 def test_quickstart_claims_are_true_of_the_actual_tool_surface(
