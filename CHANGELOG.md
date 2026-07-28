@@ -187,6 +187,17 @@ versions may include breaking API changes until 1.0.
   feeds routing: the catalog is curated metadata a human wrote, a probe is whatever a CLI said just
   now, and flattening the two would let a probe drift into looking like configuration.
 
+- **Marshal describes itself as what it is (#98).** Asked to fan out 12-14 agents for research, a
+  driver **did not reach for Marshal** and explained why: the description was framed entirely around
+  producing diffs, so its own self-description routed the work elsewhere. It never got as far as the
+  feature gaps. The MCP server description, `marshal_quickstart`, the README and `docs/usage.md` now
+  say fleet primitive first and name code delegation as the best-developed path rather than the only
+  one. They also correct what a non-code run actually does, which the old framing got wrong: a run
+  that only reads and reasons **still returns its work** - its final message is on the record as
+  `text` and the run is `exited_clean`. `collect_run` reports which artifact it was via `produced`;
+  `empty` means the run produced neither text nor changes. The real gap is *structured*
+  output. Separately, where a backend truncates long final messages (Cursor does), have the agent
+  write its report to a file - that, not a missing text path, is why the review teams do so.
 - **`collect_run` reports a text artifact instead of looking empty (#97, partial).** It is the tool
   a driver reaches for first to answer "what did this run produce", and for a research or review run
   the honest answer is prose. The engine already treated text alone as `succeeded`, but collect

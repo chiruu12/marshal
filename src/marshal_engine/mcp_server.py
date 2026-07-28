@@ -1,5 +1,12 @@
 """MCP server exposing Marshal to a driver (e.g. Claude Code).
 
+Marshal is a **fleet primitive**: one driver agent spawns and coordinates many sub-agents, each in
+its own isolated git worktree, in parallel, with per-provider cost tracking. Code delegation is the
+best-developed path, not the only one - review panels, audits and research fan-out all run through
+the same primitives. A run that only reads and reasons still returns its work: its final message is
+on the record as `text` and the run is `exited_clean` - `collect_run` says which artifact it was
+via `produced` and returns the message for a text run. Call `marshal_quickstart` first for the loop and the tool boundaries.
+
 Thin wrapper over a WorkspaceRegistry of single-repo MarshalServices. Repo(s) + config come from the
 environment:
   MARSHAL_REPO        the DEFAULT workspace's repo root        (default: cwd), named "default"
@@ -191,9 +198,21 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """
         return {
             "what_marshal_is": (
-                "One agent spawns and coordinates a fleet of sub-agents, each in its own isolated "
-                "git worktree, with per-provider cost tracking. Code delegation is the "
-                "best-developed path, not the only one."
+                "A fleet primitive: one agent spawns and coordinates many sub-agents, each in its "
+                "own isolated git worktree, in parallel, with per-provider cost tracking. Code "
+                "delegation is the best-developed path, not the only one - review panels, audits "
+                "and research fan-out use the same primitives."
+            ),
+            "non_code_runs": (
+                "A run that only reads and reasons DOES return its work: its final message is on "
+                "the record as `text`, and the run is `exited_clean`. collect_run reports which "
+                "artifact it was via `produced` (`diff` | `text` | `nothing`) and returns the "
+                "message itself for a text run; get_run (or status(full=true)) gives you the raw "
+                "record if you want it. `empty` means the run produced neither text nor "
+                "file changes. What Marshal lacks "
+                "is STRUCTURED output: the result is prose you parse. Where a backend truncates "
+                "long final messages (Cursor does), have the agent write its report to a file "
+                "instead - that is why the built-in review teams do so."
             ),
             "the_loop": [
                 "1. doctor - is this workspace ready? Catches a missing CLI, a broken config, and "

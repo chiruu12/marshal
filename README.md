@@ -4,9 +4,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
-**The control plane for AI coding agents.** Keep your best reasoning model focused on planning and
-review, route execution to cheaper or specialized workers, isolate each task in its own git
-worktree, and measure what every routing strategy actually cost.
+**The control plane for a fleet of AI agents.** One driver agent spawns and coordinates many
+sub-agents, each isolated in its own git worktree, running in parallel - and measures what every
+routing strategy actually cost. Keep your best reasoning model on planning and review; route the
+execution out.
+
+**Code delegation is the best-developed path, not the only one.** Marshal runs whatever a headless
+agent CLI can run: implementation, review panels, audits, research fan-out. A run that only reads
+and reasons still returns its work - its final message lands on the run record as `text` and the run
+is `exited_clean`; `collect_run` reports which artifact it was via `produced` (`diff` | `text` |
+`nothing`) and hands back the message itself for a text run. The real gap is **structured** output: results come back as prose you parse, tracked in
+[#97](https://github.com/chiruu12/marshal/issues/97).
 
 One driver agent (e.g. Claude Code) plans the work. Marshal spawns and manages a fleet of
 *headless* coding agents - **Cursor CLI, OpenCode, Codex, Command Code, and Claude Code** today (plus
