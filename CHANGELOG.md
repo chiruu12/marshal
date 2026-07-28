@@ -8,6 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+- **The MCP server targets `mcp` 2.0 (#119).** 2.0.0 removed `mcp.server.fastmcp`; the replacement
+  is `mcp.server.mcpserver.MCPServer`. The two names are **disjoint** — no release ships both, and
+  1.29.0 emits no deprecation warning on the way out — so there is no pin that satisfies both APIs
+  and no way to support both without a fork in the import. We take 2.0 rather than pinning `mcp<2`:
+  Marshal is a published distribution, and a `<2` cap would make it the package blocking anyone
+  else's resolve for the same work we would have to do later anyway.
+
+  Server-side the port really is the rename — all tools register unchanged. The cost landed in the
+  **test surface**, where 2.0 renamed `Tool.inputSchema` to `input_schema` and turned `call_tool`'s
+  tuple into a `CallToolResult`. Those helpers now read `.structured_content` by attribute instead
+  of unpacking a tuple, which is the shape-independent form they should have used regardless.
+
 ### Added
 - **Adversarial review teams (`teams.py`).** A *team* is a declarative panel of independent,
   read-only reviewers — each role pinned to the client best at its lens — that review one subject

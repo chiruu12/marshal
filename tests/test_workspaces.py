@@ -522,8 +522,8 @@ def test_build_app_registers_workspace_tools_and_params(tmp_path: Path) -> None:
     app = build_app(WorkspaceRegistry.for_service(_echo_service(repo)))
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
     assert "list_workspaces" in tools
-    assert tools["run_agent"].inputSchema["properties"]["workspace"].get("description")
-    assert tools["get_run"].inputSchema["properties"]["workspace"].get("description")
+    assert tools["run_agent"].input_schema["properties"]["workspace"].get("description")
+    assert tools["get_run"].input_schema["properties"]["workspace"].get("description")
 
 
 def test_mcp_workspace_param_routes_via_call_tool(tmp_path: Path) -> None:
@@ -555,7 +555,7 @@ def test_mcp_workspace_param_routes_via_call_tool(tmp_path: Path) -> None:
     # an unknown id must not raise through the MCP transport (get_run's None contract holds);
     # reaching the assert means call_tool returned cleanly rather than erroring.
     unknown = asyncio.run(app.call_tool("get_run", {"run_id": "no-such-run"}))
-    assert unknown is not None  # FastMCP wraps even a None tool-return in a (content, ...) envelope
+    assert unknown is not None  # the server wraps even a None tool-return in a result envelope
 
 
 # --- the central registry file (~/.marshal/workspaces.yaml) -----------------------------------
@@ -1150,9 +1150,9 @@ def test_mcp_add_workspace_opt_in_allows_registration(
     monkeypatch.setenv(_MCP_REG_OPT_IN, "1")
     app, reg, reg_file, repo_b = _registry_app(tmp_path, monkeypatch)
 
-    _content, structured = asyncio.run(
+    structured = asyncio.run(
         app.call_tool("add_workspace", {"name": "beta", "path": str(repo_b), "scaffold": True})
-    )
+    ).structured_content
     assert "beta" in reg.names()  # registered + hot-reloaded into the live registry
     assert read_workspaces_file(reg_file)[0].get("beta") == str(repo_b.resolve())
     payload = structured.get("result", structured)
@@ -1284,10 +1284,11 @@ def _two_ws_app(tmp_path: Path) -> tuple[object, WorkspaceRegistry, Path, Path]:
 
 
 def _call(app: object, name: str, args: dict[str, object] | None = None) -> object:
-    """Call an MCP tool and return its structured payload (unwrapping FastMCP's {'result': …})."""
+    """Call an MCP tool and return its structured payload (unwrapping the {'result': …} envelope)."""
     import asyncio
 
-    _content, structured = asyncio.run(app.call_tool(name, args or {}))  # type: ignore[attr-defined]
+    result = asyncio.run(app.call_tool(name, args or {}))  # type: ignore[attr-defined]
+    structured = result.structured_content
     if isinstance(structured, dict):
         return structured.get("result", structured)
     return structured

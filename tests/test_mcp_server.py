@@ -66,7 +66,7 @@ def test_list_workflows_surfaces_malformed_recipe(
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
-    _content, structured = asyncio.run(app.call_tool("list_workflows", {}))
+    structured = asyncio.run(app.call_tool("list_workflows", {})).structured_content
     payload = structured.get("result", structured) if isinstance(structured, dict) else structured
     assert payload["workflows"] == []
     assert "broken.yaml" in payload["errors"]
@@ -122,7 +122,7 @@ def test_list_teams_surfaces_malformed_team(
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
-    _content, structured = asyncio.run(app.call_tool("list_teams", {}))
+    structured = asyncio.run(app.call_tool("list_teams", {})).structured_content
     payload = structured.get("result", structured) if isinstance(structured, dict) else structured
     assert payload["teams"] == []
     assert "broken.yaml" in payload["errors"]
@@ -201,7 +201,7 @@ def test_tools_are_async_and_round_trip_via_call_tool(
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
-    _content, structured = asyncio.run(app.call_tool("list_clients", {}))
+    structured = asyncio.run(app.call_tool("list_clients", {})).structured_content
     payload = structured.get("result", structured) if isinstance(structured, dict) else structured
     assert isinstance(payload, dict)
     assert "clients" in payload
@@ -261,7 +261,7 @@ def test_status_is_compact_and_reports_what_it_left_out(
     app = build_app(build_service())
 
     def call(**kw: object) -> dict[str, Any]:
-        _, payload = asyncio.run(app.call_tool("status", kw))
+        payload = asyncio.run(app.call_tool("status", kw)).structured_content
         return payload  # type: ignore[return-value]
 
     out = call(limit=2)
@@ -295,8 +295,8 @@ def test_duration_param_is_wired_into_spawn_schema(
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
-    assert "duration" in tools["spawn"].inputSchema["properties"]
-    assert "duration" in tools["run_agent"].inputSchema["properties"]
+    assert "duration" in tools["spawn"].input_schema["properties"]
+    assert "duration" in tools["run_agent"].input_schema["properties"]
 
 
 def test_base_branch_param_is_wired_into_spawn_and_run_agent_schema(
@@ -312,8 +312,8 @@ def test_base_branch_param_is_wired_into_spawn_and_run_agent_schema(
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
-    assert "base_branch" in tools["spawn"].inputSchema["properties"]
-    assert "base_branch" in tools["run_agent"].inputSchema["properties"]
+    assert "base_branch" in tools["spawn"].input_schema["properties"]
+    assert "base_branch" in tools["run_agent"].input_schema["properties"]
 
 
 def test_spawn_base_branch_reaches_task_spec_via_mcp(
@@ -408,7 +408,7 @@ def test_tool_params_carry_schema_descriptions(
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
-    props = tools["run_agent"].inputSchema["properties"]
+    props = tools["run_agent"].input_schema["properties"]
     assert props["client"].get("description")
     assert props["context_files"].get("description")
 
@@ -441,7 +441,7 @@ def test_get_run_log_round_trips_via_call_tool(
     )
 
     app = build_app(svc)
-    _content, structured = asyncio.run(app.call_tool("get_run_log", {"run_id": "synthetic.run"}))
+    structured = asyncio.run(app.call_tool("get_run_log", {"run_id": "synthetic.run"})).structured_content
     out = structured.get("result", structured) if isinstance(structured, dict) else structured
     assert out["run_id"] == "synthetic.run"
     assert "the-stdout" in out["log"]
@@ -450,7 +450,7 @@ def test_get_run_log_round_trips_via_call_tool(
     assert out["workspace"] == "default"  # tag() stamps the owning workspace
 
     # And: a run id no workspace owns returns log=null with the requested workspace stamp
-    _content2, structured2 = asyncio.run(app.call_tool("get_run_log", {"run_id": "nope.run"}))
+    structured2 = asyncio.run(app.call_tool("get_run_log", {"run_id": "nope.run"})).structured_content
     out2 = structured2.get("result", structured2) if isinstance(structured2, dict) else structured2
     assert out2["log"] is None
     assert out2["run_id"] == "nope.run"
@@ -471,7 +471,7 @@ def test_usage_window_param_is_in_schema(
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
-    props = tools["usage"].inputSchema["properties"]
+    props = tools["usage"].input_schema["properties"]
     assert "window" in props
     assert set(props["window"]["enum"]) == set(USAGE_WINDOWS)
 
@@ -512,7 +512,7 @@ def test_usage_window_param_mapping(
     svc.fleet.usage = UsageTracker(u)
 
     def _call(window: str) -> dict:
-        _content, structured = asyncio.run(app.call_tool("usage", {"window": window}))
+        structured = asyncio.run(app.call_tool("usage", {"window": window})).structured_content
         if isinstance(structured, dict):
             return structured.get("result", structured)
         return structured  # type: ignore[return-value]
@@ -574,7 +574,7 @@ def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
     names = {t.name for t in asyncio.run(app.list_tools())}
     assert "marshal_quickstart" in names
 
-    _, payload = asyncio.run(app.call_tool("marshal_quickstart", {}))
+    payload = asyncio.run(app.call_tool("marshal_quickstart", {})).structured_content
     # The four-step spine, in order.
     steps = " ".join(payload["the_loop"])
     for tool in ("doctor", "spawn", "collect_run", "integrate"):
@@ -606,12 +606,12 @@ def test_quickstart_claims_are_true_of_the_actual_tool_surface(
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
-    _, payload = asyncio.run(app.call_tool("marshal_quickstart", {}))
+    payload = asyncio.run(app.call_tool("marshal_quickstart", {})).structured_content
 
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
     takes_workspace = {
         name for name, t in tools.items()
-        if "workspace" in (t.inputSchema or {}).get("properties", {})
+        if "workspace" in (t.input_schema or {}).get("properties", {})
     }
     globals_ = {"marshal_quickstart", "list_workspaces", "add_workspace"}
     assert not (globals_ & takes_workspace), "a global tool grew a workspace param"

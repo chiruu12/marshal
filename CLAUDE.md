@@ -52,7 +52,7 @@ marshal/
 │   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
-│   ├── mcp_server.py        # MCP server (FastMCP) - see docs/mcp-tools.md for the tool reference
+│   ├── mcp_server.py        # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
 │   └── cli.py               # `marshal` CLI (doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus, marshal-adversarial-review
 ├── examples/                # runnable library_quickstart.py, a benchmark-output sample, workflows/ + teams/ starters
