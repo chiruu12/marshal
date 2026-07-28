@@ -127,9 +127,14 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   child's pid before its parent reaps it, so within that window the pid is unambiguous. A cancel
   that arrives before the pid is known is applied as soon as it is; a cancel after the child is
   reaped does not signal at all. A run owned by another (or dead) Marshal process is stamped
-  cancelled *without* a signal and says so on the record. The trade-off is that an orphaned agent
-  whose supervisor died is not killed by `cancel_run`; reconciliation stamps its record terminal,
-  and the process must be ended by hand.
+  cancelled *without* a signal and says so on the record. The trade-off is real and worth stating
+  exactly: **an agent that outlived its supervisor cannot be stopped by Marshal at all.**
+  Reconciliation does not stamp such a run terminal — it deliberately skips a record whose agent is
+  still alive, because that is running work, not an orphan to clean up. Reconciliation only stamps
+  `failed` once the process is gone. So the sequence to know about is: supervisor dies, agent keeps
+  running, `cancel_run` stamps the record `cancelled` **without ending the process**. The record
+  keeps the pid and its `error` names it, `clean` refuses to remove that worktree while the process
+  lives, and ending it is a manual `kill -TERM -<pid>`.
 - **A team file is prompt text delivered to fleet agents.** `<repo>/teams/*.yaml` rubrics are
   concatenated into every reviewer's goal, so anyone who can write that directory can instruct the
   fleet. `run_team` refuses a team path outside the workspace's own `teams/` directory, and the

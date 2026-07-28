@@ -245,7 +245,14 @@ def _pid_is_still_ours(rec: RunRecord) -> bool:
 
 
 def _another_fleet_active(lock_path: Path) -> bool:
-    """True when another Marshal Fleet process holds ``base/fleet.lock`` and is still alive."""
+    """True when another Marshal Fleet process holds ``base/fleet.lock`` and is still alive.
+
+    Checks the pid AND its recorded start time, the same identity the run records use. A bare pid
+    would let a recycled one impersonate a dead holder forever: every later Fleet would see "a live
+    supervisor" and decline to reap, so stale runs would read RUNNING until that unrelated process
+    happened to exit. A holder written by an older version has no start time recorded - it is
+    treated as held while alive, so an upgrade never causes a takeover it should not make.
+    """
     if not lock_path.exists():
         return False
     try:
@@ -255,7 +262,27 @@ def _another_fleet_active(lock_path: Path) -> bool:
         return False  # corrupt/stale lock - treat as inactive; this Fleet will reclaim it
     if pid == os.getpid():
         return False
-    return _pid_alive(pid)
+    if not _pid_alive(pid):
+        return False
+    recorded = data.get("pid_start_time")
+    if not isinstance(recorded, str) or not recorded:
+        return True  # older lock, or start time unreadable when written: assume still held
+    now = _pid_start_time(pid)
+    if now is None:
+        return True  # cannot probe: assume held rather than steal a live supervisor's lock
+    return now == recorded
+
+
+def _pid_is_verifiably_ours(rec: RunRecord) -> bool:
+    """Like ``_pid_is_still_ours`` but fails CLOSED: True only on proof, never on ambiguity.
+
+    ``_pid_is_still_ours`` assumes ours when identity cannot be checked, because there the wrong
+    answer reaps a live run. The opposite bias is needed wherever we act on the pid as an identity -
+    naming it in a `kill` instruction, or refusing to clean a worktree because of it. An
+    unverifiable pid may be a recycled one belonging to something else entirely, and pointing a
+    human at it would be worse than saying nothing.
+    """
+    return bool(rec.pid) and bool(rec.pid_start_time) and _pid_is_still_ours(rec)
 
 
 def _is_reapable(rec: RunRecord, runs_dir: Path) -> bool:
@@ -382,7 +409,9 @@ def _write_lock_payload(lock_path: Path) -> None:
     fd, tmp_str = tempfile.mkstemp(dir=str(lock_path.parent), prefix="fleet.lock.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"pid": os.getpid()}))
+            # Stamp the start time alongside the pid: a bare pid is not an identity here either,
+            # and a recycled one would make every later Fleet believe a live supervisor exists.
+            f.write(json.dumps({"pid": os.getpid(), "pid_start_time": _pid_start_time(os.getpid())}))
         os.replace(tmp_str, lock_path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -1237,6 +1266,15 @@ class Fleet:
                 if _in_clean_scope(r, scope) and _ended_before(r, cutoff)
             ]
         for rec in targets:
+            # A terminal record does not always mean a finished process. `cancel_run` on a run this
+            # process did not start stamps `cancelled` without being able to signal, so the agent
+            # can still be writing this worktree. Pulling it out from under a live writer loses its
+            # work and leaves git confused, so skip it and say why.
+            if _pid_is_verifiably_ours(rec):
+                result.skipped.append(
+                    {"run_id": rec.run_id, "reason": f"agent still running at pid {rec.pid}"}
+                )
+                continue
             if dry_run:
                 result.removed.append(rec.run_id)
                 continue
@@ -1295,11 +1333,22 @@ class Fleet:
         # guessing at a pid we do not own risks SIGTERM to an unrelated process group.
         handle = _inflight_handle(self.state.dir, run_id)
         if handle is None:
-            cancel_extra["pid"] = None
-            cancel_error = (
-                "fleet: cancelled without signalling - this run was started by another process, "
-                "so its pid cannot be confirmed to still belong to the agent"
-            )
+            if _pid_is_verifiably_ours(rec):
+                # The agent outlived the process that started it and is STILL RUNNING. Marshal
+                # cannot signal it (the pid belongs to no child of ours), but clearing the pid here
+                # would delete the only handle an operator has on it while the record claims the
+                # run is over. Keep the pid and say plainly that the process is still alive.
+                cancel_error = (
+                    f"fleet: cancelled the record only - the agent is STILL RUNNING at pid "
+                    f"{rec.pid} and was started by another process, so Marshal cannot signal it "
+                    f"safely. Its worktree may still be written. End it with: kill -TERM -{rec.pid}"
+                )
+            else:
+                cancel_extra["pid"] = None
+                cancel_error = (
+                    "fleet: cancelled without signalling - this run was started by another "
+                    "process, so its pid cannot be confirmed to still belong to the agent"
+                )
         else:
             with _active_runs_guard:
                 handle.cancel_requested = True

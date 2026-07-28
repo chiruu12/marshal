@@ -88,6 +88,22 @@ versions may include breaking API changes until 1.0.
   `marshal status` is a raw ledger read that never reconciles (a short-lived CLI mutating run state
   is the original bug), and a record carrying neither a pid nor a parseable `started_at` has no
   evidence either way — it stays visible and honest until `cancel_run`.
+- **A live agent that outlived its supervisor is visible instead of silently lost (#87).** Marshal
+  cannot signal a process it did not start, so `cancel_run` on such a run only flips the ledger —
+  but it used to clear the `pid` while doing so, deleting the operator's only handle on a process
+  that was still writing, behind a record claiming the run was over. The pid is kept, the `error`
+  says the agent is still running and gives the `kill` command, and `clean` refuses to remove that
+  worktree while the process lives. Identity here fails **closed** (pid *and* recorded start time
+  must match): reaping assumes ambiguity means "still ours" so it never kills a live run, but
+  pointing a human at an unverified pid could send them after a recycled one. `SECURITY.md` claimed
+  reconciliation stamps such runs terminal — it does not, and never did.
+- **`fleet.lock` identity matches run-record identity (#88).** The lock stored a bare pid while run
+  records had already learned that a pid is not an identity. If a holder died and the OS handed its
+  pid to any unrelated long-lived process, every later Fleet saw a live supervisor, declined the
+  claim, and therefore never reaped — stale runs read RUNNING until that unrelated process happened
+  to exit. The lock now records the holder's start time too and verifies the pair. A lock written by
+  an older version has no start time, and is treated as held while alive, so upgrading never causes
+  a takeover it should not make.
 - **A reap is decided and committed atomically.** The scan read each record without a lock while
   the write only re-checked "still not finished", so a pid stamped in that gap — the run's own
   process finally reporting in — was overwritten anyway. The whole decision now lives in one
