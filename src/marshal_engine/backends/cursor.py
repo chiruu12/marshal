@@ -154,6 +154,31 @@ class CursorBackend(CodingAgentBackend):
             result.error = f"{result.error}; {restore_error}" if result.error else restore_error
         return result
 
+    def available_models(self) -> list[str] | None:
+        """Model ids from ``cursor-agent models``. None when the CLI is absent or unreadable.
+
+        Output is a header line then ``<id> - <label>`` rows (verified against the real CLI), so
+        only the id before the first " - " is kept: that is what a client's ``model:`` takes. A row
+        without the separator is skipped rather than guessed at.
+        """
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "models"], capture_output=True, text=True, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        models: list[str] = []
+        for line in (proc.stdout or "").splitlines():
+            stripped = line.strip()
+            if not stripped or " - " not in stripped:
+                continue  # header/blank, or a shape we do not recognise - do not invent an id
+            models.append(stripped.split(" - ", 1)[0].strip())
+        return models or None
+
     def account_info(self) -> dict[str, str] | None:
         """Auth gate via ``cursor-agent status``; plan/model via ``about`` only after auth.
 
