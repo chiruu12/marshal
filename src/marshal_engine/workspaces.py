@@ -570,6 +570,34 @@ class WorkspaceRegistry:
     def _runs_dir(self, wdef: WorkspaceDef) -> Path:
         return runs_dir(wdef.path)
 
+    def _last_activity_at(self, wdef: WorkspaceDef) -> str | None:
+        """When a run record here was last written, or None if this workspace has no runs.
+
+        Deliberately a **stat**, not a read: `describe()` builds no services and parses no run
+        records, and with fifteen workspaces a full ledger parse per row would turn a listing into
+        real work. The tradeoff is that this is the record's last write - a run starting, updating,
+        or finishing - rather than a start time, which is why it is not called `last_run_at`. For
+        "which of these was I just working in", last write is the more useful signal anyway.
+        """
+        directory = self._runs_dir(wdef)
+        newest: float | None = None
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not entry.name.endswith(".json"):
+                        continue
+                    try:
+                        mtime = entry.stat().st_mtime
+                    except OSError:
+                        continue  # vanished mid-scan (a concurrent clean); it is not the newest
+                    if newest is None or mtime > newest:
+                        newest = mtime
+        except (OSError, ValueError):
+            return None  # no ledger yet, or unreadable - absence is reported as absence
+        if newest is None:
+            return None
+        return datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
+
     def owner_of(self, run_id: str, hint: str | None = None) -> str | None:
         """The workspace that owns ``run_id``, or None. Cheap path stat; never builds a service.
 
@@ -675,6 +703,9 @@ class WorkspaceRegistry:
         ``ready`` is still a claim about *configuration*, not about the machine: it does not probe
         whether those clients' backend CLIs are installed or authenticated (that is ``doctor``, and
         it costs subprocesses this listing deliberately avoids).
+
+        ``last_activity_at`` exists because a registry of fifteen workspaces is unnavigable by name
+        alone - recency is how anyone finds the one they were just working in.
         """
         self._refresh()
         rows: list[dict[str, Any]] = []
@@ -706,6 +737,7 @@ class WorkspaceRegistry:
                     "client_count": client_count,
                     "ready": ready_reason is None,
                     "ready_reason": ready_reason,
+                    "last_activity_at": self._last_activity_at(wdef),
                     "default": name == DEFAULT_WORKSPACE,
                 }
             )

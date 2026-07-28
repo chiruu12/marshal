@@ -60,7 +60,7 @@ _ALLOW_MCP_REGISTRATION_ENV = "MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION"
 # title + type). Reused across the tools and the run_many Job model.
 _DESC_CLIENT = "Name of a configured client (from list_clients)."
 _DESC_MODEL = "Optional model override; when set with a client, replaces the client's resolved model. When set with `backend` (ad-hoc), is the model to run."
-_DESC_BACKEND = "Optional bare backend name for an ad-hoc spawn (e.g. 'opencode', 'claude-code'); bypasses fleet.config.yaml. Ignored if `client` is also set."
+_DESC_BACKEND = "Optional bare backend name for an ad-hoc spawn (e.g. 'opencode', 'claude-code'); bypasses fleet.config.yaml. Mutually exclusive with `client` - passing both is refused, not silently resolved."
 _DESC_DURATION = (
     "Optional per-spawn timeout override. A preset name (short=300s, medium=1200s, large=6000s, "
     "long=24000s) or a positive integer of seconds. When set, it overrides the resolved timeout."

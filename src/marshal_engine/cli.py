@@ -518,7 +518,10 @@ def _cmd_workspace(args: argparse.Namespace) -> int:
         # Show why a workspace is unusable, not just that a config file happens to exist: "0
         # clients" and "config does not load" look identical otherwise, and both look like "ready".
         cfg = f"{r['client_count']} clients" if r["ready"] else f"NOT READY: {r['ready_reason']}"
-        print(f"  {r['name']:14}{flag:10} {cfg:12} {r['path']}")
+        # Recency first among the trailing columns: with a dozen registered repos, "which was I
+        # just in" is the question the list actually gets asked.
+        last = (r["last_activity_at"] or "")[:16].replace("T", " ") or "no runs"
+        print(f"  {r['name']:14}{flag:10} {cfg:12} {last:17} {r['path']}")
     return 0
 
 

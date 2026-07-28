@@ -251,6 +251,18 @@ class MarshalService:
         except ValidationError as exc:
             raise ValueError(str(exc)) from exc
         timeout_override = resolve_duration(duration) if duration is not None else None
+        if client_name and backend:
+            # A contradiction, not a precedence question: the caller named a configured client AND
+            # a bare backend, which are two different answers to "what runs this". Silently
+            # preferring one meant the run happened on a backend the caller had not asked for, with
+            # nothing in the result saying so. `model` is NOT in this rule - a client plus a model
+            # is a coherent request (run this client's backend against that model) and stays a
+            # documented override.
+            raise ValueError(
+                f"conflicting routing: client={client_name!r} and backend={backend!r} both given. "
+                f"Pass `client` to use a configured client (add `model` to override its model), or "
+                f"pass `backend` alone for an ad-hoc run - not both."
+            )
         if client_name:
             client = self._clients.get(client_name)
             if client is None:

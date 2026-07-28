@@ -1405,3 +1405,37 @@ def test_cli_workspace_add_bad_path_errors_cleanly(
     assert "error" in capsys.readouterr().err
     assert not (missing / "fleet.config.yaml").exists()
     assert not reg_file.exists()  # nothing registered
+
+
+def test_describe_reports_when_a_workspace_last_saw_activity(tmp_path: Path) -> None:
+    """Fifteen registered repos are unnavigable by name alone - recency is how anyone finds the one
+    they were just working in."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    for repo in (a, b):
+        (repo / "fleet.config.yaml").write_text("clients:\n  w:\n    backend: cursor\n")
+    _write_run(a, "r-a")  # only `a` has ever run anything
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml"),
+            WorkspaceDef("beta", b, b / "fleet.config.yaml")]
+    rows = {r["name"]: r for r in WorkspaceRegistry(defs, builder=_explode).describe()}
+    assert rows["default"]["last_activity_at"] is not None
+    assert rows["beta"]["last_activity_at"] is None, "no runs must read as absent, not as a date"
+    # Parseable, timezone-aware ISO - a driver should not have to guess the format or the zone.
+    parsed = datetime.fromisoformat(rows["default"]["last_activity_at"])
+    assert parsed.tzinfo is not None
+
+
+def test_recency_does_not_parse_run_records(tmp_path: Path) -> None:
+    """It is a stat, not a read: `describe()` builds no services and parses no records, and with a
+    dozen workspaces a full ledger parse per row would turn a listing into real work. A corrupt
+    record must therefore not affect it."""
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "fleet.config.yaml").write_text("clients:\n  w:\n    backend: cursor\n")
+    runs = a / ".marshal" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "torn.json").write_text("{not json")  # unparseable, but it is still activity
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
+    row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
+    assert row["last_activity_at"] is not None
