@@ -37,6 +37,8 @@ from .fleet import (
     EnforceBudgetGate,
     Fleet,
     IntegrateResult,
+    RunManyJob,
+    RunManyJobResult,
     RunRequest,
     StrategyResult,
 )
@@ -494,33 +496,47 @@ class MarshalService:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
         Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?, model?,
-        backend?, duration?}``. Used by single-repo ``run_many`` and the registry's cross-workspace
-        fan-out so validation stays fail-fast before any worktree is created.
+        backend?, duration?}``. Strips ``then`` and ``workspace`` (registry-only). Used by single-repo
+        ``run_many`` and the registry's cross-workspace fan-out so validation stays fail-fast before
+        any worktree is created.
         """
+        body = {k: v for k, v in job.items() if k not in ("then", "workspace")}
         return self._request_for(
-            job.get("client"),
-            job["goal"],
-            job.get("task_id"),
-            job.get("context_files"),
-            model=job.get("model"),
-            backend=job.get("backend"),
-            duration=job.get("duration"),
+            body.get("client"),
+            body["goal"],
+            body.get("task_id"),
+            body.get("context_files"),
+            model=body.get("model"),
+            backend=body.get("backend"),
+            duration=body.get("duration"),
         )
+
+    def run_many_job(self, job: dict[str, Any]) -> RunManyJob:
+        """Validate one run_many job dict (including optional ``then``) into a ``RunManyJob``."""
+        then_raw = job.get("then")
+        then_req = self.job_request(then_raw) if then_raw else None
+        return RunManyJob(request=self.job_request(job), then=then_req)
 
     def run_request_captured(self, req: RunRequest) -> RunRecord:
         """Run one request; capture any failure as a FAILED record (batch-safe, never raises)."""
         return self.fleet._run_request(req)
 
-    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
-        """Run several clients in parallel. Each job is
-        {client, goal, task_id?, context_files?, model?, backend?, duration?}.
+    def run_many_chain_captured(self, job: RunManyJob) -> RunManyJobResult:
+        """Run one run_many chain; capture failures as FAILED records (batch-safe, never raises)."""
+        return self.fleet._run_many_chain(job)
 
-        Client names are validated up front, so a typo fails fast before any run starts. A job may
-        also be specified ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's
-        optional `duration` (preset name or positive seconds) overrides the resolved timeout_s.
+    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
+        """Run several clients in parallel. Each job is
+        {client, goal, task_id?, context_files?, model?, backend?, duration?, then?}.
+
+        Optional ``then`` is the same field set as a job; it runs in the same worker as soon as that
+        job's primary finishes (does not wait for sibling jobs). Client names and ``then`` specs are
+        validated up front, so a typo fails fast before any run starts. A job may also be specified
+        ad-hoc as {backend, model, goal, ...} with no 'client' key. A job's optional `duration`
+        (preset name or positive seconds) overrides the resolved timeout_s.
         """
-        requests = [self.job_request(j) for j in jobs]
-        return self.fleet.run_many(requests, max_concurrency=max_concurrency)
+        prepared = [self.run_many_job(j) for j in jobs]
+        return self.fleet.run_many(prepared, max_concurrency=max_concurrency)
 
     def spawn(
         self,

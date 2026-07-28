@@ -573,8 +573,8 @@ def test_run_many_runs_each_client_job(repo: Path) -> None:
         {"client": "worker", "goal": "c", "task_id": "j3"},
     ]
     records = svc.run_many(jobs, max_concurrency=3)
-    assert [r.task_id for r in records] == ["j1", "j2", "j3"]
-    assert all(r.status == "exited_clean" for r in records)
+    assert [r.primary.task_id for r in records] == ["j1", "j2", "j3"]
+    assert all(r.primary.status == "exited_clean" for r in records)
     assert len(svc.status()) == 3
 
 
@@ -1000,8 +1000,8 @@ def test_run_many_per_job_duration(repo: Path) -> None:
         {"client": "b", "goal": "y", "task_id": "j2", "duration": 999},
     ]
     records = svc.run_many(jobs, max_concurrency=2)
-    assert [r.task_id for r in records] == ["j1", "j2"]
-    assert all(r.status == "exited_clean" for r in records)
+    assert [r.primary.task_id for r in records] == ["j1", "j2"]
+    assert all(r.primary.status == "exited_clean" for r in records)
 
 
 def test_run_many_duration_invalid_preset_fails_fast(repo: Path) -> None:

@@ -54,7 +54,7 @@ from .types import PermissionMode, RunStatus
 from .worktree import WorktreeError
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
-    from .fleet import CollectResult
+    from .fleet import CollectResult, RunManyJobResult
     from .state import RunRecord
 
 TargetKind = Literal["run", "plan", "range", "audit"]
@@ -480,7 +480,7 @@ class TeamService(Protocol):
     config: FleetConfig
     repo_root: Path
 
-    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]: ...
+    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]: ...
     def get_run(self, run_id: str) -> RunRecord | None: ...
     def collect_run(self, run_id: str) -> CollectResult: ...
     def diff_range(self, base: str, head: str | None = None, *, paths: list[str] | None = None) -> str: ...
@@ -597,7 +597,8 @@ class TeamRunner:
                 for r in available
             ]
             try:
-                records = self.service.run_many(jobs, max_concurrency=max_concurrency)
+                batch = self.service.run_many(jobs, max_concurrency=max_concurrency)
+                records = [r.primary for r in batch]
             except Exception as exc:  # noqa: BLE001 - a panel failure is reported, never crashed
                 records = []
                 spawn_failed = True  # these roles are already recorded; don't pair them again

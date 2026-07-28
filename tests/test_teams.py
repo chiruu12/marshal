@@ -17,7 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from marshal_engine.config import ClientConfig, ConfigError, FleetConfig
-from marshal_engine.fleet import CollectResult
+from marshal_engine.fleet import CollectResult, RunManyJobResult
 from marshal_engine.state import RunRecord
 from marshal_engine.teams import (
     MAX_SUBJECT_CHARS,
@@ -94,7 +94,7 @@ class StubService:
         self.run_status = run_status
         self.collect_raises = collect_raises
 
-    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunRecord]:
+    def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
         self.calls.append("run_many")
         if self.run_many_raises:
             raise RuntimeError("fleet exploded")
@@ -114,7 +114,7 @@ class StubService:
             out = out[: -self.drop_records]
         if self.reverse_records:
             out.reverse()
-        return out
+        return [RunManyJobResult(primary=r) for r in out]
 
     def get_run(self, run_id: str) -> RunRecord | None:
         return RunRecord(

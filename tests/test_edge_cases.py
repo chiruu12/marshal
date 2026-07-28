@@ -310,23 +310,30 @@ def test_spawn_after_pool_shutdown_stamps_failed(repo: Path) -> None:
 
 
 def test_run_many_mixed_batch_survives_a_failure(repo: Path) -> None:
+    from marshal_engine.fleet import RunManyJob
+
     fleet = Fleet(repo, {"writer": _PerTaskWriter(), "boom": _Exploder()})
     recs = fleet.run_many(
         [
-            RunRequest(backend_name="writer", task=TaskSpec(id="ok", goal="x")),
-            RunRequest(backend_name="boom", task=TaskSpec(id="bad", goal="x")),
+            RunManyJob(request=RunRequest(backend_name="writer", task=TaskSpec(id="ok", goal="x"))),
+            RunManyJob(request=RunRequest(backend_name="boom", task=TaskSpec(id="bad", goal="x"))),
         ]
     )
-    by_task = {r.task_id: r for r in recs}
-    assert [r.task_id for r in recs] == ["ok", "bad"]  # order preserved
+    by_task = {r.primary.task_id: r.primary for r in recs}
+    assert [r.primary.task_id for r in recs] == ["ok", "bad"]  # order preserved
     assert by_task["ok"].status == "exited_clean"
     assert by_task["bad"].status == "failed"
 
 
 def test_run_many_respects_max_concurrency(repo: Path) -> None:
+    from marshal_engine.fleet import RunManyJob
+
     backend = _PeakCounter()
     fleet = Fleet(repo, {"pk": backend})
-    reqs = [RunRequest(backend_name="pk", task=TaskSpec(id=f"j{i}", goal="x")) for i in range(4)]
+    reqs = [
+        RunManyJob(request=RunRequest(backend_name="pk", task=TaskSpec(id=f"j{i}", goal="x")))
+        for i in range(4)
+    ]
     fleet.run_many(reqs, max_concurrency=2)
     assert backend.peak <= 2  # the pool cap is actually enforced (OOM guard)
 

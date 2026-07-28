@@ -155,22 +155,32 @@ Same parameters as `run_agent`. Returns immediately with a `RUNNING` record; pol
 
 Run several jobs in parallel, each in its own worktree. Jobs may target **different registered
 workspaces** via an optional per-job `workspace`; the call-level `workspace` is the default for jobs
-that omit it. Mixed batches share one `max_concurrency` cap (and the process-wide `run_gate` when
-multi-repo is active). Each workspace keeps its own config, worktrees, and usage ledger — there is
-no cross-workspace ledger merge. Budgets, `EnforceBudgetGate`, and session clocks are also
-**per-workspace**; concurrency is the only shared limiter.
+that omit it. Optional per-job **`then`** runs a follow-up in the **same worker** as soon as that
+job's primary reaches a terminal state — it does **not** wait for sibling jobs (unlike a barrier).
+Mixed batches share one `max_concurrency` cap (and the process-wide `run_gate` when multi-repo is
+active). Each workspace keeps its own config, worktrees, and usage ledger — there is no cross-workspace
+ledger merge. Budgets, `EnforceBudgetGate`, and session clocks are also **per-workspace**; concurrency
+is the only shared limiter.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, context_files?, model?, backend?, duration?, workspace? }`. Omit `client` and set `backend` for ad-hoc spawns. Per-job `workspace` overrides the call-level default. |
-| `max_concurrency` | int | `4` | Max jobs running at once across the whole batch (all workspaces). |
+| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, context_files?, model?, backend?, duration?, workspace?, then? }`. Omit `client` and set `backend` for ad-hoc spawns. Per-job `workspace` overrides the call-level default. `then` uses the same field set (no nested `then` or `workspace`). |
+| `max_concurrency` | int | `4` | Max **workers** (chains) running at once across the whole batch (all workspaces). Each worker runs one job's primary, then its optional `then` back-to-back, so at most `max_concurrency` agent processes run concurrently. |
 | `workspace` | string \| null | `null` | Default workspace for jobs that omit per-job `workspace`. |
 
-**Returns:** `list[RunRecord + workspace]` — each record tagged with the workspace it actually ran in.
+**Returns:** `list[RunManyJobResult + workspace]` — one object per input job, in input order. Each
+object is tagged with the workspace the primary ran in:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `primary` | RunRecord | The job's primary run. |
+| `then` | RunRecord \| null | The follow-up run, when it ran. Absent when skipped. |
+| `then_skipped` | string \| null | Why `then` did not run (primary failed, no branch, primary's branch has no commits beyond its base, `commit_run` blocked, …). |
+| `workspace` | string | Workspace the chain ran in. |
 
 **Errors:** unknown per-job / call-level workspace names fail fast before any agent starts (same as
-other workspace-scoped tools). Invalid job specs (unknown client, bad `duration`, …) likewise fail
-fast before the batch begins.
+other workspace-scoped tools). Invalid job specs (unknown client, bad `duration`, bad `then`, …)
+likewise fail fast before the batch begins.
 
 ### `benchmark`
 
