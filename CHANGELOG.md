@@ -121,6 +121,13 @@ versions may include breaking API changes until 1.0.
   unknown backend name reads differently from an installed-but-absent CLI, because those have
   different fixes.
 
+- **`integrate` takes a commit `message` (#75).** The Fleet accepted one all along; the service and
+  the MCP tool both dropped it, so no caller could reach it and every integrate landed as
+  `marshal: integrate <run_id>` - a message about the tooling rather than the change. The reporter
+  reset and recommitted after every single one, roughly fifteen times. `commit_run` had taken a
+  `message` from the start, which made this an inconsistency in our own surface rather than a
+  missing capability. The driver reviewed the diff, so the driver is who should write the message.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
