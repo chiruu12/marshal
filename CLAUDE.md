@@ -1,7 +1,7 @@
 # Marshal
 
 Orchestration engine for driving a **fleet of headless coding agents** (Cursor CLI, OpenCode,
-Codex, Google Antigravity, Claude Code, Command Code, Goose; Gemini later) from one "driver"
+Codex, Google Antigravity, Claude Code, Command Code, Goose) from one "driver"
 agent (e.g. Claude Code). The driver plans; Marshal spawns and manages the fleet in isolated git
 worktrees, in parallel, and reports back - exposed as an **MCP server + Skills**, with
 **per-provider usage tracking**.

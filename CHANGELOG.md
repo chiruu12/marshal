@@ -195,6 +195,15 @@ versions may include breaking API changes until 1.0.
   script** stays `marshal` (what you type). Verified end to end: the wheel builds as
   `marshalfleet-0.0.1`, installs into a clean venv, and `marshal --version` still works - as does
   the release guard that parses the version out of the wheel filename.
+- **A run records what provisioned its worktree (#77).** Agents reported "1308 passed" where the
+  workspace showed "1351 passed, 0 skipped" - a bare `uv sync` had left the project's extras
+  uninstalled - and it took **three occurrences** before a driver with full context recognised the
+  pattern. In the reporter's words, *"a number that means something different in two worlds, with
+  nothing marking it, is a trap the tool sets."* We hit the same class ourselves the same day: six
+  `test_cli.py` failures that occur only inside a worktree. `worktree_setup` on the run record names
+  the command the environment came from, and `null` says the worktree was a bare checkout - the
+  sharpest form of the delta. Marshal does not own that config, but it does own whether the
+  difference is visible on the result.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
@@ -342,19 +351,6 @@ versions may include breaking API changes until 1.0.
   treated as authenticated.
 
 ### Added
-- **Gemini CLI backend adapter (`backends/gemini.py`).** Headless `gemini -p` with
-  `--output-format json`; token counts parsed from JSON `stats` with cost `unavailable` (no
-  fabricated $0). **`read-only` is unsupported and raises** — Gemini has no tier that reliably
-  denies writes headless: `plan` auto-approves `exit_plan_mode` in non-interactive runs and then
-  switches to YOLO to implement the plan, and a settings flag can silently demote it to `default`.
-  Review panels route to `read-only`, so mapping it to something writable would defeat a safety
-  boundary rather than merely degrade it. The session id is read from the top level of the JSON
-  object, where the CLI writes it, so `--resume` actually receives one. safe-edit maps to
-  `--approval-mode yolo`, not `auto_edit`: `auto_edit`
-  auto-approves edit tools but still prompts before shell and other non-edit tools, which
-  deadlocks a headless run with closed stdin — so the git worktree is the boundary, the same
-  stance as Command Code and Goose. Registered
-  as `gemini`; contract-tested offline — not live-verified (CLI absent in CI/worktree).
 - **Fail-closed doctor auth probes for remaining backends (#43).** Claude Code
   (`claude auth status`), Command Code (`command-code status --json`; config.json alone is not
   auth), OpenCode (`opencode auth list`), and Codex (`codex login status`) set `verifies_auth` so
@@ -386,6 +382,18 @@ versions may include breaking API changes until 1.0.
   boundary; neither deny list is a sandbox; Claude `acceptEdits` has no Marshal deny layer).
 
 ### Removed
+- **The Gemini CLI backend** (added and removed within this same unreleased cycle, so it never
+  shipped in a release — the `Added` entry is gone rather than leaving a net-zero pair for readers
+  to reconcile). Google is steering users toward **Antigravity**, which Marshal already
+  adapts - so Google models stay reachable and a second Google adapter would be maintenance for a
+  CLI its own vendor is moving off. The adapter was never live-verified (`gemini` was absent on PATH
+  throughout; every argv and JSON claim came from reading docs), and an adversarial audit found two
+  of those claims wrong - one a safety issue where `read-only` mapped to a mode that auto-approves
+  its own exit and escalates to YOLO, so a run declared read-only could write and exit 0. Both were
+  fixed, but verifying the rest meant installing a CLI we are now dropping. Unaffected: the
+  Antigravity adapter keeps its `~/.gemini/antigravity-cli/` settings path and `gemini-3.x` model
+  ids - those are Antigravity's, not the Gemini CLI's.
+
 - **Marshal Recall extracted from core.** The experimental Cognee-backed memory feature is preserved
   on the `feature/marshal-recall-cognee` branch for future reference.
 

@@ -2,7 +2,7 @@
 
 > **Marshal** is the infrastructure layer: one "driver" agent (Claude Code) plans work, then
 > Marshal spawns and manages a **fleet of headless coding agents** (Cursor CLI, OpenCode, Codex,
-> Command Code, Google Antigravity, Claude Code now; Gemini later), each in an isolated git worktree, in parallel - exposed to the driver as an
+> Command Code, Google Antigravity, Claude Code now), each in an isolated git worktree, in parallel - exposed to the driver as an
 > **MCP server + Skills**, with **per-provider usage tracking**. To *marshal* = to gather and
 > organize a force - exactly what this does to a fleet of agents.
 >
@@ -19,7 +19,7 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 ## 0. Locked decisions
 
 - **Execution model:** background **fleet** - N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
-- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Command Code + Antigravity + Claude Code + Goose + Gemini now. Adding another = new adapter only.
+- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Command Code + Antigravity + Claude Code + Goose now. Adding another = new adapter only.
 - **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) - optional fast path.
 - **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** - they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
 - **Differentiator:** **per-provider usage tracking** + a `usage` command. Nearly every competitor omits this.
@@ -56,8 +56,8 @@ common contract; the orchestrator treats all backends uniformly. Keep `build_inv
 
 ```python
 class CodingAgentBackend(ABC):
-    name: str            # "cursor" | "opencode" | "codex" | "gemini"
-    binary: str          # "cursor-agent" | "opencode" | "codex" | "gemini"
+    name: str            # "cursor" | "opencode" | "codex" | "claude-code"
+    binary: str          # "cursor-agent" | "opencode" | "codex" | "claude"
 
     class Capabilities:          # feature flags → orchestrator degrades gracefully
         json_output: bool
@@ -148,12 +148,12 @@ for lower latency, with subprocess `opencode run` as fallback (cmuxlayer-style f
 The single most reusable artifact (from shinpr/sub-agents-mcp). Headless = **no interactive
 approvals, ever** - "sub-agents have no stdin, so any approval prompt deadlocks the run."
 
-| Tier | Cursor | OpenCode | Codex | Command Code | Antigravity | Claude Code | Goose | Gemini |
-|---|---|---|---|---|---|---|---|---|
-| **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | - (unsupported headless) | `--permission-mode plan` | `GOOSE_MODE=chat` (via `prepare`) | - (unsupported: `plan` escalates to yolo headless) |
-| **safe-edit** (default) | `--force` + engine-managed deny list in `.cursor/cli.json` | `--dangerously-skip-permissions` + `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies) | `-s workspace-write` | `--yolo` | `--dangerously-skip-permissions` (+ `trustedWorkspaces` via `prepare`) | `--permission-mode acceptEdits` | `GOOSE_MODE=auto` (via `prepare`; no argv flags) | `--approval-mode yolo` (`auto_edit` waits on a human) |
-| **yolo** (opt-in) | `--yolo` (no deny list) | `--dangerously-skip-permissions` + `question: deny` only | workspace-write, no approval | `--yolo` | `--dangerously-skip-permissions` | bypass | `GOOSE_MODE=auto` (same as safe-edit) | `--approval-mode yolo` |
-| **permission_fidelity** | `enforced-denies` | `enforced-denies` | `enforced-denies` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` |
+| Tier | Cursor | OpenCode | Codex | Command Code | Antigravity | Claude Code | Goose |
+|---|---|---|---|---|---|---|---|
+| **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | - (unsupported headless) | `--permission-mode plan` | `GOOSE_MODE=chat` (via `prepare`) |
+| **safe-edit** (default) | `--force` + engine-managed deny list in `.cursor/cli.json` | `--dangerously-skip-permissions` + `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies) | `-s workspace-write` | `--yolo` | `--dangerously-skip-permissions` (+ `trustedWorkspaces` via `prepare`) | `--permission-mode acceptEdits` | `GOOSE_MODE=auto` (via `prepare`; no argv flags) |
+| **yolo** (opt-in) | `--yolo` (no deny list) | `--dangerously-skip-permissions` + `question: deny` only | workspace-write, no approval | `--yolo` | `--dangerously-skip-permissions` | bypass | `GOOSE_MODE=auto` (same as safe-edit) |
+| **permission_fidelity** | `enforced-denies` | `enforced-denies` | `enforced-denies` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` |
 
 `permission_fidelity` is a coarse routing signal on `Capabilities` (surfaced via `list_clients`,
 `marshal backends`, and `doctor`), not a sandbox ranking:
