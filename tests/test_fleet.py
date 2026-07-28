@@ -3054,3 +3054,32 @@ def test_collect_run_says_nothing_when_a_run_produced_neither(repo: Path) -> Non
     fleet = Fleet(repo, {"silent": _Talker("")})
     rec = fleet.run("silent", TaskSpec(id="quiet", goal="x"))
     assert fleet.collect_run(rec.run_id).produced == "nothing"
+def test_a_run_records_what_provisioned_its_worktree(repo: Path) -> None:
+    """REGRESSION (#77): a number from a worktree does not mean the same thing as the same number
+    from your checkout, and nothing marked the difference. Agents reported "1308 passed" where the
+    workspace showed "1351 passed, 0 skipped" - a bare `uv sync` had left the extras uninstalled -
+    and it took three occurrences before a driver with full context spotted the pattern."""
+    fleet = Fleet(repo, {"writer": _Writer()}, worktree_setup=[sys.executable, "-c", "pass"])
+    rec = fleet.run("writer", TaskSpec(id="prov", goal="x"))
+    assert rec.worktree_setup == f"{sys.executable} -c pass"
+
+
+def test_worktree_setup_provenance_survives_a_quoted_argument(repo: Path) -> None:
+    """The scaffolded form is `sh -c "cd sub && uv sync"`. A plain `" ".join` renders that as
+    `sh -c cd sub && uv sync` - a DIFFERENT command. Provenance that misdescribes what ran is worse
+    than none, because the entire point of the field is letting a driver trust where a number came
+    from."""
+    import shlex
+
+    cmd = [sys.executable, "-c", "x = 1 ; pass"]
+    fleet = Fleet(repo, {"writer": _Writer()}, worktree_setup=cmd)
+    rec = fleet.run("writer", TaskSpec(id="quoted", goal="x"))
+    assert shlex.split(rec.worktree_setup) == cmd, "the recorded command does not round-trip"
+
+
+def test_an_unprovisioned_worktree_records_none(repo: Path) -> None:
+    """`None` is the sharpest form of the delta: the worktree is a bare checkout - no venv, no
+    extras, no gitignored data dirs - so any count from it describes a different world entirely."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="bare", goal="x"))
+    assert rec.worktree_setup is None

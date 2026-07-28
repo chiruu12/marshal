@@ -196,6 +196,23 @@ versions may include breaking API changes until 1.0.
   branch on a field rather than inferring intent from which container is empty. Structured output -
   the remaining half of #97 - is deliberately not attempted here: prose you can find beats prose you
   cannot, and a schema is a separate decision.
+- **The PyPI distribution is `MarshalFleet`.** `[project].name` must equal the name the Trusted
+  Publisher is registered under or the upload is rejected, and the registered project is
+  `MarshalFleet` (PyPI normalises it to `marshalfleet`). Three names now, each doing one job: the
+  **distribution** is `MarshalFleet` (what `pip install` takes), the **import package** stays
+  `marshal_engine` (a top-level `marshal` would shadow the stdlib module), and the **console
+  script** stays `marshal` (what you type). Verified end to end: the wheel builds as
+  `marshalfleet-0.0.1`, installs into a clean venv, and `marshal --version` still works - as does
+  the release guard that parses the version out of the wheel filename.
+- **A run records what provisioned its worktree (#77).** Agents reported "1308 passed" where the
+  workspace showed "1351 passed, 0 skipped" - a bare `uv sync` had left the project's extras
+  uninstalled - and it took **three occurrences** before a driver with full context recognised the
+  pattern. In the reporter's words, *"a number that means something different in two worlds, with
+  nothing marking it, is a trap the tool sets."* We hit the same class ourselves the same day: six
+  `test_cli.py` failures that occur only inside a worktree. `worktree_setup` on the run record names
+  the command the environment came from, and `null` says the worktree was a bare checkout - the
+  sharpest form of the delta. Marshal does not own that config, but it does own whether the
+  difference is visible on the result.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
