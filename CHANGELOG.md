@@ -149,6 +149,15 @@ versions may include breaking API changes until 1.0.
   `message` from the start, which made this an inconsistency in our own surface rather than a
   missing capability. The driver reviewed the diff, so the driver is who should write the message.
 
+- **`list_models` proxies the backend's own list when no catalog is configured (#78).** It returned
+  `{"models": []}`, so a driver left Marshal and ran `cursor-agent models` in a shell to find out
+  what it could route at - we did exactly the same thing ourselves the same day, to confirm two
+  model ids before pointing a fleet at them. Backends can now report what their CLI says they run
+  (implemented for Cursor, verified against the real output: 193 ids). `null` for a backend means it
+  cannot be asked, not that it runs nothing. It stays in a separate `backend_models` field and never
+  feeds routing: the catalog is curated metadata a human wrote, a probe is whatever a CLI said just
+  now, and flattening the two would let a probe drift into looking like configuration.
+
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
   are now in the run-record reference with the reason each exists; `.marshal/fleet.lock` is
@@ -172,6 +181,40 @@ versions may include breaking API changes until 1.0.
   docstring drift that still claimed budgets never block.
 
 ### Fixed
+- **Startup reconciliation no longer reaps runs another process just started.** Observed in
+  production, not theorised: two live agents were stamped `failed` ("orphaned at startup") seconds
+  after spawning, one of them still running when its record claimed it had died. A run is persisted
+  RUNNING a moment before its pid is stamped, so a short-lived process reconciling in that window
+  finds a record with no pid and nothing to protect it — the in-process registry only covers runs
+  the *same* process started, and the lock only helps once its holder is alive and current. A
+  non-terminal record that has no pid yet and is younger than the reap grace period is now left
+  alone. The grace is deliberately narrow in both directions: a record that already carries a pid is
+  decided immediately (its liveness is knowable, so waiting would only keep a dead run reported as
+  RUNNING), and a record skipped for being young is re-examined on the next `status`/`get_run`
+  rather than only at the next Fleet construction — otherwise a genuine orphan that happened to be
+  young at startup would read RUNNING for the whole life of a long-running server. Multi-workspace
+  MCP `status` reads ledgers directly rather than through the service, so it finishes a pending
+  reconciliation for any workspace whose Fleet already exists in the process (it still never builds
+  one to do so — where no Fleet was built, nothing reaped). A record skipped because its agent was
+  still alive is queued for re-check the same way: "alive right now" is a snapshot, and without this
+  a run whose agent outlived its supervisor and then exited stayed `running` until the server
+  restarted. Two cases remain undecidable by design and are documented rather than guessed at:
+  `marshal status` is a raw ledger read that never reconciles (a short-lived CLI mutating run state
+  is the original bug), and a record carrying neither a pid nor a parseable `started_at` has no
+  evidence either way — it stays visible and honest until `cancel_run`.
+- **A reap is decided and committed atomically.** The scan read each record without a lock while
+  the write only re-checked "still not finished", so a pid stamped in that gap — the run's own
+  process finally reporting in — was overwritten anyway. The whole decision now lives in one
+  predicate that runs again inside `update_if`, under the run's own lock, so a reap can never be
+  authorised by one test and committed against another.
+- **Reconciliation can no longer be lost.** It is no longer gated on a flag fixed at construction:
+  such a flag can only ever be cleared, so an orphan created *after* it cleared was never looked at
+  again. A denied `fleet.lock` claim is now retried on the next read rather than remembered as
+  permanent — ownership can be refused merely because a short-lived CLI held the guard for that
+  instant, which previously left a long-running server that never reconciled again.
+- **A pid is never written onto a terminal record.** After such a reap, the pid callback stamped a
+  live pid onto the `failed` record, producing a record that claimed a running process for a run it
+  said was dead. The write is now conditional on the run still being non-terminal.
 - **`cancel_run` signals only a live child of the current process.** Signalling goes through an
   in-process handle tracking the child from spawn until it is reaped — the OS cannot recycle a
   child's pid before its parent reaps it, so within that window the pid is unambiguous. A cancel
