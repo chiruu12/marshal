@@ -107,11 +107,16 @@ class CodingAgentBackend(ABC):
     # --- optional hooks ------------------------------------------------------------------
 
     def _compose_prompt(self, task: TaskSpec) -> str:
-        """Build the agent prompt from the task goal and optional context files."""
+        """Build the agent prompt from the task goal and optional context files / read_paths."""
         prompt = task.goal
         if task.context_files:
             files = "\n".join(f"- {f}" for f in task.context_files)
             prompt = f"{prompt}\n\nRelevant files:\n{files}"
+        if task.read_paths:
+            prompt = (
+                f"{prompt}\n\nRead-only reference material is available under "
+                f".marshal-context/ (do not modify those files)."
+            )
         return prompt
 
     def finalize(self, result: AgentResult) -> AgentResult:

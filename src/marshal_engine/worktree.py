@@ -74,6 +74,25 @@ def _ensure_under_base(path: Path, base_dir: Path) -> Path:
     return resolved
 
 
+def _restore_writable_dirs(root: Path) -> None:
+    """Add owner-write on directories under ``root`` so remove/rmtree can unlink entries.
+
+    Read-only *files* can still be unlinked from a writable directory; directories without the
+    write bit cannot, which strands the worktree when ``ignore_errors`` cleanup reports success.
+    Applied to the whole tree (not a ``.marshal-context`` special case) so any read-only content
+    is reclaimable.
+    """
+    if not root.exists():
+        return
+    for dirpath, _dirnames, _filenames in os.walk(root):
+        try:
+            mode = os.stat(dirpath).st_mode
+            if mode & 0o200 == 0:
+                os.chmod(dirpath, mode | 0o200)
+        except OSError:
+            continue
+
+
 class Worktree(BaseModel):
     task_id: str
     path: Path
@@ -477,6 +496,7 @@ class WorktreeManager:
 
     def remove(self, wt: Worktree, delete_branch: bool = True) -> None:
         _ensure_under_base(wt.path, self.base_dir)
+        _restore_writable_dirs(wt.path)
         proc = self._git("worktree", "remove", "--force", str(wt.path))
         if proc.returncode != 0:
             raise WorktreeError(f"worktree remove failed for {wt.task_id!r}: {proc.stderr.strip()}")
@@ -499,11 +519,13 @@ class WorktreeManager:
         immutable usage ledger and the run-state record are NOT touched here.
 
         Paths outside ``base_dir`` are refused before any remove/rmtree (poisoned state must not
-        delete host directories).
+        delete host directories). Owner-write is restored on directories first so read-only trees
+        (e.g. provisioned ``read_paths`` at 0o555) cannot strand the worktree.
         """
         p = Path(path)
         _ensure_under_base(p, self.base_dir)
         if p.exists():
+            _restore_writable_dirs(p)
             rm = self._git("worktree", "remove", "--force", str(p))
             if rm.returncode != 0 and p.exists():
                 # git refused (corrupt/missing admin entry); the dir is now just a plain directory -

@@ -285,6 +285,7 @@ class MarshalService:
         goal: str,
         task_id: str | None = None,
         context_files: list[str] | None = None,
+        read_paths: list[str] | None = None,
         *,
         base_branch: str | None = None,
         model: str | None = None,
@@ -314,6 +315,7 @@ class MarshalService:
                 id=task_id if task_id is not None else uuid.uuid4().hex[:8],
                 goal=self._compose_goal(goal),
                 context_files=context_files or [],
+                read_paths=read_paths or [],
                 base_branch=base_branch,
             )
         except ValidationError as exc:
@@ -472,13 +474,14 @@ class MarshalService:
         *,
         task_id: str | None = None,
         context_files: list[str] | None = None,
+        read_paths: list[str] | None = None,
         base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
     ) -> RunRecord:
         req = self._request_for(
-            client_name, goal, task_id, context_files,
+            client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )
@@ -495,10 +498,10 @@ class MarshalService:
     def job_request(self, job: dict[str, Any]) -> RunRequest:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
-        Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?, model?,
-        backend?, duration?}``. Strips ``then`` and ``workspace`` (registry-only). Used by single-repo
-        ``run_many`` and the registry's cross-workspace fan-out so validation stays fail-fast before
-        any worktree is created.
+        Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?,
+        read_paths?, model?, backend?, duration?}``. Strips ``then`` and ``workspace``
+        (registry-only). Used by single-repo ``run_many`` and the registry's cross-workspace
+        fan-out so validation stays fail-fast before any worktree is created.
         """
         body = {k: v for k, v in job.items() if k not in ("then", "workspace")}
         return self._request_for(
@@ -506,6 +509,7 @@ class MarshalService:
             body["goal"],
             body.get("task_id"),
             body.get("context_files"),
+            body.get("read_paths"),
             model=body.get("model"),
             backend=body.get("backend"),
             duration=body.get("duration"),
@@ -527,7 +531,7 @@ class MarshalService:
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
         """Run several clients in parallel. Each job is
-        {client, goal, task_id?, context_files?, model?, backend?, duration?, then?}.
+        {client, goal, task_id?, context_files?, read_paths?, model?, backend?, duration?, then?}.
 
         Optional ``then`` is the same field set as a job; it runs in the same worker as soon as that
         job's primary finishes (does not wait for sibling jobs). Client names and ``then`` specs are
@@ -545,6 +549,7 @@ class MarshalService:
         *,
         task_id: str | None = None,
         context_files: list[str] | None = None,
+        read_paths: list[str] | None = None,
         base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
@@ -552,7 +557,7 @@ class MarshalService:
     ) -> RunRecord:
         """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
         req = self._request_for(
-            client_name, goal, task_id, context_files,
+            client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )

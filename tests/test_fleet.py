@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import pytest
@@ -25,6 +28,7 @@ from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
+from marshal_engine import fleet as fleet_mod
 from marshal_engine.fleet import Fleet, RunManyJob, RunRequest, _active_runs_guard, _register_inflight_run
 from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
@@ -3020,6 +3024,984 @@ def test_a_traversing_context_path_is_refused(repo: Path) -> None:
     with pytest.raises(ValueError, match="outside the worktree"):
         fleet.run("writer", TaskSpec(id="trav", goal="x", context_files=["../../outside.txt"]))
     assert fleet.state.list() == []
+
+
+class _ContextReader(CodingAgentBackend):
+    """Reads `.marshal-context/<name>` and writes its contents to out.txt (proves readability)."""
+
+    name = "ctxreader"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, basename: str = "notes.md") -> None:
+        self._basename = basename
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        # Read the provisioned copy, then write a real tracked change so collect_run has a diff
+        # that must NOT include `.marshal-context`.
+        code = (
+            "from pathlib import Path\n"
+            f"src = Path('.marshal-context') / {self._basename!r}\n"
+            "text = src.read_text()\n"
+            "Path('out.txt').write_text(text)\n"
+            "print(text)\n"
+        )
+        return [sys.executable, "-c", code]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+def test_read_paths_copies_file_readable_inside_worktree(repo: Path) -> None:
+    """Happy path (#105): a driver-declared path outside the worktree is copied under
+    `.marshal-context/` and the agent can read it."""
+    outside = repo.parent / "driver-notes.md"
+    outside.write_text("secret-to-the-worktree-but-declared")
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("driver-notes.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp1", goal="use the notes", read_paths=[str(outside)]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.text == "secret-to-the-worktree-but-declared"
+    copied = Path(rec.worktree) / ".marshal-context" / "driver-notes.md"
+    assert copied.is_file()
+    assert copied.read_text() == "secret-to-the-worktree-but-declared"
+    # Read-only for the owner (and everyone): no write bit.
+    assert (copied.stat().st_mode & 0o222) == 0
+
+
+def test_read_paths_relative_to_driver_repo_root(repo: Path) -> None:
+    """Relative read_paths resolve against the driver's repo root, not the worktree."""
+    # A gitignored file in the driver checkout - invisible in a fresh worktree, but declared.
+    (repo / ".gitignore").write_text("scratch/\n")
+    scratch = repo / "scratch" / "brief.md"
+    scratch.parent.mkdir()
+    scratch.write_text("from-driver-checkout")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "ignore scratch"],
+        check=True,
+        capture_output=True,
+    )
+
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("brief.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp-rel", goal="use brief", read_paths=["scratch/brief.md"]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.text == "from-driver-checkout"
+
+
+def test_read_paths_do_not_pollute_diff_or_changed_files(repo: Path) -> None:
+    """CRITICAL (#105): provisioned copies must never appear in the run's diff / changed_files."""
+    outside = repo.parent / "ref.md"
+    outside.write_text("reference material")
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("ref.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp-diff", goal="write from ref", read_paths=[str(outside)]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+
+    got = fleet.collect_run(rec.run_id)
+    assert "out.txt" in got.changed_files
+    assert not any(".marshal-context" in p for p in got.changed_files)
+    assert ".marshal-context" not in got.diff
+
+
+def test_read_paths_surface_on_the_run_record(repo: Path) -> None:
+    """A reviewer must see that the run was allowed to read more than its worktree (#105)."""
+    outside = repo.parent / "extra.md"
+    outside.write_text("extra")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    declared = [str(outside)]
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-rec", goal="x", read_paths=declared),
+    )
+    assert rec.read_paths == declared
+    reloaded = fleet.state.get(rec.run_id)
+    assert reloaded is not None
+    assert reloaded.read_paths == declared
+
+
+@pytest.mark.parametrize(
+    "name",
+    [".env", ".env.local", "cert.pem", "id_rsa", "id_rsa.pub", "id_ed25519", "id_ed25519.pub"],
+)
+def test_read_paths_refuses_secret_named_files(repo: Path, name: str) -> None:
+    """Fail-closed: secret-shaped basenames are never copied into a worktree (#105)."""
+    secret = repo.parent / name
+    secret.write_text("do-not-copy")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="refuses secret-shaped path"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sec", goal="x", read_paths=[str(secret)]),
+        )
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_paths_inside_ssh_directory(repo: Path) -> None:
+    """Anything under a `.ssh` directory is refused, regardless of basename (#105)."""
+    ssh_dir = repo.parent / ".ssh"
+    ssh_dir.mkdir()
+    key = ssh_dir / "config"
+    key.write_text("Host *")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="refuses secret-shaped path"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-ssh", goal="x", read_paths=[str(key)]),
+        )
+    assert fleet.state.list() == []
+
+
+def test_read_paths_missing_path_fails_and_tears_down(repo: Path) -> None:
+    """A missing path fails the spawn; the half-made worktree is discarded (#105)."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match="read_paths not found"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-miss", goal="x", read_paths=["no/such/file.md"]),
+        )
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_copies_are_contained_under_marshal_context(repo: Path) -> None:
+    """Containment: every copy lands under `<worktree>/.marshal-context/<basename>` only."""
+    outside = repo.parent / "nested" / "doc.md"
+    outside.parent.mkdir()
+    outside.write_text("nested")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-contain", goal="x", read_paths=[str(outside)]),
+    )
+    wt = Path(rec.worktree)
+    dest = wt / ".marshal-context" / "doc.md"
+    assert dest.is_file()
+    assert dest.resolve().is_relative_to((wt / ".marshal-context").resolve())
+    # Must not also land at the original nested relative path inside the worktree.
+    assert not (wt / "nested" / "doc.md").exists()
+
+
+def test_read_paths_directory_copies_recursively_readonly(repo: Path) -> None:
+    """Directories are copied recursively; files AND directories have no write bit (#105 P1-B)."""
+    src_dir = repo.parent / "docs-pack"
+    src_dir.mkdir()
+    (src_dir / "a.md").write_text("a")
+    sub = src_dir / "sub"
+    sub.mkdir()
+    (sub / "b.md").write_text("b")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-dir", goal="x", read_paths=[str(src_dir)]),
+    )
+    dest = Path(rec.worktree) / ".marshal-context" / "docs-pack"
+    assert (dest / "a.md").read_text() == "a"
+    assert (dest / "sub" / "b.md").read_text() == "b"
+    # Agent must not be able to unlink/replace enclosed read-only files via a writable dir.
+    assert ((dest / "a.md").stat().st_mode & 0o222) == 0
+    assert ((dest / "sub" / "b.md").stat().st_mode & 0o222) == 0
+    assert (dest.stat().st_mode & 0o222) == 0
+    assert ((dest / "sub").stat().st_mode & 0o222) == 0
+
+
+def test_read_paths_directory_worktree_is_reclaimable_on_clean(repo: Path) -> None:
+    """Regression (#105 P1-B): DIRECTORY read_paths (0o555 dirs) must not strand teardown.
+
+    Without restoring owner-write before remove/rmtree, discard's ``ignore_errors`` fallback
+    reports clean SUCCESS while leaking the worktree. Assert the directory is actually gone.
+    """
+    src_dir = repo.parent / "docs-pack-clean"
+    src_dir.mkdir()
+    (src_dir / "a.md").write_text("a")
+    sub = src_dir / "sub"
+    sub.mkdir()
+    (sub / "b.md").write_text("b")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run(
+        "writer",
+        TaskSpec(id="rp-dir-clean", goal="x", read_paths=[str(src_dir)]),
+    )
+    wt = Path(rec.worktree)
+    assert (wt / ".marshal-context" / "docs-pack-clean" / "sub" / "b.md").is_file()
+    # Precondition: dirs really are immutable (otherwise this test wouldn't catch a restore revert).
+    assert ((wt / ".marshal-context" / "docs-pack-clean").stat().st_mode & 0o222) == 0
+
+    result = fleet.clean(scope="all")
+    assert rec.run_id in result.removed
+    assert not wt.exists(), "worktree leaked after clean (directory read_path teardown bug)"
+
+
+def test_read_paths_refuses_secret_descendants_in_directory(repo: Path) -> None:
+    """P1-A (#105): secret-shaped descendants of a declared directory are refused, not copied."""
+    src_dir = repo.parent / "docs-with-secret"
+    sub = src_dir / "sub"
+    sub.mkdir(parents=True)
+    (sub / "ok.md").write_text("fine")
+    secret = sub / ".env"
+    secret.write_text("SECRET=1")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses secret-shaped path:.*sub/\.env") as excinfo:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sec-desc", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert ".env" in str(excinfo.value)
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_ssh_descendants_in_directory(repo: Path) -> None:
+    """P1-A (#105): a ``.ssh`` subdirectory under a declared directory is refused."""
+    src_dir = repo.parent / "docs-with-ssh"
+    ssh = src_dir / "sub" / ".ssh"
+    ssh.mkdir(parents=True)
+    key = ssh / "key"
+    key.write_text("-----BEGIN PRIVATE KEY-----")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses secret-shaped path:.*\.ssh") as excinfo:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-ssh-desc", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert "key" in str(excinfo.value) or ".ssh" in str(excinfo.value)
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_fifo_without_hanging(repo: Path) -> None:
+    """P1-C (#105): a FIFO read_path is refused immediately (must not block forever)."""
+    fifo = repo.parent / "blocker.fifo"
+    os.mkfifo(fifo)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-fifo", goal="x", read_paths=[str(fifo)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match="refuses special file"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung opening a FIFO (P1-C regression)")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_fifo_descendant_without_hanging(repo: Path) -> None:
+    """P1-C (#105): a FIFO inside a declared directory is refused without opening it."""
+    src_dir = repo.parent / "docs-with-fifo"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("fine")
+    fifo = src_dir / "blocker.fifo"
+    os.mkfifo(fifo)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-fifo-dir", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses special file:.*blocker\.fifo"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung opening a FIFO descendant (P1-C regression)")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_innocent_symlink_to_secret(repo: Path) -> None:
+    """#105: a descendant symlink named innocently must not smuggle secret content via dereference."""
+    secret = repo.parent / ".env"
+    secret.write_text("SECRET=do-not-copy")
+    src_dir = repo.parent / "docs-with-link"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("fine")
+    link = src_dir / "notes.md"
+    link.symlink_to(secret)
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses symlink:.*notes\.md") as excinfo:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sym-secret", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert ".env" in str(excinfo.value) or "notes.md" in str(excinfo.value)
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert "SECRET=do-not-copy" not in leaked.read_text(errors="ignore")
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_any_symlink_descendant(repo: Path) -> None:
+    """#105: any symlink descendant is refused, regardless of target."""
+    src_dir = repo.parent / "docs-with-any-link"
+    src_dir.mkdir()
+    target = repo.parent / "elsewhere.md"
+    target.write_text("harmless")
+    link = src_dir / "alias.md"
+    link.symlink_to(target)
+    fleet = Fleet(repo, {"writer": _Writer()})
+    with pytest.raises(ValueError, match=r"refuses symlink:.*alias\.md"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-sym-any", goal="x", read_paths=[str(src_dir)]),
+        )
+    assert fleet.state.list() == []
+
+
+def test_read_paths_symlinked_declared_root_still_works(repo: Path) -> None:
+    """#105: a driver-typed symlink as the declared root is resolved and copied normally."""
+    real_docs = repo.parent / "real-docs"
+    real_docs.mkdir()
+    (real_docs / "a.md").write_text("from-symlinked-root")
+    link = repo.parent / "docs-link"
+    link.symlink_to(real_docs)
+    # ContextReader path is under the resolved basename (`real-docs`), not the link name.
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("real-docs/a.md")})
+    rec = fleet.run(
+        "ctxreader",
+        TaskSpec(id="rp-sym-root", goal="use docs", read_paths=[str(link)]),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.text == "from-symlinked-root"
+    dest = Path(rec.worktree) / ".marshal-context" / "real-docs" / "a.md"
+    assert dest.is_file()
+    assert dest.read_text() == "from-symlinked-root"
+    assert not dest.is_symlink()
+
+
+def test_read_paths_refuses_toctou_fifo_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: a file replaced by a FIFO between validation and copy is refused, not hung."""
+    target = repo.parent / "race.md"
+    target.write_text("ok-at-validate")
+    real_validate = fleet_mod._validate_read_path_tree
+
+    def _validate_then_swap_to_fifo(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        src.unlink()
+        os.mkfifo(src)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_swap_to_fifo)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-fifo", goal="x", read_paths=[str(target)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses special file|refused to open"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU FIFO swap (validation/copy race)")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def _replace_dir_with_symlink(victim: Path, outside: Path) -> None:
+    """Remove ``victim`` (a directory) and replace it with a symlink to ``outside``."""
+    for child in victim.iterdir():
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            # Nested fixture victims are leaves; keep this helper simple and strict.
+            for nested in child.iterdir():
+                nested.unlink()
+            child.rmdir()
+        else:
+            child.unlink()
+    victim.rmdir()
+    victim.symlink_to(outside)
+
+
+def _arm_dir_symlink_swap_after_lstat(
+    monkeypatch: pytest.MonkeyPatch, victim: Path, outside: Path
+) -> None:
+    """Like the FIFO TOCTOU test, but swap after directory *classification*, not after validate.
+
+    Validate-then-swap is caught by the copy's initial ``lstat`` (symlink refused before descent).
+    The hole is between ``lstat`` returning directory mode and path-based ``iterdir``: return the
+    stale directory stat, then replace ``victim`` with a symlink so a path walk follows into
+    ``outside``. Fd-relative ``O_NOFOLLOW|O_DIRECTORY`` open must refuse instead.
+    """
+    real_validate = fleet_mod._validate_read_path_tree
+    real_lstat_at = fleet_mod._lstat_at
+    victim_resolved = victim.resolve()
+    swapped = False
+
+    def _is_victim(src: Path) -> bool:
+        try:
+            return src.resolve() == victim_resolved
+        except OSError:
+            return src.name == victim.name and src.parent.resolve() == victim.parent.resolve()
+
+    def _lstat_at_then_swap(src: Path, *, dir_fd: int | None = None) -> os.stat_result:
+        nonlocal swapped
+        st = real_lstat_at(src, dir_fd=dir_fd)
+        if (
+            not swapped
+            and _is_victim(src)
+            and stat.S_ISDIR(st.st_mode)
+            and not stat.S_ISLNK(st.st_mode)
+        ):
+            _replace_dir_with_symlink(victim, outside)
+            swapped = True
+        return st
+
+    def _validate_then_arm(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+
+
+def test_read_paths_refuses_toctou_dir_symlink_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: a directory swapped to a symlink mid-copy must not smuggle unvalidated content.
+
+    Asserts on the absence of the smuggled *content* under `.marshal-context/`, not only the
+    raised error — the bug is host files reaching the agent.
+    """
+    src_dir = repo.parent / "docs-toctou-root"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("validated-ok")
+    outside = repo.parent / "unvalidated-outside"
+    outside.mkdir()
+    smuggled = "SMUGGLED-TOCTOU-ROOT-CONTENT"
+    (outside / "secret.md").write_text(smuggled)
+
+    _arm_dir_symlink_swap_after_lstat(monkeypatch, src_dir, outside)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-dir", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses symlink|refused to open"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU directory symlink swap")
+
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert smuggled not in leaked.read_text(errors="ignore"), (
+                    f"TOCTOU smuggled content reached {leaked}"
+                )
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_toctou_nested_dir_symlink_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: symlink swap on a *subdirectory* must refuse; exercises fd-relative child open."""
+    src_dir = repo.parent / "docs-toctou-nested"
+    src_dir.mkdir()
+    (src_dir / "root.md").write_text("root-ok")
+    sub = src_dir / "sub"
+    sub.mkdir()
+    (sub / "nested.md").write_text("nested-ok")
+    outside = repo.parent / "unvalidated-nested-outside"
+    outside.mkdir()
+    smuggled = "SMUGGLED-TOCTOU-NESTED-CONTENT"
+    (outside / "leaked.md").write_text(smuggled)
+
+    _arm_dir_symlink_swap_after_lstat(monkeypatch, sub, outside)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-nested", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses symlink|refused to open"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU nested directory symlink swap")
+
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert smuggled not in leaked.read_text(errors="ignore"), (
+                    f"TOCTOU smuggled content reached {leaked}"
+                )
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def _clear_dir(victim: Path) -> None:
+    """Remove all children of ``victim`` (files, dirs, symlinks); leave ``victim`` itself."""
+    for child in victim.iterdir():
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            _clear_dir(child)
+            child.rmdir()
+        else:
+            child.unlink()
+
+
+def _replace_dir_with_ordinary(victim: Path, populate: Callable[[Path], None]) -> None:
+    """Replace ``victim`` with a DISTINCT ordinary directory, then call ``populate(victim)``.
+
+    Builds the replacement elsewhere and renames it into place, rather than rmdir + mkdir at the
+    same path: Linux filesystems commonly reuse a just-freed inode, so recreating in place can
+    land the same (st_dev, st_ino) and the identity pin has nothing to detect. Renaming a
+    separately-created directory gives it a genuinely different inode on every platform, which is
+    the case the pin is there to catch.
+    """
+    # Build the replacement BEFORE removing the victim. Creating it afterwards lets the OS hand
+    # back the just-freed inode (Linux does this readily), and rename preserves it - so the
+    # replacement would carry the victim's identity and the pin would have nothing to detect.
+    stand_in = victim.parent / f"{victim.name}.replacement"
+    stand_in.mkdir()
+    populate(stand_in)
+    victim_id = victim.stat().st_ino
+    stand_in_id = stand_in.stat().st_ino
+    assert victim_id != stand_in_id, (
+        "test premise broken: replacement reused the victim's inode, so this cannot exercise "
+        "the identity pin"
+    )
+    _clear_dir(victim)
+    victim.rmdir()
+    stand_in.rename(victim)
+
+
+def _arm_same_type_dir_swap_after_validate(
+    monkeypatch: pytest.MonkeyPatch, victim: Path, populate: Callable[[Path], None]
+) -> None:
+    """After up-front validate, replace ``victim`` with another ordinary directory.
+
+    ``O_NOFOLLOW|O_DIRECTORY`` still succeeds (same type); policy-at-use in the copy walk must
+    refuse. Unlike the symlink-swap helper, this does not arm a post-lstat swap.
+    """
+    real_validate = fleet_mod._validate_read_path_tree
+
+    def _validate_then_swap(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        _replace_dir_with_ordinary(victim, populate)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_swap)
+
+
+def _assert_no_smuggled_content(repo: Path, smuggled: str) -> None:
+    """Assert ``smuggled`` never appears in any regular file under worktrees (the actual harm)."""
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert smuggled not in leaked.read_text(errors="ignore"), (
+                    f"TOCTOU smuggled content reached {leaked}"
+                )
+
+
+def test_read_paths_refuses_toctou_same_type_dir_swap_env(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: same-type dir swap after validate must not smuggle a ``.env`` into the worktree."""
+    src_dir = repo.parent / "docs-toctou-sametype-env"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("validated-ok")
+    smuggled = "SMUGGLED-SAME-TYPE-ENV-CONTENT"
+
+    def _populate_with_env(d: Path) -> None:
+        (d / "ok.md").write_text("still-looks-ok")
+        (d / ".env").write_text(smuggled)
+
+    _arm_same_type_dir_swap_after_validate(monkeypatch, src_dir, _populate_with_env)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-sametype-env", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses secret-shaped path"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU same-type directory swap (.env)")
+
+    _assert_no_smuggled_content(repo, smuggled)
+    worktrees = repo / ".marshal" / "worktrees"
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_toctou_same_type_dir_swap_ssh(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: same-type dir swap after validate must not smuggle ``.ssh/key`` content."""
+    src_dir = repo.parent / "docs-toctou-sametype-ssh"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("validated-ok")
+    smuggled = "SMUGGLED-SAME-TYPE-SSH-KEY"
+
+    def _populate_with_ssh(d: Path) -> None:
+        (d / "ok.md").write_text("still-looks-ok")
+        ssh = d / ".ssh"
+        ssh.mkdir()
+        (ssh / "key").write_text(smuggled)
+
+    _arm_same_type_dir_swap_after_validate(monkeypatch, src_dir, _populate_with_ssh)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-sametype-ssh", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses secret-shaped path"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU same-type directory swap (.ssh)")
+
+    _assert_no_smuggled_content(repo, smuggled)
+    worktrees = repo / ".marshal" / "worktrees"
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_toctou_same_type_subdir_swap_env(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: same-type swap on a *subdirectory* must refuse; exercises fd-relative descent."""
+    src_dir = repo.parent / "docs-toctou-sametype-nested"
+    src_dir.mkdir()
+    (src_dir / "root.md").write_text("root-ok")
+    sub = src_dir / "sub"
+    sub.mkdir()
+    (sub / "nested.md").write_text("nested-ok")
+    smuggled = "SMUGGLED-SAME-TYPE-NESTED-ENV"
+
+    def _populate_sub_with_env(d: Path) -> None:
+        (d / "nested.md").write_text("still-looks-ok")
+        (d / ".env").write_text(smuggled)
+
+    _arm_same_type_dir_swap_after_validate(monkeypatch, sub, _populate_sub_with_env)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-sametype-nested", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses secret-shaped path"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU same-type nested directory swap")
+
+    _assert_no_smuggled_content(repo, smuggled)
+    worktrees = repo / ".marshal" / "worktrees"
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_toctou_same_type_dir_swap_fifo_and_symlink(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: FIFO/symlink that appear only in a same-type swapped dir are refused at copy time."""
+    src_dir = repo.parent / "docs-toctou-sametype-special"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("validated-ok")
+    link_target = repo.parent / "sametype-link-target.md"
+    link_target.write_text("link-target-body")
+
+    def _populate_with_fifo_and_symlink(d: Path) -> None:
+        (d / "ok.md").write_text("still-looks-ok")
+        os.mkfifo(d / "pipe.fifo")
+        (d / "sneaky.md").symlink_to(link_target)
+
+    _arm_same_type_dir_swap_after_validate(monkeypatch, src_dir, _populate_with_fifo_and_symlink)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-sametype-special", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(
+                ValueError, match=r"refuses (special file|symlink)|refused to open"
+            ):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU same-type swap with FIFO/symlink")
+
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob("*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                text = leaked.read_text(errors="ignore")
+                assert "link-target-body" not in text, f"symlink target reached {leaked}"
+            assert not leaked.is_fifo(), f"FIFO leaked into worktree at {leaked}"
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_toctou_dir_identity_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: a directory replaced by a DIFFERENT directory between lstat and open is refused.
+
+    The pin compares (st_dev, st_ino), so it catches a swap to a distinct directory. It does not
+    catch delete-then-recreate at the same path, where the OS may hand back the same inode — that
+    case is covered by the point-of-use policy checks in the copy walk, not by identity.
+    """
+    src_dir = repo.parent / "docs-toctou-identity"
+    src_dir.mkdir()
+    (src_dir / "ok.md").write_text("validated-ok")
+    replacement_marker = "REPLACED-DIR-IDENTITY-MARKER"
+
+    real_validate = fleet_mod._validate_read_path_tree
+    real_lstat_at = fleet_mod._lstat_at
+    victim_resolved = src_dir.resolve()
+    swapped = False
+
+    def _is_victim(src: Path) -> bool:
+        try:
+            return src.resolve() == victim_resolved
+        except OSError:
+            return src.name == src_dir.name and src.parent.resolve() == src_dir.parent.resolve()
+
+    def _lstat_at_then_swap(src: Path, *, dir_fd: int | None = None) -> os.stat_result:
+        nonlocal swapped
+        st = real_lstat_at(src, dir_fd=dir_fd)
+        if (
+            not swapped
+            and _is_victim(src)
+            and stat.S_ISDIR(st.st_mode)
+            and not stat.S_ISLNK(st.st_mode)
+        ):
+            _replace_dir_with_ordinary(
+                src_dir, lambda d: (d / "ok.md").write_text(replacement_marker)
+            )
+            swapped = True
+        return st
+
+    def _validate_then_arm(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-identity", goal="x", read_paths=[str(src_dir)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses swapped directory"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU directory identity swap")
+
+    _assert_no_smuggled_content(repo, replacement_marker)
+    worktrees = repo / ".marshal" / "worktrees"
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_toctou_file_identity_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#105: a regular file replaced by a DIFFERENT regular file between lstat and open is refused.
+
+    Replacement is created separately and ``os.rename``d into place so it has a distinct inode
+    (unlink-and-recreate at the same path can reuse the inode and make the pin a no-op). The pin
+    refuses a swap to a different file; it is not the whole boundary (delete-then-recreate can
+    reuse an inode). Asserts the replacement content never appears under `.marshal-context/`.
+    """
+    target = repo.parent / "race-file-identity.md"
+    target.write_text("validated-ok")
+    replacement_marker = "REPLACED-FILE-IDENTITY-MARKER"
+    stand_in = repo.parent / "race-file-identity.md.replacement"
+    stand_in.write_text(replacement_marker)
+
+    real_validate = fleet_mod._validate_read_path_tree
+    real_lstat_at = fleet_mod._lstat_at
+    victim_resolved = target.resolve()
+    swapped = False
+
+    def _is_victim(src: Path) -> bool:
+        try:
+            return src.resolve() == victim_resolved
+        except OSError:
+            return src.name == target.name and src.parent.resolve() == target.parent.resolve()
+
+    def _lstat_at_then_swap(src: Path, *, dir_fd: int | None = None) -> os.stat_result:
+        nonlocal swapped
+        st = real_lstat_at(src, dir_fd=dir_fd)
+        if (
+            not swapped
+            and _is_victim(src)
+            and stat.S_ISREG(st.st_mode)
+            and not stat.S_ISLNK(st.st_mode)
+        ):
+            target.unlink()
+            os.rename(stand_in, target)
+            swapped = True
+        return st
+
+    def _validate_then_arm(src: Path, raw: str) -> None:
+        real_validate(src, raw)
+        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+
+    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def _run() -> None:
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-toctou-file-identity", goal="x", read_paths=[str(target)]),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            with pytest.raises(ValueError, match=r"refuses swapped file"):
+                fut.result(timeout=5)
+        except FuturesTimeout:  # pragma: no cover - regression guard
+            fut.cancel()
+            pytest.fail("read_paths hung on TOCTOU file identity swap")
+
+    _assert_no_smuggled_content(repo, replacement_marker)
+    worktrees = repo / ".marshal" / "worktrees"
+    if worktrees.exists():
+        for leaked in worktrees.rglob(".marshal-context/**/*"):
+            if leaked.is_file() and not leaked.is_symlink():
+                assert replacement_marker not in leaked.read_text(errors="ignore")
+    assert fleet.state.list() == []
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+
+
+def test_read_paths_refuses_tracked_marshal_context_symlink(repo: Path) -> None:
+    """#105: a tracked `.marshal-context` symlink must not be followed into tracked content.
+
+    If the base branch has `.marshal-context` -> a tracked directory, ``resolve()`` would make
+    provisioning copy into (and chmod 0o444) that target. Refuse instead; leave the target
+    untouched.
+    """
+    tracked = repo / "tracked-docs"
+    tracked.mkdir()
+    victim = tracked / "keep-me.md"
+    original = "TRACKED-DOCS-ORIGINAL-CONTENT"
+    victim.write_text(original)
+    original_mode = victim.stat().st_mode
+    ctx = repo / ".marshal-context"
+    ctx.symlink_to("tracked-docs")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "tracked marshal-context symlink"],
+        check=True,
+        capture_output=True,
+    )
+
+    outside = repo.parent / "driver-notes-ctx-symlink.md"
+    smuggled = "SHOULD-NOT-LAND-IN-TRACKED-DOCS"
+    outside.write_text(smuggled)
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    with pytest.raises(
+        ValueError, match=r"not a plain directory|\.marshal-context.*not a plain directory"
+    ):
+        fleet.run(
+            "writer",
+            TaskSpec(id="rp-ctx-symlink", goal="x", read_paths=[str(outside)]),
+        )
+
+    assert victim.read_text() == original
+    assert victim.stat().st_mode == original_mode
+    assert (victim.stat().st_mode & 0o222) != 0, "tracked target must not be chmod'd read-only"
+    assert smuggled not in victim.read_text()
+    for path in tracked.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            assert smuggled not in path.read_text(errors="ignore")
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
 
 
 def test_collect_run_returns_the_final_message_when_no_files_changed(repo: Path) -> None:

@@ -69,6 +69,14 @@ def test_compose_prompt_includes_context_files(backend: CommandCodeBackend) -> N
     assert "a.py" in argv[2] and "b.py" in argv[2]
 
 
+def test_compose_prompt_includes_read_paths_hint(backend: CommandCodeBackend) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="fix bug", read_paths=["/tmp/notes.md"]), _opts()
+    )
+    assert ".marshal-context/" in argv[2]
+    assert "Read-only reference material" in argv[2]
+
+
 def test_parse_output_success(backend: CommandCodeBackend) -> None:
     res = backend.parse_output("pong\n", "", 0)
     assert res.status is RunStatus.EXITED_CLEAN

@@ -119,6 +119,10 @@ class TaskSpec(BaseModel):
     role: str | None = None                # routing role (planner/coder/writer/reviewer/...);
                                            # policy maps role -> backend. Engine stays mechanism.
     context_files: list[str] = []          # minimal files the worker should see
+    # Declared read-only escape hatch: absolute paths, or paths relative to the driver's repo root,
+    # copied into the worktree under `.marshal-context/` (see Fleet provisioning). Unlike
+    # context_files these are deliberately outside the worktree checkout.
+    read_paths: list[str] = []
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
 
     @field_validator("id")

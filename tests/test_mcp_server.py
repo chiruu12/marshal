@@ -411,6 +411,9 @@ def test_tool_params_carry_schema_descriptions(
     props = tools["run_agent"].input_schema["properties"]
     assert props["client"].get("description")
     assert props["context_files"].get("description")
+    assert props["read_paths"].get("description")
+    spawn_props = tools["spawn"].input_schema["properties"]
+    assert spawn_props["read_paths"].get("description")
 
 
 def test_get_run_log_round_trips_via_call_tool(

@@ -26,6 +26,35 @@ versions may include breaking API changes until 1.0.
   of unpacking a tuple, which is the shape-independent form they should have used regardless.
 
 ### Added
+- **`read_paths` — declared read-only escape hatch for files outside a worktree (#105).**
+  An agent in an isolated worktree cannot see paths that are not in that checkout;
+  `context_files` only injects repo-relative tracked paths. Drivers were manually copying
+  reference material in. `read_paths` on `TaskSpec` / `run_agent` / `spawn` / `run_many` jobs
+  (and the MCP tools) accepts absolute paths or paths relative to the **driver's** repo root;
+  each is copied into `<worktree>/.marshal-context/<basename>` (files 0o444, directories 0o555)
+  and appended to the worktree's `.git/info/exclude` so the copies never appear in the run's
+  diff or `changed_files`. Teardown restores owner-write on directories before
+  `git worktree remove` / `rmtree` so immutable dirs cannot strand a worktree. Secret-shaped
+  names (`.env*`, `*.pem`, `id_rsa*`, `id_ed25519*`) and anything under `.ssh` are refused on
+  the declared path **and every descendant** that would be copied; symlinks inside a declared
+  tree are refused (a symlinked declared root is resolved first, then validated from the real
+  path); only regular files and directories are accepted (FIFOs/sockets/devices refused so
+  provisioning cannot hang before a run timeout exists). Policy is enforced during the
+  fd-relative copy walk (validation at point of use): every `scandir` entry is re-checked for
+  secret-shaped names / `.ssh`, symlinks, and non-file/dir types; each file and directory's
+  `(st_dev, st_ino)` from the classifying `lstat` must match `fstat` of the opened fd, refusing
+  a swap to a different file or directory (identity is a secondary check — a delete-then-recreate
+  can be handed back the same inode, so the per-entry checks are what contain a swapped tree).
+  Destination `.marshal-context` must be absent or a plain directory (a tracked symlink or
+  non-dir is refused; never `resolve()` through it); per-entry destinations never follow
+  symlinks (`O_CREAT|O_EXCL` / refuse existing dest symlinks). The up-front tree scan only
+  names offenders early before worktree work — it is not the security boundary. Copies also
+  open fail-closed (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` + identity for files;
+  `O_NOFOLLOW|O_DIRECTORY` + identity for directory descent). A missing or refused path fails
+  the spawn (worktree torn down). The declared list is recorded on `RunRecord` so a reviewer
+  can see the run saw more than its worktree. The worker prompt is told read-only reference
+  material is under `.marshal-context/`.
+
 - **Adversarial review teams (`teams.py`).** A *team* is a declarative panel of independent,
   read-only reviewers — each role pinned to the client best at its lens — that review one subject
   and each write a report. Teams live in `<repo>/teams/*.yaml` and are surfaced as the `list_teams`
