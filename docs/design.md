@@ -36,7 +36,9 @@ agents outlive a turn. So fleet state lives in the **long-lived MCP server**, pe
 On Fleet construction the engine reconciles any persisted `running`/`queued` records left by a
 prior supervisor (stamped `failed`, `pid` cleared) unless another live Fleet holds `fleet.lock`,
 the agent subprocess is still running, or this process still has the run in its in-flight pool
-(config hot-reload) — so stale pids can never be signalled by `cancel_run`.
+(config hot-reload) — so stale pids can never be signalled by `cancel_run`. A record with no pid
+stamped yet is too young to judge (it may belong to a run another process started moments ago); it
+is left alone and re-examined on the next `status`/`get_run` instead of being decided or forgotten.
 
 - **MCP tools** = mechanism (imperative verbs).
 - **Skills** = policy (decomposition, prompt-writing, merge judgment).

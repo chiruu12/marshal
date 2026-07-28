@@ -523,6 +523,7 @@ class MarshalService:
         )
 
     def get_run(self, run_id: str) -> RunRecord | None:
+        self.fleet.reconcile_orphans()
         return self.fleet.state.get(run_id)
 
     def run_log(self, run_id: str) -> str | None:
@@ -574,6 +575,7 @@ class MarshalService:
         return doctor_report(run_checks(self.repo_root, self.config_path, backends=probed))
 
     def status(self) -> list[RunRecord]:
+        self.fleet.reconcile_orphans()
         return self.fleet.state.list()
 
     def usage(

@@ -150,12 +150,13 @@ def _is_terminal(rec: RunRecord) -> bool:
     return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
 
 
-#: A non-terminal record younger than this is never reaped. Reconciliation runs in whatever process
-#: happens to start next, and a run is persisted RUNNING a moment before its pid is stamped - so a
-#: short-lived CLI can otherwise reap a long-lived server's just-started run, which has no pid yet
-#: to protect it. Observed in practice: two live agents stamped ``failed`` seconds after spawning,
-#: one still running when the record said it had died. A genuinely orphaned run is reaped moments
-#: later instead; nothing is lost by waiting.
+#: How long a PID-LESS non-terminal record is protected from reaping. A run is persisted RUNNING a
+#: moment before its pid is stamped, so a short-lived CLI can otherwise reap a long-lived server's
+#: just-started run, which has no pid yet to protect it. Observed in practice: two live agents
+#: stamped ``failed`` seconds after spawning, one still running when the record said it had died.
+#: A record that DOES carry a pid is never graced - `_pid_is_still_ours` answers definitively, so
+#: waiting would only delay the truth. A graced record is re-examined later (see
+#: `Fleet.reconcile_orphans`), never skipped permanently.
 _REAP_GRACE_S = 180.0
 
 
@@ -169,11 +170,13 @@ _ORPHAN_REAP_ERROR = (
 
 
 def _started_within_grace(rec: RunRecord, *, now: datetime | None = None) -> bool:
-    """True when ``rec`` started too recently to be judged orphaned.
+    """True when ``rec`` has no pid yet and started too recently to be judged orphaned.
 
     A record with no parseable ``started_at`` is treated as young (do not reap): an unreadable
     timestamp is not evidence that the run is dead.
     """
+    if rec.pid is not None:
+        return False  # a stamped pid is decidable now; grace would only defer the answer
     if not rec.started_at:
         return True
     try:
@@ -255,8 +258,12 @@ def _another_fleet_active(lock_path: Path) -> bool:
     return _pid_alive(pid)
 
 
-def _reap_orphaned_runs(state: FleetState) -> None:
+def _reap_orphaned_runs(state: FleetState) -> bool:
     """Terminal-stamp persisted ``running``/``queued`` runs left by a prior Fleet instance.
+
+    Returns True when at least one record was left undecided ONLY because it was inside the
+    pid-less grace window - the caller must run this again later, or that record stays RUNNING
+    forever in a long-lived server that never constructs another Fleet.
 
     Callers MUST have established that no other live Fleet supervises this repo (see the
     ``fleet.lock`` check in ``Fleet.__init__``) - this function does not re-check.
@@ -266,8 +273,9 @@ def _reap_orphaned_runs(state: FleetState) -> None:
     THIS process still owns it (config hot-reload). Reaping clears ``pid`` so a later
     ``cancel_run`` can never ``killpg`` a reused pid. Corrupt records are skipped with a warning.
     """
+    deferred = False
     if not state.dir.exists():
-        return
+        return deferred
     for path in sorted(state.dir.glob("*.json")):
         try:
             rec = RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
@@ -279,7 +287,8 @@ def _reap_orphaned_runs(state: FleetState) -> None:
         if _inflight_in_this_process(state.dir, rec.run_id):
             continue  # another Fleet in this process still owns the run (config hot-reload)
         if _started_within_grace(rec):
-            continue  # too young to judge: another process may have just started it
+            deferred = True  # pid not stamped yet; re-examined once the window passes
+            continue
         if _pid_is_still_ours(rec):
             continue  # our agent is genuinely still running (MCP died, the child survived)
         try:
@@ -293,6 +302,7 @@ def _reap_orphaned_runs(state: FleetState) -> None:
             )
         except Exception as exc:  # noqa: BLE001 - startup reaping must never crash Fleet construction
             print(f"[marshal] failed to reap orphaned run {rec.run_id}: {exc}", file=sys.stderr)
+    return deferred
 
 
 def _claim_fleet_lock(lock_path: Path) -> bool:
@@ -609,8 +619,23 @@ class Fleet:
         # Reap ONLY as the winner of an atomic claim. Checking liveness and then writing was a
         # TOCTOU: two Fleets could both pass the check and both reap. Winning the claim is the
         # permission to reconcile.
-        if _claim_fleet_lock(base / "fleet.lock"):
-            _reap_orphaned_runs(self.state)
+        self._reap_lock = threading.Lock()
+        self._owns_fleet_lock = _claim_fleet_lock(base / "fleet.lock")
+        self._reap_deferred = _reap_orphaned_runs(self.state) if self._owns_fleet_lock else False
+
+    def reconcile_orphans(self) -> None:
+        """Re-examine records the startup reap had to defer (pid-less and inside the grace window).
+
+        Reconciliation is otherwise one-shot at construction, so a genuine orphan that happened to
+        be young when we started would be reported RUNNING for as long as this process lives. Read
+        surfaces call this, which is exactly when a stale record would be believed.
+        """
+        if not self._reap_deferred:
+            return
+        with self._reap_lock:
+            if not self._reap_deferred:
+                return
+            self._reap_deferred = _reap_orphaned_runs(self.state)
 
     def run(
         self,

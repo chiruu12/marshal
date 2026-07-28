@@ -2500,6 +2500,56 @@ def test_a_record_with_no_start_time_is_not_reaped(repo: Path) -> None:
     assert fleet.state.get("nots.writer.x").status == RunStatus.RUNNING.value
 
 
+def test_a_young_record_carrying_a_dead_pid_is_reaped_immediately(repo: Path) -> None:
+    """The grace window exists only for the pid-not-yet-stamped race. Once a pid IS on the record
+    its liveness is decidable now, and waiting would only keep a dead run reported as RUNNING."""
+    from datetime import datetime, timezone
+
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id="youngpid.writer.x",
+            task_id="youngpid",
+            backend="writer",
+            status="running",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            pid=999_999,  # no such process
+            pid_start_time="never-matches",
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get("youngpid.writer.x").status == RunStatus.FAILED.value
+
+
+def test_a_deferred_orphan_is_reconciled_on_a_later_read(repo: Path) -> None:
+    """REGRESSION: reconciliation ran once at construction, so a genuine orphan that happened to be
+    young at startup stayed RUNNING for the whole life of a long-running server."""
+    from datetime import datetime, timedelta, timezone
+
+    from marshal_engine.fleet import _REAP_GRACE_S
+
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id="defer.writer.x",
+            task_id="defer",
+            backend="writer",
+            status="running",
+            started_at=datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    assert fleet.state.get("defer.writer.x").status == RunStatus.RUNNING.value
+    assert fleet._reap_deferred, "the skip was not remembered for a re-check"
+
+    # Age the record past the window, then read again the way a driver polling status would.
+    aged = datetime.now(timezone.utc) - timedelta(seconds=_REAP_GRACE_S + 60)
+    fleet.state.update("defer.writer.x", started_at=aged.isoformat())
+    fleet.reconcile_orphans()
+    assert fleet.state.get("defer.writer.x").status == RunStatus.FAILED.value
+    assert not fleet._reap_deferred, "nothing is left deferred once the record is decided"
+
+
 def test_a_pid_is_never_written_onto_a_terminal_record(repo: Path) -> None:
     """REGRESSION: after a reap, `_record_pid` stamped a live pid onto the `failed` record - a
     record claiming a running process for a run it says is dead."""

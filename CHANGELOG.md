@@ -73,8 +73,12 @@ versions may include breaking API changes until 1.0.
   RUNNING a moment before its pid is stamped, so a short-lived process reconciling in that window
   finds a record with no pid and nothing to protect it — the in-process registry only covers runs
   the *same* process started, and the lock only helps once its holder is alive and current. A
-  non-terminal record younger than the reap grace period is now left alone; a genuinely orphaned
-  run is reaped moments later instead.
+  non-terminal record that has no pid yet and is younger than the reap grace period is now left
+  alone. The grace is deliberately narrow in both directions: a record that already carries a pid is
+  decided immediately (its liveness is knowable, so waiting would only keep a dead run reported as
+  RUNNING), and a record skipped for being young is re-examined on the next `status`/`get_run`
+  rather than only at the next Fleet construction — otherwise a genuine orphan that happened to be
+  young at startup would read RUNNING for the whole life of a long-running server.
 - **A pid is never written onto a terminal record.** After such a reap, the pid callback stamped a
   live pid onto the `failed` record, producing a record that claimed a running process for a run it
   said was dead. The write is now conditional on the run still being non-terminal.
