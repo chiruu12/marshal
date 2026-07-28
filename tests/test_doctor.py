@@ -577,3 +577,19 @@ def test_doctor_ignores_billing_failures_outside_the_window(tmp_path: Path) -> N
     ))
     checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
     assert not [c for c in checks if c.name.startswith("quota:")]
+
+
+def test_doctor_does_not_treat_rate_limiting_as_a_billing_problem(tmp_path: Path) -> None:
+    """A 429 means *slow down*, not *pay*. The retry policy already backs off and retries it, and
+    telling an operator to top up or switch providers over throttling sends them to the wrong
+    remedy - a false positive here costs the same detour the check exists to prevent."""
+    repo = _quota_repo(tmp_path)
+    runs = FleetState(runs_dir(repo))
+    now = datetime.now(timezone.utc)
+    runs.add(_record(
+        run_id="rl.cursor.1",
+        error="HTTP 429: rate limit exceeded, retry after 20s",
+        ended_at=now.isoformat(),
+    ))
+    checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
+    assert not [c for c in checks if c.name.startswith("quota:")]

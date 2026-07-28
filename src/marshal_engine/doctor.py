@@ -61,10 +61,14 @@ BACKEND_HINTS: dict[str, str] = {
 MIN_PYTHON = (3, 11)
 
 
-#: Substrings that mark a run failure as "the provider refused on money or quota grounds", as
-#: opposed to the task being wrong. Matched case-insensitively against a run record's `error`.
-#: Deliberately conservative: a false positive here tells an operator their billing is broken when
-#: it is not, which is its own wasted detour.
+#: Substrings that mark a run failure as "the provider refused because the account is out of money
+#: or allowance", as opposed to the task being wrong. Matched case-insensitively against a run
+#: record's `error`. Deliberately conservative: a false positive tells an operator their billing is
+#: broken when it is not, which is its own wasted detour.
+#:
+#: Rate limiting is deliberately NOT here. "429" and "rate limit" mean *slow down*, not *pay* - the
+#: retry policy already backs off and retries them, and pointing an operator at "top up or switch
+#: providers" for throttling sends them to the wrong remedy entirely. This check is about money.
 _QUOTA_MARKERS = (
     "insufficient balance",
     "insufficient credit",
@@ -75,8 +79,6 @@ _QUOTA_MARKERS = (
     "payment required",
     "billing",
     "subscription",
-    "rate limit",
-    "429",
 )
 
 #: How far back the ledger is read for the quota check. Long enough to catch "I hit this earlier

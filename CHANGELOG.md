@@ -60,7 +60,10 @@ versions may include breaking API changes until 1.0.
   runs failed on billing/quota grounds and quotes the latest error, derived from the run ledger we
   already keep — no provider API, and it reports what happened rather than predicting. Its absence
   is deliberately **not** a clearance: doctor cannot read provider balances, and saying quota looks
-  fine because it was never checked is the same overclaim the field reports were about.
+  fine because it was never checked is the same overclaim the field reports were about. Rate
+  limiting is deliberately excluded from the classifier: a 429 means *slow down*, not *pay*, the
+  retry policy already backs off and retries it, and sending an operator to top up over throttling
+  is the wrong remedy.
 
 ### Documentation
 - **Document the run-lifecycle state that shipped without it.** `pid_start_time` and `base_commit`
