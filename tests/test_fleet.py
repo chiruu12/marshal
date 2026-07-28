@@ -535,6 +535,66 @@ def test_non_transient_failure_is_not_retried(repo: Path) -> None:
     assert backend.calls == 1
 
 
+def test_a_cancel_during_the_backoff_sleep_stops_the_retry(repo: Path) -> None:
+    """The backoff is the widest window in the loop, so a cancel is most likely to land exactly
+    there. Checking only before the sleep let the loop wake and spawn a fresh agent - writing to
+    the worktree and billing for it - with the record already reading `cancelled`."""
+    import marshal_engine.fleet as fleet_mod
+
+    fleet = Fleet(repo, {"flaky": _Flaky(["opencode: database is locked"] * 4)},
+                  retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    backend = fleet.backends["flaky"]
+
+    # Cancel arrives DURING the sleep: nothing has requested it before the loop starts waiting.
+    real_sleep = fleet_mod.time.sleep
+    cancelled: dict[str, bool] = {"done": False}
+
+    def sleeping_cancel(seconds: float) -> None:
+        real_sleep(seconds)
+        if not cancelled["done"]:
+            cancelled["done"] = True
+            for rec in fleet.state.list():
+                if rec.status == RunStatus.RUNNING.value:
+                    fleet.cancel_run(rec.run_id)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod.time, "sleep", sleeping_cancel)
+    try:
+        fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    finally:
+        monkey.undo()
+
+    assert backend.calls == 1, "a cancel during the backoff still spawned another attempt"
+
+
+def test_a_cancel_stops_the_retry_loop(repo: Path) -> None:
+    """REGRESSION (#89): the retry loop never consulted the cancel state. SIGTERM can surface as a
+    transport-shaped error, so a cancelled run slept and spawned a WHOLE new attempt - backend
+    setup and all - which the pending cancel then killed on arrival, putting a second writer in the
+    worktree after the record already read `cancelled`."""
+
+    class _CancelsItself(_Flaky):
+        def __init__(self, fleet_ref: dict[str, Fleet]) -> None:
+            super().__init__(["opencode: database is locked"] * 4)  # always transient
+            self._fleet_ref = fleet_ref
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+            result = super().run(task, opts)
+            # A cancel lands while attempt 1 is finishing, exactly like the real race.
+            fleet = self._fleet_ref["f"]
+            for rec in fleet.state.list():
+                if rec.status == RunStatus.RUNNING.value:
+                    fleet.cancel_run(rec.run_id)
+            return result
+
+    ref: dict[str, Fleet] = {}
+    backend = _CancelsItself(ref)
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    ref["f"] = fleet
+    fleet.run("flaky", TaskSpec(id="t", goal="x"))
+    assert backend.calls == 1, "a cancelled run spawned another attempt"
+
+
 def test_transient_retries_are_bounded(repo: Path) -> None:
     backend = _Flaky(["rate limit", "rate limit", "rate limit", "rate limit"])  # never recovers
     fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
@@ -2219,13 +2279,16 @@ def test_cancel_signals_a_verified_live_run(
         holder.wait(timeout=10)
 
 
-def test_cancel_does_not_signal_a_run_with_no_recorded_identity(
+def test_cancel_does_not_signal_a_run_this_process_did_not_start(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fail CLOSED on cancel (unlike reaper): without a verifiable identity, do not killpg.
+    """Fail CLOSED on cancel (unlike the reaper): with no in-process handle, never killpg.
 
-    Signalling the wrong process is the harm; a stale record left running until explicit cancel
-    is acceptable. The run is still terminal-stamped cancelled with an explanatory error.
+    The gate is the handle, not the recorded `pid_start_time` - an earlier design verified the
+    pid pair and signalled on a match, and the name of this test still described that. Only a
+    child of THIS process has a pid the OS cannot have recycled yet; anything else might now be an
+    unrelated process group, and signalling it is the harm. The run is still stamped cancelled with
+    an explanatory error.
     """
     import os
 
@@ -2253,7 +2316,9 @@ def test_cancel_does_not_signal_a_run_with_no_recorded_identity(
         assert killed == [], "unverifiable identity must not be signalled (fail closed)"
         assert rec.status == RunStatus.CANCELLED.value
         assert rec.error and "started by another process" in rec.error
-        assert rec.pid is None
+        # The pid stays: the process is alive and it is the only handle anyone has on it.
+        # Only a pid whose process is GONE is cleared - then there is nothing to point at.
+        assert rec.pid == holder.pid
     finally:
         holder.terminate()
         holder.wait(timeout=10)
@@ -2692,6 +2757,179 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
     rec = state.get(run_id)
     assert rec.status == RunStatus.RUNNING.value, "a run was reaped after its pid arrived"
     assert rec.pid == os.getpid(), "the reap cleared a live pid"
+
+
+def test_cancelling_a_live_orphan_keeps_the_pid_and_says_it_is_still_running(repo: Path) -> None:
+    """Marshal cannot signal an agent it did not start, so cancel only flips the ledger. Clearing
+    the pid there would delete the operator's only handle on a process that is still writing, while
+    the record claimed the run was over. Keep it, and say so."""
+    import marshal_engine.fleet as fleet_mod
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.state.add(
+        RunRecord(
+            run_id="live.writer.x",
+            task_id="live",
+            backend="writer",
+            status="running",
+            pid=4242,  # no inflight handle: started by a process that has since died
+        )
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod, "_pid_is_verifiably_ours", lambda rec: True)
+    try:
+        rec = fleet.cancel_run("live.writer.x")
+    finally:
+        monkey.undo()
+
+    assert rec.status == RunStatus.CANCELLED.value
+    assert rec.pid == 4242, "the only handle on a live process was thrown away"
+    assert "STILL RUNNING" in (rec.error or "")
+    assert "kill -TERM -4242" in (rec.error or ""), "no way given to actually end it"
+
+
+def test_a_recycled_lock_pid_does_not_block_reaping_forever(repo: Path) -> None:
+    """REGRESSION (#88): the lock stored a bare pid while run records had learned that a pid is not
+    an identity. A dead holder whose pid the OS handed to an unrelated long-lived process made every
+    later Fleet see a live supervisor, decline the claim, and never reap - so stale runs read
+    RUNNING until that unrelated process happened to exit."""
+    import json as _json
+
+    from marshal_engine.fleet import _another_fleet_active
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock = repo / ".marshal" / "fleet.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        # The pid is alive, but it is NOT the process that wrote the lock.
+        lock.write_text(
+            _json.dumps({"pid": holder.pid, "pid_start_time": "not-when-this-one-started"}),
+            encoding="utf-8",
+        )
+        assert not _another_fleet_active(lock), "a recycled pid was mistaken for a live supervisor"
+
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id="blocked.writer.x",
+                task_id="blocked",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00+00:00",
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        assert fleet.state.get("blocked.writer.x").status == RunStatus.FAILED.value
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
+    """REGRESSION: `_pid_is_verifiably_ours` delegated to `_pid_is_still_ours`, which returns True
+    when the start-time probe is unavailable - the fail-OPEN answer. Inheriting that made an
+    unprobeable pid read as *verified*, so cancel would hand an operator a `kill` command for what
+    might be a recycled process group. Verification must mean a real comparison, not the absence of
+    a contradiction."""
+    import marshal_engine.fleet as fleet_mod
+
+    rec = RunRecord(
+        run_id="probe.writer.x",
+        task_id="probe",
+        backend="writer",
+        status="running",
+        pid=4242,
+        pid_start_time="Mon Jan  1 00:00:00 2026",
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod, "_pid_alive", lambda pid: True)  # the process exists...
+    monkey.setattr(fleet_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
+    try:
+        assert fleet_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
+        assert fleet_mod._pid_is_verifiably_ours(rec) is False
+    finally:
+        monkey.undo()
+
+
+def test_an_unverifiable_pid_is_never_named_in_a_kill_instruction(repo: Path) -> None:
+    """Identity fails OPEN for reaping (never kill a live run) but must fail CLOSED here. A pid we
+    cannot verify may have been recycled by an unrelated process, and telling an operator to
+    `kill -TERM -<pid>` on that guess is worse than admitting we do not know."""
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="unverif.writer.x",
+                task_id="unverif",
+                backend="writer",
+                status="running",
+                pid=holder.pid,  # alive, but no pid_start_time to prove it is ours
+            )
+        )
+        rec = fleet.cancel_run("unverif.writer.x")
+        assert "kill -TERM" not in (rec.error or ""), "named a pid it could not verify"
+        # Kept as evidence even though it could not be verified: `clean` needs it to know this
+        # worktree may still have a writer. Erasing it is what let a live agent's work be deleted.
+        assert rec.pid == holder.pid
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_clean_spares_a_worktree_whose_agent_is_alive_but_unverifiable(repo: Path) -> None:
+    """The two pid questions have opposite costs, and the first fix used one answer for both.
+    Naming an unverified pid in a `kill` instruction could send an operator after an unrelated
+    process, so that fails CLOSED. Deleting a worktree that might still have a writer destroys work
+    in progress, so THIS fails OPEN. With no recorded start time the identity cannot be confirmed -
+    and the worktree must still be spared."""
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        fleet = Fleet(repo, {"writer": _Writer()})
+        fleet.state.add(
+            RunRecord(
+                run_id="unverifwt.writer.x",
+                task_id="unverifwt",
+                backend="writer",
+                status="cancelled",
+                pid=holder.pid,  # alive, but nothing to verify it against
+                ended_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        result = fleet.clean()
+        assert "unverifwt.writer.x" not in result.removed, "deleted a possibly-live worktree"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_clean_refuses_a_worktree_whose_agent_is_still_running(repo: Path) -> None:
+    """A terminal record does not always mean a finished process: a no-signal cancel leaves a live
+    writer behind a `cancelled` record. Removing that worktree would destroy work in progress."""
+    import marshal_engine.fleet as fleet_mod
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.state.add(
+        RunRecord(
+            run_id="livewt.writer.x",
+            task_id="livewt",
+            backend="writer",
+            status="cancelled",
+            pid=4242,
+            ended_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fleet_mod, "_pid_is_still_ours", lambda rec: True)
+    try:
+        result = fleet.clean()
+    finally:
+        monkey.undo()
+
+    assert "livewt.writer.x" not in result.removed
+    assert any(
+        s["run_id"] == "livewt.writer.x" and "still be running" in s["reason"] for s in result.skipped
+    ), result.skipped
 
 
 def test_a_pid_is_never_written_onto_a_terminal_record(repo: Path) -> None:

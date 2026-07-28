@@ -116,8 +116,10 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   Code (`safe-edit`/`yolo` both `--yolo`, no per-tool deny grammar), Goose (`safe-edit`/`yolo` both
   `GOOSE_MODE=auto`), Antigravity (`prepare()` briefly adds the run worktree to host-global
   `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`; `run()` removes it on
-  completion; malformed settings fail closed; residual: parallel Antigravity runs still share and
-  serialize on that global file; no PTY wrapper; stdout can be swallowed without a TTY; no distinct
+  completion, with in-process reference counting so overlapping runs cannot revoke each other's
+  grant early; malformed settings fail closed; residual: parallel Antigravity runs still share and
+  serialize on that global file, and a run whose teardown never executed - a hard kill, or a run
+  later reaped as an orphan - leaves its path trusted until the worktree is removed by `clean`; no PTY wrapper; stdout can be swallowed without a TTY; no distinct
   safe-edit scoping beyond the run-scoped trust grant), and Claude Code (`acceptEdits` with no
   Marshal deny layer). Worktree isolation remains the hard boundary for those adapters and for
   everything the curated denies do not cover. See `permission_fidelity` on `list_clients` /
@@ -127,9 +129,14 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   child's pid before its parent reaps it, so within that window the pid is unambiguous. A cancel
   that arrives before the pid is known is applied as soon as it is; a cancel after the child is
   reaped does not signal at all. A run owned by another (or dead) Marshal process is stamped
-  cancelled *without* a signal and says so on the record. The trade-off is that an orphaned agent
-  whose supervisor died is not killed by `cancel_run`; reconciliation stamps its record terminal,
-  and the process must be ended by hand.
+  cancelled *without* a signal and says so on the record. The trade-off is real and worth stating
+  exactly: **an agent that outlived its supervisor cannot be stopped by Marshal at all.**
+  Reconciliation does not stamp such a run terminal — it deliberately skips a record whose agent is
+  still alive, because that is running work, not an orphan to clean up. Reconciliation only stamps
+  `failed` once the process is gone. So the sequence to know about is: supervisor dies, agent keeps
+  running, `cancel_run` stamps the record `cancelled` **without ending the process**. The record
+  keeps the pid and its `error` names it, `clean` refuses to remove that worktree while the process
+  lives, and ending it is a manual `kill -TERM -<pid>`.
 - **A team file is prompt text delivered to fleet agents.** `<repo>/teams/*.yaml` rubrics are
   concatenated into every reviewer's goal, so anyone who can write that directory can instruct the
   fleet. `run_team` refuses a team path outside the workspace's own `teams/` directory, and the

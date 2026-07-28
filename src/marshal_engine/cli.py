@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -21,7 +21,7 @@ from .layout import logs_dir, marshal_dir, runs_dir, usage_dir
 from .logs import RunLogStore
 from .registry import backend_names, default_backends
 from .service import MarshalService
-from .state import FleetState
+from .state import FleetState, compact_run, filter_runs
 from .scaffold import scaffold_fleet_config
 from .teams import TeamSubject, load_team, team_paths, validate_team
 from .usage import USAGE_WINDOWS, Bucket, UsageTracker, usage_window_since
@@ -36,6 +36,27 @@ from .workspaces import (
     remove_workspace,
     workspaces_file_path,
 )
+
+
+def _positive_int(raw: str) -> int:
+    """A count that must be >= 1. argparse turns the ValueError into a usage error.
+
+    Unbounded here while the MCP tool bounds the same parameter is not a cosmetic gap: a NEGATIVE
+    limit silently returns a *different* slice (`rows[:-5]` drops the last five rather than showing
+    five), so the caller gets plausible-looking wrong output instead of an error.
+    """
+    value = int(raw)
+    if value < 1:
+        raise ValueError(f"must be 1 or greater, got {value}")
+    return value
+
+
+def _positive_hours(raw: str) -> float:
+    """A lookback that must be finite and > 0 - NaN/inf reach timedelta and raise mid-command."""
+    value = float(raw)
+    if not (value > 0) or value in (float("inf"), float("-inf")):
+        raise ValueError(f"must be a finite number greater than 0, got {raw!r}")
+    return value
 
 
 def _resolve_repo(args: argparse.Namespace) -> Path:
@@ -268,10 +289,26 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
 def _cmd_status(args: argparse.Namespace) -> int:
     repo = _resolve_repo(args)
     state_dir = Path(args.state) if args.state is not None else runs_dir(repo)
-    runs = FleetState(state_dir).list()
+    since = (
+        datetime.now(timezone.utc) - timedelta(hours=args.since_hours)
+        if args.since_hours is not None else None
+    )
+    matched = filter_runs(
+        FleetState(state_dir).list(), status=args.status, task_id=args.task_id, since=since
+    )
+    runs = matched if args.limit is None else matched[: args.limit]
     if args.json:
-        print(json.dumps([r.model_dump(mode="json") for r in runs], indent=2))
+        # Same compact-by-default shape as the MCP tool, and the same refusal to cap silently.
+        print(json.dumps({
+            "runs": [r.model_dump(mode="json") if args.full else compact_run(r) for r in runs],
+            "returned": len(runs),
+            "matched": len(matched),
+            "truncated": len(matched) > len(runs),
+            "compact": not args.full,
+        }, indent=2))
         return 0
+    if len(matched) > len(runs):
+        print(f"showing {len(runs)} of {len(matched)} runs (raise --limit to see more)")
     if not runs:
         print(f"no runs recorded under {state_dir.resolve()}")
         return 0
@@ -714,6 +751,16 @@ def main(argv: list[str] | None = None) -> int:
     ps.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     ps.add_argument("--state", default=None, help="per-run state directory (default: <repo>/.marshal/runs)")
     ps.add_argument("--json", action="store_true", help="output JSON")
+    ps.add_argument("--limit", type=_positive_int, default=50,
+                    help="max runs, newest first (default 50)")
+    ps.add_argument("--status", default=None, help="only runs with this status")
+    ps.add_argument("--task-id", default=None, help="only runs with this task_id")
+    ps.add_argument("--since-hours", type=_positive_hours, default=None,
+                    help="only runs started within N hours")
+    ps.add_argument(
+        "--full", action="store_true",
+        help="include the agent's final message and verify output (omitted by default: unbounded)",
+    )
     pl = sub.add_parser("logs", help="print the persisted stdout/stderr for one run")
     pl.add_argument("run_id", help="the run id to fetch the log for")
     pl.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")

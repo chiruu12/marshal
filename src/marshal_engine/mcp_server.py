@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeVar
 
@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from .env import merge_user_path
 from .scaffold import scaffold_fleet_config
 from .service import MarshalService
+from .state import compact_run, filter_runs
 from .teams import TeamSubject
 from .usage import UsageWindow, usage_window_since
 from .workspaces import (
@@ -631,14 +632,51 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     @app.tool()
     async def status(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE + " Omit to list ALL workspaces.")] = None,
-    ) -> list[dict[str, Any]]:
-        """List fleet runs with status and cost (status ∈ succeeded/empty/failed/timed_out/
-        cancelled/verify_failed). Omit `workspace` to aggregate across every workspace (each run
-        tagged with its workspace); pass one to scope to it."""
-        return [
-            tag(rec.model_dump(mode="json"), ws)
-            for ws, rec in await offload(registry.ledger_runs, workspace)
-        ]
+        limit: Annotated[int, Field(ge=1, le=500, description=(
+            "Max runs to return, newest first. The reply always reports `matched` alongside "
+            "`returned`, so a truncated list is never mistaken for the whole ledger."
+        ))] = 50,
+        status: Annotated[str | None, Field(description=(
+            "Only runs with this exact status (e.g. 'running', 'succeeded', 'verify_failed')."
+        ))] = None,
+        task_id: Annotated[str | None, Field(description="Only runs with this task_id.")] = None,
+        since_hours: Annotated[float | None, Field(gt=0, description=(
+            "Only runs started within this many hours. A run with an unreadable start time is "
+            "KEPT - a missing timestamp is not evidence it falls outside the window."
+        ))] = None,
+        full: Annotated[bool, Field(description=(
+            "Include the agent's final message and verify output. Off by default: these are "
+            "unbounded and dominate a listing's size. Use `get_run` for one run's full text."
+        ))] = False,
+    ) -> dict[str, Any]:
+        """List fleet runs, newest first, with status and cost. Omit `workspace` to aggregate
+        across every workspace (each run tagged with its workspace); pass one to scope to it.
+
+        Compact by default: `text` and `verify_output` are replaced by `has_text` /
+        `has_verify_output` flags, so an omitted field is never misread as an empty one. Pass
+        `full=true` for the whole record. Filter with `status` / `task_id` / `since_hours` and page
+        with `limit` rather than pulling the entire ledger.
+        """
+        rows = await offload(registry.ledger_runs, workspace)
+        since = (
+            datetime.now(timezone.utc) - timedelta(hours=since_hours)
+            if since_hours is not None else None
+        )
+        by_run = {id(rec): ws for ws, rec in rows}
+        matched = filter_runs(
+            [rec for _, rec in rows], status=status, task_id=task_id, since=since
+        )
+        page = matched[:limit]
+        return {
+            "runs": [
+                tag(rec.model_dump(mode="json") if full else compact_run(rec), by_run[id(rec)])
+                for rec in page
+            ],
+            "returned": len(page),
+            "matched": len(matched),
+            "truncated": len(matched) > len(page),
+            "compact": not full,
+        }
 
     @app.tool()
     async def usage(

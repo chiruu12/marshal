@@ -322,9 +322,25 @@ Read-only diff collection; nothing is merged.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Scope to one workspace; omit to list **all** workspaces. |
+| `limit` | int (1–500) | `50` | Max runs, newest first. |
+| `status` | string \| null | `null` | Only runs with this exact status. |
+| `task_id` | string \| null | `null` | Only runs with this `task_id`. |
+| `since_hours` | float \| null | `null` | Only runs started within N hours. A run whose start time is unreadable is **kept** — a missing timestamp is not evidence it falls outside the window. |
+| `full` | bool | `false` | Include `text` and `verify_output`. |
 
-**Returns:** `list[RunRecord + workspace]`. Omitting `workspace` aggregates run *records* across
-workspaces for visibility; it is **not** a merged usage/budget view (see `usage`).
+**Returns:** `{ runs, returned, matched, truncated, compact }`, newest first.
+
+**Compact by default.** `text` and `verify_output` are unbounded and dominate a listing's size
+(one observed reply was ~395k characters), so they are replaced by `has_text` /
+`has_verify_output` flags — a caller must be able to tell "this run produced no message" from
+"this view omitted it". Use `get_run` for one run's full text, or `full=true`.
+
+**Never silently capped.** `matched` is the number of runs that passed the filters and `returned`
+is how many came back, with `truncated` saying whether anything was dropped. A driver that read a
+capped list as the whole ledger would draw exactly the wrong conclusion.
+
+Omitting `workspace` aggregates run *records* across workspaces for visibility; it is **not** a
+merged usage/budget view (see `usage`).
 
 ### `cancel_run`
 
@@ -486,6 +502,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `commit` | string \| null | Branch tip after `commit_run`. |
 | `pid` | int \| null | Agent subprocess pid (while running). |
 | `pid_start_time` | string \| null | OS-reported start time of `pid`. A pid alone is not an identity — the OS reuses pids — so startup reconciliation verifies the pair before deciding a recorded run is still alive. |
+| `agent_alive` | bool \| null | **Derived when you read the record, never stored.** Is the agent process alive *right now*: distinguishes "still working" from "finished, outcome not yet written" without shelling out to `kill -0` (which a driver should not do anyway — pids are reused, so a live pid is not proof the agent lives). `null` means unknown, not dead: the run is terminal (the question is moot), no pid is recorded, or its identity could not be verified. Never persisted — a stored liveness is stale the instant it lands. |
 | `attempts` | int | Backend invocations (> 1 means transient retries). |
 | `verify_passed` | bool \| null | `null` = no gate ran; `false` with `verify_failed` status. |
 | `verify_output` | string | Tail of verify command output. |
