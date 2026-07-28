@@ -19,7 +19,7 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 ## 0. Locked decisions
 
 - **Execution model:** background **fleet** - N agents in parallel, each in its own git worktree; driver monitors → collects → merges → verifies.
-- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Command Code + Antigravity + Claude Code now. Gemini later = new adapter only.
+- **Backends:** one **base class**, one **adapter per backend**. Cursor + OpenCode + Codex + Command Code + Antigravity + Claude Code + Goose + Gemini now. Adding another = new adapter only.
 - **Runtime:** local CLIs (shell out). OpenCode additionally exposes an HTTP server (see §4) - optional fast path.
 - **Surface:** MCP server (user-configured, N clients) + Skills (orchestration playbooks). Backend is a **per-client/per-call parameter**, never global, never encoded in tool names. Skills double as the **driver's manual** - they teach the harness (Claude Code or any host) *what* Marshal can do and *how* to drive it (decompose → spawn → monitor → integrate).
 - **Differentiator:** **per-provider usage tracking** + a `usage` command. Nearly every competitor omits this.
@@ -150,8 +150,8 @@ approvals, ever** - "sub-agents have no stdin, so any approval prompt deadlocks 
 |---|---|---|---|---|---|---|---|---|
 | **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | - (unsupported headless) | `--permission-mode plan` | `GOOSE_MODE=chat` (via `prepare`) | `--approval-mode plan` |
 | **safe-edit** (default) | `--force` + engine-managed deny list in `.cursor/cli.json` | `--dangerously-skip-permissions` + `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies) | `-s workspace-write` | `--yolo` | `--dangerously-skip-permissions` (+ `trustedWorkspaces` via `prepare`) | `--permission-mode acceptEdits` | `GOOSE_MODE=auto` (via `prepare`; no argv flags) | `--approval-mode auto_edit` |
-| **yolo** (opt-in) | `--yolo` (no deny list) | `--dangerously-skip-permissions` + `question: deny` only | workspace-write, no approval | `--yolo` | `--dangerously-skip-permissions` | bypass | `GOOSE_MODE=auto` (same as safe-edit) | bypass |
-| **permission_fidelity** | `enforced-denies` | `enforced-denies` | `enforced-denies` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` | *(planned)* |
+| **yolo** (opt-in) | `--yolo` (no deny list) | `--dangerously-skip-permissions` + `question: deny` only | workspace-write, no approval | `--yolo` | `--dangerously-skip-permissions` | bypass | `GOOSE_MODE=auto` (same as safe-edit) | `--approval-mode yolo` |
+| **permission_fidelity** | `enforced-denies` | `enforced-denies` | `enforced-denies` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` |
 
 `permission_fidelity` is a coarse routing signal on `Capabilities` (surfaced via `list_clients`,
 `marshal backends`, and `doctor`), not a sandbox ranking:
@@ -176,7 +176,7 @@ Key per-backend detail:
 
 - **OpenCode - easy.** Per-step `cost`+`tokens` in the stream; `opencode stats --days --models`; on-disk store at `~/.local/share/opencode/storage/` (note: message files store `cost: 0` → recompute from tokens via price table). Caveat: stream may **drop the final `step_finish`** → read final accounting from on-disk store / `opencode export`, not the stream.
 - **Cursor - hard.** **No tokens, no cost in CLI output at all.** Programmatic usage only via the **Admin API** (`api.cursor.com`, HTTP Basic `-u KEY:`) - **Team/Enterprise only**. `POST /teams/filtered-usage-events` returns per-event tokens+cost with an **`isHeadless`** flag and **`serviceAccountId`**. Pattern: give each worker its own **service-account key**, attribute via `serviceAccountId`. Pro/individual accounts → dashboard only, no API.
-- **Codex/Gemini - likely no JSON usage** → fall back to terminal screen-scrape (cmuxlayer `read_screen` parses tokens/context% off output).
+- **Codex - likely no JSON cost** → cost `admin-api`/estimated/unavailable; tokens from JSONL events. **Gemini** reports token counts in `--output-format json` `stats` (per-model `tokens.prompt`/`candidates`/`cached`) but not USD → tokens kept, cost `unavailable` (never a fake $0).
 - **EastRouter (real `admin-api` cost) - implemented.** A client may set `usage_api: eastrouter` to have its REAL per-run cost read from EastRouter's `/v1/usage` after the run (`eastrouter.py`), reported as `admin-api` rather than an estimate - EastRouter's price swings with prompt caching, so a static table would mislead. Attribution is by model + the run's `[start, end]` time window with a token-reconciliation guard; an unattributable run (e.g. two clients on the same EastRouter model concurrently) keeps its estimate/unavailable cost instead of asserting a wrong one. Codex routed through EastRouter uses this; OpenCode pointed at EastRouter (`eastrouter/<id>`) can't be priced by the CLI and stays `unavailable`.
 
 **Local schema (no DB; file-based like ORCH's `.orchestry/`):**
