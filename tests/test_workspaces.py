@@ -360,9 +360,39 @@ def test_describe_reports_configured_and_counts(tmp_path: Path) -> None:
     assert rows["default"]["configured"] is True
     assert rows["default"]["client_count"] == 1
     assert rows["default"]["default"] is True
+    assert rows["default"]["ready"] is True
+    assert rows["default"]["ready_reason"] is None
     assert rows["beta"]["configured"] is False
     assert rows["beta"]["client_count"] == 0
     assert rows["beta"]["default"] is False
+    assert rows["beta"]["ready"] is False
+    assert "no config file" in rows["beta"]["ready_reason"]
+
+
+def test_a_config_with_no_clients_is_not_ready(tmp_path: Path) -> None:
+    """REGRESSION: `configured: true` meant only "a file exists there". A driver read it as "usable",
+    ran against the workspace, got nothing, and had to fall back to an ad-hoc spawn. `ready` answers
+    the question that was actually being asked, and says why when the answer is no."""
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "fleet.config.yaml").write_text("clients: {}\n")  # a real, valid, useless config
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
+    row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
+    assert row["configured"] is True, "the file does exist - that field keeps its old meaning"
+    assert row["ready"] is False
+    assert "no clients" in row["ready_reason"]
+
+
+def test_an_unparseable_config_says_so_rather_than_reporting_zero_clients(tmp_path: Path) -> None:
+    """"0 clients" and "this file is broken" need different fixes; collapsing them to one number
+    just moves the guessing onto the reader."""
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "fleet.config.yaml").write_text("clients: [broken: yaml: here")
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
+    row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
+    assert row["ready"] is False
+    assert "does not load" in row["ready_reason"]
 
 
 def test_describe_survives_malformed_config(tmp_path: Path) -> None:
@@ -1375,3 +1405,37 @@ def test_cli_workspace_add_bad_path_errors_cleanly(
     assert "error" in capsys.readouterr().err
     assert not (missing / "fleet.config.yaml").exists()
     assert not reg_file.exists()  # nothing registered
+
+
+def test_describe_reports_when_a_workspace_last_saw_activity(tmp_path: Path) -> None:
+    """Fifteen registered repos are unnavigable by name alone - recency is how anyone finds the one
+    they were just working in."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    for repo in (a, b):
+        (repo / "fleet.config.yaml").write_text("clients:\n  w:\n    backend: cursor\n")
+    _write_run(a, "r-a")  # only `a` has ever run anything
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml"),
+            WorkspaceDef("beta", b, b / "fleet.config.yaml")]
+    rows = {r["name"]: r for r in WorkspaceRegistry(defs, builder=_explode).describe()}
+    assert rows["default"]["last_activity_at"] is not None
+    assert rows["beta"]["last_activity_at"] is None, "no runs must read as absent, not as a date"
+    # Parseable, timezone-aware ISO - a driver should not have to guess the format or the zone.
+    parsed = datetime.fromisoformat(rows["default"]["last_activity_at"])
+    assert parsed.tzinfo is not None
+
+
+def test_recency_does_not_parse_run_records(tmp_path: Path) -> None:
+    """It is a stat, not a read: `describe()` builds no services and parses no records, and with a
+    dozen workspaces a full ledger parse per row would turn a listing into real work. A corrupt
+    record must therefore not affect it."""
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "fleet.config.yaml").write_text("clients:\n  w:\n    backend: cursor\n")
+    runs = a / ".marshal" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "torn.json").write_text("{not json")  # unparseable, but it is still activity
+    defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
+    row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
+    assert row["last_activity_at"] is not None

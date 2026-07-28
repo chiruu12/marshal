@@ -88,10 +88,26 @@ class ClientInfo(BaseModel):
     permission_fidelity: str
 
 
+class SkippedClient(BaseModel):
+    """A configured client that is NOT usable right now, and why.
+
+    Marshal already knew this - it prints a warning to stderr at construction - but the MCP driver
+    never sees stderr, so from its side the client simply vanished from `list_clients` with no
+    error and no reason. Naming the client, its backend, and the cause turns a silent
+    disappearance into something a driver can act on (install the CLI, fix the name, route
+    elsewhere).
+    """
+
+    name: str
+    backend: str
+    reason: str
+
+
 class ClientList(BaseModel):
-    """list_clients() result: the configured clients plus the fleet's driver-facing context."""
+    """list_clients() result: the usable clients, the ones that were dropped, and driver context."""
 
     clients: list[ClientInfo]
+    skipped: list[SkippedClient] = []
     driver_context: str | None = None
 
 
@@ -144,6 +160,22 @@ class MarshalService:
         self.skipped_clients: list[str] = [
             n for n, c in config.clients.items() if not avail.get(c.backend, False)
         ]
+        # Same facts, keyed for the driver: which client, on which backend, and why it is missing.
+        # `avail` is False both for a known backend whose CLI is absent and for a name that is not
+        # a backend at all - different problems with different fixes, so they are not collapsed.
+        self._skipped_detail: dict[str, SkippedClient] = {
+            n: SkippedClient(
+                name=n,
+                backend=c.backend,
+                reason=(
+                    f"backend {c.backend!r} is not a known backend"
+                    if c.backend not in backends
+                    else f"the {c.backend!r} CLI is not available on PATH (or failed its probe)"
+                ),
+            )
+            for n, c in config.clients.items()
+            if not avail.get(c.backend, False)
+        }
         for n, c in config.clients.items():
             if not avail.get(c.backend, False):
                 print(f"marshal: skipping client {n!r} (backend {c.backend!r} CLI unavailable)", file=sys.stderr)
@@ -181,6 +213,8 @@ class MarshalService:
                 )
                 for c in self._clients.values()
             ],
+            skipped=[self._skipped_detail[n] for n in self.skipped_clients
+                     if n in self._skipped_detail],
             driver_context=self.config.context.driver,
         )
 
@@ -251,6 +285,18 @@ class MarshalService:
         except ValidationError as exc:
             raise ValueError(str(exc)) from exc
         timeout_override = resolve_duration(duration) if duration is not None else None
+        if client_name and backend:
+            # A contradiction, not a precedence question: the caller named a configured client AND
+            # a bare backend, which are two different answers to "what runs this". Silently
+            # preferring one meant the run happened on a backend the caller had not asked for, with
+            # nothing in the result saying so. `model` is NOT in this rule - a client plus a model
+            # is a coherent request (run this client's backend against that model) and stays a
+            # documented override.
+            raise ValueError(
+                f"conflicting routing: client={client_name!r} and backend={backend!r} both given. "
+                f"Pass `client` to use a configured client (add `model` to override its model), or "
+                f"pass `backend` alone for an ad-hoc run - not both."
+            )
         if client_name:
             client = self._clients.get(client_name)
             if client is None:
@@ -545,8 +591,13 @@ class MarshalService:
     def cancel_run(self, run_id: str) -> RunRecord:
         return self.fleet.cancel_run(run_id)
 
-    def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult:
-        return self.fleet.integrate(run_id, cleanup=cleanup)
+    def integrate(
+        self, run_id: str, *, message: str | None = None, cleanup: bool = False
+    ) -> IntegrateResult:
+        # `message` was already supported by the Fleet but stopped here, so no caller could reach
+        # it: every integrate landed as "marshal: integrate <run_id>", describing the tooling
+        # instead of the change, and had to be rewritten by hand afterwards.
+        return self.fleet.integrate(run_id, message=message, cleanup=cleanup)
 
     def clean(
         self,
