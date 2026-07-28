@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -24,7 +24,7 @@ from .service import MarshalService
 from .state import FleetState
 from .scaffold import scaffold_fleet_config
 from .teams import TeamSubject, load_team, team_paths, validate_team
-from .usage import Bucket, UsageTracker
+from .usage import USAGE_WINDOWS, Bucket, UsageTracker, usage_window_since
 from .workflow import WorkflowRunner, load_workflow, validate_workflow, workflow_paths
 from .worktree import WorktreeError
 from .workspaces import (
@@ -176,7 +176,10 @@ def _print_bucket_table(title: str, buckets: dict[str, Bucket]) -> None:
 
 
 def _cmd_usage(args: argparse.Namespace) -> int:
-    since = _usage_window_since(args.window)
+    # The CLI has no long-lived Fleet, so `session` = since this invocation (typically empty).
+    # Pass `now` as session_start — honest, not a silent fake of MCP's process-lifetime clock.
+    now = datetime.now(timezone.utc)
+    since = usage_window_since(args.window, session_start=now, now=now)
     repo = _resolve_repo(args)
     usage_path = Path(args.dir) if args.dir is not None else usage_dir(repo)
     tracker = UsageTracker(usage_path)
@@ -190,9 +193,7 @@ def _cmd_usage(args: argparse.Namespace) -> int:
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-    # The CLI has no long-lived Fleet, so a `session` budget window reads as $0 (the process
-    # just started). Pass `now` as both ends - honest "since this CLI invocation".
-    now = datetime.now(timezone.utc)
+    # Same honesty for budget status: a `session` budget window reads as $0 (process just started).
     budget_rows = compute_budget_status(tracker, now, budgets, now)
     if args.json:
         payload = {
@@ -212,7 +213,16 @@ def _cmd_usage(args: argparse.Namespace) -> int:
         return 0
     t = s.totals
     cps_str = f"${t.cost_per_succeeded:.4f}" if t.cost_per_succeeded is not None else "n/a"
-    window_label = f"  window={args.window}" if args.window != "all" else ""
+    if args.window == "session":
+        # CLI has no long-lived Fleet — say so plainly rather than silently returning ~$0.
+        window_label = (
+            "  window=session (since this CLI invocation — typically empty; "
+            "no long-lived Fleet; use day/week/month for rolling spend)"
+        )
+    elif args.window != "all":
+        window_label = f"  window={args.window}"
+    else:
+        window_label = ""
     print(
         f"runs={t.runs}  succeeded={t.succeeded}  cost=${t.cost_usd:.4f} "
         f"(native ${t.cost_native:.4f} / admin-api ${t.cost_admin_api:.4f} / est ${t.cost_estimated:.4f})"
@@ -253,21 +263,6 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
     ]
     for line in _align_rows(header, table_rows):
         print(f"  {line}")
-
-
-def _usage_window_since(window: str) -> datetime | None:
-    """Map the CLI `--window` name to a UTC `since` (None for "all"). The CLI has no server
-    reference, so it uses rolling windows; "day" (last 24h) is the session-equivalent."""
-    if window == "all":
-        return None
-    now = datetime.now(timezone.utc)
-    if window == "day":
-        return now - timedelta(hours=24)
-    if window == "week":
-        return now - timedelta(days=7)
-    if window == "month":
-        return now - timedelta(days=30)
-    raise ValueError(f"unknown usage window: {window!r} (use day|week|month|all)")
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -698,8 +693,12 @@ def main(argv: list[str] | None = None) -> int:
     pu.add_argument(
         "--window",
         default="all",
-        choices=["day", "week", "month", "all"],
-        help="rolling time window: day=last 24h, week=7d, month=30d, all=everything (default)",
+        choices=list(USAGE_WINDOWS),
+        help=(
+            "time window: session=since this CLI invocation (no long-lived Fleet; typically "
+            "empty — use day/week/month for rolling spend), day=last 24h, week=7d, month=30d, "
+            "all=everything (default). Same set as the MCP usage tool."
+        ),
     )
     pu.add_argument(
         "--config", default=None,
