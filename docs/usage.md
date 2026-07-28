@@ -228,7 +228,8 @@ the default workspace.
 
 | Tool | Purpose |
 |------|---------|
-| `list_workspaces()` | List the repos this server can target (name, path, configured, client_count). |
+| `marshal_quickstart()` | **Start here.** The four-step loop, and which tool to pick when several look alike (the run-ish and status-ish groups). |
+| `list_workspaces()` | List the repos this server can target (name, path, `ready` + `ready_reason`, client_count). |
 | `add_workspace(name, path, scaffold?)` | Register a repo in the central registry; usable immediately (no reconnect). |
 | `doctor()` | Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth); read-only. Run it before spawning. |
 | `list_clients` | List configured clients (name, backend, model, permission, permission_fidelity) plus `driver_context`. |

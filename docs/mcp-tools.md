@@ -1,12 +1,26 @@
 # MCP tool reference
 
-The Marshal MCP server (`marshal mcp`) exposes **24 tools** (counted from `@app.tool` in
-`mcp_server.py`). Every action/query tool accepts an optional `workspace` parameter (defaults to
-`"default"`). Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
+The Marshal MCP server (`marshal mcp`) exposes the tools documented below (the normative list is
+`@app.tool` in `mcp_server.py`). **New to Marshal? Call `marshal_quickstart` first** — it names the
+four-step loop and says which tool to pick when several look alike. Workspace-scoped tools accept an optional `workspace` parameter (defaults to `"default"`);
+the global ones — `marshal_quickstart`, `list_workspaces`, `add_workspace` — do not. Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
 owning workspace by scanning each repo's ledger, with an optional `workspace` hint to skip the scan.
 
 Results from workspace-scoped tools include a top-level `"workspace"` field naming the repo they came
 from.
+
+## Orientation
+
+### `marshal_quickstart`
+
+The canonical loop and the decision boundary between the lookalike tools. No parameters.
+
+**Returns:** `{ what_marshal_is, the_loop, which_run_tool, which_status_tool, safety, multi_repo }`.
+
+Exists because a driver facing ~20 tools has no stated ordering: several do near-identical things
+(`run_agent` / `spawn` / `run_many` / `run_workflow`; `status` / `get_run` / `collect_run` /
+`get_run_log`) and the blocking-vs-async split is not visible in the names. A driver reads tool
+descriptions, not this file — so the orientation lives where it will actually be read.
 
 ## Workspace
 

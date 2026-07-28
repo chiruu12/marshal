@@ -182,6 +182,56 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         return tag(dump_result(result), name)
 
     @app.tool()
+    async def marshal_quickstart() -> dict[str, Any]:
+        """START HERE. The canonical four-step loop, and which tool to pick when several look alike.
+
+        Read this before choosing among the run-ish tools (run_agent / spawn / run_many /
+        run_workflow) or the status-ish ones (status / get_run / collect_run / get_run_log).
+        """
+        return {
+            "what_marshal_is": (
+                "One agent spawns and coordinates a fleet of sub-agents, each in its own isolated "
+                "git worktree, with per-provider cost tracking. Code delegation is the "
+                "best-developed path, not the only one."
+            ),
+            "the_loop": [
+                "1. doctor - is this workspace ready? Catches a missing CLI, a broken config, and "
+                "a backend that recently failed on billing, BEFORE you spend a run.",
+                "2. spawn (or run_agent) - start the work.",
+                "3. collect_run - read the diff. A run's status says it exited cleanly, NOT that "
+                "the work is correct. Always read the diff before step 4.",
+                "4. integrate - merge that run's branch into yours. One run at a time.",
+            ],
+            "which_run_tool": {
+                "run_agent": "Blocks until the run finishes. Use for short work you want inline.",
+                "spawn": "Returns immediately with a RUNNING record. Use for anything long - it "
+                "does not hold your turn. Poll with get_run, stop with cancel_run.",
+                "run_many": "Several jobs in parallel, one per worktree. Returns when all finish.",
+                "run_workflow": "A declarative recipe (fan-out, gates, integrate) from a YAML file.",
+            },
+            "which_status_tool": {
+                "status": "List runs. Filtered and compact by default - pass `limit`, `status`, "
+                "`task_id`, `since_hours`. Check `agent_alive` to tell 'still working' from "
+                "'finished, outcome not yet written'.",
+                "get_run": "One run's full record, including its final text.",
+                "collect_run": "One run's DIFF - what it actually changed. This is the review step.",
+                "get_run_log": "One run's raw stdout/stderr. For diagnosing a failure.",
+            },
+            "safety": (
+                "Runs are isolated in their own worktrees; a bad run costs a worktree, not your "
+                "repo. Two things reach your branch: `integrate`, and `run_workflow` when the "
+                "recipe declares an integrate phase with `auto: true` - read a workflow before "
+                "running it. `succeeded` means the process exited 0, which is not a claim about "
+                "correctness, so review the diff first."
+            ),
+            "multi_repo": (
+                "Workspace-scoped tools take an optional `workspace` (the global ones - this tool, "
+                "list_workspaces, add_workspace - do not). list_workspaces shows what is registered "
+                "and whether each is `ready`, with a reason when it is not."
+            ),
+        }
+
+    @app.tool()
     async def list_workspaces() -> list[dict[str, Any]]:
         """List the repos this server can target: name, path, config_path, configured, client_count,
         and which is the default. Pass a name as the `workspace` param on the other tools."""

@@ -81,6 +81,19 @@ versions may include breaking API changes until 1.0.
   retry policy already backs off and retries it, and sending an operator to top up over throttling
   is the wrong remedy.
 
+- **`marshal_quickstart` MCP tool: a stated "start here" (#102).** A driver facing ~20 tools had no
+  ordering and no decision boundary between the near-duplicates — `run_agent` / `spawn` /
+  `run_many` / `run_workflow` and `status` / `get_run` / `collect_run` / `get_run_log` — and learned
+  "spawn is the long-job one" only by reading every description. The tool returns the four-step loop
+  (`doctor` → `spawn` → `collect_run` → `integrate`), says plainly which run tool blocks and which
+  does not, and states up front that a run's status is about the process exiting, not about the work
+  being right. It is a tool rather than a docs link because a driver reads tool descriptions.
+  `docs/mcp-tools.md` also stops hardcoding a tool count (it was already stale by one) and no longer
+  claims *every* tool takes a `workspace` — the global tools do not. A test checks the quickstart's
+  claims against the real registered signatures, because an orientation tool that overclaims is the
+  same defect as `succeeded` and `configured`, just in prose: two drafts asserted that `integrate`
+  is the only thing that reaches your branch, when a workflow with an `auto: true` integrate phase
+  does too.
 - **`list_workspaces` reports recency (#104).** With fifteen registered repos the list was
   unnavigable by name alone — `provo` from `domo` from `lore` meant opening each. `last_activity_at`
   is the most recent write to that workspace's run ledger, which is how anyone actually finds the
