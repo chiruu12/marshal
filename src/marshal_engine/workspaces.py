@@ -692,7 +692,13 @@ class WorkspaceRegistry:
             if fleet is not None:
                 fleet.reconcile_orphans()
             for rec in FleetState(self._runs_dir(self._defs[wsname])).list():
-                out.append((wsname, rec))
+                # Fill in `agent_alive` the same way `MarshalService.status` does. This path reads
+                # the ledger directly, so without it the field is always null on the MCP surface -
+                # the one a driver actually polls - and the whole point of it (telling "still
+                # working" from "finished, outcome not yet written") is lost exactly where it is
+                # needed. Only possible for a workspace whose Fleet already exists here; elsewhere
+                # the answer is honestly unknown.
+                out.append((wsname, fleet.with_liveness(rec) if fleet is not None else rec))
         return out
 
     def describe(self) -> list[dict[str, Any]]:

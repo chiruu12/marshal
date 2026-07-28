@@ -795,3 +795,20 @@ def test_status_since_hours_filters(tmp_path: Path, capsys: pytest.CaptureFixtur
     ret = cli.main(["status", "--json", "--state", str(runs), "--since-hours", "999999"])
     assert ret == 0
     assert json.loads(capsys.readouterr()[0])["matched"] == 1
+
+
+def test_status_rejects_a_nonpositive_limit(tmp_path: Path) -> None:
+    """A negative limit does not error in Python - `rows[:-5]` silently returns a DIFFERENT slice
+    (all but the last five), so the caller gets plausible-looking wrong output. The MCP tool bounds
+    this parameter; the CLI must not be the lax door to the same logic."""
+    with pytest.raises(SystemExit):
+        cli.main(["status", "--state", str(tmp_path / "runs"), "--limit", "-5"])
+    with pytest.raises(SystemExit):
+        cli.main(["status", "--state", str(tmp_path / "runs"), "--limit", "0"])
+
+
+def test_status_rejects_a_nonfinite_lookback(tmp_path: Path) -> None:
+    """NaN and inf survive float() and only blow up later inside timedelta, mid-command."""
+    for bad in ("nan", "inf", "0", "-3"):
+        with pytest.raises(SystemExit):
+            cli.main(["status", "--state", str(tmp_path / "runs"), "--since-hours", bad])

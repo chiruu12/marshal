@@ -38,6 +38,27 @@ from .workspaces import (
 )
 
 
+def _positive_int(raw: str) -> int:
+    """A count that must be >= 1. argparse turns the ValueError into a usage error.
+
+    Unbounded here while the MCP tool bounds the same parameter is not a cosmetic gap: a NEGATIVE
+    limit silently returns a *different* slice (`rows[:-5]` drops the last five rather than showing
+    five), so the caller gets plausible-looking wrong output instead of an error.
+    """
+    value = int(raw)
+    if value < 1:
+        raise ValueError(f"must be 1 or greater, got {value}")
+    return value
+
+
+def _positive_hours(raw: str) -> float:
+    """A lookback that must be finite and > 0 - NaN/inf reach timedelta and raise mid-command."""
+    value = float(raw)
+    if not (value > 0) or value in (float("inf"), float("-inf")):
+        raise ValueError(f"must be a finite number greater than 0, got {raw!r}")
+    return value
+
+
 def _resolve_repo(args: argparse.Namespace) -> Path:
     return Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
 
@@ -730,10 +751,12 @@ def main(argv: list[str] | None = None) -> int:
     ps.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     ps.add_argument("--state", default=None, help="per-run state directory (default: <repo>/.marshal/runs)")
     ps.add_argument("--json", action="store_true", help="output JSON")
-    ps.add_argument("--limit", type=int, default=50, help="max runs, newest first (default 50)")
+    ps.add_argument("--limit", type=_positive_int, default=50,
+                    help="max runs, newest first (default 50)")
     ps.add_argument("--status", default=None, help="only runs with this status")
     ps.add_argument("--task-id", default=None, help="only runs with this task_id")
-    ps.add_argument("--since-hours", type=float, default=None, help="only runs started within N hours")
+    ps.add_argument("--since-hours", type=_positive_hours, default=None,
+                    help="only runs started within N hours")
     ps.add_argument(
         "--full", action="store_true",
         help="include the agent's final message and verify output (omitted by default: unbounded)",

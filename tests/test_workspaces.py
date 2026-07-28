@@ -364,6 +364,9 @@ def test_ledger_runs_finishes_a_deferred_reconciliation(tmp_path: Path) -> None:
         def reconcile_orphans(self) -> None:
             self.calls += 1
 
+        def with_liveness(self, rec: RunRecord) -> RunRecord:
+            return rec  # this test is about the reconcile hook, not the liveness fill-in
+
     class _StubService:
         def __init__(self) -> None:
             self.fleet = _StubFleet()
@@ -1511,3 +1514,44 @@ def test_recency_does_not_parse_run_records(tmp_path: Path) -> None:
     defs = [WorkspaceDef("default", a, a / "fleet.config.yaml")]
     row = WorkspaceRegistry(defs, builder=_explode).describe()[0]
     assert row["last_activity_at"] is not None
+
+
+def test_ledger_runs_fills_in_agent_liveness(tmp_path: Path) -> None:
+    """REGRESSION: MCP `status` reads the ledger here rather than through MarshalService, so
+    `agent_alive` came back null on the one surface a driver actually polls - the whole point of the
+    field (telling "still working" from "finished, outcome not yet written") lost exactly where it
+    was needed. Same bypass that the reconciliation hook had to fix."""
+
+    class _StubFleet:
+        session_start = None
+        budget_gate = None
+
+        def reconcile_orphans(self) -> None:
+            pass
+
+        def with_liveness(self, rec: RunRecord) -> RunRecord:
+            return rec.model_copy(update={"agent_alive": True})
+
+    class _StubService:
+        def __init__(self) -> None:
+            self.fleet = _StubFleet()
+
+    a = tmp_path / "a"
+    a.mkdir()
+    _write_run(a, "r-a")
+    reg = WorkspaceRegistry(
+        [WorkspaceDef("default", a, a / "c.yaml")],
+        builder=_explode,
+        prebuilt={"default": _StubService()},  # type: ignore[dict-item]
+    )
+    assert [r.agent_alive for _, r in reg.ledger_runs()] == [True]
+
+
+def test_ledger_runs_leaves_liveness_unknown_without_a_fleet(tmp_path: Path) -> None:
+    """No Fleet in this process means nothing can probe - `None` is the honest answer, and it must
+    not be mistaken for "the agent is dead"."""
+    a = tmp_path / "a"
+    a.mkdir()
+    _write_run(a, "r-a")
+    reg = WorkspaceRegistry([WorkspaceDef("default", a, a / "c.yaml")], builder=_explode)
+    assert [r.agent_alive for _, r in reg.ledger_runs()] == [None]
