@@ -1320,3 +1320,53 @@ def test_read_run_file_on_a_cleaned_worktree_says_so(repo: Path) -> None:
     svc.clean(scope="all")
     with pytest.raises(ValueError, match="gone"):
         svc.read_run_file(rec.run_id, "anything.md")
+
+
+def test_list_models_probes_backends_concurrently(tmp_path: Path) -> None:
+    """Serial probes make the worst case the SUM of their timeouts, which can exceed an MCP
+    client's deadline. Four 0.4s probes must finish in well under 1.6s."""
+    import time
+
+    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
+
+    class _SlowProbe(_Echo):
+        def available_models(self) -> list[str]:
+            time.sleep(0.4)
+            return ["m"]
+
+    names = ["b1", "b2", "b3", "b4"]
+    cfg = FleetConfig(
+        clients={
+            n: ClientConfig(name=n, backend=n, permission=PermissionMode.SAFE_EDIT) for n in names
+        }
+    )
+    backends = {n: _SlowProbe() for n in names}
+    svc = MarshalService(tmp_path, cfg, backends=backends)
+
+    started = time.monotonic()
+    result = svc.list_models()
+    elapsed = time.monotonic() - started
+
+    assert set(result.backend_models) == set(names)
+    assert elapsed < 1.2, f"probes look serial: {elapsed:.2f}s for 4x0.4s"
+
+
+def test_list_models_survives_a_raising_probe(tmp_path: Path) -> None:
+    """One broken backend must not take the whole listing down."""
+    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
+
+    class _Boom(_Echo):
+        def available_models(self) -> list[str]:
+            raise RuntimeError("probe exploded")
+
+    cfg = FleetConfig(
+        clients={
+            "ok": ClientConfig(name="ok", backend="ok", permission=PermissionMode.SAFE_EDIT),
+            "bad": ClientConfig(name="bad", backend="bad", permission=PermissionMode.SAFE_EDIT),
+        }
+    )
+    svc = MarshalService(
+        tmp_path, cfg, backends={"ok": _Echo(), "bad": _Boom()}
+    )
+    result = svc.list_models()
+    assert result.backend_models["bad"] is None
