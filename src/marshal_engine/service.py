@@ -73,7 +73,7 @@ from .workflow import (
 
 
 _WORKER_PREAMBLE = (
-    "You are a headless coding agent in a Marshal fleet, running in an isolated git worktree. "
+    "You are a headless agent in a Marshal fleet, running in an isolated git worktree. "
     "You cannot ask questions or wait for input - make reasonable decisions and proceed. "
     "Make all edits inside this worktree only. "
     "If the repo root has an AGENTS.md, CLAUDE.md, or GEMINI.md, read it first for project conventions."
@@ -549,7 +549,11 @@ class MarshalService:
         backend: str | None = None,
         duration: str | int | None = None,
     ) -> RunRecord:
-        """Start a run in the background; return its RUNNING record at once. Poll status()/get_run()."""
+        """Start a worker agent in the background; return its RUNNING record at once.
+
+        Same delegation primitive as ``run_agent`` (product may be a diff or text). Poll
+        ``status()`` / ``get_run()``.
+        """
         req = self._request_for(
             client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,

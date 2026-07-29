@@ -33,6 +33,12 @@ versions may include breaking API changes until 1.0.
   still display `$0.0000`.
 
 ### Changed
+- **MCP tool / skill framing finishes the #98 fleet-primitive shift.** Residual diff-centric
+  wording on `run_agent`, `spawn`, `run_many`, `collect_run`, `get_run`, `integrate`, `status`,
+  and `marshal_quickstart` now treats delegation as the primitive and DIFF or TEXT as first-class
+  products. `empty` is described as an outcome (exited 0, neither text nor file changes), not a
+  fault. `skills/marshal-orchestrate` decomposes read-and-reason work alongside write work and no
+  longer treats `empty` as failure. Docs (`docs/mcp-tools.md`, `docs/usage.md`) match.
 - **Codex defaults to stock OpenAI.** The scaffold stub and model playbook now lead with plain
   `backend: codex` / `model: gpt-5.5` and `codex login` or `OPENAI_API_KEY`; EastRouter
   `usage_api` remains documented as an optional add-on for real admin-api cost.

@@ -450,8 +450,8 @@ def test_goal_is_prefixed_with_worker_preamble(repo: Path) -> None:
     svc = _capture_svc(repo, backend)
     svc.run_agent("worker", "refactor the parser", task_id="t1")
     goal = backend.tasks[-1].goal
-    assert goal.startswith("You are a headless coding agent in a Marshal fleet")
-    assert "headless coding agent in a Marshal fleet" in goal
+    assert goal.startswith("You are a headless agent in a Marshal fleet")
+    assert "headless agent in a Marshal fleet" in goal
     assert "refactor the parser" in goal  # the user's goal text is still present
 
 
@@ -461,11 +461,11 @@ def test_goal_includes_fleet_worker_context_when_set(repo: Path) -> None:
     svc = _capture_svc(repo, backend, worker="Always add type hints. No new deps.")
     svc.run_agent("worker", "fix the bug", task_id="t1")
     goal = backend.tasks[-1].goal
-    assert goal.startswith("You are a headless coding agent in a Marshal fleet")
+    assert goal.startswith("You are a headless agent in a Marshal fleet")
     assert "Always add type hints. No new deps." in goal  # fleet worker context
     assert "fix the bug" in goal  # user's goal still present
     # ordering: preamble, then worker context, then goal
-    assert goal.index("headless coding agent") < goal.index("Always add type hints")
+    assert goal.index("headless agent") < goal.index("Always add type hints")
     assert goal.index("Always add type hints") < goal.index("fix the bug")
 
 def test_run_many_threads_context_files_per_job(repo: Path) -> None:

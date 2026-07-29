@@ -232,18 +232,20 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         """
         return {
             "what_marshal_is": (
-                "A fleet primitive: one agent spawns and coordinates many sub-agents, each in its "
-                "own isolated git worktree, in parallel, with per-provider cost tracking. Code "
-                "delegation is the best-developed path, not the only one - review panels, audits "
-                "and research fan-out use the same primitives."
+                "A fleet primitive: one agent spawns and coordinates many sub-agents in parallel, "
+                "each in an isolated git worktree, with per-provider cost tracking. A run's "
+                "product may be a DIFF or TEXT - both first-class. Marshal runs the agents; you "
+                "decide. Use it to implement code, research a question across sources, review a "
+                "diff, audit a codebase, or summarise - code delegation is the best-developed "
+                "path, not the only one."
             ),
             "non_code_runs": (
                 "A run that only reads and reasons DOES return its work: its final message is on "
                 "the record as `text`, and the run is `exited_clean`. collect_run reports which "
                 "artifact it was via `produced` (`diff` | `text` | `nothing`) and returns the "
                 "message itself for a text run; get_run (or status(full=true)) gives you the raw "
-                "record if you want it. `empty` means the run produced neither text nor "
-                "file changes. What Marshal lacks "
+                "record if you want it. `empty` is an outcome, not a fault: the process exited 0 "
+                "with neither text nor file changes - nothing to integrate. What Marshal lacks "
                 "is STRUCTURED output: the result is prose you parse. Where a backend truncates "
                 "long final messages (Cursor does), have the agent write its report to a file "
                 "instead - that is why the built-in review teams do so."
@@ -251,10 +253,13 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
             "the_loop": [
                 "1. doctor - is this workspace ready? Catches a missing CLI, a broken config, and "
                 "a backend that recently failed on billing, BEFORE you spend a run.",
-                "2. spawn (or run_agent) - start the work.",
-                "3. collect_run - read the diff. A run's status says it exited cleanly, NOT that "
-                "the work is correct. Always read the diff before step 4.",
-                "4. integrate - merge that run's branch into yours. One run at a time.",
+                "2. spawn (or run_agent) - delegate the work to a worker agent.",
+                "3. collect_run - read what the run produced (`produced`: diff | text | nothing). "
+                "`exited_clean` means the process exited 0, NOT that the work is correct. For a "
+                "diff run, review before step 4; for a text run, the value is in `text` - skip "
+                "integrate.",
+                "4. integrate - merge a diff run's branch into yours. One run at a time. Skip for "
+                "text-only work.",
             ],
             "which_run_tool": {
                 "run_agent": "Blocks until the run finishes. Use for short work you want inline.",
@@ -268,15 +273,16 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
                 "`task_id`, `since_hours`. Check `agent_alive` to tell 'still working' from "
                 "'finished, outcome not yet written'.",
                 "get_run": "One run's full record, including its final text.",
-                "collect_run": "One run's DIFF - what it actually changed. This is the review step.",
+                "collect_run": "What the run produced (diff and/or text via `produced`). Review "
+                "step before integrate; for text runs, read `text`.",
                 "get_run_log": "One run's raw stdout/stderr. For diagnosing a failure.",
             },
             "safety": (
                 "Runs are isolated in their own worktrees; a bad run costs a worktree, not your "
                 "repo. Two things reach your branch: `integrate`, and `run_workflow` when the "
                 "recipe declares an integrate phase with `auto: true` - read a workflow before "
-                "running it. `succeeded` means the process exited 0, which is not a claim about "
-                "correctness, so review the diff first."
+                "running it. `exited_clean` means the process exited 0, which is not a claim about "
+                "correctness, so review what it produced first."
             ),
             "multi_repo": (
                 "Workspace-scoped tools take an optional `workspace` (the global ones - this tool, "
@@ -368,10 +374,10 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """Run a task on a client's backend in an isolated git worktree (in `workspace`'s repo);
-        returns the run record stamped with its workspace.
+        """Delegate a goal to a worker agent in an isolated git worktree (in `workspace`'s repo);
+        returns the run record. Product may be a diff or text - both first-class (see collect_run).
 
-        Blocks until the run finishes; for long work prefer spawn (returns at once + cancellable).
+        Blocks until finished; for long work prefer spawn (returns at once + cancellable).
         `model` overrides the client's resolved model when `client` is set; for an ad-hoc spawn,
         pass `backend` (+ optional `model`) with no `client`. `duration` overrides the resolved
         timeout (a preset name or positive seconds). `base_branch` bases the worktree on a branch
@@ -399,12 +405,13 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
             ),
         ] = None,
     ) -> list[dict[str, Any]]:
-        """Run several jobs in parallel, each in its own worktree. Jobs may target different
+        """Delegate several goals in parallel, each to its own worktree. Jobs may target different
         registered workspaces via per-job `workspace` (call-level `workspace` is the default for
-        jobs that omit it). Optional per-job `then` runs a follow-up in the same worker as soon as
-        that job's primary finishes — it does not wait for sibling jobs. Returns one result object
-        per input job (input order), each tagged with the workspace it ran in. Ledgers and worktrees
-        stay per-workspace; only the concurrency cap is shared."""
+        jobs that omit it). Each job's product may be a diff or text. Optional per-job `then` runs
+        a follow-up in the same worker as soon as that job's primary finishes — it does not wait
+        for sibling jobs. Returns one result object per input job (input order), each tagged with
+        the workspace it ran in. Ledgers and worktrees stay per-workspace; only the concurrency
+        cap is shared."""
         paired = await offload(
             registry.run_many,
             [j.model_dump() for j in jobs],
@@ -437,7 +444,8 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """Start a run in the background in `workspace`'s repo; returns its RUNNING record immediately.
+        """Start a worker agent in the background in `workspace`'s repo; returns its RUNNING record
+        immediately. Same delegation primitive as run_agent (product may be a diff or text).
         Poll get_run/status, and cancel_run to stop it. `model`/`backend`/`duration`/`base_branch`
         follow the same rules as run_agent (override the client's model, ad-hoc spawn by bare backend,
         per-spawn timeout override, or chain off a prior run's branch)."""
@@ -481,10 +489,11 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any] | None:
         """Get a run record by id, located across all workspaces (or via the `workspace` hint).
 
-        status is one of: succeeded | empty (ran clean but produced no work - do NOT integrate) |
-        failed | timed_out | cancelled | verify_failed (produced work but the workspace's `verify:`
-        gate rejected it - review the diff and `verify_output` before deciding). Only `succeeded`
-        runs are integration candidates."""
+        status is one of: exited_clean | empty (exited 0 with neither text nor file changes - an
+        outcome, not a fault; nothing to integrate) | failed | timed_out | cancelled |
+        verify_failed (had file changes but the workspace's `verify:` gate rejected them - review
+        the diff and `verify_output` before deciding). Only `exited_clean` runs with a diff are
+        integration candidates; for text-only work read `text` (or collect_run)."""
         resolved = await offload(registry.resolve_run, run_id, workspace)
         if resolved is None:
             return None
@@ -517,7 +526,8 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
-        """Collect a run's diff and changed files (read-only; nothing is merged)."""
+        """Collect what a run produced: diff/changed files and/or final text via `produced`
+        (read-only; nothing is merged). Branch on `produced` (`diff` | `text` | `nothing`)."""
         return await run_call(run_id, workspace, lambda svc: svc.collect_run(run_id))
 
     @app.tool()
@@ -584,11 +594,12 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     ) -> dict[str, Any]:
         """Merge a run's worktree branch into its workspace's current branch.
 
-        REVIEW THE DIFF FIRST with collect_run - `succeeded` means the process exited cleanly, NOT
-        that the code is correct. Integrate one run at a time. Pass `message` to commit in the
-        repo's own convention. Outcome status is one of: merged | conflict (aborted, repo left
-        clean) | blocked (target dirty/detached, or the run is still running - fix and retry) |
-        empty (nothing to integrate) | error (a git op needs a human)."""
+        REVIEW WHAT IT PRODUCED FIRST with collect_run - `exited_clean` means the process exited 0,
+        NOT that the work is correct. Integrate one diff run at a time; skip text-only runs.
+        Pass `message` to commit in the repo's own convention. Outcome status is one of: merged |
+        conflict (aborted, repo left clean) | blocked (target dirty/detached, or the run is still
+        running - fix and retry) | empty (no file changes to merge - an outcome, not a fault) |
+        error (a git op needs a human)."""
         return await run_call(
             run_id, workspace, lambda svc: svc.integrate(run_id, message=message, cleanup=cleanup),
         )
@@ -731,7 +742,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
             "`returned`, so a truncated list is never mistaken for the whole ledger."
         ))] = 50,
         status: Annotated[str | None, Field(description=(
-            "Only runs with this exact status (e.g. 'running', 'succeeded', 'verify_failed')."
+            "Only runs with this exact status (e.g. 'running', 'exited_clean', 'empty', "
+            "'verify_failed'). `empty` is an outcome (exited 0, neither text nor file changes), "
+            "not a failure."
         ))] = None,
         task_id: Annotated[str | None, Field(description="Only runs with this task_id.")] = None,
         since_hours: Annotated[float | None, Field(gt=0, description=(
