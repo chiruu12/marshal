@@ -34,9 +34,9 @@ You only need the backends your `fleet.config.yaml` references. One is enough to
 **PyPI (recommended):**
 
 ```bash
-uv tool install MarshalFleet
+uv tool install "MarshalFleet[mcp]"
 # or
-pipx install MarshalFleet
+pipx install "MarshalFleet[mcp]"
 ```
 
 **Clone from source** (for development or before PyPI publish):
