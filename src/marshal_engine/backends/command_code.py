@@ -49,6 +49,13 @@ _CAP_HIT_EXIT = 8
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
+#: ``--list-models`` rows look like ``<id>  <description>`` (2+ spaces).
+_LIST_MODELS_ROW = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_./-]*)\s{2,}\S")
+
+#: Static fallback when ``command-code --list-models`` cannot be probed.
+#: Sourced from docs/model-playbook.md (command-code / zai-org/glm-5.2).
+_STATIC_MODELS: tuple[str, ...] = ("zai-org/glm-5.2",)
+
 
 class CommandCodeBackend(CodingAgentBackend):
     name = "command-code"
@@ -99,6 +106,29 @@ class CommandCodeBackend(CodingAgentBackend):
         # ``command-code status`` is authenticated-only; config.json presence ≠ logged in.
         return True
 
+    def available_models(self) -> list[str]:
+        """Model ids from ``command-code --list-models``, or the static playbook fallback.
+
+        Rows are ``<id>  <description>``; section headers (no padded description) are skipped.
+        Never raises; never returns None — on probe failure uses docs/model-playbook.md.
+        """
+        if shutil.which(self.binary) is None:
+            return list(_STATIC_MODELS)
+        try:
+            proc = subprocess.run(
+                [self.binary, "--list-models"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return list(_STATIC_MODELS)
+        if proc.returncode != 0:
+            return list(_STATIC_MODELS)
+        models = _parse_list_models(_ANSI.sub("", proc.stdout or ""))
+        return models or list(_STATIC_MODELS)
+
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [
             self.binary,
@@ -139,6 +169,17 @@ class CommandCodeBackend(CodingAgentBackend):
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _parse_list_models(raw: str) -> list[str]:
+    """Extract model ids from ``command-code --list-models`` text. Pure."""
+    models: list[str] = []
+    for line in (raw or "").splitlines():
+        match = _LIST_MODELS_ROW.match(line.strip())
+        if match is None:
+            continue
+        models.append(match.group(1))
+    return models
 
 
 def _parse_status_json(raw: str) -> dict[str, str] | None:

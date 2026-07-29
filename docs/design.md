@@ -87,6 +87,7 @@ class CodingAgentBackend(ABC):
     def prepare(self, opts) -> None: ...                         # default no-op; per-run setup before spawn
     def account_info(self) -> dict[str, str] | None: ...         # default None; cheap account metadata (plan tier)
     def verifies_auth(self) -> bool: ...                         # True → doctor FAILs when account_info is None
+    def available_models(self) -> list[str] | None: ...          # default None; concrete adapters always return a non-empty list
 
     # run() lives on the base: build_invocation -> spawn in worktree (timeout!) -> capture -> parse_output
 ```
@@ -96,6 +97,13 @@ Add a **version probe** in `check_available` + **contract tests per backend** (t
 `check_available` is presence-only; backends with a cheap authenticated probe override `account_info`
 + `verifies_auth` so `marshal doctor` can distinguish installed from logged-in (preflight only —
 spawn is not hard-gated on doctor auth FAIL).
+
+**Model discovery (`available_models`):** every concrete adapter returns a non-empty `list[str]`
+(never `None`). Probe the CLI when it exposes a headless list (`cursor-agent models`,
+`opencode models`, `command-code --list-models`, `agy models`); otherwise return a curated static
+list from [`model-playbook.md`](model-playbook.md) / the adapter docstring. Probes must never raise
+or hang (bounded timeout + static fallback). Shared contract: `tests/test_backend_contract.py`
+(parametrised over `registry.backend_names()`).
 
 **Doctor auth probes (fail closed when `verifies_auth`):**
 
@@ -112,17 +120,19 @@ spawn is not hard-gated on doctor auth FAIL).
 
 ## 3. Per-backend cheat sheet (all implemented backends)
 
-| | **Cursor (`cursor-agent`)** | **OpenCode (`opencode`)** | **Codex** | **Command Code (`command-code`)** | **Antigravity (`agy`)** | **Claude Code** |
-|---|---|---|---|---|---|---|
-| Headless run | `cursor-agent -p "..."` | `opencode run "..."` | `codex ...` | `command-code -p "..."` | `agy -p "..."` | `claude --print` |
-| JSON | ``--output-format stream-json`` (NDJSON; default adapter path) | `--format json` (NDJSON event stream) | json | none (plain text only) | none (plain text only) | `--output-format json\|stream-json` |
-| Final text | concat assistant ``message.content[].text``; prefer stream over shorter ``result.result`` | concat all `text` events' `part.text` | - | stdout (plain text, ANSI-stripped) | stdout (plain text) | json field |
-| Tokens/cost in output | tokens from the `result` event's `usage{inputTokens,outputTokens,cacheReadTokens}`; **no cost** — source stays `unavailable` (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | none (hosted account → `unavailable`) | none (no native usage headless → `unavailable`) | `total_cost_usd` + `usage{...}` |
-| File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | diff worktree via git (`collect_run`); CLI emits none | diff worktree via git (`collect_run`); CLI emits none | - |
-| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>` (no headless session-id capture → `sessions=False`) | `session_id` returned |
-| Model select | `--model` / `--list-models` (default **Auto**) | `-m provider/model` / `opencode models` | - | `-m MODEL` / `--list-models` | `-m MODEL` | - |
-| Working dir | **no `--cwd`**; `--workspace <path>`; `-w/--worktree [name]`, `--worktree-base` | `--dir <path>` (config walks up to git root) | - | none (uses the process `cwd` the runner sets; `-t` trusts the project) | `--add-dir <path>` + run-scoped `trustedWorkspaces` entry (`prepare()`/`run()`) | - |
-| Server mode | no | **`opencode serve`** (OpenAPI on 127.0.0.1:4096) + `opencode acp` | no | no | no | no |
+| | **Cursor (`cursor-agent`)** | **OpenCode (`opencode`)** | **Codex** | **Command Code (`command-code`)** | **Antigravity (`agy`)** | **Claude Code** | **Goose** |
+|---|---|---|---|---|---|---|---|
+| Headless run | `cursor-agent -p "..."` | `opencode run "..."` | `codex ...` | `command-code -p "..."` | `agy -p "..."` | `claude --print` | `goose run -t "..."` |
+| JSON | ``--output-format stream-json`` (NDJSON; default adapter path) | `--format json` (NDJSON event stream) | json | none (plain text only) | none (plain text only) | `--output-format json\|stream-json` | `--output-format stream-json` |
+| Final text | concat assistant ``message.content[].text``; prefer stream over shorter ``result.result`` | concat all `text` events' `part.text` | - | stdout (plain text, ANSI-stripped) | stdout (plain text) | json field | concat assistant message text |
+| Tokens/cost in output | tokens from the `result` event's `usage{inputTokens,outputTokens,cacheReadTokens}`; **no cost** — source stays `unavailable` (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | none (hosted account → `unavailable`) | none (no native usage headless → `unavailable`) | `total_cost_usd` + `usage{...}` | stream cost native only when positive |
+| File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | diff worktree via git (`collect_run`); CLI emits none | diff worktree via git (`collect_run`); CLI emits none | - | diff worktree via git |
+| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>` (no headless session-id capture → `sessions=False`) | `session_id` returned | `--no-session` (Marshal one-shot) |
+| Model select | `--model` / `cursor-agent models` | `-m provider/model` / `opencode models` | `-m MODEL` (no headless list) | `-m MODEL` / `--list-models` | `-m MODEL` / `agy models` | `--model` (no headless list) | `--provider` + `--model` (`provider/model`) |
+| `available_models` | probe `models` → static `composer-2.5` | probe `models` → static `opencode-go/*` playbook rows | static `gpt-5.5` | probe `--list-models` → static `zai-org/glm-5.2` | probe `models` → static playbook/docstring ids | static playbook Claude ids | static `cursor-agent/auto` |
+| Doctor auth | `status` → `isAuthenticated` | `auth list` | `login status` | `status --json` | **none** (`verifies_auth=False`) | `auth status` | `info -v --check` |
+| Working dir | **no `--cwd`**; `--workspace <path>`; `-w/--worktree [name]`, `--worktree-base` | `--dir <path>` (config walks up to git root) | `-C <path>` | none (uses the process `cwd` the runner sets; `-t` trusts the project) | `--add-dir <path>` + run-scoped `trustedWorkspaces` entry (`prepare()`/`run()`) | process `cwd` | process `cwd` |
+| Server mode | no | **`opencode serve`** (OpenAPI on 127.0.0.1:4096) + `opencode acp` | no | no | no | no | no |
 
 > **File changes, every backend:** Marshal derives file changes the same way regardless of CLI -
 > after the run it diffs the worktree via git (`collect_run`). None of the CLIs emits a structured

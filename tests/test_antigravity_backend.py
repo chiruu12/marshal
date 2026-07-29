@@ -215,8 +215,42 @@ def test_trust_workspace_no_temp_leftover_after_concurrent_prepares(
 
 def test_verifies_auth_false_documented_gap(backend: AntigravityBackend) -> None:
     # No cheap dedicated auth/status/whoami probe on `agy`; doctor stays path-only.
+    # Explicit overrides (not base defaults) so the gap stays documented in the adapter.
+    assert "account_info" in AntigravityBackend.__dict__
+    assert "verifies_auth" in AntigravityBackend.__dict__
     assert backend.verifies_auth() is False
     assert backend.account_info() is None
+
+
+def test_available_models_parses_cli_rows(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "gemini-3.1-pro-high\nclaude-sonnet-4-6\n"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.antigravity.shutil.which", lambda _b: "/usr/bin/agy"
+    )
+    monkeypatch.setattr("marshal_engine.backends.antigravity.subprocess.run", _run)
+    assert backend.available_models() == ["gemini-3.1-pro-high", "claude-sonnet-4-6"]
+    assert calls and calls[0] == ["agy", "models"]
+
+
+def test_available_models_static_fallback_when_binary_missing(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.antigravity.shutil.which", lambda _b: None)
+    models = backend.available_models()
+    assert "gemini-3.1-pro" in models
+    assert "gpt-oss-120b" in models
 
 
 # --- trustedWorkspaces transaction (run() adds on prepare, removes on completion) -------------

@@ -229,3 +229,44 @@ def test_account_info_ignores_config_json_alone(
     (cfg_dir / "config.json").write_text('{"provider": "zai", "model": "zai-org/GLM-5.2"}')
     monkeypatch.setattr("marshal_engine.backends.command_code.shutil.which", lambda _b: None)
     assert backend.account_info() is None
+
+
+def test_parse_list_models_rows() -> None:
+    from marshal_engine.backends.command_code import _parse_list_models
+
+    raw = (
+        "Available models  ·  2 models\n\nOpen Source\n\n"
+        "zai-org/glm-5.2                      powerful coding\n"
+        "claude-sonnet-4-6                    prev Sonnet\n"
+    )
+    assert _parse_list_models(raw) == ["zai-org/glm-5.2", "claude-sonnet-4-6"]
+
+
+def test_available_models_parses_cli(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "zai-org/glm-5.2                      powerful coding\n"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.command_code.shutil.which",
+        lambda _b: "/usr/bin/command-code",
+    )
+    monkeypatch.setattr("marshal_engine.backends.command_code.subprocess.run", _run)
+    assert backend.available_models() == ["zai-org/glm-5.2"]
+    assert calls and calls[0] == ["command-code", "--list-models"]
+
+
+def test_available_models_static_fallback_when_binary_missing(
+    backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.command_code.shutil.which", lambda _b: None)
+    assert backend.available_models() == ["zai-org/glm-5.2"]

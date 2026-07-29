@@ -47,6 +47,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -69,6 +71,16 @@ from .base import CodingAgentBackend
 #: Where the agy CLI keeps its user settings (incl. `trustedWorkspaces`). An attribute on the
 #: backend so tests can point it at a temp file instead of the real home.
 DEFAULT_SETTINGS_PATH = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+
+#: Static fallback when ``agy models`` cannot be probed.
+#: Sourced from this module's docstring / docs/model-playbook.md (antigravity rows).
+_STATIC_MODELS: tuple[str, ...] = (
+    "gemini-3.1-pro",
+    "gemini-3.5-flash",
+    "claude-sonnet-4.6",
+    "claude-opus-4.6",
+    "gpt-oss-120b",
+)
 
 
 class AntigravityBackend(CodingAgentBackend):
@@ -114,6 +126,41 @@ class AntigravityBackend(CodingAgentBackend):
             f"antigravity: permission mode {mode!r} is not supported headless "
             "(only safe-edit and yolo)"
         )
+
+    def account_info(self) -> dict[str, str] | None:
+        """No cheap auth/status/whoami probe on ``agy`` (``agy --help`` has none).
+
+        Always None. Hang-prone TTY probes are refused — doctor reports CLI presence only.
+        """
+        return None
+
+    def verifies_auth(self) -> bool:
+        # Honest gap: no authenticated-only probe; a None from account_info is "unsupported",
+        # not "logged out". Doctor must not claim credentials are valid from PATH alone.
+        return False
+
+    def available_models(self) -> list[str]:
+        """Model ids from ``agy models``, or the static playbook/docstring fallback.
+
+        One model id per stdout line (verified against the real CLI). Never raises; never
+        returns None — on any probe failure the curated static list is used.
+        """
+        if shutil.which(self.binary) is None:
+            return list(_STATIC_MODELS)
+        try:
+            proc = subprocess.run(
+                [self.binary, "models"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return list(_STATIC_MODELS)
+        if proc.returncode != 0:
+            return list(_STATIC_MODELS)
+        models = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+        return models or list(_STATIC_MODELS)
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary]

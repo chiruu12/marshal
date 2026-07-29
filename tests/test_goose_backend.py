@@ -382,3 +382,7 @@ def test_account_info_none_when_binary_missing(
 ) -> None:
     monkeypatch.setattr("marshal_engine.backends.goose.shutil.which", lambda _b: None)
     assert backend.account_info() is None
+
+
+def test_available_models_static_playbook(backend: GooseBackend) -> None:
+    assert backend.available_models() == ["cursor-agent/auto"]

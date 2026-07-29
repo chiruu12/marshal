@@ -666,6 +666,36 @@ def test_account_info_none_on_status_timeout(
     assert backend.account_info() is None
 
 
+def test_available_models_parses_cli_rows(
+    backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "Available models\n\ncomposer-2.5 - Composer 2.5\ngpt-5.2 - GPT-5.2\n"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.cursor.shutil.which", lambda _b: "/usr/bin/cursor-agent"
+    )
+    monkeypatch.setattr("marshal_engine.backends.cursor.subprocess.run", _run)
+    assert backend.available_models() == ["composer-2.5", "gpt-5.2"]
+    assert calls and calls[0] == ["cursor-agent", "models"]
+
+
+def test_available_models_static_fallback_when_binary_missing(
+    backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.cursor.shutil.which", lambda _b: None)
+    models = backend.available_models()
+    assert models == ["composer-2.5"]
+
+
 def test_failed_run_still_reports_tokens_and_session(backend: CursorBackend) -> None:
     """A failed run still consumed tokens. Dropping them under-reports spend in the ledger - the
     one thing this project refuses to get wrong - and the session id is needed to investigate."""
