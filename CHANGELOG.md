@@ -13,6 +13,8 @@ versions may include breaking API changes until 1.0.
 
 ### Changed
 - **BREAKING: `run_many` return shape (#103).** Previously `run_many` returned `list[RunRecord]` (one flat run record per input job — the primary). It now returns `list[RunManyJobResult]`, one `{primary, then?, then_skipped?}` object per input job. Callers that treated list elements as `RunRecord` must read `.primary` (and optionally `.then` / `.then_skipped` for the follow-up). Same shape on MCP `run_many`, `MarshalService.run_many`, CLI batch output, and the registry fan-out.
+- **Stop tracking `.commandcode/`.** Local Command Code tooling state (same class of ignore as
+  `.claude/`); files stay on disk, leave the public index.
 - **The MCP server targets `mcp` 2.0 (#119).** 2.0.0 removed `mcp.server.fastmcp`; the replacement
   is `mcp.server.mcpserver.MCPServer`. The two names are **disjoint** — no release ships both, and
   1.29.0 emits no deprecation warning on the way out — so there is no pin that satisfies both APIs
