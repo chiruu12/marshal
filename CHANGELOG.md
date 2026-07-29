@@ -8,6 +8,10 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+- **Brand assets refined.** The wordmark lockup ships on a transparent background so it renders
+  correctly on light and dark surfaces; the crown geometry in `logo.svg` / `logo-dark.svg` /
+  `logo-mono.svg` matches it.
 ### Removed
 - **Estimated cost pricing.** Marshal no longer derives dollar figures from a local price table
   (`pricing.py`, `data/prices.yaml`). Token-only runs now report `source: unavailable` with

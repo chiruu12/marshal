@@ -1,9 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <!-- Dark-background variant. Same geometry and same #FF5714: it clears AA against
-       #1A1A1A and darker, so no tint shift is needed. -->
+  <!-- Dark-background variant. Same geometry and colour: #FF5714 clears AA on #1A1A1A and darker. -->
   <g fill="#FF5714">
-    <path d="M 50 18 L 64 62 L 57.5 62 L 50 51 L 42.5 62 L 36 62 Z"/>
-    <path d="M 6 40 L 33.5 62 L 8.5 62 Z"/>
-    <path d="M 94 40 L 66.5 62 L 91.5 62 Z"/>
+    <path d="M 50 22 L 63 68 L 55 68 L 50 57 L 45 68 L 37 68 Z"/>
+    <path d="M 8 38 L 34.5 68 L 15 68 Z"/>
+    <path d="M 92 38 L 65.5 68 L 85 68 Z"/>
   </g>
 </svg>

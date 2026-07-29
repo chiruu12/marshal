@@ -24,7 +24,8 @@ Same geometry with `fill="currentColor"`, so the mark inherits from its context 
 `fill` on a parent). For docs, dark-mode stylesheets, and single-colour print.
 
 ### `wordmark.png`
-The primary lockup: the crown plus the "Marshal" logotype on a dark rounded badge. Use this as the
+The primary lockup: the crown plus the "Marshal" logotype on a dark rounded badge, on a
+TRANSPARENT background so it sits correctly on light and dark surfaces alike. Use this as the
 README header and anywhere the project needs to be identified by name. Raster rather than SVG
 because the badge surface and logotype weight are part of the design.
 
