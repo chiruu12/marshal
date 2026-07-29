@@ -982,3 +982,16 @@ def test_bucket_rate_unannotated_when_every_run_is_priced() -> None:
 def test_bucket_rate_unavailable_when_nothing_is_priced() -> None:
     b = Bucket(runs=3, priced_runs=0, cost_usd=0.0, cost_per_run=0.0)
     assert cli._format_bucket_rate(b.cost_per_run, b) == "unavailable"
+
+
+def test_cost_split_accounts_for_legacy_estimated_spend() -> None:
+    """The split must sum to the total beside it, including legacy ledger spend."""
+    b = Bucket(runs=2, priced_runs=2, cost_usd=0.75, cost_native=0.50, cost_estimated=0.25)
+    out = cli._format_cost_split(b)
+    assert "native $0.5000" in out
+    assert "estimated (legacy) $0.2500" in out
+
+
+def test_cost_split_omits_estimated_when_absent() -> None:
+    b = Bucket(runs=1, priced_runs=1, cost_usd=0.5, cost_native=0.5)
+    assert cli._format_cost_split(b) == "native $0.5000"

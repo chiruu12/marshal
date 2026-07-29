@@ -14,7 +14,13 @@ versions may include breaking API changes until 1.0.
   `cost_usd: 0.0` (token counts preserved). Real cost still comes from backend-native reporting
   or a provider usage API (`admin-api`, e.g. EastRouter). Historical ledger lines tagged
   `estimated` still load and still count toward spend rollups; the `cost_estimated` bucket field
-  remains in summaries as a zero tombstone.
+  remains in summaries, and legacy spend is still attributed to it so the provenance split keeps
+  summing to `cost_usd`.
+- **BREAKING (library API): `Fleet(prices=...)`.** The `prices` constructor parameter is gone along
+  with the price table it took. Embedders passing it will get a `TypeError` on an unexpected
+  keyword - drop the argument; there is no replacement, because there is nothing left to price
+  with. `UsageSource.ESTIMATED` and `UsageSource.SCRAPED` are also removed from the enum (stored
+  ledger strings are unaffected).
 
 ### Fixed
 - **CLI cost display no longer implies unmetered runs were free.** `marshal status` and `marshal
