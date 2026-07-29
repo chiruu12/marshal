@@ -178,8 +178,8 @@ Key per-backend detail:
 
 - **OpenCode - easy.** Per-step `cost`+`tokens` in the stream; `opencode stats --days --models`; on-disk store at `~/.local/share/opencode/storage/` (note: message files store `cost: 0` → recompute from tokens via price table). Caveat: stream may **drop the final `step_finish`** → read final accounting from on-disk store / `opencode export`, not the stream.
 - **Cursor - hard.** **No tokens, no cost in CLI output at all.** Programmatic usage only via the **Admin API** (`api.cursor.com`, HTTP Basic `-u KEY:`) - **Team/Enterprise only**. `POST /teams/filtered-usage-events` returns per-event tokens+cost with an **`isHeadless`** flag and **`serviceAccountId`**. Pattern: give each worker its own **service-account key**, attribute via `serviceAccountId`. Pro/individual accounts → dashboard only, no API.
-- **Codex - likely no JSON cost** → cost `admin-api`/estimated/unavailable; tokens from JSONL events. **Gemini** reports token counts in `--output-format json` `stats` (per-model `tokens.prompt`/`candidates`/`cached`) but not USD → tokens kept, cost `unavailable` (never a fake $0).
-- **EastRouter (real `admin-api` cost) - implemented.** A client may set `usage_api: eastrouter` to have its REAL per-run cost read from EastRouter's `/v1/usage` after the run (`eastrouter.py`), reported as `admin-api` rather than an estimate - EastRouter's price swings with prompt caching, so a static table would mislead. Attribution is by model + the run's `[start, end]` time window with a token-reconciliation guard; an unattributable run (e.g. two clients on the same EastRouter model concurrently) keeps its estimate/unavailable cost instead of asserting a wrong one. Codex routed through EastRouter uses this; OpenCode pointed at EastRouter (`eastrouter/<id>`) can't be priced by the CLI and stays `unavailable`.
+- **Codex - likely no JSON cost** → cost `admin-api` or `unavailable`; tokens from JSONL events. **Gemini** reports token counts in `--output-format json` `stats` (per-model `tokens.prompt`/`candidates`/`cached`) but not USD → tokens kept, cost `unavailable` (never a fake $0).
+- **EastRouter (real `admin-api` cost) - implemented.** A client may set `usage_api: eastrouter` to have its REAL per-run cost read from EastRouter's `/v1/usage` after the run (`eastrouter.py`), reported as `admin-api`. Attribution is by model + the run's `[start, end]` time window with a token-reconciliation guard; an unattributable run (e.g. two clients on the same EastRouter model concurrently) keeps `unavailable` instead of asserting a wrong one. Codex routed through EastRouter uses this; OpenCode pointed at EastRouter (`eastrouter/<id>`) can't be priced by the CLI and stays `unavailable`.
 
 **Local schema (no DB; file-based like ORCH's `.orchestry/`):**
 
@@ -188,7 +188,7 @@ Key per-backend detail:
 {"ts":"...","run_id":"...","client":"reviewer","backend":"cursor","model":"...",
  "worktree":"feat-x","tokens":{"input":1234,"output":567,"cache_read":0},
  "cost_usd":0.041,"duration_ms":8200,"status":"success",
- "source":"native|admin-api|estimated|unavailable"}
+ "source":"native|admin-api|unavailable"}
 ```
 `usage/summary.json` (cumulative rollup, updated each run): `by_client`, `by_backend`, `by_model`, `totals`, plus a compound `by_backend_model` keyed `<backend>/<model>` for when one backend runs multiple models.
 
@@ -201,8 +201,7 @@ tracebacks, and stderr noise after the fact. Writes are atomic (unique temp + `o
 idiom as `FleetState`); a write failure is swallowed in `Fleet._execute` and stderr-logged, so
 the log store is best-effort and never breaks a finished run.
 
-Apply a local `(backend, model) → price` table for backends that report tokens but not cost.
-**Tag every record `source`** so estimated/scraped costs are auditable and never presented as ground truth.
+**Tag every record `source`** so unknown costs are never presented as ground truth.
 Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via the shared `session|day|week|month|all` vocabulary (`usage_window_since` in `usage.py`). MCP `session` maps to the Fleet's `session_start` (stamped at process start); CLI `session` is since that invocation (no long-lived Fleet). A driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
 
 **Budgets (soft-warn default; optional hard refuse).** An optional top-level `budgets:` list in
@@ -222,7 +221,7 @@ ledgers or evaluate a cap across workspaces. The shared control plane is concurr
 cross-workspace enforce is out of scope for Marshal; org-wide policy belongs to a future product
 layer (Chauffeur) if needed.
 **Honesty / cost coverage.** A budget's "spend" comes from the ledger's `cost_usd`, which is real
-only for meterable backends (`native` / `admin-api` / `estimated`); subscription / unknown-cost
+only for meterable backends (`native` / `admin-api`, plus legacy ledger lines tagged `estimated`);
 backends that record `$0` or `unavailable` never trip a dollar cap — see the live matrix in
 [`usage.md`](usage.md) (Backend notes) rather than treating `enforce: true` as a universal
 kill-switch. We do NOT fabricate a percentage or "remaining" from a missing cost. The MCP `usage`
@@ -250,7 +249,7 @@ clients:
 **Optional model catalog (the driver's "sheet").** A top-level `models:` list is pure data the
 driver can read (`list_models` MCP tool / `marshal models` CLI) — `id` (provider/model), which
 `backends` can run it, and short free-form strings for `cost` (e.g. `native`/`admin-api`/
-`estimated`/`unavailable`), `quota_type` (e.g. `metered`/`subscription`/`unavailable`), and
+`unavailable`), `quota_type` (e.g. `metered`/`subscription`/`unavailable`), and
 `notes`. **The catalog is metadata only — it does NOT change routing** (clients still own
 backend+model). Absent or empty = no catalog to expose; a malformed entry raises `ConfigError`
 at load (the same hard-fail behavior as the other config errors).
@@ -488,7 +487,7 @@ and contract tests:
 
 | Backend | Headless invocation | read-only / safe-edit / yolo | Usage in output |
 |---|---|---|---|
-| Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost `admin-api` via EastRouter `usage_api`, else estimated/unavailable) |
+| Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost `admin-api` via EastRouter `usage_api`, else `unavailable`) |
 | Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
 | OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` (native only when cost is positive; an unpriced custom provider stays `unavailable`) |
 | Command Code | `command-code -p` (text only) | `--permission-mode plan` / `--yolo` / `--yolo` | none (hosted account → `unavailable`) |
@@ -512,7 +511,7 @@ removed when `run()` completes, so edits land in the worktree - live-verified en
 text-only output (no native usage). **Codex ✅
 verified end-to-end through EastRouter:** worktree writes land, the JSONL parser extracts text +
 tokens, and a `usage_api: eastrouter` client puts its real `admin-api` cost on the ledger; a
-token-only Codex client stays `estimated`/`unavailable`. **Claude Code ✅ fully (2026-06-26):**
+token-only Codex client stays `unavailable`. **Claude Code ✅ fully (2026-06-26):**
 read/safe-edit (`acceptEdits`) writes land in the worktree, native `total_cost_usd`+tokens flow to
 the ledger, and `-p` mode is non-blocking with stdin closed. **Command Code ✅ live-verified headless
 (model `zai-org/GLM-5.2`):** `-p` prints plain text with no token/cost accounting, so usage is

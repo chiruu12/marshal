@@ -41,7 +41,7 @@ phases:
          - Implement 4 required hooks: check_available(), build_invocation(), map_permission(), parse_output()
          - Reference implementations: cursor.py, opencode.py (both in same directory)
          - NO interactive/prompting permission modes - must support headless execution
-         - Usage must be tagged with source: native/estimated/unavailable, never $0
+         - Usage must be tagged with source: native/admin-api/unavailable, never $0
 
       3. TESTS: Create tests/test_<backend_name>_backend.py
          - Contract tests only (no process spawning, no network)

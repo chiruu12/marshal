@@ -70,7 +70,7 @@ and git primitives. Concrete modules:
 | Worktree isolation | `worktree.py`, `fleet.py` | `git worktree add/remove`; the safety boundary — main branch untouched until explicit integrate. |
 | Run loop | `backends/base.py`, `fleet.py` | Spawn backend in worktree; external timeout + process-group kill on every run; optional verify gate. |
 | Backend adapters | `backends/*.py`, `registry.py` | Pure `build_invocation` / `map_permission`; normalize CLI output to `AgentResult`. |
-| Usage ledger | `usage.py`, `pricing.py`, `eastrouter.py` | Append-only `events.jsonl`; tag every record with `source`; never present estimates as ground truth. |
+| Usage ledger | `usage.py`, `eastrouter.py` | Append-only `events.jsonl`; tag every record with `source`; never fabricate cost. |
 | Fleet state | `state.py`, `logs.py` | One `runs/<run_id>.json` per run; durable stdout/stderr logs. |
 | Service primitives | `service.py`, `fleet.py` | `run_agent`, `run_many`, `spawn`, `collect_run`, `integrate`, `cancel_run` — the imperative verbs drivers call. |
 | MCP tenancy (not engine) | `workspaces.py` | Resolve named repos; cache one `MarshalService` per workspace; shared concurrency cap only — ledgers stay per-repo. |

@@ -231,7 +231,7 @@ until you `integrate`. State and usage live under `.marshal/`.
 | `no fleet config at …` | no `fleet.config.yaml` | `cp fleet.config.example.yaml fleet.config.yaml` |
 | `marshal mcp` exits with an extra message | the `mcp` extra isn't installed | `uv sync --extra mcp` |
 | OpenCode model rejected at load | a `fireworks-ai/*` model bills Fireworks credits | use an `opencode-go/*` model |
-| a backend run shows cost `unavailable` | the backend reports no native cost and its model isn't priced | add the model to `src/marshal_engine/data/prices.yaml` |
+| a backend run shows cost `unavailable` | the backend reports no native cost and no `usage_api` backfill | configure `usage_api: eastrouter` for Codex via EastRouter, or use a native-cost backend |
 | `integrate` refuses with detached HEAD | no branch checked out in `MARSHAL_REPO` | `git checkout <branch>` |
 
 For how to drive a fleet, see [`docs/usage.md`](docs/usage.md); for architecture, see

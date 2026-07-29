@@ -30,7 +30,6 @@ from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
 from marshal_engine import fleet as fleet_mod
 from marshal_engine.fleet import Fleet, RunManyJob, RunRequest, _active_runs_guard, _register_inflight_run
-from marshal_engine.pricing import ModelPrice, PriceTable
 from marshal_engine.retry import RetryPolicy
 from marshal_engine.state import FleetState, RunRecord
 from marshal_engine.worktree import WorktreeError
@@ -849,29 +848,28 @@ def test_status_succeeds_when_changed_files_unknown(repo: Path, monkeypatch: pyt
     assert rec.status == "exited_clean"  # can't determine work -> don't mislabel a success as empty
 
 
-def test_tokened_run_gets_estimated_cost(repo: Path) -> None:
-    prices = PriceTable({"m": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
-    fleet = Fleet(repo, {"tok": _Tokened()}, prices=prices)
+def test_tokened_run_is_unavailable_not_estimated(repo: Path) -> None:
+    fleet = Fleet(repo, {"tok": _Tokened()})
     rec = fleet.run("tok", TaskSpec(id="p1", goal="x"))
     assert rec.status == "exited_clean"
-    assert rec.cost_usd == 10.0          # 1M input tokens @ $10/Mtok
-    assert rec.source == "estimated"
+    assert rec.cost_usd == 0.0
+    assert rec.source == "unavailable"
+    assert rec.input_tokens == 1_000_000
     assert rec.duration_ms >= 0
 
 
 def test_native_zero_cost_is_not_repriced(repo: Path) -> None:
-    prices = PriceTable({"m": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
-    fleet = Fleet(repo, {"nz": _NativeZero()}, prices=prices)
+    fleet = Fleet(repo, {"nz": _NativeZero()})
     rec = fleet.run("nz", TaskSpec(id="nz1", goal="x"))
     assert rec.source == "native"   # a backend-reported $0 stays native...
-    assert rec.cost_usd == 0.0      # ...and is NOT fabricated into a $10 estimate
+    assert rec.cost_usd == 0.0      # ...and is NOT overwritten to unavailable
 
 
 def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:
-    fleet = Fleet(repo, {"tok": _Tokened()}, prices=PriceTable({}))  # empty table
+    fleet = Fleet(repo, {"tok": _Tokened()})
     rec = fleet.run("tok", TaskSpec(id="p2", goal="x"))
     assert rec.cost_usd == 0.0
-    assert rec.source == "unavailable"   # unpriced -> cost unknown, never shown as a real $0
+    assert rec.source == "unavailable"   # cost unknown, never shown as a real $0
 
 
 def test_run_many_preserves_usage_api(repo: Path) -> None:
@@ -882,7 +880,7 @@ def test_run_many_preserves_usage_api(repo: Path) -> None:
         return ExternalCost(0.42, UsageSource.ADMIN_API, 1_000_000, 0, 1)
 
     fleet = Fleet(
-        repo, {"tok": _Tokened()}, prices=PriceTable({}), cost_resolvers={"eastrouter": resolver}
+        repo, {"tok": _Tokened()}, cost_resolvers={"eastrouter": resolver}
     )
     req = RunRequest(
         backend_name="tok",
@@ -938,35 +936,33 @@ def test_usage_api_overrides_cost_with_admin_api(repo: Path) -> None:
         return ExternalCost(0.42, UsageSource.ADMIN_API, 1_000_000, 0, 1)
 
     fleet = Fleet(
-        repo, {"tok": _Tokened()}, prices=PriceTable({}), cost_resolvers={"eastrouter": resolver}
+        repo, {"tok": _Tokened()}, cost_resolvers={"eastrouter": resolver}
     )
     rec = fleet.run("tok", TaskSpec(id="er1", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
-    assert rec.source == "admin-api"     # real provider cost replaces the unavailable estimate
+    assert rec.source == "admin-api"     # real provider cost replaces unavailable
     assert rec.cost_usd == 0.42
     assert seen["input_tokens"] == 1_000_000  # the run's real tokens were handed to the resolver
     assert seen["model"] == "z-ai/glm-5.1"
 
 
-def test_usage_api_no_attribution_keeps_estimate(repo: Path) -> None:
-    prices = PriceTable({"z-ai/glm-5.1": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
+def test_usage_api_no_attribution_keeps_unavailable(repo: Path) -> None:
     fleet = Fleet(
-        repo, {"tok": _Tokened()}, prices=prices, cost_resolvers={"eastrouter": lambda **_kw: None}
+        repo, {"tok": _Tokened()}, cost_resolvers={"eastrouter": lambda **_kw: None}
     )
     rec = fleet.run("tok", TaskSpec(id="er2", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
-    assert rec.source == "estimated"     # resolver declined to attribute -> estimate stands
-    assert rec.cost_usd == 10.0
+    assert rec.source == "unavailable"     # resolver declined to attribute -> unavailable stands
+    assert rec.cost_usd == 0.0
 
 
 def test_usage_api_resolver_failure_is_safe(repo: Path) -> None:
     def boom(**_kw: object) -> ExternalCost:
         raise RuntimeError("provider down")
 
-    prices = PriceTable({"z-ai/glm-5.1": ModelPrice(input_per_mtok=10.0, output_per_mtok=0.0)})
-    fleet = Fleet(repo, {"tok": _Tokened()}, prices=prices, cost_resolvers={"eastrouter": boom})
+    fleet = Fleet(repo, {"tok": _Tokened()}, cost_resolvers={"eastrouter": boom})
     rec = fleet.run("tok", TaskSpec(id="er3", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
     assert rec.status == "exited_clean"     # a resolver crash never fails a finished run...
-    assert rec.source == "estimated"     # ...and never corrupts the cost
-    assert rec.cost_usd == 10.0
+    assert rec.source == "unavailable"     # ...and never corrupts the cost
+    assert rec.cost_usd == 0.0
 
 
 def test_collect_run_returns_diff_and_changed_files(repo: Path) -> None:

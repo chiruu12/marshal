@@ -52,7 +52,7 @@ class CodexBackend(CodingAgentBackend):
         stream_json=True,
         sessions=True,
         server_mode=False,
-        native_usage=True,  # token counts come from JSON events; cost is estimated via price table
+        native_usage=True,  # token counts come from JSON events; cost stays unavailable until usage_api
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
@@ -132,9 +132,8 @@ class CodexBackend(CodingAgentBackend):
                     usage.cache_read_tokens += tok["cache_read"]
                     found_tokens = True
 
-        # Codex reports tokens but never a cost, so its source stays UNAVAILABLE; the fleet's pricing
-        # step estimates cost from these tokens (-> ESTIMATED when the model is priced). Claiming
-        # NATIVE here would assert a $0 cost the backend never reported.
+        # Codex reports tokens but never a cost; source stays UNAVAILABLE until a usage_api backfill.
+        # Claiming NATIVE here would assert a $0 cost the backend never reported.
 
         ok = exit_code == 0 and error_msg is None
         return AgentResult(

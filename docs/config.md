@@ -79,7 +79,7 @@ Optional catalog the driver reads via `list_models` / `marshal models`. Pure met
 |-----|------|---------|--------------|---------|
 | `id` | string | *(required)* | Provider/model id (same shape as a client's `model`). | `id: opencode-go/glm-5.2` |
 | `backends` | list of strings | *(required, non-empty)* | Backends that can run this model. | `backends: [opencode]` |
-| `cost` | string | `""` | Cost provenance hint (`native`, `admin-api`, `estimated`, `scraped`, `unavailable`). | `cost: native` |
+| `cost` | string | `""` | Cost provenance hint (`native`, `admin-api`, `unavailable`). | `cost: native` |
 | `quota_type` | string | `""` | Billing shape hint (`metered`, `subscription`, `unavailable`). | `quota_type: subscription` |
 | `notes` | string | `""` | Free-form note for the driver. | `notes: Go subscription` |
 
