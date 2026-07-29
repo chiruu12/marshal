@@ -149,6 +149,9 @@ Full design: [`docs/design.md`](docs/design.md).
 - [`docs/design.md`](docs/design.md) — architecture and backend cheat sheets.
 - [`docs/nerds.md`](docs/nerds.md) — numbers, methodology, and the stuff we argue about.
 - [`docs/sources.md`](docs/sources.md) — primary sources.
+- [`examples/`](examples/) — runnable copy-paste examples (`library_quickstart`, pipelined
+  `then` review, `read_paths`, adversarial teams, multi-workspace, per-client `env:`); see
+  [`examples/README.md`](examples/README.md).
 
 ## Contributing
 
