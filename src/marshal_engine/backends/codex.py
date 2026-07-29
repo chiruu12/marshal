@@ -43,6 +43,10 @@ from ..types import (
 )
 from .base import CodingAgentBackend, parse_jsonl
 
+#: Static list — Codex has no headless ``models`` probe (``codex models`` needs a TTY).
+#: Sourced from docs/model-playbook.md (codex / gpt-5.5).
+_STATIC_MODELS: tuple[str, ...] = ("gpt-5.5",)
+
 
 class CodexBackend(CodingAgentBackend):
     name = "codex"
@@ -90,6 +94,13 @@ class CodexBackend(CodingAgentBackend):
     def verifies_auth(self) -> bool:
         # ``codex login status`` is the authenticated-only probe for doctor.
         return True
+
+    def available_models(self) -> list[str]:
+        """Curated static model ids — Codex exposes no headless model-list probe.
+
+        Static list from docs/model-playbook.md. Never raises; never returns None.
+        """
+        return list(_STATIC_MODELS)
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "exec", "--json", "--color", "never", "--skip-git-repo-check"]

@@ -6,6 +6,8 @@ injected for tests; in production they come from the registry.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import sys
 import threading
 import uuid
@@ -250,11 +252,25 @@ class MarshalService:
         # Probing costs a subprocess per backend, so only do it when the catalog is empty - which
         # is exactly the case that sent a driver to a shell. A configured catalog is the curated
         # answer and stands on its own.
+        # Probe CONCURRENTLY. Each probe is a subprocess with its own timeout, so running them
+        # serially makes the worst case the SUM of those timeouts - enough to blow past an MCP
+        # client's request deadline and turn a slow catalogue into a dead tool.
         probed: dict[str, list[str] | None] = {}
         if not self.config.models:
-            for name in sorted({c.backend for c in self._clients.values()}):
+            names = sorted({c.backend for c in self._clients.values()})
+
+            def _probe(name: str) -> tuple[str, list[str] | None]:
                 backend = self.fleet.backends.get(name)
-                probed[name] = backend.available_models() if backend is not None else None
+                if backend is None:
+                    return name, None
+                try:
+                    return name, backend.available_models()
+                except Exception:  # a probe must never take the whole listing down
+                    return name, None
+
+            if names:
+                with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:
+                    probed = dict(pool.map(_probe, names))
         return ModelList(
             models=list(self.config.models),
             backend_models=probed,

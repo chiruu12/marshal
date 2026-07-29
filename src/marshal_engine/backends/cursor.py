@@ -71,6 +71,10 @@ SAFE_EDIT_DENY: tuple[str, ...] = (
     "Read(**/.env.*)",
 )
 
+#: Static fallback when ``cursor-agent models`` cannot be probed.
+#: Sourced from docs/model-playbook.md (cursor / composer-2.5).
+_STATIC_MODELS: tuple[str, ...] = ("composer-2.5",)
+
 
 class CursorBackend(CodingAgentBackend):
     name = "cursor"
@@ -154,30 +158,31 @@ class CursorBackend(CodingAgentBackend):
             result.error = f"{result.error}; {restore_error}" if result.error else restore_error
         return result
 
-    def available_models(self) -> list[str] | None:
-        """Model ids from ``cursor-agent models``. None when the CLI is absent or unreadable.
+    def available_models(self) -> list[str]:
+        """Model ids from ``cursor-agent models``, or the static playbook fallback.
 
         Output is a header line then ``<id> - <label>`` rows (verified against the real CLI), so
         only the id before the first " - " is kept: that is what a client's ``model:`` takes. A row
-        without the separator is skipped rather than guessed at.
+        without the separator is skipped rather than guessed at. Never raises; never returns None —
+        on any probe failure the curated static list from docs/model-playbook.md is used.
         """
         if shutil.which(self.binary) is None:
-            return None
+            return list(_STATIC_MODELS)
         try:
             proc = subprocess.run(
                 [self.binary, "models"], capture_output=True, text=True, timeout=20,
             )
         except (OSError, subprocess.SubprocessError):
-            return None
+            return list(_STATIC_MODELS)
         if proc.returncode != 0:
-            return None
+            return list(_STATIC_MODELS)
         models: list[str] = []
         for line in (proc.stdout or "").splitlines():
             stripped = line.strip()
             if not stripped or " - " not in stripped:
                 continue  # header/blank, or a shape we do not recognise - do not invent an id
             models.append(stripped.split(" - ", 1)[0].strip())
-        return models or None
+        return models or list(_STATIC_MODELS)
 
     def account_info(self) -> dict[str, str] | None:
         """Auth gate via ``cursor-agent status``; plan/model via ``about`` only after auth.

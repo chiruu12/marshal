@@ -32,6 +32,25 @@ versions may include breaking API changes until 1.0.
 - **Brand assets refined.** The wordmark lockup ships on a transparent background so it renders
   correctly on light and dark surfaces; the crown geometry in `logo.svg` / `logo-dark.svg` /
   `logo-mono.svg` matches it.
+- **Every backend answers `available_models()`.** Six of seven adapters inherited the base
+  `None`, so `list_models` was half-blind. Cursor / OpenCode / Command Code / Antigravity probe
+  their CLI catalogues (bounded timeout, static playbook fallback); Codex / Claude Code / Goose
+  return curated static ids from `docs/model-playbook.md`. Never `None`, never empty.
+- **Goose `_compose_prompt` matches the base instance-method contract** (was a `@staticmethod`
+  with a divergent signature).
+- **Antigravity documents its auth gap explicitly** (`account_info` → `None`,
+  `verifies_auth` → `False`): `agy` has no cheap auth/status/whoami probe, so doctor stays
+  path-only rather than inventing a fake green.
+- **CLI cost display no longer implies unmetered runs were free.** `marshal status` and `marshal
+  usage` human output render `unavailable` when a run's cost provenance is unknown (or missing),
+  instead of showing `$0.0000`. Measured zero-cost runs (`source: native` / `admin-api` / etc.)
+  still display `$0.0000`.
+
+### Added
+- **`tests/test_backend_contract.py`** — parametrised over `registry.backend_names()` so a new
+  adapter is covered automatically (pure `build_invocation`, `map_permission`, never-raise
+  `parse_output`, non-empty `available_models`, usage-source vocabulary).
+
 ### Removed
 - **Estimated cost pricing.** Marshal no longer derives dollar figures from a local price table
   (`pricing.py`, `data/prices.yaml`). Token-only runs now report `source: unavailable` with
@@ -45,12 +64,6 @@ versions may include breaking API changes until 1.0.
   keyword - drop the argument; there is no replacement, because there is nothing left to price
   with. `UsageSource.ESTIMATED` and `UsageSource.SCRAPED` are also removed from the enum (stored
   ledger strings are unaffected).
-
-### Fixed
-- **CLI cost display no longer implies unmetered runs were free.** `marshal status` and `marshal
-  usage` human output render `unavailable` when a run's cost provenance is unknown (or missing),
-  instead of showing `$0.0000`. Measured zero-cost runs (`source: native` / `admin-api` / etc.)
-  still display `$0.0000`.
 
 ### Changed
 - **MCP tool / skill framing finishes the #98 fleet-primitive shift.** Residual diff-centric

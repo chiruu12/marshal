@@ -44,6 +44,14 @@ from ..types import (
 )
 from .base import CodingAgentBackend
 
+#: Static list — ``claude`` has no dedicated headless models subcommand.
+#: Sourced from docs/model-playbook.md (claude-code rows).
+_STATIC_MODELS: tuple[str, ...] = (
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+)
+
 
 class ClaudeCodeBackend(CodingAgentBackend):
     name = "claude-code"
@@ -91,6 +99,13 @@ class ClaudeCodeBackend(CodingAgentBackend):
     def verifies_auth(self) -> bool:
         # ``claude auth status`` reports ``loggedIn``; None with binary present → not authenticated.
         return True
+
+    def available_models(self) -> list[str]:
+        """Curated static model ids — Claude Code exposes no headless model-list probe.
+
+        Static list from docs/model-playbook.md. Never raises; never returns None.
+        """
+        return list(_STATIC_MODELS)
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "json"]

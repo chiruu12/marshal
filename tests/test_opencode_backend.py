@@ -553,3 +553,34 @@ def test_account_info_none_when_binary_missing(
 ) -> None:
     monkeypatch.setattr("marshal_engine.backends.opencode.shutil.which", lambda _b: None)
     assert backend.account_info() is None
+
+
+def test_available_models_parses_cli_rows(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "opencode-go/glm-5.2\nopencode-go/kimi-k2.6\nbanner-line-without-slash\n"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.opencode.shutil.which", lambda _b: "/usr/bin/opencode"
+    )
+    monkeypatch.setattr("marshal_engine.backends.opencode.subprocess.run", _run)
+    assert backend.available_models() == ["opencode-go/glm-5.2", "opencode-go/kimi-k2.6"]
+    assert calls and calls[0][:2] == ["opencode", "models"]
+
+
+def test_available_models_static_fallback_when_binary_missing(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.opencode.shutil.which", lambda _b: None)
+    models = backend.available_models()
+    assert "opencode-go/glm-5.2" in models
+    assert all("/" in m for m in models)

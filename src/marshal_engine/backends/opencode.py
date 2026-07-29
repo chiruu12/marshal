@@ -74,6 +74,15 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _CREDENTIALS_COUNT = re.compile(r"(\d+)\s+credentials?\b", re.IGNORECASE)
 _ENV_AUTH_COUNT = re.compile(r"(\d+)\s+environment\s+variables?\b", re.IGNORECASE)
 
+#: Static fallback when ``opencode models`` cannot be probed.
+#: Sourced from docs/model-playbook.md (opencode-go/* rows).
+_STATIC_MODELS: tuple[str, ...] = (
+    "opencode-go/kimi-k2.6",
+    "opencode-go/glm-5.2",
+    "opencode-go/minimax-m3",
+    "opencode-go/deepseek-v4-flash",
+)
+
 #: Ordered bash deny patterns for ``safe-edit`` (inserted after ``"*": "allow"`` so last-match
 #: wins). OpenCode's documented grammar is simple wildcards only (``*`` / ``?``); no regex,
 #: brace expansion, or negative matching. These cover curated cheap cases (``rm``, ``git config``,
@@ -189,6 +198,35 @@ class OpenCodeBackend(CodingAgentBackend):
     def verifies_auth(self) -> bool:
         # ``opencode auth list`` with ≥1 credential/env auth is the doctor auth signal.
         return True
+
+    def available_models(self) -> list[str]:
+        """Model ids from ``opencode models``, or the static playbook fallback.
+
+        One ``provider/model`` id per stdout line (verified against the real CLI). Never raises;
+        never returns None — on any probe failure the curated list from docs/model-playbook.md.
+        """
+        if shutil.which(self.binary) is None:
+            return list(_STATIC_MODELS)
+        try:
+            proc = subprocess.run(
+                [self.binary, "models"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return list(_STATIC_MODELS)
+        if proc.returncode != 0:
+            return list(_STATIC_MODELS)
+        models = [
+            line.strip()
+            for line in (proc.stdout or "").splitlines()
+            if line.strip() and not line.strip().startswith("⠀")
+        ]
+        # Drop the ASCII-art banner lines (non id-shaped) — keep provider/model rows only.
+        models = [m for m in models if "/" in m]
+        return models or list(_STATIC_MODELS)
 
     def prepare(self, opts: RunOpts) -> None:
         """Stamp ``OPENCODE_CONFIG_CONTENT`` with the permission snippet for this tier.

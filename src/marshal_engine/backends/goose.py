@@ -57,6 +57,10 @@ _GOOSE_MODE: dict[PermissionMode, str] = {
     PermissionMode.YOLO: "auto",
 }
 
+#: Static list — Goose has no catalogue of remote provider models (``local-models`` is GGUF/MLX only).
+#: Sourced from docs/model-playbook.md (goose / cursor-agent/auto).
+_STATIC_MODELS: tuple[str, ...] = ("cursor-agent/auto",)
+
 
 class GooseBackend(CodingAgentBackend):
     name = "goose"
@@ -120,6 +124,14 @@ class GooseBackend(CodingAgentBackend):
         # in" — doctor must not green-light Goose on a bare ``--version``.
         return True
 
+    def available_models(self) -> list[str]:
+        """Curated static model ids — Goose exposes no remote-provider model-list probe.
+
+        ``goose local-models`` covers downloaded GGUF/MLX only, not provider/model ids. Static
+        list from docs/model-playbook.md. Never raises; never returns None.
+        """
+        return list(_STATIC_MODELS)
+
     def prepare(self, opts: RunOpts) -> None:
         """Stamp GOOSE_MODE for headless permission semantics (argv has no --yes/--plan)."""
         mode = _GOOSE_MODE.get(opts.permission, "auto")
@@ -142,8 +154,7 @@ class GooseBackend(CodingAgentBackend):
         argv += ["-t", self._compose_prompt(task)]
         return argv
 
-    @staticmethod
-    def _compose_prompt(task: TaskSpec) -> str:
+    def _compose_prompt(self, task: TaskSpec) -> str:
         prompt = task.goal
         if task.context_files:
             mentions = " ".join(f"@{f}" for f in task.context_files)

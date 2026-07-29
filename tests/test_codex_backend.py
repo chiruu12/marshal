@@ -193,3 +193,7 @@ def test_account_info_none_when_binary_missing(
 ) -> None:
     monkeypatch.setattr("marshal_engine.backends.codex.shutil.which", lambda _b: None)
     assert backend.account_info() is None
+
+
+def test_available_models_static_playbook(backend: CodexBackend) -> None:
+    assert backend.available_models() == ["gpt-5.5"]
