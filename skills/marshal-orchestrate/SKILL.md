@@ -1,11 +1,12 @@
 ---
 name: marshal-orchestrate
 description: >
-  Drive a fleet of headless coding agents through Marshal's MCP server: decompose a goal into
-  independent tasks, run them in parallel in isolated git worktrees, review each diff, and
-  integrate the good ones. Use when you have a multi-part coding goal to delegate to worker agents
-  (Cursor, OpenCode, Codex, Antigravity, Claude Code) instead of doing it all yourself. The engine is mechanism;
-  this playbook is the judgment - decomposition, prompt-writing, and merge decisions live here.
+  Drive a fleet of headless agents through Marshal's MCP server: decompose a goal into
+  independent tasks (implementation, research, review, audit, summarise), run them in parallel in
+  isolated git worktrees, collect each run's product (diff or text), and integrate the good diffs.
+  Use when you have multi-part work to delegate to worker agents (Cursor, OpenCode, Codex,
+  Antigravity, Claude Code) instead of doing it all yourself. The engine is mechanism; this
+  playbook is the judgment - decomposition, prompt-writing, and merge decisions live here.
 ---
 
 # Driving the Marshal fleet
@@ -13,8 +14,9 @@ description: >
 You are the **driver**. You keep the expensive thinking - planning, review, merge decisions - and
 Marshal spawns cheaper or specialized worker agents that each execute one task autonomously in its
 own git worktree. Your job is to decide *who works, on what, with how much context, and whether the
-result was worth keeping.* Marshal is exposed as MCP tools; the loop is **plan → spawn → monitor →
-collect → integrate.**
+result was worth keeping.* Marshal is a **fleet primitive**, not a diff factory: a run's product may
+be a DIFF or TEXT. Marshal is exposed as MCP tools; the loop is **plan → spawn → monitor →
+collect → (integrate when there is a diff).**
 
 ## Targeting a workspace (when the server has more than one repo)
 One Marshal server can be wired to several repos at once. Call `list_workspaces` first to see them
@@ -60,9 +62,11 @@ To decide *which* client a task should go to (by task weight - heavy/standard/li
 see [`docs/model-playbook.md`](../../docs/model-playbook.md).
 
 ## 1. Plan - decompose into INDEPENDENT tasks
-Split the goal into tasks that can run in parallel **without colliding**:
-- Give each task a disjoint set of files where possible. Two tasks editing the same file will
-  conflict at integrate time - separate their scope or run them in different rounds.
+Split the goal into tasks that can run in parallel **without colliding**. Tasks may be write work
+(implementation) or read-and-reason work (research a question across sources, review a diff, audit a
+codebase, summarise) - Marshal runs the agents either way; the product is a diff or text.
+- For write tasks: give each a disjoint set of files where possible. Two tasks editing the same file
+  will conflict at integrate time - separate their scope or run them in different rounds.
 - Size each task so one worker can finish it autonomously. Workers are **headless: they cannot ask
   you anything mid-run.** The prompt must contain everything needed to finish.
 - Write a self-contained prompt per task: the goal, acceptance criteria, and the *minimal* files and
@@ -74,7 +78,8 @@ Split the goal into tasks that can run in parallel **without colliding**:
 **Never fan out a dependency chain in one `run_many`.** Marshal shines on *independent* work. If task
 B needs A's output, batching them in parallel makes each branch off the same base, blind to the
 others - they re-invent the same scaffolding and collide at integrate. For sequential work, do one of:
-- **Rounds (simplest):** integrate A into your branch, then plan B against the new state.
+- **Rounds (simplest):** integrate A into your branch (when A produced a diff), then plan B against
+  the new state. For text-only A, read `collect_run` / `text` and put the findings in B's prompt.
 - **Chain off A's branch (no integrate yet):** `commit_run(A)` freezes A's work as a commit on its own
   branch (your branch stays untouched), then `spawn`/`run_agent` B with `base_branch` = A's branch so B
   builds on A's actual output. Without `commit_run`, basing B on A's branch sees only the spawn base -
@@ -97,19 +102,24 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
   working". Read `agent_alive` to tell them apart: `true` = still working, `false` = the process is
   gone and the outcome is about to be written (re-read shortly), `null` = unknown, **not** dead.
   Do not probe the pid yourself — a pid alone is not an identity, since the OS reuses them.
-- A run ends in `succeeded`, `empty` (ran clean but produced no work - do not integrate it),
-  `failed`, `timed_out`, `cancelled`, or `verify_failed` (the work exists but the workspace's
-  `verify:` gate rejected it - collect the diff and read the record's `verify_output` before
-  deciding; not an integration candidate as-is). Only `succeeded` runs are integration candidates,
-  and when the workspace configures a `verify:` command, `succeeded` also means that gate passed.
+- A run ends in `exited_clean`, `empty` (exited 0 with neither text nor file changes - an outcome,
+  not a fault; nothing to integrate), `failed`, `timed_out`, `cancelled`, or `verify_failed` (file
+  changes exist but the workspace's `verify:` gate rejected them - collect the diff and read the
+  record's `verify_output` before deciding; not an integration candidate as-is). Only
+  `exited_clean` runs with a diff are integration candidates; text-only `exited_clean` work lives
+  in `text` (see collect). When the workspace configures a `verify:` command, `exited_clean` also
+  means that gate passed for runs that had changes.
 
 ## 4. Collect - review before you trust
-- `collect_run(run_id)` returns the run's work read-only in two sections:
-  - **Uncommitted** (`changed_files`, `diff`) — working-tree changes not yet committed.
-  - **Committed** (`committed_changed_files`, `committed_diff`, `commit_count`) — commits the
-    agent made on the run's branch (common with Cursor and Claude Code). Read both. An empty
-    uncommitted diff does **not** mean no work — check the committed section too.
-- `succeeded` means "the process exited cleanly," not "the code is correct."
+- `collect_run(run_id)` returns the run's product read-only. Branch on `produced`:
+  - **`diff`** — uncommitted (`changed_files`, `diff`) and/or committed
+    (`committed_changed_files`, `committed_diff`, `commit_count`) file changes. Read both sections.
+    An empty uncommitted diff does **not** mean no work — check the committed section too.
+  - **`text`** — no file changes; the agent's final message is the artifact (`text` on the result).
+    This is the expected product of research/review/audit/summarise runs. Do **not** treat it as
+    failure, and do not integrate.
+  - **`nothing`** — neither text nor file changes (matches run status `empty`).
+- `exited_clean` means "the process exited cleanly," not "the work is correct."
 - Reject work that is wrong or off-scope by simply not integrating it. The worktree stays isolated;
   main is untouched.
 - **When your own read isn't enough** - a migration, a public API, a security-sensitive path -
@@ -118,16 +128,16 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
   It computes no verdict: you still collect the objections and decide. See
   `marshal-adversarial-review`, and `list_teams()` for the declared panels.
 
-## 5. Integrate - merge the good ones
+## 5. Integrate - merge the good diffs
 `integrate(run_id, cleanup?)` merges the run's branch into the branch you currently have checked out.
-Handle the outcome:
+Only for runs whose product is a diff. Handle the outcome:
 - `merged` - landed; `merged_into` and `changed_files` say what/where. Pass `cleanup=true` to remove
   the worktree when you're done with it.
 - `conflict` - the merge was aborted and the repo left clean; `conflicts` lists the files. Resolve by
   re-planning the task (or integrating the other runs first), then retry.
 - `blocked` - the target checkout is dirty/colliding or on a detached HEAD; nothing changed. Fix the
   target (commit/stash your edits, check out a branch) and retry - the work is safe on its branch.
-- `empty` - nothing to integrate.
+- `empty` - no file changes to merge (an outcome, not a fault; common for text-only runs).
 - A `failed` run has two possible meanings: the agent/backend failed, or the run was **orphaned at
   startup** because the process supervising it died before an outcome was recorded. Read `error` to
   tell them apart - an orphan says so, and its work may still be sitting in the worktree.
@@ -146,9 +156,9 @@ them down in one call (the usage ledger and run-state history are kept; only the
 and branches go). It **never** touches a running run. Scopes:
 - `merged` - only runs you already integrated. Safest.
 - `finished` (default) - merged runs plus failed/timed_out/cancelled/empty/verify_failed ones;
-  **protects un-integrated `succeeded` runs** (a candidate you might still want to review). A
+  **protects un-integrated `exited_clean` runs** (a candidate you might still want to review). A
   `verify_failed` run's worktree holds reviewable work - collect/review it before cleaning.
-- `all` - every finished run, including un-integrated succeeded work.
+- `all` - every finished run, including un-integrated exited_clean work.
 
 Scope-mode cleans also reap **orphans** automatically - worktree dirs whose run record was pruned or
 corrupted (they are invisible to ledger-driven cleanup and would otherwise leak on disk forever);
@@ -168,7 +178,8 @@ never treat `unavailable` as free. To compare routing strategies head-to-head on
 - When several repos are wired, pick the right `workspace` per call; a run integrates into **its own**
   workspace's repo, never another.
 - Workers are headless - prompts must be self-sufficient (no questions are possible).
-- Review diffs before integrating; `succeeded` is not `correct`.
+- Review what a run produced before integrating; `exited_clean` is not `correct`. Text-only runs
+  need no integrate; `empty` is an outcome, not a failure.
 - Keep tasks independent to avoid merge conflicts; **never fan out a dependency chain** - sequence it
   in rounds, or chain off a committed branch with `commit_run` + `base_branch`.
 - Confirm backends are authenticated (`doctor`) before the first batch, not after a wasted run.

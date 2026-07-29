@@ -15,7 +15,13 @@ from.
 
 The canonical loop and the decision boundary between the lookalike tools. No parameters.
 
-**Returns:** `{ what_marshal_is, the_loop, which_run_tool, which_status_tool, safety, multi_repo }`.
+**Returns:** `{ what_marshal_is, non_code_runs, the_loop, which_run_tool, which_status_tool, safety, multi_repo }`.
+
+`what_marshal_is` leads with **fleet primitive**: parallel sub-agents in isolated worktrees; a run's
+product may be a **DIFF or TEXT** (both first-class). Names write and read-and-reason uses
+(implement, research, review, audit, summarise) and that Marshal runs the agents while the driver
+decides. `non_code_runs` states that a text-only run is `exited_clean` with value in `text`, and
+that `empty` is an outcome (exited 0, neither text nor file changes), not a fault.
 
 Exists because a driver facing ~20 tools has no stated ordering: several do near-identical things
 (`run_agent` / `spawn` / `run_many` / `run_workflow`; `status` / `get_run` / `collect_run` /
@@ -130,7 +136,8 @@ authenticated, and out of credit still passes every other check.
 
 ### `run_agent`
 
-Run a task in an isolated worktree; **blocks** until finished.
+Delegate a goal to a worker agent in an isolated worktree; **blocks** until finished. Product may
+be a diff or text — both first-class (see `collect_run`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -149,19 +156,19 @@ Run a task in an isolated worktree; **blocks** until finished.
 
 ### `spawn`
 
-Same parameters as `run_agent`. Returns immediately with a `RUNNING` record; poll `get_run` /
-`status`, cancel with `cancel_run`.
+Same parameters as `run_agent`. Same delegation primitive (product may be a diff or text). Returns
+immediately with a `RUNNING` record; poll `get_run` / `status`, cancel with `cancel_run`.
 
 ### `run_many`
 
-Run several jobs in parallel, each in its own worktree. Jobs may target **different registered
+Delegate several goals in parallel, each to its own worktree. Jobs may target **different registered
 workspaces** via an optional per-job `workspace`; the call-level `workspace` is the default for jobs
-that omit it. Optional per-job **`then`** runs a follow-up in the **same worker** as soon as that
-job's primary reaches a terminal state — it does **not** wait for sibling jobs (unlike a barrier).
-Mixed batches share one `max_concurrency` cap (and the process-wide `run_gate` when multi-repo is
-active). Each workspace keeps its own config, worktrees, and usage ledger — there is no cross-workspace
-ledger merge. Budgets, `EnforceBudgetGate`, and session clocks are also **per-workspace**; concurrency
-is the only shared limiter.
+that omit it. Each job's product may be a diff or text. Optional per-job **`then`** runs a follow-up
+in the **same worker** as soon as that job's primary reaches a terminal state — it does **not** wait
+for sibling jobs (unlike a barrier). Mixed batches share one `max_concurrency` cap (and the
+process-wide `run_gate` when multi-repo is active). Each workspace keeps its own config, worktrees,
+and usage ledger — there is no cross-workspace ledger merge. Budgets, `EnforceBudgetGate`, and
+session clocks are also **per-workspace**; concurrency is the only shared limiter.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -288,6 +295,12 @@ reports. This tool never integrates.
 
 ### `get_run`
 
+Fetch one run record by id. Status is one of: `exited_clean` | `empty` (exited 0 with neither text
+nor file changes — an outcome, not a fault; nothing to integrate) | `failed` | `timed_out` |
+`cancelled` | `verify_failed` (had file changes but the workspace's `verify:` gate rejected them —
+review the diff and `verify_output` before deciding). Only `exited_clean` runs with a diff are
+integration candidates; for text-only work read `text` (or `collect_run`).
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `run_id` | string | *(required)* | Run id from `run_agent` / `spawn` / `run_many`. |
@@ -308,7 +321,8 @@ Full persisted stdout/stderr for a run (not the truncated `text` on the record).
 
 ### `collect_run`
 
-Read-only diff collection; nothing is merged.
+Collect what a run produced: diff/changed files and/or final text via `produced` (read-only;
+nothing is merged). Branch on `produced` (`diff` | `text` | `nothing`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -428,7 +442,10 @@ chaining: `commit_run(A)` then `spawn(B, base_branch=A's branch)`.
 
 ### `integrate`
 
-Merge a run's worktree branch into the workspace's current branch. Review with `collect_run` first.
+Merge a run's worktree branch into the workspace's current branch. Review what it produced with
+`collect_run` first — `exited_clean` means the process exited 0, not that the work is correct.
+Integrate one diff run at a time; skip text-only runs. Outcome `empty` means no file changes to
+merge (an outcome, not a fault).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -522,7 +539,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `run_id` | string | Unique id. |
 | `task_id` | string | Grouping id. |
 | `backend` | string | Backend that ran. |
-| `status` | string | `queued` \| `running` \| `exited_clean` (the process exited 0 — **not** a claim that the work is correct; review the diff) \| `empty` \| `failed` \| `timed_out` \| `cancelled` \| `verify_failed` — a `failed` with `error` mentioning *orphaned at startup* means the supervising process died before the run finished (not an agent failure); `pid` is cleared |
+| `status` | string | `queued` \| `running` \| `exited_clean` (the process exited 0 — **not** a claim that the work is correct; review what it produced) \| `empty` (exited 0 with neither text nor file changes — an outcome, not a fault; nothing to integrate) \| `failed` \| `timed_out` \| `cancelled` \| `verify_failed` — a `failed` with `error` mentioning *orphaned at startup* means the supervising process died before the run finished (not an agent failure); `pid` is cleared |
 | `client` | string \| null | Client name (null for ad-hoc spawns). |
 | `model` | string \| null | Model used. |
 | `worktree` | string \| null | Worktree path. |
@@ -549,6 +566,8 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `verify_passed` | bool \| null | `null` = no gate ran; `false` with `verify_failed` status. |
 | `verify_output` | string | Tail of verify command output. |
 
-Only `exited_clean` runs are integration candidates. `empty` ran clean but produced no work — do not
-integrate. `verify_failed` produced work but the repo's `verify:` gate rejected it — review the
+Only `exited_clean` runs with a diff are integration candidates. For text-only `exited_clean` work,
+read `text` (or `collect_run` with `produced == "text"`) — there is nothing to integrate. `empty`
+means the process exited 0 with neither text nor file changes — an outcome, not a fault; do not
+integrate. `verify_failed` had file changes but the repo's `verify:` gate rejected them — review the
 diff and `verify_output` before deciding.

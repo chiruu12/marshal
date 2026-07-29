@@ -592,14 +592,19 @@ def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
     assert "not a claim about" in payload["safety"]
     # A driver asked for a 12-agent research fan-out read this framing and went elsewhere, because
     # the description implied code-only through collect_run/integrate/worktrees. It must say what
-    # Marshal is, AND name the limit that actually caused the misread rather than hiding it.
+    # Marshal is, name read-and-reason uses, and treat DIFF/TEXT as first-class.
     assert "fleet primitive" in payload["what_marshal_is"]
     assert "not the only one" in payload["what_marshal_is"]
+    assert "DIFF or TEXT" in payload["what_marshal_is"] or "diff or text" in payload["what_marshal_is"].lower()
+    for use in ("research", "review", "audit", "summarise"):
+        assert use in payload["what_marshal_is"].lower(), f"quickstart omits use case {use!r}"
     # An earlier draft claimed a read-and-reason run "ends `empty`". It does not: `text` alone is
-    # enough for SUCCEEDED (see `_authoritative_status`), and the message is on the record. Saying
+    # enough for exited_clean (see `_authoritative_status`), and the message is on the record. Saying
     # otherwise pushed drivers to write files they did not need to. Assert the corrected claim.
     assert "get_run" in payload["non_code_runs"]
     assert "collect_run" in payload["non_code_runs"], "must name collect_run's `produced` field"
+    assert "outcome" in payload["non_code_runs"].lower()
+    assert "exited_clean" in payload["safety"]
 
 
 def test_no_marshal_surface_claims_a_text_run_ends_empty() -> None:
