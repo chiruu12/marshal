@@ -24,7 +24,17 @@ from marshal_engine.config import load_config
 from marshal_engine.state import FleetState
 from marshal_engine.workspaces import WorkspaceDef, WorkspaceRegistry
 
-CLIENT = "implementer"
+def _first_client(config_path: Path) -> str:
+    """Use whatever client the config actually declares.
+
+    Hard-coding a name makes the example fail on any valid config that happens to name its
+    clients differently - which is most of them, since client names are the user's own vocabulary.
+    """
+    clients = load_config(config_path).clients
+    if not clients:
+        raise SystemExit(f"{config_path} declares no clients; add one (see fleet.config.example.yaml)")
+    return next(iter(clients))
+
 
 
 def _mini_repo(root: Path, config_src: Path) -> Path:
@@ -43,6 +53,8 @@ def main() -> None:
     config_src = Path("fleet.config.yaml")
     if not config_src.exists():
         raise SystemExit("fleet.config.yaml missing; copy fleet.config.example.yaml first")
+    client = _first_client(config_src)
+    print(f"using client {client!r} (first declared in {config_src})")
 
     # Same entry point the MCP server uses for list_workspaces.
     live = WorkspaceRegistry.from_env()
@@ -73,12 +85,12 @@ def main() -> None:
         paired = reg.run_many(
             [
                 {
-                    "client": CLIENT,
+                    "client": client,
                     "workspace": "default",
                     "goal": "Add a one-line comment to README.md saying workspace=default.",
                 },
                 {
-                    "client": CLIENT,
+                    "client": client,
                     "workspace": "other",
                     "goal": "Add a one-line comment to README.md saying workspace=other.",
                 },

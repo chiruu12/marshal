@@ -25,7 +25,26 @@ IMPLEMENTER = "implementer"
 REVIEWER = "reviewer"
 
 
+
+def _require_clients(config_path: Path, *names: str) -> None:
+    """Fail with guidance, not a stack trace, when the config uses different client names.
+
+    These names come from fleet.config.example.yaml, which the prerequisites tell you to copy -
+    but client names are the user's own vocabulary, so a mismatch is expected and should say what
+    to do about it.
+    """
+    declared = load_config(config_path).clients
+    missing = [n for n in names if n not in declared]
+    if missing:
+        have = ", ".join(sorted(declared)) or "(none)"
+        raise SystemExit(
+            f"this example expects client(s) {', '.join(missing)} in {config_path}; "
+            f"declared: {have}. Rename the constants at the top of this file, or copy the "
+            f"clients from fleet.config.example.yaml."
+        )
+
 def main() -> None:
+    _require_clients(Path("fleet.config.yaml"), IMPLEMENTER, REVIEWER)
     service = MarshalService(Path("."), load_config("fleet.config.yaml"))
 
     results = service.run_many(

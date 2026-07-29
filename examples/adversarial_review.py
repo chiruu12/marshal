@@ -37,6 +37,24 @@ roles:
 """
 
 
+
+def _require_clients(config_path: Path, *names: str) -> None:
+    """Fail with guidance, not a stack trace, when the config uses different client names.
+
+    These names come from fleet.config.example.yaml, which the prerequisites tell you to copy -
+    but client names are the user's own vocabulary, so a mismatch is expected and should say what
+    to do about it.
+    """
+    declared = load_config(config_path).clients
+    missing = [n for n in names if n not in declared]
+    if missing:
+        have = ", ".join(sorted(declared)) or "(none)"
+        raise SystemExit(
+            f"this example expects client(s) {', '.join(missing)} in {config_path}; "
+            f"declared: {have}. Rename the constants at the top of this file, or copy the "
+            f"clients from fleet.config.example.yaml."
+        )
+
 def _ensure_team() -> None:
     path = Path("teams") / f"{TEAM}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,18 +65,33 @@ def _ensure_team() -> None:
 
 def main() -> None:
     _ensure_team()
+    _require_clients(Path("fleet.config.yaml"), IMPLEMENTER, REVIEWER)
     service = MarshalService(Path("."), load_config("fleet.config.yaml"))
 
+    # The task must produce a diff UNCONDITIONALLY. A conditional edit ("add X if missing") can
+    # legitimately do nothing, and a review panel handed an empty subject is refused - correctly,
+    # since a reviewer that sees nothing reports no issues, which is worse than no review at all.
     record = service.run_agent(
         IMPLEMENTER,
-        "Add a one-line module comment at the top of src/marshal_engine/env.py if it lacks one.",
+        "Create a new file examples/_review_candidate.py containing a single function "
+        "`halve(n: int) -> float` that returns n / 2, with a one-line docstring. "
+        "Create only that file.",
     )
     print(f"candidate status={record.status}  run_id={record.run_id}")
 
-    result = service.run_team(
-        TEAM,
-        TeamSubject(kind="run", run_id=record.run_id),
-    )
+    if record.status != "exited_clean":
+        print(f"candidate run did not succeed ({record.status}); nothing to review")
+        return
+
+    collected = service.collect_run(record.run_id)
+    if not collected.changed_files:
+        # Fall back to a subject that always exists, rather than failing the demonstration.
+        print("candidate produced no diff; reviewing the last commit range instead")
+        subject = TeamSubject(kind="range", range="HEAD~1..HEAD")
+    else:
+        subject = TeamSubject(kind="run", run_id=record.run_id)
+
+    result = service.run_team(TEAM, subject)
 
     print("--- unified_report (read this first) ---")
     print(result.unified_report)
