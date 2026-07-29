@@ -52,6 +52,10 @@ SAFE_SETUP_VERIFY_BINARIES: frozenset[str] = frozenset(
 )
 _PYTHON_VERSIONED = re.compile(r"^python\d+(\.\d+)?$")
 
+# ``env:`` keys matching any of these substrings (case-insensitive) are refused at load. ``env:`` is
+# for provider/config selection (e.g. CODEX_HOME), not literal credentials — that is ``secret_ref``.
+_SECRET_ENV_KEY_PARTS: tuple[str, ...] = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
 # Per-spawn timeout presets (seconds). The driver can pass a preset name to `run_agent`/`spawn`/
 # `run_many`/`marshal run` to override the client's configured `timeout_s` for that one run.
 # A raw int (or numeric string) is also accepted; the same value flows to RunRequest.timeout_s.
@@ -107,6 +111,9 @@ class ClientConfig(BaseModel):
     model: str | None = None
     permission: PermissionMode = PermissionMode.SAFE_EDIT
     timeout_s: int = 600
+    # Per-client literal env vars merged into each agent child (provider routing, e.g. CODEX_HOME).
+    # Secrets belong in secret_ref, not here — validated at load.
+    env: dict[str, str] = {}
     secret_ref: str | None = None
     # Optional provider usage-API to read REAL cost from after a run (e.g. "eastrouter"). When set,
     # the fleet fetches the actual charge for the run and reports cost as admin-api instead of an
@@ -223,6 +230,7 @@ def load_config(path: Path | str) -> FleetConfig:
             model=str(merged["model"]) if merged.get("model") else None,
             permission=PermissionMode(str(merged.get("permission", "safe-edit"))),
             timeout_s=int(merged.get("timeout_s", 600)),
+            env=_parse_client_env(merged.get("env"), client=name),
             secret_ref=str(merged["secret_ref"]) if merged.get("secret_ref") else None,
             usage_api=str(merged["usage_api"]) if merged.get("usage_api") else None,
         )
@@ -437,6 +445,46 @@ def _parse_budgets(value: Any) -> list[BudgetSpec]:
                 enforce=enforce_raw,
             )
         )
+    return out
+
+
+def _is_secret_shaped_env_key(key: str) -> bool:
+    upper = key.upper()
+    return any(part in upper for part in _SECRET_ENV_KEY_PARTS)
+
+
+def _parse_client_env(value: Any, *, client: str) -> dict[str, str]:
+    """Normalize a client's ``env:`` block. Refuses secret-shaped keys, empty keys, and PATH."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(
+            f"client {client!r}: env must be a mapping, got {type(value).__name__}"
+        )
+    out: dict[str, str] = {}
+    for raw_key, raw_val in value.items():
+        key = str(raw_key)
+        if not key:
+            raise ConfigError(f"client {client!r}: env has an empty key")
+        if key == "PATH":
+            raise ConfigError(
+                f"client {client!r}: env must not set PATH; Marshal merges the user's interactive "
+                "PATH at engine entry — overriding PATH here would break that recovery"
+            )
+        if _is_secret_shaped_env_key(key):
+            raise ConfigError(
+                f"client {client!r}: env key {key!r} looks like a secret; use secret_ref "
+                f"(env:VAR) instead. env: is for provider/config selection (e.g. CODEX_HOME), "
+                "not literal credentials"
+            )
+        if not isinstance(raw_val, str):
+            raise ConfigError(
+                f"client {client!r}: env[{key!r}] must be a string, got {type(raw_val).__name__}"
+            )
+        val = raw_val
+        if val.startswith("~"):
+            val = str(Path(val).expanduser())
+        out[key] = val
     return out
 
 

@@ -145,6 +145,7 @@ class RunOpts(BaseModel):
     model: str | None = None
     session_id: str | None = None         # resume a prior session if the backend supports it
     timeout_s: int = 600                  # external timeout + kill - never run without one
+    client_env: dict[str, str] = {}       # per-client vars from fleet.config.yaml (after scrub)
     extra_env: dict[str, str] = {}
     on_pid: Callable[[int], None] | None = None  # called by base.run() with the child pid
     # Called by base.run() once the child has been REAPED. Until then the OS cannot reuse its pid,

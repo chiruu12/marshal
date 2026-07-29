@@ -24,6 +24,7 @@ from .service import MarshalService
 from .state import FleetState, compact_run, filter_runs
 from .scaffold import scaffold_fleet_config
 from .teams import TeamSubject, load_team, team_paths, validate_team
+from .types import UsageSource
 from .usage import USAGE_WINDOWS, Bucket, UsageTracker, usage_window_since
 from .workflow import WorkflowRunner, load_workflow, validate_workflow, workflow_paths
 from .worktree import WorktreeError
@@ -154,8 +155,45 @@ def _align_rows(header: Sequence[str], rows: Sequence[Sequence[Any]]) -> list[st
     return out
 
 
-def _format_cost(b: Bucket) -> str:
+def _format_cost_display(cost_usd: float, source: str | None) -> str:
+    """Human cost string from amount + provenance; unknown spend is never rendered as $0."""
+    if source is None or source == UsageSource.UNAVAILABLE.value:
+        return "unavailable"
+    return f"${cost_usd:.4f}"
+
+
+def _bucket_cost_is_known(b: Bucket) -> bool:
+    if b.runs == 0:
+        return True
+    return b.priced_runs > 0 or b.cost_usd > 0
+
+
+def _format_bucket_cost(b: Bucket) -> str:
+    if not _bucket_cost_is_known(b):
+        return "unavailable"
     return f"${b.cost_usd:.4f}"
+
+
+def _format_bucket_rate(cost: float, b: Bucket, *, no_successes: bool = False) -> str:
+    """Per-run rate, annotated when only some of the bucket's runs have a known cost.
+
+    A rate divides known spend by ALL runs in the bucket, so a bucket mixing priced and
+    unpriced runs understates it. Say how many runs the number actually covers rather than
+    presenting a partial rate as the whole - the same reason an unpriced run is not $0.
+    """
+    if no_successes or b.runs == 0:
+        return "n/a"
+    if not _bucket_cost_is_known(b):
+        return "unavailable"
+    if b.priced_runs < b.runs:
+        return f"${cost:.4f} ({b.priced_runs}/{b.runs} priced)"
+    return f"${cost:.4f}"
+
+
+def _format_budget_amount(amount: float, *, known: bool) -> str:
+    if not known and amount == 0.0:
+        return "unavailable"
+    return f"${amount:.4f}"
 
 
 def _format_cost_split(b: Bucket) -> str:
@@ -184,7 +222,7 @@ def _print_bucket_table(title: str, buckets: dict[str, Bucket]) -> None:
             name,
             str(v.runs),
             str(v.succeeded),
-            _format_cost(v),
+            _format_bucket_cost(v),
             _format_cost_split(v),
             str(v.input_tokens),
             str(v.output_tokens),
@@ -233,7 +271,9 @@ def _cmd_usage(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
         return 0
     t = s.totals
-    cps_str = f"${t.cost_per_succeeded:.4f}" if t.cost_per_succeeded is not None else "n/a"
+    cps_str = _format_bucket_rate(
+        t.cost_per_succeeded or 0.0, t, no_successes=t.cost_per_succeeded is None
+    )
     if args.window == "session":
         # CLI has no long-lived Fleet — say so plainly rather than silently returning ~$0.
         window_label = (
@@ -245,12 +285,12 @@ def _cmd_usage(args: argparse.Namespace) -> int:
     else:
         window_label = ""
     print(
-        f"runs={t.runs}  succeeded={t.succeeded}  cost=${t.cost_usd:.4f} "
-        f"(native ${t.cost_native:.4f} / admin-api ${t.cost_admin_api:.4f} / est ${t.cost_estimated:.4f})"
+        f"runs={t.runs}  succeeded={t.succeeded}  cost={_format_bucket_cost(t)} "
+        f"({_format_cost_split(t)})"
         f"{window_label}"
     )
     print(
-        f"  $/run=${t.cost_per_run:.4f}  $/succeeded={cps_str}  "
+        f"  $/run={_format_bucket_rate(t.cost_per_run, t)}  $/succeeded={cps_str}  "
         f"in={t.input_tokens}  out={t.output_tokens}  cache_read={t.cache_read_tokens}"
     )
     _print_bucket_table("by_backend", s.by_backend)
@@ -262,11 +302,7 @@ def _cmd_usage(args: argparse.Namespace) -> int:
 
 
 def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
-    """Print the configured budgets as an aligned table. No-op when no budgets.
-
-    A subscription / unknown-cost backend reports $0, so a $ budget on it shows `$0.0000` spent
-    (not a fake percentage); the table just makes that explicit.
-    """
+    """Print the configured budgets as an aligned table. No-op when no budgets."""
     if not rows:
         return
     print("\nbudgets")
@@ -275,9 +311,9 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
         (
             r.scope,
             r.window,
-            f"${r.spent_usd:.4f}",
+            _format_budget_amount(r.spent_usd, known=r.spent_known),
             f"${r.limit_usd:.4f}",
-            f"${r.remaining_usd:.4f}",
+            "unavailable" if not r.spent_known else f"${r.remaining_usd:.4f}",
             "enforce" if r.enforce else "soft-warn",
         )
         for r in rows
@@ -312,8 +348,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     if not runs:
         print(f"no runs recorded under {state_dir.resolve()}")
         return 0
+    cost_w = max((len(_format_cost_display(r.cost_usd, r.source)) for r in runs), default=11)
     for r in runs:
-        print(f"{r.run_id:24} {r.backend:12} {r.status:10} ${r.cost_usd:.4f}  {r.worktree or ''}")
+        cost = _format_cost_display(r.cost_usd, r.source)
+        print(f"{r.run_id:24} {r.backend:12} {r.status:10} {cost:<{cost_w}}  {r.worktree or ''}")
     return 0
 
 

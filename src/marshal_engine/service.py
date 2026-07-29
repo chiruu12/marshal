@@ -358,6 +358,7 @@ class MarshalService:
                 client=client.name,
                 timeout_s=timeout_override if timeout_override is not None else client.timeout_s,
                 usage_api=client.usage_api,
+                client_env=dict(client.env),
             )
         if backend:
             # Ad-hoc: synthesize a client that doesn't need to be in fleet.config.yaml. It uses
@@ -375,6 +376,7 @@ class MarshalService:
                 client=ephemeral.name,
                 timeout_s=timeout_override if timeout_override is not None else ephemeral.timeout_s,
                 usage_api=ephemeral.usage_api,
+                client_env=dict(ephemeral.env),
             )
         raise ValueError(
             "must provide either a configured 'client' or a bare 'backend' (with optional 'model'); "
@@ -485,15 +487,7 @@ class MarshalService:
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
         )
-        return self.fleet.run(
-            req.backend_name,
-            req.task,
-            permission=req.permission,
-            model=req.model,
-            client=req.client,
-            timeout_s=req.timeout_s,
-            usage_api=req.usage_api,
-        )
+        return self.fleet.run_request(req)
 
     def job_request(self, job: dict[str, Any]) -> RunRequest:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).

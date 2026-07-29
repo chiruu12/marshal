@@ -690,6 +690,22 @@ def test_scaffold_suggests_read_only_reviewers(tmp_path: Path) -> None:
     assert load_config(repo / "fleet.config.yaml").clients == {}
 
 
+def test_scaffold_includes_stock_openai_codex_example(tmp_path: Path) -> None:
+    """New users with a stock Codex CLI should see a copy-paste OpenAI client, not a router-only path."""
+    from marshal_engine.config import load_config
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    scaffold_fleet_config(repo)
+    stub = (repo / "fleet.config.yaml").read_text(encoding="utf-8")
+    assert "# codex:" in stub
+    assert "backend: codex" in stub
+    assert "model: gpt-5.5" in stub
+    assert "codex login" in stub and "OPENAI_API_KEY" in stub
+    assert "codex-readonly" in stub
+    assert load_config(repo / "fleet.config.yaml").clients == {}
+
+
 def test_detect_project_markers_root_wins(tmp_path: Path) -> None:
     from marshal_engine.workspaces import detect_project_markers
 

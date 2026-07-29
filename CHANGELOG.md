@@ -8,11 +8,37 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **CLI cost display no longer implies unmetered runs were free.** `marshal status` and `marshal
+  usage` human output render `unavailable` when a run's cost provenance is unknown (or missing),
+  instead of showing `$0.0000`. Measured zero-cost runs (`source: native` / `admin-api` / etc.)
+  still display `$0.0000`.
+
+### Changed
+- **Codex defaults to stock OpenAI.** The scaffold stub and model playbook now lead with plain
+  `backend: codex` / `model: gpt-5.5` and `codex login` or `OPENAI_API_KEY`; EastRouter
+  `usage_api` remains documented as an optional add-on for real admin-api cost.
+
 ### Added
+- **Per-client `env` in `fleet.config.yaml`.** Each client may set literal environment variables
+  (e.g. `CODEX_HOME`) merged into that client's agent children only, so one Marshal server can drive
+  the same backend against different provider setups. Secret-shaped keys, empty keys, and `PATH` are
+  refused at load; a leading `~` in values is expanded. See `docs/config.md`.
 - **Per-job `then` follow-up on `run_many` (#103).** A job may carry optional `then: {client?, backend?, model?, goal, duration?, …}` — the same field set as a job. As soon as that job's primary reaches a terminal state, the follow-up starts in the **same worker** (not a second barrier). The follow-up worktree is based on the primary's branch after `commit_run`-style freezing so the agent sees the primary's diff. Skipped (with `then_skipped` on the result) when the primary failed, has no branch, or the primary's branch has no commits beyond its base (covers text-only primaries; still runs when the agent self-committed and left a clean tree). Freeze failures (`commit_run` blocked/error) are reported separately in `then_skipped`. `max_concurrency` caps workers (chains), not individual runs within a chain. MCP `run_many`, `MarshalService.run_many`, and the registry fan-out all expose this.
+- **Brand assets (`assets/`).** Hand-authored SVG logo and supporting files: `logo.svg` (mark on
+  transparent, `#FF5714`), `logo-dark.svg` (same geometry, same colour — contrast verified),
+  `logo-mono.svg` (`currentColor` for doc embedding), `wordmark.svg` (mark + logotype in system
+  geometric sans), and `architecture.svg` (flat dispatch diagram: driver → MCP server → fleet →
+  N isolated worktrees → integrate). See `assets/README.md` for palette values and intended use.
 
 ### Changed
 - **BREAKING: `run_many` return shape (#103).** Previously `run_many` returned `list[RunRecord]` (one flat run record per input job — the primary). It now returns `list[RunManyJobResult]`, one `{primary, then?, then_skipped?}` object per input job. Callers that treated list elements as `RunRecord` must read `.primary` (and optionally `.then` / `.then_skipped` for the follow-up). Same shape on MCP `run_many`, `MarshalService.run_many`, CLI batch output, and the registry fan-out.
+- **Stop tracking `.commandcode/`.** Local Command Code tooling state (same class of ignore as
+  `.claude/`); files stay on disk, leave the public index.
+- **README is a launch landing page.** Benchmark proof above the fold; install via `uv tool install
+  MarshalFleet` / `pipx`; 60-second quickstart; backend matrix (all seven adapters); comparison
+  table. Explanatory material moved to [`docs/usage.md`](docs/usage.md), [`docs/model-playbook.md`](docs/model-playbook.md),
+  and new [`docs/nerds.md`](docs/nerds.md). Clone-from-source path lives in [`SETUP.md`](SETUP.md).
 - **The MCP server targets `mcp` 2.0 (#119).** 2.0.0 removed `mcp.server.fastmcp`; the replacement
   is `mcp.server.mcpserver.MCPServer`. The two names are **disjoint** — no release ships both, and
   1.29.0 emits no deprecation warning on the way out — so there is no pin that satisfies both APIs

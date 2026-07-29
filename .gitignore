@@ -27,6 +27,7 @@ build/
 # Claude Code (local tooling - the public driver Skills live in skills/, not here)
 .context/
 .claude/
+.commandcode/
 tmp/
 
 # Internal notes - strategy / decisions / plans, kept local, not part of the public docs set

@@ -213,7 +213,7 @@ class CodingAgentBackend(ABC):
         argv = self.build_invocation(task, opts)
         # Scrub the driver's VIRTUAL_ENV/PYTHONHOME so the agent's tooling (uv/python) resolves the
         # worktree's own environment, not the driver's - otherwise `uv run pytest` tests stale code.
-        env = child_env(opts.extra_env)
+        env = child_env(opts.extra_env, client=opts.client_env)
 
         try:
             proc = subprocess.Popen(

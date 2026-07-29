@@ -11,7 +11,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 |--------|----------------|-------|
 | `types.py` | Shared Pydantic models + enums | done |
 | `backends/base.py` | Abstract backend + safe `run()` (no-stdin, hard timeout) | done |
-| `backends/{cursor,opencode,codex,command_code,antigravity,claude_code,goose,gemini}.py` | Eight adapters off one base class | done |
+| `backends/{cursor,opencode,codex,command_code,antigravity,claude_code,goose}.py` | Seven adapters off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
 | `pricing.py` | Token → cost price table (the `ESTIMATED` path) | done |
@@ -174,7 +174,5 @@ nonce-delimited, refs validated, empty subjects refused. Surfaced as `list_teams
 `marshal teams`/`marshal team run` (CLI), the `marshal-adversarial-review` Skill, and starter panels
 in `examples/teams/`.
 
-Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini
-backend; PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
-Remaining: Antigravity native usage; Cursor admin-API usage; Gemini live verification;
+Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini backend;
 PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

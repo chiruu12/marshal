@@ -23,6 +23,11 @@ clients:
   #   backend: claude-code
   #   model: claude-sonnet-4-6
 
+  # codex:
+  #   backend: codex
+  #   model: gpt-5.5
+  # Auth: `codex login` (ChatGPT account) or OPENAI_API_KEY.
+
   # --- read-only reviewers -------------------------------------------------------------------
   # Review teams (`marshal team run` / the run_team MCP tool) refuse any role whose client is not
   # permission: read-only - a reviewer that can edit is not a reviewer - so a panel needs its own
@@ -35,6 +40,10 @@ clients:
   #   permission: read-only
   # cursor-readonly:
   #   backend: cursor
+  #   permission: read-only
+  # codex-readonly:
+  #   backend: codex
+  #   model: gpt-5.5
   #   permission: read-only
 """
 
