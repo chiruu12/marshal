@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Marshal" width="120">
+  <img src="assets/logo.svg" alt="Marshal" width="110">
 </p>
 
 <h1 align="center">Marshal</h1>
@@ -121,7 +121,7 @@ Routing playbook: [`docs/model-playbook.md`](docs/model-playbook.md). Verificati
 Marshal is the infrastructure layer between a driver agent and a fleet of headless coding CLIs. The driver plans; Marshal creates worktrees, runs backends with timeouts, records usage to an immutable ledger, and returns diffs for review. A future end-user product (**Chauffeur**) will sit on top — see [`docs/chauffeur-future.md`](docs/chauffeur-future.md).
 
 <p align="center">
-  <img src="assets/architecture.svg" alt="Marshal architecture (placeholder)">
+  <img src="assets/architecture.svg" alt="Marshal architecture: driver agent to MCP server to fleet to isolated worktrees, merging back">
 </p>
 
 Full design: [`docs/design.md`](docs/design.md).
