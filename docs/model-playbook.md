@@ -48,9 +48,29 @@ Pick a model for the *weight*, and note how its cost is known - Marshal never fa
 
 > **Optional: real cost via EastRouter (third-party).** If you route a `codex` client through
 > EastRouter instead of stock OpenAI, set `usage_api: eastrouter` to read its **real** per-run cost
-> back from EastRouter's `/v1/usage` (reported `admin-api`, not an estimate). `opencode` can also
-> use EastRouter as a custom OpenAI-compatible provider (models named `eastrouter/<id>`), but
-> OpenCode can't price a custom provider, so that client's cost stays `unavailable`.
+> back from EastRouter's `/v1/usage` (reported `admin-api`, not an estimate). Point the client at
+> EastRouter's Codex config directory with per-client `env` — the Codex CLI selects provider and
+> auth via `CODEX_HOME`, so one Marshal server can run stock ChatGPT Codex and an EastRouter route
+> side by side:
+
+```yaml
+clients:
+  codex-stock:
+    backend: codex
+    model: gpt-5.5
+    # default ~/.codex — ChatGPT auth from `codex login`
+
+  codex-eastrouter:
+    backend: codex
+    model: z-ai/glm-5.1
+    usage_api: eastrouter
+    env:
+      CODEX_HOME: ~/.codex-eastrouter   # third-party router config; ~ expanded at load
+```
+
+> `opencode` can also use EastRouter as a custom OpenAI-compatible provider (models named
+> `eastrouter/<id>`), but OpenCode can't price a custom provider, so that client's cost stays
+> `unavailable`.
 
 ## A tiered fleet you can copy
 

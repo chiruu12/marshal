@@ -548,3 +548,79 @@ def test_budgets_block_non_numeric_limit_raises(tmp_path: Path) -> None:
     p.write_text("budgets:\n  - window: week\n    limit_usd: many\n" + _YAML)
     with pytest.raises(ConfigError, match="limit_usd must be a positive number"):
         load_config(p)
+
+
+# --- client env: per-client literal vars (provider routing, not secrets) -----------------------
+
+
+def test_client_env_loads_and_expands_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    expected = str(Path("~/.codex-eastrouter").expanduser())
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "clients:\n"
+        "  router:\n"
+        "    backend: codex\n"
+        "    env:\n"
+        "      CODEX_HOME: ~/.codex-eastrouter\n"
+    )
+    cfg = load_config(p)
+    assert cfg.clients["router"].env == {"CODEX_HOME": expected}
+
+
+def test_client_env_absent_defaults_empty(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("clients:\n  x:\n    backend: cursor\n")
+    assert load_config(p).clients["x"].env == {}
+
+
+@pytest.mark.parametrize("bad_key", ["API_KEY", "My_Token", "client_SECRET", "DB_PASSWORD", "AWS_CREDENTIAL"])
+def test_client_env_refuses_secret_shaped_keys(tmp_path: Path, bad_key: str) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        f"clients:\n  x:\n    backend: codex\n    env:\n      {bad_key}: literal\n"
+    )
+    with pytest.raises(ConfigError, match="looks like a secret.*secret_ref"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("bad_key", ["api_key", "oauth_token", "mysecret", "dbpassword", "credential_id"])
+def test_client_env_refuses_secret_shaped_keys_mixed_case(tmp_path: Path, bad_key: str) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        f"clients:\n  x:\n    backend: codex\n    env:\n      {bad_key}: literal\n"
+    )
+    with pytest.raises(ConfigError, match="looks like a secret"):
+        load_config(p)
+
+
+def test_client_env_refuses_empty_key(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "clients:\n  x:\n    backend: codex\n    env:\n      '': noop\n"
+    )
+    with pytest.raises(ConfigError, match="empty key"):
+        load_config(p)
+
+
+def test_client_env_refuses_path(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "clients:\n  x:\n    backend: codex\n    env:\n      PATH: /evil/bin\n"
+    )
+    with pytest.raises(ConfigError, match="must not set PATH"):
+        load_config(p)
+
+
+def test_client_env_wrong_type_raises(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("clients:\n  x:\n    backend: codex\n    env: not-a-map\n")
+    with pytest.raises(ConfigError, match="env must be a mapping"):
+        load_config(p)
+
+
+def test_client_env_value_must_be_string(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text("clients:\n  x:\n    backend: codex\n    env:\n      FOO: 42\n")
+    with pytest.raises(ConfigError, match="must be a string"):
+        load_config(p)

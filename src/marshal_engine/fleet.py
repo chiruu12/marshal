@@ -1136,6 +1136,7 @@ class RunRequest(BaseModel):
     client: str | None = None
     timeout_s: int = 600
     usage_api: str | None = None  # provider usage-API for real cost (e.g. "eastrouter"); see eastrouter.py
+    client_env: dict[str, str] = {}  # per-client vars from fleet.config.yaml
 
 
 class RunManyJob(BaseModel):
@@ -1487,6 +1488,7 @@ class Fleet:
                 permission=req.permission,
                 model=req.model,
                 timeout_s=req.timeout_s,
+                client_env=req.client_env,
                 on_pid=_record_pid,
                 on_exit=_record_exit,
             )

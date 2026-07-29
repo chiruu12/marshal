@@ -78,22 +78,32 @@ _FALLBACK_USER_DIRS: tuple[str, ...] = (
 _USER_PATH_CACHE: str | None = None
 
 
-def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """``os.environ`` minus driver leaks, with ``extra`` layered on top.
+def child_env(
+    extra: dict[str, str] | None = None,
+    *,
+    client: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """``os.environ`` minus driver leaks, with per-client ``client`` then ``extra`` layered on top.
 
     Strips ``LEAKY_VENV_VARS`` (the driver's activated venv pins) and every ``MARSHAL_*`` session
     variable (``MARSHAL_CONFIG``, ``MARSHAL_REPO``, …). Without the latter, a worker running the
     repo's test suite or invoking ``marshal`` inherits the driver's config path and silently targets
     the driver's repo instead of its own worktree.
 
-    ``extra`` wins, so a caller that deliberately passes ``VIRTUAL_ENV`` or a ``MARSHAL_*`` value
-    for a child still gets it through.
+    Per-client ``client`` env is applied after the scrub; keys that would undo hygiene (venv pins,
+    ``MARSHAL_*``, ``PATH``) are ignored. ``extra`` wins last, so backend ``prepare()`` stamps
+    (``GOOSE_MODE``, …) and deliberate ``extra_env`` overrides still reach the child.
     """
     env = {
         k: v
         for k, v in os.environ.items()
         if k not in LEAKY_VENV_VARS and not _is_marshal_env_var(k)
     }
+    if client:
+        for k, v in client.items():
+            if k in LEAKY_VENV_VARS or _is_marshal_env_var(k) or k == "PATH":
+                continue
+            env[k] = v
     if extra:
         env.update(extra)
     return env

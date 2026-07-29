@@ -10,7 +10,16 @@ from pathlib import Path
 import pytest
 
 import marshal_engine.env as env_mod
+from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.env import child_env, merge_user_path, user_path
+from marshal_engine.types import (
+    AgentResult,
+    Capabilities,
+    PermissionMode,
+    RunOpts,
+    RunStatus,
+    TaskSpec,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +80,24 @@ def test_child_env_extra_overrides_marshal_scrub(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("MARSHAL_CONFIG", "/driver/fleet.config.yaml")
     env = child_env({"MARSHAL_CONFIG": "/worktree/fleet.config.yaml"})
     assert env["MARSHAL_CONFIG"] == "/worktree/fleet.config.yaml"
+
+
+def test_child_env_applies_client_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FOO", "driver-value")
+    env = child_env(client={"FOO": "client-value"})
+    assert env["FOO"] == "client-value"
+
+
+def test_child_env_client_cannot_resurrect_virtual_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VIRTUAL_ENV", "/driver/.venv")
+    env = child_env(client={"VIRTUAL_ENV": "/client/.venv"})
+    assert "VIRTUAL_ENV" not in env
+
+
+def test_child_env_extra_still_overrides_after_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VIRTUAL_ENV", "/driver/.venv")
+    env = child_env({"VIRTUAL_ENV": "/wanted/.venv"}, client={"VIRTUAL_ENV": "/client/.venv"})
+    assert env["VIRTUAL_ENV"] == "/wanted/.venv"
 
 
 # --- user_path: derive the login-shell PATH ----------------------------------------------
@@ -438,3 +465,58 @@ def test_merged_path_propagates_through_service_init(
     MarshalService(tmp_path / "repo", cfg, config_path=tmp_path / "fleet.config.yaml")
 
     assert "/opt/homebrew/bin" in os.environ["PATH"]
+
+
+# --- per-client env reaches a REAL child process ------------------------------------------
+
+
+class _EnvProbe(CodingAgentBackend):
+    """Writes one env var's value to a file, so a test can assert on the real child env."""
+
+    name = "envprobe"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, var: str, out: Path) -> None:
+        self._var, self._out = var, out
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            f"import os,pathlib; "
+            f"pathlib.Path({str(self._out)!r}).write_text(os.environ.get({self._var!r},'<unset>'))"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout,
+            exit_code=exit_code,
+        )
+
+
+def _probe_run(tmp_path: Path, var: str, client_env: dict[str, str]) -> str:
+    out = tmp_path / f"seen-{var}-{len(client_env)}-{abs(hash(tuple(sorted(client_env.items()))))}"
+    backend = _EnvProbe(var, out)
+    opts = RunOpts(cwd=tmp_path, permission=PermissionMode.SAFE_EDIT, client_env=client_env)
+    backend.run(TaskSpec(id="probe", goal="x"), opts)
+    return out.read_text()
+
+
+def test_client_env_reaches_a_real_child_process(tmp_path: Path) -> None:
+    assert _probe_run(tmp_path, "CODEX_HOME", {"CODEX_HOME": "/tmp/home-a"}) == "/tmp/home-a"
+
+
+def test_two_clients_on_one_backend_do_not_leak_env(tmp_path: Path) -> None:
+    """The motivating case: same backend, different provider homes, no cross-contamination."""
+    a = _probe_run(tmp_path, "CODEX_HOME", {"CODEX_HOME": "/tmp/home-a"})
+    b = _probe_run(tmp_path, "CODEX_HOME", {"CODEX_HOME": "/tmp/home-b"})
+    plain = _probe_run(tmp_path, "CODEX_HOME", {})
+    assert (a, b) == ("/tmp/home-a", "/tmp/home-b")
+    assert plain == "<unset>", "a client with no env: must not inherit a sibling client's value"
