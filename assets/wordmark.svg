@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 272 100">
+  <!--
+    Marshal wordmark - mark plus logotype.
+    Font: a system geometric sans stack rather than converted paths. "Marshal" as
+    outlines is ~3 KB of path data with no rendering gain, and the stack resolves to
+    SF Pro / Segoe UI / Roboto - installed everywhere Marshal runs. Weight 600
+    matches the 4-unit stroke of the mark.
+  -->
+  <g fill="none" stroke="#E8642C" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 22 50 L 40 22 L 62 22"/>
+    <path d="M 22 50 L 36 40 L 78 40"/>
+    <path d="M 22 50 L 36 60 L 70 60"/>
+    <path d="M 22 50 L 40 78 L 54 78"/>
+  </g>
+  <circle cx="22" cy="50" r="7" fill="#E8642C"/>
+  <circle cx="66" cy="22" r="4.5" fill="#E8642C"/>
+  <circle cx="82" cy="40" r="4.5" fill="#E8642C"/>
+  <circle cx="74" cy="60" r="4.5" fill="#E8642C"/>
+  <circle cx="58" cy="78" r="4.5" fill="#E8642C"/>
+  <text x="108" y="62"
+        font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+        font-size="38" font-weight="600" letter-spacing="-1" fill="#E8642C">Marshal</text>
+</svg>

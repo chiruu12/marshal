@@ -10,6 +10,11 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 - **Per-job `then` follow-up on `run_many` (#103).** A job may carry optional `then: {client?, backend?, model?, goal, duration?, …}` — the same field set as a job. As soon as that job's primary reaches a terminal state, the follow-up starts in the **same worker** (not a second barrier). The follow-up worktree is based on the primary's branch after `commit_run`-style freezing so the agent sees the primary's diff. Skipped (with `then_skipped` on the result) when the primary failed, has no branch, or the primary's branch has no commits beyond its base (covers text-only primaries; still runs when the agent self-committed and left a clean tree). Freeze failures (`commit_run` blocked/error) are reported separately in `then_skipped`. `max_concurrency` caps workers (chains), not individual runs within a chain. MCP `run_many`, `MarshalService.run_many`, and the registry fan-out all expose this.
+- **Brand assets (`assets/`).** Hand-authored SVG logo and supporting files: `logo.svg` (mark on
+  transparent, `#E8642C`), `logo-dark.svg` (same geometry, same colour — contrast verified),
+  `logo-mono.svg` (`currentColor` for doc embedding), `wordmark.svg` (mark + logotype in system
+  geometric sans), and `architecture.svg` (flat dispatch diagram: driver → MCP server → fleet →
+  N isolated worktrees → integrate). See `assets/README.md` for palette values and intended use.
 
 ### Changed
 - **BREAKING: `run_many` return shape (#103).** Previously `run_many` returned `list[RunRecord]` (one flat run record per input job — the primary). It now returns `list[RunManyJobResult]`, one `{primary, then?, then_skipped?}` object per input job. Callers that treated list elements as `RunRecord` must read `.primary` (and optionally `.then` / `.then_skipped` for the follow-up). Same shape on MCP `run_many`, `MarshalService.run_many`, CLI batch output, and the registry fan-out.

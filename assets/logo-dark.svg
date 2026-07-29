@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!--
+    Marshal mark - dark-background variant. Same geometry as logo.svg.
+    #E8642C clears WCAG AA (4.7:1) against #1A1A1A and darker, so the colour is
+    unchanged; a lighter tint would cost brand consistency for no legibility gain.
+  -->
+  <g fill="none" stroke="#E8642C" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 22 50 L 40 22 L 62 22"/>
+    <path d="M 22 50 L 36 40 L 78 40"/>
+    <path d="M 22 50 L 36 60 L 70 60"/>
+    <path d="M 22 50 L 40 78 L 54 78"/>
+  </g>
+  <circle cx="22" cy="50" r="7" fill="#E8642C"/>
+  <circle cx="66" cy="22" r="4.5" fill="#E8642C"/>
+  <circle cx="82" cy="40" r="4.5" fill="#E8642C"/>
+  <circle cx="74" cy="60" r="4.5" fill="#E8642C"/>
+  <circle cx="58" cy="78" r="4.5" fill="#E8642C"/>
+</svg>
