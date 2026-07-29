@@ -5,16 +5,16 @@ its own isolated git worktree, in parallel. You declare named **clients** (each 
 model + permission), then call Marshal three ways: as an MCP server, as a CLI, or as a Python
 library.
 
-Code delegation is the best-developed path, **not the only one** — review panels, audits and
-research fan-out run through the same primitives. A run that only reads and reasons still returns
-its work: its final message is on the run record as `text` and the run is `exited_clean`.
-`collect_run` reports which artifact it was via `produced` (`diff` | `text` | `nothing`) and returns
-the message itself for a text run. `empty` means the run produced neither text nor file changes.
+Marshal runs whatever a headless agent CLI can run: implementation, review panels, audits, and
+research fan-out. A run that only reads and reasons still returns its work — its final message
+lands on the run record as `text` and the run is `exited_clean`; `collect_run` reports which
+artifact it was via `produced` (`diff` | `text` | `nothing`) and hands back the message itself for
+a text run. `empty` means the run produced neither text nor file changes.
 
 The real gap is **structured** output: results come back as prose you parse
-([#97](https://github.com/chiruu12/marshal/issues/97)). Separately, where a backend truncates long
-final messages (Cursor does), have the agent write its report to a file — that is why the built-in
-review teams do so.
+([#97](https://github.com/chiruu12/marshal/issues/97)). Where a backend truncates long final
+messages (Cursor does), have the agent write its report to a file — that is why the built-in review
+teams do so.
 
 > **Status:** V1 core complete, pre-1.0. The engine, CLI, and MCP server work, including merge-back
 > (`collect_run` + `integrate`), capped parallel fan-out (`run_many`), and a measured savings
@@ -36,9 +36,16 @@ review teams do so.
 
 ## Install
 
-New here? Start with **[`../SETUP.md`](../SETUP.md)** for the full clone-to-first-run path:
-prerequisites (Python ≥ 3.11, uv, git) and how to install + authenticate the backend CLIs -
-Marshal does **not** install them.
+```bash
+uv tool install MarshalFleet
+# or
+pipx install MarshalFleet
+```
+
+For clone-from-source, backend CLI auth, and MCP wiring, see **[`../SETUP.md`](../SETUP.md)**.
+Marshal does **not** install the backend CLIs.
+
+Developing Marshal itself:
 
 ```bash
 uv sync --extra mcp --extra dev

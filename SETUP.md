@@ -31,13 +31,24 @@ You only need the backends your `fleet.config.yaml` references. One is enough to
 
 ## 1. Install Marshal
 
+**PyPI (recommended):**
+
+```bash
+uv tool install MarshalFleet
+# or
+pipx install MarshalFleet
+```
+
+**Clone from source** (for development or before PyPI publish):
+
 ```bash
 git clone https://github.com/chiruu12/marshal.git && cd marshal
 uv sync --extra mcp --extra dev
 ```
 
 The base package is Pydantic + PyYAML. `--extra mcp` adds the MCP server; `--extra dev` adds the
-test/lint toolchain.
+test/lint toolchain. A source checkout does not put `marshal` on your PATH unless you use
+`uv run marshal …` or `uv tool install .`.
 
 ## 2. Configure a fleet
 
