@@ -1,5 +1,6 @@
 {
   "name": "marshal",
+  "description": "Marshal: run a fleet of headless coding agents in parallel, each isolated in its own git worktree, with per-provider cost tracking and measured routing benchmarks.",
   "owner": {
     "name": "chiruu12",
     "url": "https://github.com/chiruu12"
