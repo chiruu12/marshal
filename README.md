@@ -29,20 +29,31 @@ Each produced solution's tests: `deepseek`, `claude`, and `cmdcode` passed 6/6 �
 
 ## Install
 
-```bash
-uv tool install "MarshalFleet[mcp]"
-# or
-pipx install "MarshalFleet[mcp]"
-```
+You need Python 3.11+, git, and **at least one backend CLI installed and logged in** — Marshal
+drives agents, it does not ship one. `marshal doctor` tells you which are ready.
 
-**Claude Code plugin** (Skills + MCP in one step):
+**Claude Code plugin** — the fastest path. Brings the Skills and the MCP server in one step:
 
 ```
 /plugin marketplace add chiruu12/marshal
 /plugin install marshal@marshal
 ```
 
-Clone from source, backend CLI auth, and MCP wiring: **[`SETUP.md`](SETUP.md)**.
+**From GitHub**, for the CLI and the Python library:
+
+```bash
+uv tool install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
+# or
+pipx install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
+```
+
+Drop `@v0.1.0` to track `main`. The `[mcp]` extra is what makes `marshal mcp` work — without it the
+server exits before a host can connect.
+
+> Not on PyPI yet. `uv tool install "MarshalFleet[mcp]"` is the intended command once it is
+> published; until then use the GitHub URL above, which installs the same package.
+
+Backend CLI auth and MCP wiring: **[`SETUP.md`](SETUP.md)**.
 
 ## 60 seconds
 

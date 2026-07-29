@@ -289,3 +289,47 @@ def test_reported_version_matches_pyproject() -> None:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     declared = tomllib.loads(pyproject.read_text())["project"]["version"]
     assert marshal_engine.__version__ == declared
+
+
+def test_plugin_manifests_match_pyproject_version() -> None:
+    """The Claude Code plugin manifests must not drift from [project].version.
+
+    Same failure mode as a hardcoded __version__: the plugin advertises one version while the
+    package it installs is another, and the mismatch is invisible until a user reports it.
+    """
+    import json
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    declared = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+
+    plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text())
+    assert plugin["version"] == declared
+
+    market = json.loads((root / ".claude-plugin" / "marketplace.json").read_text())
+    for entry in market["plugins"]:
+        assert entry["version"] == declared, f"{entry['name']} drifted from pyproject"
+
+
+def test_plugin_manifests_list_every_backend() -> None:
+    """Every registered backend must appear in the plugin descriptions.
+
+    A backend missing from the description is a capability users never discover.
+    """
+    import json
+    from pathlib import Path
+
+    from marshal_engine.registry import backend_names
+
+    root = Path(__file__).resolve().parent.parent
+    texts = [
+        json.dumps(json.loads((root / ".claude-plugin" / f).read_text()))
+        for f in ("plugin.json", "marketplace.json")
+    ]
+    for name in backend_names():
+        token = name.replace("-", " ").replace("_", " ")
+        for text in texts:
+            assert token.lower() in text.lower() or name.lower() in text.lower(), (
+                f"backend {name!r} is missing from a plugin manifest description"
+            )
