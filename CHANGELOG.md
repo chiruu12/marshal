@@ -8,6 +8,12 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **CLI cost display no longer implies unmetered runs were free.** `marshal status` and `marshal
+  usage` human output render `unavailable` when a run's cost provenance is unknown (or missing),
+  instead of showing `$0.0000`. Measured zero-cost runs (`source: native` / `admin-api` / etc.)
+  still display `$0.0000`.
+
 ### Changed
 - **Codex defaults to stock OpenAI.** The scaffold stub and model playbook now lead with plain
   `backend: codex` / `model: gpt-5.5` and `codex login` or `OPENAI_API_KEY`; EastRouter

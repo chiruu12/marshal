@@ -135,7 +135,8 @@ clients:
   over-cap spawns (`BudgetExceeded`) and serialize matching in-flight spawns. Set at most one of
   `backend` / `client` per entry (omit both for a global cap); `limit_usd` must be positive; the
   scope's `cost_usd` comes from the usage ledger, so subscription / unknown-cost backends (which
-  report `$0` / `unavailable`) never trigger a $ cap and show `$0.00` spent (no fake percentage,
+  report `$0` / `unavailable`) never trigger a $ cap and show `unavailable` spent when the scope
+  has runs with no priced cost (an empty scope still shows `$0.0000`; no fake percentage,
   no fabricated "remaining"). See [`config.md`](config.md) for the full census.
 
   ```yaml
@@ -304,7 +305,9 @@ reconcile: a run whose supervising process died can still read `running` here un
 holds `.marshal/fleet.lock` next reconciles (the MCP server does this on `status`/`get_run`). This is
 deliberate — a short-lived CLI that reconciles is exactly what once stamped live agents `failed`, so
 the CLI observes and the lock holder decides. If a `running` row looks stale, check the MCP `status`
-or `cancel_run` it; do not assume the agent is alive. `run`/`spawn` accept `--repo`, `--config`, `--client` (or
+or `cancel_run` it; do not assume the agent is alive. Human output shows `unavailable` when a run's
+cost provenance is unknown (Cursor, Command Code, etc.); measured costs — including a genuine
+`$0.0000` from `native` / `admin-api` — show as dollar amounts. `run`/`spawn` accept `--repo`, `--config`, `--client` (or
 ad-hoc `--backend` + `--model`), and `--duration` (preset or seconds).
 
 **Config path matters.** `run`/`spawn` resolve clients from `<repo>/fleet.config.yaml` (or
@@ -356,7 +359,8 @@ change" contract for users who don't opt in). Default is soft-warn (stderr when 
 run proceeds); `enforce: true` refuses matching over-cap spawns and serializes matching in-flight
 spawns (see [`config.md`](config.md)). Budgets are only meaningful for backends that report cost —
 subscription / unknown-cost backends report `$0` / `unavailable`, so a $ cap on them never triggers
-and reads `$0.00` spent (no fake percentage, no fabricated "remaining"). The CLI is single-repo by
+and reads `unavailable` spent when runs exist with no priced cost (empty ledger still shows
+`$0.0000`; no fake percentage, no fabricated "remaining"). The CLI is single-repo by
 nature; MCP `usage` is likewise always one workspace (no cross-workspace spend merge).
 
 ### `marshal logs`

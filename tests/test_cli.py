@@ -11,6 +11,7 @@ import pytest
 
 from marshal_engine import cli
 from marshal_engine.budgets import BudgetExceeded
+from marshal_engine.usage import Bucket
 from marshal_engine.worktree import WorktreeError
 
 
@@ -525,6 +526,158 @@ def test_workspace_bare_lists(
     assert "default" in capsys.readouterr()[0]
 
 
+# --- cost display honesty ---------------------------------------------------------------
+
+
+def test_format_cost_display_unavailable() -> None:
+    assert cli._format_cost_display(0.0, "unavailable") == "unavailable"
+    assert "$0.0000" not in cli._format_cost_display(0.0, "unavailable")
+
+
+def test_format_cost_display_native_zero() -> None:
+    assert cli._format_cost_display(0.0, "native") == "$0.0000"
+
+
+def test_format_cost_display_native_amount() -> None:
+    assert cli._format_cost_display(0.4695, "native") == "$0.4695"
+
+
+def test_format_cost_display_missing_source() -> None:
+    assert cli._format_cost_display(0.0, None) == "unavailable"
+
+
+def test_status_human_unavailable_cost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marshal_engine.state import FleetState, RunRecord
+
+    runs = tmp_path / "runs"
+    state = FleetState(runs)
+    state.add(RunRecord(
+        run_id="cursor-run.cursor.abc12345", task_id="t", backend="cursor",
+        status="exited_clean", cost_usd=0.0, source="unavailable",
+    ))
+    ret = cli.main(["status", "--state", str(runs)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "unavailable" in out
+    assert "$0.0000" not in out
+
+
+def test_status_human_native_zero_cost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marshal_engine.state import FleetState, RunRecord
+
+    runs = tmp_path / "runs"
+    state = FleetState(runs)
+    state.add(RunRecord(
+        run_id="free-run.claude-code.abc123", task_id="t", backend="claude-code",
+        status="exited_clean", cost_usd=0.0, source="native",
+    ))
+    ret = cli.main(["status", "--state", str(runs)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    line = [ln for ln in out.splitlines() if "claude-code" in ln][0]
+    assert "$0.0000" in line
+    assert "unavailable" not in line
+
+
+def test_status_human_native_real_cost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marshal_engine.state import FleetState, RunRecord
+
+    runs = tmp_path / "runs"
+    state = FleetState(runs)
+    state.add(RunRecord(
+        run_id="paid-run.claude-code.abc123", task_id="t", backend="claude-code",
+        status="exited_clean", cost_usd=0.4695, source="native",
+    ))
+    ret = cli.main(["status", "--state", str(runs)])
+    assert ret == 0
+    assert "$0.4695" in capsys.readouterr()[0]
+
+
+def test_usage_human_unavailable_backend_bucket(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="cursor", cost_usd=0.0, status="exited_clean",
+            source="unavailable",
+        ).model_dump_json() + "\n"
+    )
+    ret = cli.main(["usage", "--dir", str(u)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "cost=unavailable" in out
+    assert "cost=$0.0000" not in out
+    assert "unavailable" in out.split("by_backend")[1]
+
+
+def test_usage_human_native_zero_totals(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="claude-code", cost_usd=0.0, status="exited_clean",
+            source="native",
+        ).model_dump_json() + "\n"
+    )
+    ret = cli.main(["usage", "--dir", str(u)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "cost=$0.0000" in out
+    assert "$/run=$0.0000" in out
+
+
+def test_usage_human_budget_unavailable_spent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import datetime, timezone
+
+    from marshal_engine.usage import UsageEvent
+
+    u = tmp_path / "usage"
+    u.mkdir()
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts=datetime.now(timezone.utc).isoformat(),
+            run_id="r1", backend="cursor", client="composer", cost_usd=0.0,
+            status="exited_clean", source="unavailable",
+        ).model_dump_json() + "\n"
+    )
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text(
+        "clients:\n  composer:\n    backend: cursor\n"
+        "budgets:\n"
+        "  - backend: cursor\n    window: month\n    limit_usd: 5.0\n"
+    )
+    ret = cli.main(["usage", "--dir", str(u), "--config", str(cfg), "--window", "month"])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "\nbudgets" in out
+    # Spent and remaining are unknown when runs exist but cost is unavailable.
+    budget_section = out.split("\nbudgets", 1)[1]
+    assert budget_section.count("unavailable") >= 2
+    assert "$0.0000" not in budget_section.split("limit")[0]
+
+
 # --- `marshal usage` budgets: optional `--config` surfaces the configured `budgets:` -----
 
 
@@ -812,3 +965,20 @@ def test_status_rejects_a_nonfinite_lookback(tmp_path: Path) -> None:
     for bad in ("nan", "inf", "0", "-3"):
         with pytest.raises(SystemExit):
             cli.main(["status", "--state", str(tmp_path / "runs"), "--since-hours", bad])
+
+
+def test_bucket_rate_annotates_a_partially_priced_bucket() -> None:
+    """A rate over a mixed bucket divides known spend by ALL runs, so say what it covers."""
+    b = Bucket(runs=10, priced_runs=1, cost_usd=0.5, cost_per_run=0.05)
+    out = cli._format_bucket_rate(b.cost_per_run, b)
+    assert out == "$0.0500 (1/10 priced)"
+
+
+def test_bucket_rate_unannotated_when_every_run_is_priced() -> None:
+    b = Bucket(runs=4, priced_runs=4, cost_usd=0.4, cost_per_run=0.1)
+    assert cli._format_bucket_rate(b.cost_per_run, b) == "$0.1000"
+
+
+def test_bucket_rate_unavailable_when_nothing_is_priced() -> None:
+    b = Bucket(runs=3, priced_runs=0, cost_usd=0.0, cost_per_run=0.0)
+    assert cli._format_bucket_rate(b.cost_per_run, b) == "unavailable"

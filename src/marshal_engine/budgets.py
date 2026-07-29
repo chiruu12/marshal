@@ -18,10 +18,10 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import BudgetSpec
-from .usage import UsageSummary, UsageTracker
+from .usage import Bucket, UsageSummary, UsageTracker
 
 
 class BudgetExceeded(RuntimeError):
@@ -49,6 +49,22 @@ def _budget_window_since(window: str, session_start: datetime, now: datetime) ->
     if window == "month":
         return now - timedelta(days=30)
     raise ValueError(f"unknown budget window: {window!r} (use session|week|month)")
+
+
+def _budget_bucket_from_summary(summary: UsageSummary, budget: BudgetSpec) -> Bucket | None:
+    """The rollup bucket for a budget's scope, or None when the scope has no events."""
+    if budget.client is not None:
+        return summary.by_client.get(budget.client)
+    if budget.backend is not None:
+        return summary.by_backend.get(budget.backend)
+    return summary.totals
+
+
+def _budget_spent_known(bucket: Bucket | None) -> bool:
+    """False when the scope has runs but none carried a priced cost source."""
+    if bucket is None or bucket.runs == 0:
+        return True
+    return bucket.priced_runs > 0 or bucket.cost_usd > 0
 
 
 def _budget_spend_from_summary(summary: UsageSummary, budget: BudgetSpec) -> float:
@@ -119,9 +135,18 @@ def compute_budget_status(
     out: list[BudgetStatus] = []
     for b in budgets:
         try:
-            spent = _budget_spend_cached(cache, tracker, session_start, b, now)
+            summary = cache.get(b.window)
+            if summary is None:
+                summary = tracker.summary(
+                    since=_budget_window_since(b.window, session_start, now)
+                )
+                cache[b.window] = summary
+            spent = _budget_spend_from_summary(summary, b)
+            bucket = _budget_bucket_from_summary(summary, b)
+            spent_known = _budget_spent_known(bucket)
         except Exception:  # noqa: BLE001 - display never fails a usage query
             spent = 0.0
+            spent_known = True
         out.append(
             BudgetStatus(
                 scope=_budget_scope_label(b),
@@ -130,6 +155,7 @@ def compute_budget_status(
                 limit_usd=b.limit_usd,
                 remaining_usd=max(0.0, b.limit_usd - spent),
                 enforce=b.enforce,
+                spent_known=spent_known,
             )
         )
     return out
@@ -144,6 +170,11 @@ class BudgetStatus(BaseModel):
     limit_usd: float
     remaining_usd: float # max(0, limit - spent) - the same floor a $0 spend gives a $0 remaining
     enforce: bool = False
+    spent_known: bool = Field(
+        default=True,
+        exclude=True,
+        description="CLI-only: False when scope has runs but no priced cost source",
+    )
 
 
 def check_budget(

@@ -110,6 +110,7 @@ class Bucket(BaseModel):
 
     runs: int = 0
     succeeded: int = 0
+    priced_runs: int = 0  # runs with native/admin-api/estimated/scraped cost (incl. measured $0)
     cost_usd: float = 0.0
     cost_native: float = 0.0        # cost we know is real (backend-reported)
     cost_admin_api: float = 0.0     # real cost from a provider admin-API (e.g. EastRouter) - also ground truth
@@ -240,6 +241,13 @@ def _add(bucket: Bucket, e: UsageEvent) -> None:
     if e.status == RunStatus.EXITED_CLEAN.value:
         bucket.succeeded += 1
     bucket.cost_usd = round(bucket.cost_usd + e.cost_usd, 6)
+    if e.source in (
+        UsageSource.NATIVE.value,
+        UsageSource.ADMIN_API.value,
+        UsageSource.ESTIMATED.value,
+        UsageSource.SCRAPED.value,
+    ):
+        bucket.priced_runs += 1
     if e.source == UsageSource.NATIVE.value:
         bucket.cost_native = round(bucket.cost_native + e.cost_usd, 6)
     elif e.source == UsageSource.ADMIN_API.value:

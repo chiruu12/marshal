@@ -15,7 +15,8 @@ re-derives a source-honest table from each run's recorded facts in the immutable
 - Every strategy runs the **identical goal** in its **own isolated git worktree**.
 - Cost, latency, and token counts come from each run's recorded facts — never invented at report time.
 - **`cheapest` ranks only strategies with a known cost.** Clients showing `unavailable` are excluded
-  (not treated as $0).
+  (not treated as $0). The same rule applies to human CLI output (`marshal status`, `marshal usage`):
+  unknown provenance renders as `unavailable`, not `$0.0000`.
 - Correctness is verified **separately** from `report` — run the produced tests yourself.
 
 ### Example run (TokenBucket rate limiter)
