@@ -323,13 +323,20 @@ def test_plugin_manifests_list_every_backend() -> None:
     from marshal_engine.registry import backend_names
 
     root = Path(__file__).resolve().parent.parent
-    texts = [
-        json.dumps(json.loads((root / ".claude-plugin" / f).read_text()))
-        for f in ("plugin.json", "marketplace.json")
-    ]
+
+    # Only the DESCRIPTION fields count. Searching the whole serialized manifest would let
+    # `keywords` satisfy the assertion while the user-facing text went stale - a test that passes
+    # for the wrong reason is worse than no test.
+    descriptions: list[str] = []
+    plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text())
+    descriptions.append(plugin["description"])
+    market = json.loads((root / ".claude-plugin" / "marketplace.json").read_text())
+    descriptions.extend(entry["description"] for entry in market["plugins"])
+
     for name in backend_names():
         token = name.replace("-", " ").replace("_", " ")
-        for text in texts:
-            assert token.lower() in text.lower() or name.lower() in text.lower(), (
+        for desc in descriptions:
+            low = desc.lower()
+            assert token.lower() in low or name.lower() in low, (
                 f"backend {name!r} is missing from a plugin manifest description"
             )

@@ -29,8 +29,10 @@ Each produced solution's tests: `deepseek`, `claude`, and `cmdcode` passed 6/6 �
 
 ## Install
 
-You need Python 3.11+, git, and **at least one backend CLI installed and logged in** — Marshal
-drives agents, it does not ship one. `marshal doctor` tells you which are ready.
+You need Python 3.11+, [uv](https://docs.astral.sh/uv/), git, and **at least one backend CLI
+installed and logged in** — Marshal drives agents, it does not ship one. `marshal doctor` tells you
+which are ready. (The Claude Code plugin launches the MCP server through `uv`, so it is required on
+that path too.)
 
 **Claude Code plugin** — the fastest path. Brings the Skills and the MCP server in one step:
 
