@@ -85,13 +85,13 @@ def main() -> None:
 
     collected = service.collect_run(record.run_id)
     if not collected.changed_files:
-        # Fall back to a subject that always exists, rather than failing the demonstration.
-        print("candidate produced no diff; reviewing the last commit range instead")
-        subject = TeamSubject(kind="range", range="HEAD~1..HEAD")
-    else:
-        subject = TeamSubject(kind="run", run_id=record.run_id)
+        # The task above creates a file unconditionally, so an empty diff means the agent did not
+        # do it. Stop and say so: this team targets `run`, and reviewing some unrelated commit
+        # range instead would demonstrate the panel on material nobody asked about.
+        print("candidate produced no diff - the agent did not create the file; nothing to review")
+        return
 
-    result = service.run_team(TEAM, subject)
+    result = service.run_team(TEAM, TeamSubject(kind="run", run_id=record.run_id))
 
     print("--- unified_report (read this first) ---")
     print(result.unified_report)
