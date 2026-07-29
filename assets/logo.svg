@@ -1,9 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <g fill="#FF6B1A">
-    <path d="M 50 19 L 63 54 L 51.5 74 L 48.5 74 L 37 54 Z"/>
-    <path d="M 5 37 L 39.5 55.5 L 46.5 74 L 13 74 Z"/>
-    <path d="M 41.5 58 L 44.5 74 L 41 74 Z"/>
-    <path d="M 95 37 L 60.5 55.5 L 53.5 74 L 87 74 Z"/>
-    <path d="M 58.5 58 L 55.5 74 L 59 74 Z"/>
+  <g fill="#FF5714">
+    <path d="M 50 18 L 64 62 L 57.5 62 L 50 51 L 42.5 62 L 36 62 Z"/>
+    <path d="M 6 40 L 33.5 62 L 8.5 62 Z"/>
+    <path d="M 94 40 L 66.5 62 L 91.5 62 Z"/>
   </g>
 </svg>

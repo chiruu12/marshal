@@ -1,8 +1,7 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Marshal" width="110">
+  <img src="assets/wordmark.png" alt="Marshal" width="420">
 </p>
 
-<h1 align="center">Marshal</h1>
 
 <p align="center">
   Run a fleet of AI coding agents in parallel, in isolated git worktrees, and know exactly what each one cost.
