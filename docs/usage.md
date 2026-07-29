@@ -87,7 +87,9 @@ clients:
 
 - **Auth is per-CLI**: run each backend's login once (`opencode auth login`, `cursor-agent login`,
   `codex login`). `secret_ref: env:VAR` is an optional preflight check - `marshal doctor` warns if
-  unset - but Marshal does **not** inject it; the CLI's own login is what authenticates.
+  unset - but Marshal does **not** inject it; the CLI's own login is what authenticates. For two
+  clients on the same backend with different provider homes (`env:`, e.g. `CODEX_HOME`), see
+  [`examples/per_client_env.yaml`](../examples/per_client_env.yaml).
 - An OpenCode client with no `model` defaults to `opencode-go/glm-5.2` so runs bill the Go
   subscription, not Fireworks credits. A `fireworks-ai/*` model is rejected outright.
 - **`worktree_setup`** (optional, top-level): a command run once in each fresh worktree before the
@@ -219,7 +221,8 @@ survive the rebuild (limits themselves come from the newly loaded config), so an
 mid-run does not admit a second spawn past an `enforce: true` cap or reset session spend accounting
 (see `docs/config.md` for the residual when an enforce budget's own definition changes). Spend and
 budget evaluation stay on each repo's own ledger — there is no cross-workspace rollup. With no
-file and no `MARSHAL_WORKSPACES`, it's the single-repo server it always was.
+file and no `MARSHAL_WORKSPACES`, it's the single-repo server it always was. Runnable library form:
+[`examples/multi_workspace.py`](../examples/multi_workspace.py).
 
 Example Claude Code MCP entry. A bare `uv sync` does not put a `marshal` command on your PATH, so
 invoke it through uv with the absolute path to your Marshal checkout (or run `uv tool install .`
@@ -254,8 +257,8 @@ the default workspace.
 | `doctor()` | Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth); read-only. Run it before spawning. |
 | `list_clients` | List configured clients (name, backend, model, permission, permission_fidelity) plus `driver_context`. |
 | `list_models` | List the optional `models:` catalog (`id`, `backends`, `cost`, `quota_type`, `notes`) plus `driver_context`. |
-| `run_agent(client?, goal, task_id?, context_files?, read_paths?, base_branch?, model?, backend?, duration?)` | Delegate a goal to a worker agent in an isolated worktree; returns the run record. Product may be a diff or text (both first-class). Omit `client` for an ad-hoc spawn by `backend` (+ optional `model`). `duration` is a preset name or positive seconds. `base_branch` bases the worktree on a branch other than HEAD (e.g. after `commit_run`). `read_paths` is a read-only escape hatch for files outside the worktree (copied under `.marshal-context/` as immutable files/dirs; secret-shaped descendants, symlinks inside a declared tree, and special files like FIFOs are refused; copies open fail-closed). |
-| `run_many(jobs, max_concurrency?)` | Delegate several `{client?, goal, task_id?, context_files?, read_paths?, workspace?, then?, …}` jobs in parallel, each in its own worktree (each product may be a diff or text); optional per-job `then` runs a follow-up in the same worker as soon as that job's primary finishes (does not wait for sibling jobs). Per-job `workspace` allows mixed-repo batches under one concurrency cap. Returns one `{primary, then?, then_skipped?}` object per input job (input order): `primary` is the job's run; `then` is the follow-up when it ran; `then_skipped` explains why `then` did not (primary failed, no branch, primary's branch has no commits beyond its base, `commit_run` blocked, …). |
+| `run_agent(client?, goal, task_id?, context_files?, read_paths?, base_branch?, model?, backend?, duration?)` | Delegate a goal to a worker agent in an isolated worktree; returns the run record. Product may be a diff or text (both first-class). Omit `client` for an ad-hoc spawn by `backend` (+ optional `model`). `duration` is a preset name or positive seconds. `base_branch` bases the worktree on a branch other than HEAD (e.g. after `commit_run`). `read_paths` is a read-only escape hatch for files outside the worktree (copied under `.marshal-context/` as immutable files/dirs; secret-shaped descendants, symlinks inside a declared tree, and special files like FIFOs are refused; copies open fail-closed). See [`examples/read_paths.py`](../examples/read_paths.py). |
+| `run_many(jobs, max_concurrency?)` | Delegate several `{client?, goal, task_id?, context_files?, read_paths?, workspace?, then?, …}` jobs in parallel, each in its own worktree (each product may be a diff or text); optional per-job `then` runs a follow-up in the same worker as soon as that job's primary finishes (does not wait for sibling jobs). Per-job `workspace` allows mixed-repo batches under one concurrency cap. Returns one `{primary, then?, then_skipped?}` object per input job (input order): `primary` is the job's run; `then` is the follow-up when it ran; `then_skipped` explains why `then` did not (primary failed, no branch, primary's branch has no commits beyond its base, `commit_run` blocked, …). Pipelined review: [`examples/pipelined_review.py`](../examples/pipelined_review.py); mixed workspaces: [`examples/multi_workspace.py`](../examples/multi_workspace.py). |
 | `spawn(client?, goal, task_id?, context_files?, read_paths?, base_branch?, model?, backend?, duration?)` | Start a worker agent in the background; returns its RUNNING record at once - poll `get_run`/`status`. Same delegation primitive as `run_agent` (diff or text product). Same ad-hoc/`model`/`duration`/`base_branch`/`read_paths` rules. |
 | `cancel_run(run_id)` | Stop a running agent (process-group `SIGTERM`); returns the updated record. Only signals runs **this process started** — for one started by a process that has since died it stamps the record `cancelled` without ending the agent, and `error` says so. |
 | `benchmark(goal, clients, task_id?)` | Run one goal through several clients (strategies) and compare cost/latency/outcome. |
@@ -272,7 +275,7 @@ the default workspace.
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. Returns `{workflows, errors, workspace}` — malformed recipe files land in `errors` (filename → message). |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
 | `list_teams()` | List adversarial review teams found in `<repo>/teams/`. Returns `{teams, errors, workspace}` — malformed team files land in `errors` (filename → message). |
-| `run_team(name, target, run_id?/base?/head?/paths?/text?)` | Run a panel of independent read-only reviewers over one subject (`run` diff, commit `range`, a `plan`, or an `audit` of the repo). Returns `unified_report` (read first) plus each reviewer's full report; all persisted under `.marshal/reports/<stamp>-<team>-<id>/`. **Computes no verdict** — collecting the objections and deciding is the caller's job. Never integrates. |
+| `run_team(name, target, run_id?/base?/head?/paths?/text?)` | Run a panel of independent read-only reviewers over one subject (`run` diff, commit `range`, a `plan`, or an `audit` of the repo). Returns `unified_report` (read first) plus each reviewer's full report; all persisted under `.marshal/reports/<stamp>-<team>-<id>/`. **Computes no verdict** — collecting the objections and deciding is the caller's job. Never integrates. Runnable form: [`examples/adversarial_review.py`](../examples/adversarial_review.py); team templates in [`examples/teams/`](../examples/teams/). |
 
 ## Use it as a CLI
 
@@ -396,6 +399,10 @@ record = service.run_agent("implementer", "Add a docstring to hello()")
 print(record.status, record.cost_usd, record.worktree)
 print(service.usage()["totals"])
 ```
+
+Full runnable scripts (including `run_many` + `then`, `read_paths`, review teams, and
+multi-workspace) live under [`examples/`](../examples/); start with
+[`examples/library_quickstart.py`](../examples/library_quickstart.py).
 
 Each run lands in its own git worktree under `.marshal/worktrees/`, with state in
 `.marshal/runs/<run_id>.json` (one file per run), usage in `.marshal/usage/`, and the **full raw

@@ -1,0 +1,20 @@
+# Fragment for fleet.config.yaml — two clients on the SAME backend with different provider setups.
+# Merge the `clients:` entries into your own fleet.config.yaml (or start from fleet.config.example.yaml).
+#
+# Motivating case: two Codex clients — one on the default ~/.codex home, one with CODEX_HOME
+# pointed elsewhere (e.g. a second login / EastRouter profile).
+#
+# Secret-shaped keys (names containing KEY, TOKEN, SECRET, PASSWORD, or CREDENTIAL) are refused
+# at load and belong in secret_ref (e.g. secret_ref: env:OPENAI_API_KEY), not in env:.
+
+clients:
+  codex-default:
+    backend: codex
+    permission: safe-edit
+    # No env: → Codex uses its default home (~/.codex).
+
+  codex-alt:
+    backend: codex
+    permission: safe-edit
+    env:
+      CODEX_HOME: ~/.codex-alt   # leading ~ is expanded at load

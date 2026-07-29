@@ -64,6 +64,12 @@ versions may include breaking API changes until 1.0.
   `usage_api` remains documented as an optional add-on for real admin-api cost.
 
 ### Added
+- **Runnable examples for shipped capabilities.** [`examples/pipelined_review.py`](examples/pipelined_review.py)
+  (`run_many` + per-job `then`), [`examples/read_paths.py`](examples/read_paths.py),
+  [`examples/adversarial_review.py`](examples/adversarial_review.py),
+  [`examples/multi_workspace.py`](examples/multi_workspace.py), and
+  [`examples/per_client_env.yaml`](examples/per_client_env.yaml); indexed from
+  [`examples/README.md`](examples/README.md), [`docs/usage.md`](docs/usage.md), and the README docs list.
 - **Per-client `env` in `fleet.config.yaml`.** Each client may set literal environment variables
   (e.g. `CODEX_HOME`) merged into that client's agent children only, so one Marshal server can drive
   the same backend against different provider setups. Secret-shaped keys, empty keys, and `PATH` are
