@@ -201,8 +201,6 @@ def test_usage_source_taxonomy_is_closed() -> None:
     assert {s.value for s in UsageSource} == {
         "native",
         "admin-api",
-        "estimated",
-        "scraped",
         "unavailable",
     }
 

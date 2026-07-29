@@ -94,7 +94,7 @@ MCP tool reference: [`docs/mcp-tools.md`](docs/mcp-tools.md). Orientation for dr
 
 | | Worktree isolation | Real parallelism | Per-provider cost accounting | Human merge review | Multi-repo |
 |---|---|---|---|---|---|
-| **Marshal** | yes — one worktree per run | yes — capped `run_many` | yes — native / admin-api / estimated / unavailable | yes — `collect_run` then `integrate` | yes — one MCP server, many workspaces |
+| **Marshal** | yes — one worktree per run | yes — capped `run_many` | yes — native / admin-api / unavailable | yes — `collect_run` then `integrate` | yes — one MCP server, many workspaces |
 | Hand-rolled git worktree scripts | yes — if you build it | possible — you manage threads/processes | no — unless you wire it yourself | possible — you own the merge step | no — one repo per script unless you extend it |
 | Subagents inside a single coding harness | partial — often same checkout or sandbox | limited — shared process/context | partial — whatever the host exposes | varies — some hosts auto-apply | no — bound to one session/repo |
 | Generic workflow orchestrators (CI, Airflow, Temporal) | no — not their job | yes — at the workflow layer | no — not agent-token aware | yes — human gates are the point | yes — but not coding-agent native |
@@ -107,7 +107,7 @@ Seven backend adapters. Model is set per client in `fleet.config.yaml` (or ad-ho
 |---|---|---|
 | `cursor` | optional (defaults to CLI default) | **unavailable** — individual plans expose no per-run cost |
 | `opencode` | `opencode-go/*` (required pattern) | **native** — tokens + cost from the CLI |
-| `codex` | provider/model (e.g. `gpt-5.5`) | **admin-api** via EastRouter `usage_api`; else **estimated** (priced model) or **unavailable** |
+| `codex` | provider/model (e.g. `gpt-5.5`) | **admin-api** via EastRouter `usage_api`; else **unavailable** |
 | `claude-code` | `claude-*` (e.g. `claude-sonnet-4-6`) | **native** — `total_cost_usd` + tokens |
 | `command-code` | provider/model (e.g. `zai-org/GLM-5.2`) | **unavailable** — hosted account, no token/cost in stdout |
 | `goose` | `provider/model` or bare model (e.g. `cursor-agent/auto`) | **native** when the provider reports positive cost; else **unavailable** (best-effort stream-json) |

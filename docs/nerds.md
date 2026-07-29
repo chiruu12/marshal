@@ -64,18 +64,18 @@ ground truth.
 |---|---|---|
 | **native** | Backend reported real tokens **and** cost | `claude-code`, `opencode`; Goose when provider reports positive cost |
 | **admin-api** | Real per-run charge read back from a provider usage API | `codex` with `usage_api: eastrouter` (EastRouter `/v1/usage`) |
-| **estimated** | Tokens × `src/marshal_engine/data/prices.yaml` at run time | Token-only `codex` whose model is in the price table |
-| **unavailable** | No per-run cost known; tokens may still be recorded | `cursor`, `command-code`, unpriced `codex`, `opencode` on unpriced custom provider, `antigravity` |
+| **unavailable** | No per-run cost known; tokens may still be recorded | `cursor`, `command-code`, token-only `codex`, `opencode` on unpriced custom provider, `antigravity` |
 
 **Two-layer split:** the engine stamps *facts* to an immutable ledger (`usage/events.jsonl`);
 interpretation (cost-per-outcome, savings, `cheapest`) is *derived on read* in the report layer,
-never stored. Editing the price table never rewrites history.
+never stored. Historical ledger lines tagged `estimated` still load; the `cost_estimated` summary
+field remains as a zero tombstone.
 
 **admin-api attribution:** runs are matched by model + time window with a token-reconciliation
 guard; a run that can't be uniquely attributed falls back rather than claim a wrong cost.
 
 When you need true cost accounting (e.g. for a benchmark you'll act on), prefer **native-cost**
-clients so "cheapest" ranks on facts, not estimates. Full routing notes:
+or **admin-api** clients so "cheapest" ranks on facts. Full routing notes:
 [`model-playbook.md`](model-playbook.md#cost-honesty).
 
 ## Permission-fidelity matrix

@@ -35,7 +35,6 @@ marshal/
 │   │   └── goose.py         # Goose (goose run) - safe-edit/yolo → GOOSE_MODE=auto (worktree boundary)
 │   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
 │   ├── usage.py             # per-provider usage: events.jsonl + summary.json
-│   ├── pricing.py           # token → cost price table (the ESTIMATED path)
 │   ├── eastrouter.py        # read real per-run cost from EastRouter /v1/usage (the ADMIN_API path)
 │   ├── state.py             # persistent fleet state (one runs/<run_id>.json per run)
 │   ├── fleet.py             # orchestrator: worktree → run backend → record usage → persist
@@ -108,12 +107,11 @@ Linux (py3.11-3.13) + macOS (py3.12, for the POSIX process-group paths). Check c
 - **Backend is a per-call parameter**, never a global, never encoded in tool/skill names.
 - **`build_invocation` and `map_permission` are pure functions** returning argv - unit-testable
   without spawning processes. Every backend ships contract tests.
-- **Tag every usage record with its `source`** (native / admin-api / estimated / scraped /
-  unavailable). Never present an estimate as ground truth.
+- **Tag every usage record with its `source`** (native / admin-api / unavailable). Never fabricate
+  cost when the backend or a provider usage API did not report it.
 - **Usage/cost is a two-layer split.** The engine stamps *facts* (tokens / cost / duration /
   source) to an immutable ledger (`usage/events.jsonl`); interpretation (cost-per-outcome,
-  savings) is *derived on read* in the report layer, never stored. Estimated cost is priced at
-  run time (a snapshot), so editing the price table never rewrites history.
+  savings) is *derived on read* in the report layer, never stored.
 - **Worktree isolation** is the safety boundary. Main branch is untouched until explicit integrate.
 - The **engine is mechanism**; planning/routing/merge judgment lives in **Skills** (and later
   Chauffeur). Don't put decomposition logic in the engine.

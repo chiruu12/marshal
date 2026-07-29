@@ -197,12 +197,17 @@ def _format_budget_amount(amount: float, *, known: bool) -> str:
 
 
 def _format_cost_split(b: Bucket) -> str:
-    """Compact native/admin-api/est split; zeros collapsed so the row stays readable."""
+    """Compact provenance split; zeros collapsed so the row stays readable.
+
+    ``estimated`` appears only for legacy ledger lines - Marshal no longer produces estimates, but
+    the split must still account for every dollar in ``cost_usd`` or it silently disagrees with the
+    total beside it (and with the JSON).
+    """
     parts: list[str] = []
     for label, val in (
         ("native", b.cost_native),
         ("admin-api", b.cost_admin_api),
-        ("est", b.cost_estimated),
+        ("estimated (legacy)", b.cost_estimated),
     ):
         if val > 0:
             parts.append(f"{label} ${val:.4f}")

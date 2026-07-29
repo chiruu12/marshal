@@ -1,0 +1,95 @@
+# Local dogfood fleet (gitignored). kimi/minimax/deepseek = opencode-go (native cost, never Fireworks);
+# composer = Cursor (strong coder; Cursor reports no per-run cost, so its cost shows as unavailable);
+# claude = Claude Code (claude -p, native cost; bump model to claude-opus-4-8 for harder tasks).
+defaults:
+  permission: safe-edit
+  timeout_s: 900
+
+# Provision each fresh worktree's own venv (with dev+mcp extras) before the agent runs, so
+# `uv run pytest`/`ruff`/`mypy` resolve the worktree - not the driver's venv (stale code).
+worktree_setup: uv sync --extra dev --extra mcp
+
+# Layered context: `worker` is appended to the built-in preamble on every worker's goal; `driver` is
+# surfaced to the driver via list_clients (routing notes the generic Skills don't know).
+context:
+  worker: |
+    Match the existing code style and module patterns; keep changes minimal and scoped to the task.
+    Run `uv run --extra dev pytest -q` and `uv run --extra dev ruff check src tests` before finishing.
+  driver: |
+    Routing: codex-glm = Codex/glm-5.1 via EastRouter (real admin-api cost; strong for agentic work).
+    oc-glm = OpenCode/glm-5.1 via EastRouter (cost unavailable). cmdcode = Command Code/GLM-5.2 (own
+    account, cost unavailable). composer = Cursor; kimi/minimax/deepseek = OpenCode-go (native cost).
+    goose-cursor = Goose with Cursor Agent as provider (needs `cursor-agent login`).
+    Big multi-file tasks can exceed the 900s codex timeout — split them into smaller runs.
+
+clients:
+  kimi:
+    backend: opencode
+    model: opencode-go/kimi-k2.6
+  minimax:
+    backend: opencode
+    model: opencode-go/minimax-m3
+  composer:
+    backend: cursor
+    model: composer-2.5-fast
+  deepseek:
+    backend: opencode
+    model: opencode-go/deepseek-v4-flash
+  claude:
+    backend: claude-code
+    model: claude-sonnet-4-6
+  # Codex CLI routed through EastRouter (paid credits, no Codex sub). Provider + key come from the
+  # isolated CODEX_HOME the Marshal MCP server sets (~/.codex-eastrouter) — desktop Codex is untouched.
+  codex-glm:
+    backend: codex
+    model: z-ai/glm-5.1
+    usage_api: eastrouter       # report REAL cost from EastRouter's /v1/usage (admin-api), not an estimate
+  # OpenCode routed through EastRouter (paid credits). Provider lives in ~/.config/opencode/opencode.jsonc;
+  # the model is prefixed `eastrouter/` so OpenCode picks that provider. No usage_api: opencode can't
+  # price a custom provider and under-reports tokens, so cost honestly shows `unavailable` (not a fake $0).
+  oc-glm:
+    backend: opencode
+    model: eastrouter/z-ai/glm-5.1
+  # Command Code CLI (its own hosted account; spend lives in its dashboard, so cost is unavailable).
+  cmdcode:
+    backend: command-code
+    model: zai-org/GLM-5.2
+  # Goose → Cursor Agent CLI (auth: `cursor-agent login`). model is provider/model for goose flags.
+  goose-cursor:
+    backend: goose
+    model: cursor-agent/auto
+    permission: safe-edit
+
+  # --- read-only reviewers: the only clients a review team may route a role to ---------------
+  # Teams (`run_team`) refuse any role whose client is not permission: read-only, so a panel needs
+  # dedicated entries. Each lens goes to a DIFFERENT backend on purpose - heterogeneous reviewers
+  # catch what one model's blind spot hides, and the ledger then shows what each provider cost.
+  claude-readonly:
+    backend: claude-code
+    model: claude-sonnet-4-6
+    permission: read-only
+  cursor-readonly:
+    backend: cursor
+    model: composer-2.5-fast
+    permission: read-only
+  # Safe-edit Grok: verification agents write their report to a file in the worktree, because
+  # cursor-agent silently drops long FINAL messages (observed: 11.4k output tokens generated,
+  # 266 chars returned). A file survives; a final message may not.
+  grok:
+    backend: cursor
+    model: cursor-grok-4.5-high-fast
+  # Second Cursor lens: a different model family, so a panel is not two samples of one opinion.
+  grok-readonly:
+    backend: cursor
+    model: cursor-grok-4.5-high-fast
+    permission: read-only
+  codex-readonly:
+    backend: codex
+    model: z-ai/glm-5.1
+    usage_api: eastrouter
+    permission: read-only
+  # OpenCode via the Go sub (native cost) - stands in for a third lens when Codex is off PATH.
+  oc-readonly:
+    backend: opencode
+    model: opencode-go/glm-5.2
+    permission: read-only

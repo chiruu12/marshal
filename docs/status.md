@@ -14,7 +14,6 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `backends/{cursor,opencode,codex,command_code,antigravity,claude_code,goose}.py` | Seven adapters off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
-| `pricing.py` | Token → cost price table (the `ESTIMATED` path) | done |
 | `eastrouter.py` | Read real per-run cost from EastRouter `/v1/usage` (the `ADMIN_API` path) | done |
 | `state.py` | Persistent fleet state (one `runs/<run_id>.json` per run) | done |
 | `fleet.py` | Orchestrator: worktree → run → price → record → persist | done |
@@ -47,7 +46,7 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 | OpenCode | yes | verified | verified | verified (tokens + cost) |
 | Cursor | yes | verified | verified | n/a by design (Admin API only) |
 | Claude Code | yes | verified | verified | verified (tokens + cost, native) |
-| Codex | yes | - | verified* | tokens only (cost `admin-api`/estimated/unavailable) |
+| Codex | yes | - | verified* | tokens only (cost `admin-api` or `unavailable`) |
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
 | Antigravity | yes | verified (reply) | verified** | none |
 | Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
@@ -55,8 +54,8 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
 writes land and the JSONL parser extracts text + tokens correctly. A Codex client routed through
 EastRouter with `usage_api: eastrouter` has its **real** per-run cost read back from EastRouter's
-`/v1/usage` and reported as `admin-api`; without a usage API the cost is `estimated` (model in the
-price table) or `unavailable` (token-only, unpriced).
+`/v1/usage` and reported as `admin-api`; without a usage API the cost is `unavailable`
+(token counts preserved).
 \*\*\* Command Code live-verified headless (model `zai-org/GLM-5.2`). `command-code -p` prints plain
 text with no token/cost accounting, so usage is `unavailable` (a hosted account's spend lives in its
 own dashboard, never a fabricated $0); `doctor` surfaces its provider + default model.
@@ -74,9 +73,8 @@ stream-json tokens/cost).
 
 ### Phase 1 - cost-proof (shipped)
 Per-provider cost is now trustworthy and honest, single-threaded. Shipped: `duration_ms` on every
-run; `extract_usage` wired into `Fleet.run`; a YAML price table (`pricing.py` + `data/prices.yaml`) with
-`ESTIMATED` tagging and `unpriced`-not-`$0` honesty; cost/duration/source persisted on `RunRecord`;
-cost-per-outcome (`$/run`, `$/succeeded`) + a native/estimated split in `usage`; partial-usage
+run; `extract_usage` wired into `Fleet.run`; cost/duration/source persisted on `RunRecord`;
+cost-per-outcome (`$/run`, `$/succeeded`) + a native/admin-api split in `usage`; partial-usage
 recovery on timeout; and `RunStatus.EMPTY` for clean-but-no-work runs. The engine stamps facts to an
 immutable ledger; the report layer derives interpretation on read.
 

@@ -96,14 +96,16 @@ def test_cost_per_outcome_and_source_split(tmp_path: Path) -> None:
     assert tot.succeeded == 2
     assert abs(tot.cost_usd - 0.06) < 1e-9
     assert abs(tot.cost_native - 0.02) < 1e-9
-    assert abs(tot.cost_estimated - 0.04) < 1e-9     # estimate kept separate from native
+    assert abs(tot.cost_estimated - 0.04) < 1e-9  # legacy ledger spend still attributed
+    assert tot.priced_runs == 2          # native + legacy estimated both count as priced
     assert abs(tot.cost_per_run - 0.02) < 1e-9       # 0.06 / 3
     assert abs(tot.cost_per_succeeded - 0.03) < 1e-9  # 0.06 / 2 (failures/empties still cost)
 
 
 def test_admin_api_cost_has_its_own_bucket(tmp_path: Path) -> None:
     # Regression: a real provider admin-api cost (EastRouter) is its own ground-truth bucket and the
-    # source buckets sum to the total (admin-api cost was previously dropped from native+estimated).
+    # source buckets sum to the total - including a LEGACY "estimated" line, whose spend must still
+    # be attributed or the split stops accounting for cost_usd.
     t = UsageTracker(tmp_path / "usage")
     t.record(_ev(run_id="r1", cost_usd=0.01, status="exited_clean", source="native"))
     t.record(_ev(run_id="r2", cost_usd=0.02, status="exited_clean", source="admin-api"))
@@ -111,6 +113,23 @@ def test_admin_api_cost_has_its_own_bucket(tmp_path: Path) -> None:
     tot = t.summary().totals
     assert abs(tot.cost_admin_api - 0.02) < 1e-9
     assert abs((tot.cost_native + tot.cost_admin_api + tot.cost_estimated) - tot.cost_usd) < 1e-9
+
+
+def test_historical_estimated_ledger_still_loads_and_counts_priced(tmp_path: Path) -> None:
+    events = tmp_path / "usage" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        '{"ts":"2026-01-01T00:00:00Z","run_id":"h1","backend":"codex","cost_usd":0.05,'
+        '"status":"exited_clean","source":"estimated","input_tokens":1000,"output_tokens":200}\n'
+    )
+    tot = UsageTracker(tmp_path / "usage").summary().totals
+    assert tot.runs == 1
+    assert abs(tot.cost_usd - 0.05) < 1e-9
+    assert abs(tot.cost_estimated - 0.05) < 1e-9
+    assert abs((tot.cost_native + tot.cost_admin_api + tot.cost_estimated) - tot.cost_usd) < 1e-9
+    assert tot.priced_runs == 1
+    assert tot.input_tokens == 1000
+    assert tot.output_tokens == 200
 
 
 def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None:
