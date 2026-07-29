@@ -273,3 +273,19 @@ def test_engine_status_comparisons_go_through_runstatus() -> None:
         "bare string-literal RunStatus comparisons (use RunStatus.X.value):\n  "
         + "\n  ".join(offenders)
     )
+
+
+def test_reported_version_matches_pyproject() -> None:
+    """`marshal --version` must equal [project].version - one source of truth, no drift.
+
+    A hardcoded __version__ silently disagrees with the published wheel, and that wrong number
+    then lands in every bug report.
+    """
+    import tomllib
+    from pathlib import Path
+
+    import marshal_engine
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+    assert marshal_engine.__version__ == declared

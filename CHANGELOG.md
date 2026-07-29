@@ -8,6 +8,13 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-29
+
+### Fixed
+- **`marshal --version` reported the wrong number.** `__version__` was a hardcoded literal that had
+  drifted from `[project].version`, so the CLI claimed `0.0.1` from a `0.1.0` build. It now reads
+  installed package metadata, and a test fails if a literal is reintroduced.
+
 ### Changed
 - **Brand assets refined.** The wordmark lockup ships on a transparent background so it renders
   correctly on light and dark surfaces; the crown geometry in `logo.svg` / `logo-dark.svg` /
