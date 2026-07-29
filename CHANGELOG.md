@@ -8,6 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **Install instructions now describe an install that works.** The README pointed at
+  `uv tool install "MarshalFleet[mcp]"`, which fails because the package is not on PyPI yet. It now
+  leads with the Claude Code plugin and a verified `git+https://` install, and says plainly that
+  PyPI is pending.
+- **Claude Code plugin manifests no longer drift from the package version.** `plugin.json` and
+  `marketplace.json` advertised `0.0.1` against a `0.1.0` package, and both listed six of the seven
+  backends. Tests now fail on either drift.
+
+### Added
+- Requirements stated up front in the README: Python 3.11+, git, and at least one authenticated
+  backend CLI - Marshal drives agents, it does not ship one.
+
 ## [0.1.0] - 2026-07-29
 
 ### Fixed
