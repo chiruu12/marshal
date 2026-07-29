@@ -9,6 +9,11 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **The MCP server reported an empty version.** `serverInfo.version` was blank in every initialize
+  handshake, so a client could not answer "which Marshal am I talking to?" - the first question you
+  ask when a tool misbehaves. It now reports the package version.
+
+### Fixed
 - **Install instructions now describe an install that works.** The README pointed at
   `uv tool install "MarshalFleet[mcp]"`, which fails because the package is not on PyPI yet. It now
   leads with the Claude Code plugin and a verified `git+https://` install, and says plainly that
