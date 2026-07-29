@@ -30,9 +30,9 @@ Each produced solution's tests: `deepseek`, `claude`, and `cmdcode` passed 6/6 â
 ## Install
 
 ```bash
-uv tool install MarshalFleet
+uv tool install "MarshalFleet[mcp]"
 # or
-pipx install MarshalFleet
+pipx install "MarshalFleet[mcp]"
 ```
 
 **Claude Code plugin** (Skills + MCP in one step):
@@ -75,8 +75,8 @@ worktree .marshal/worktrees/hello-docstring.cursor.d56489fe
 $ marshal status --limit 3
 showing 3 of 136 runs (raise --limit to see more)
 phase0-logo.claude-code.8413a86c    claude-code  exited_clean  $0.4695
-phase0-hygiene.cursor.79639a00      cursor       exited_clean  $0.0000
-phase0-readme.cursor.d56489fe       cursor       exited_clean  $0.0000
+phase0-hygiene.cursor.79639a00      cursor       exited_clean  unavailable
+phase0-readme.cursor.d56489fe       cursor       exited_clean  unavailable
 ```
 
 **4. Review, then merge.** From a driver agent over MCP: `collect_run("<run_id>")` returns the diff read-only, and `integrate("<run_id>", message="...")` merges it. `exited_clean` means the process exited cleanly â€” it does **not** mean the code is correct, so the diff review is not optional.

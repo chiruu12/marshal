@@ -37,9 +37,9 @@ teams do so.
 ## Install
 
 ```bash
-uv tool install MarshalFleet
+uv tool install "MarshalFleet[mcp]"
 # or
-pipx install MarshalFleet
+pipx install "MarshalFleet[mcp]"
 ```
 
 For clone-from-source, backend CLI auth, and MCP wiring, see **[`../SETUP.md`](../SETUP.md)**.
