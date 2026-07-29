@@ -511,7 +511,7 @@ mode. Budgets in the payload come from that workspace's `fleet.config.yaml` alon
 | `budgets` | list \| omitted | Present when that workspace's `fleet.config.yaml` declares `budgets:`: `[{ scope, window, spent_usd, limit_usd, remaining_usd, enforce }]`. Soft-warn by default; `enforce: true` refuses over-cap spawns on **that** workspace. |
 | `workspace` | string | |
 
-Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost_estimated, input_tokens, output_tokens, cache_read_tokens, cost_per_run, cost_per_succeeded }`.
+Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost_estimated, input_tokens, output_tokens, cache_read_tokens, cost_per_run, cost_per_succeeded }`. `cost_estimated` is a zero tombstone (legacy ledger compatibility).
 
 ## Run record
 
@@ -533,7 +533,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `input_tokens` | int | |
 | `output_tokens` | int | |
 | `duration_ms` | int | |
-| `source` | string \| null | Cost provenance (`native`, `admin-api`, `estimated`, …). |
+| `source` | string \| null | Cost provenance (`native`, `admin-api`, `unavailable`, …). |
 | `text` | string | Agent's final message (truncated). |
 | `started_at` | string \| null | ISO-8601. |
 | `ended_at` | string \| null | ISO-8601. |

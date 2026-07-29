@@ -90,8 +90,6 @@ class UsageSource(str, Enum):
 
     NATIVE = "native"            # backend reported tokens+cost in its output
     ADMIN_API = "admin-api"      # fetched from a provider account/admin API
-    ESTIMATED = "estimated"      # computed from tokens via a local price table
-    SCRAPED = "scraped"          # parsed off terminal output (least trustworthy)
     UNAVAILABLE = "unavailable"  # backend exposes no usage data
 
 

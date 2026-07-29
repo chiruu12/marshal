@@ -8,6 +8,14 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Removed
+- **Estimated cost pricing.** Marshal no longer derives dollar figures from a local price table
+  (`pricing.py`, `data/prices.yaml`). Token-only runs now report `source: unavailable` with
+  `cost_usd: 0.0` (token counts preserved). Real cost still comes from backend-native reporting
+  or a provider usage API (`admin-api`, e.g. EastRouter). Historical ledger lines tagged
+  `estimated` still load and still count toward spend rollups; the `cost_estimated` bucket field
+  remains in summaries as a zero tombstone.
+
 ### Fixed
 - **CLI cost display no longer implies unmetered runs were free.** `marshal status` and `marshal
   usage` human output render `unavailable` when a run's cost provenance is unknown (or missing),

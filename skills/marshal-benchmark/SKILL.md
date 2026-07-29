@@ -30,10 +30,8 @@ playbook runs one goal through N strategies and compares them.
 
 ## Read it honestly
 - Check `source` on each row. `native` = the backend reported the cost; `admin-api` = the **real**
-  charge read back from a provider usage API (e.g. EastRouter) - also ground truth; `estimated` =
-  computed from tokens via the price table (only as good as the table - keep it current);
-  `unavailable` = unknown (e.g. Cursor without the Admin API, or an unpriced model). Never read an
-  `unavailable` `$0` as free.
+  charge read back from a provider usage API (e.g. EastRouter); `unavailable` = unknown (e.g. Cursor
+  without the Admin API, or a token-only Codex run). Never read an `unavailable` `$0` as free.
 - The benchmark measures cost, latency, and outcome **status** - not correctness. A cheapest strategy
   can still produce worse code. Review the diffs (`collect_run`) before drawing conclusions.
 - `empty` / `failed` / `verify_failed` strategies still cost tokens; they appear in per-run cost but

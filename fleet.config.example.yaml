@@ -58,7 +58,7 @@ retries: 2
 
 # Optional model catalog - pure data the driver can read with `marshal models` / `list_models`.
 # Each entry: id (provider/model), backends that can run it, and short free-form strings for cost
-# (e.g. native|admin-api|estimated|unavailable), quota_type (metered|subscription|unavailable), and
+# (e.g. native|admin-api|unavailable), quota_type (metered|subscription|unavailable), and
 # notes. The catalog is metadata only - it does NOT change routing (clients still own backend+model).
 # Absent or empty = no catalog to expose.
 # models:
@@ -69,7 +69,7 @@ retries: 2
 #     notes: placeholder
 #   - id: <provider>/<model-b>
 #     backends: [claude-code, cursor]
-#     cost: estimated
+#     cost: unavailable
 #     quota_type: metered
 #     notes: placeholder
 
@@ -127,8 +127,8 @@ clients:
     model: cursor-agent/auto
     permission: safe-edit
 
-  # Optional per-client usage API - fetch REAL post-run cost from a provider admin API instead of
-  # the local price table. Unset = estimated or unavailable. See docs/config.md.
+  # Optional per-client usage API - fetch REAL post-run cost from a provider admin API.
+  # Unset = unavailable unless the backend reports native cost. See docs/config.md.
   # metered:
   #   backend: opencode
   #   model: opencode-go/glm-5.2

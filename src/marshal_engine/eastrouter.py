@@ -1,17 +1,15 @@
 """Read REAL per-request cost from EastRouter's ``/v1/usage`` and reconcile it to a Marshal run.
 
 EastRouter is an OpenAI-compatible router. Codex routed through it reports tokens but no cost
-(``unavailable``), and EastRouter's per-request price varies with prompt caching - so a static price
-table would systematically mislead (cache-heavy sessions are cheap, fresh runs are dear). This
-module fetches the ACTUAL ``amount_usd`` EastRouter charged, so cost is reported as ``admin-api``
-(real), never an estimate.
+(``unavailable``). This module fetches the ACTUAL ``amount_usd`` EastRouter charged, so cost is
+reported as ``admin-api`` (real).
 
 Attribution. A Marshal run carries no EastRouter ``request_id`` (Codex doesn't surface it), so usage
 records are matched by ``(model, created_at within the run's [start, end] window)``. That is exact
 when at most one run uses a given EastRouter model at a time - the default fleet pairs each model
 with a single client. If two clients drive the SAME EastRouter model concurrently, the window cannot
 separate them; the token-reconciliation guard below detects the mismatch (matched prompt tokens won't
-equal the run's input tokens) and the run KEEPS its estimated/unavailable cost rather than asserting
+equal the run's input tokens) and the run KEEPS unavailable cost rather than asserting
 a wrong real cost. Honest-or-nothing.
 
 Pagination. ``/v1/usage`` returns the most recent records; a single page can miss a run's records

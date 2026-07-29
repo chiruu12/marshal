@@ -127,7 +127,7 @@ class ModelSpec(BaseModel):
     `id` is a provider+model string (the same one a client would set in its `model:` field).
     `backends` lists the backends that can run it. `cost` / `quota_type` / `notes` are short
     free-form strings the driver surfaces verbatim - cost mirrors the UsageSource values
-    (``native`` | ``admin-api`` | ``estimated`` | ``scraped`` | ``unavailable``) and quota_type the billing
+    (``native`` | ``admin-api`` | ``unavailable``) and quota_type the billing
     shape (``metered`` | ``subscription`` | ``unavailable``). All fields after `id` and
     `backends` are optional so a minimal catalog entry is just ``{id, backends}``.
     """
@@ -162,9 +162,10 @@ class BudgetSpec(BaseModel):
     when the windowed spend meets the cap, but never blocks the run. Set ``enforce: true`` to
     refuse new matching spawns once spend meets the cap, and to admit at most one in-flight
     matching spawn at a time (concurrency guard against ledger TOCTOU). The check reads the usage
-    ledger's `cost_usd`, which is real for meterable backends (source native / admin-api /
-    estimated); subscription / unknown-cost backends report $0, so a $ budget on them simply
-    never triggers (and shows $0 spent - we do NOT fabricate a fake percentage or "remaining").
+    ledger's `cost_usd`, which is real for meterable backends (source native / admin-api, plus
+    legacy ledger lines tagged estimated); subscription / unknown-cost backends report $0, so a $
+    budget on them simply never triggers (and shows $0 spent - we do NOT fabricate a fake
+    percentage or "remaining").
     Exactly one of `backend` / `client` may be set; neither = a global cap.
     """
 

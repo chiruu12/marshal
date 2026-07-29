@@ -160,8 +160,8 @@ with it.
 
 ## Cost
 `usage()` shows per-provider cost (totals and by backend/client/model, with `$/run` and
-`$/succeeded`). Every figure is tagged by `source` (native / admin-api / estimated / unavailable) -
-never treat an estimate (or an `unavailable` `$0`) as ground truth. To compare routing strategies head-to-head on a real task, use the
+`$/succeeded`). Every figure is tagged by `source` (native / admin-api / unavailable) -
+never treat `unavailable` as free. To compare routing strategies head-to-head on a real task, use the
 **marshal-benchmark** skill.
 
 ## Invariants to respect

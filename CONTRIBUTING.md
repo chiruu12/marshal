@@ -65,7 +65,7 @@ src/marshal_engine/
     cursor.py opencode.py codex.py antigravity.py claude_code.py command_code.py
   worktree.py         # git worktree lifecycle (isolation boundary)
   usage.py eastrouter.py  # usage ledger (events.jsonl + summary) + EastRouter real-cost reader
-  pricing.py state.py fleet.py registry.py config.py retry.py env.py
+  state.py fleet.py registry.py config.py retry.py env.py
   service.py          # MarshalService - the testable core the CLI/MCP call into (single-repo)
   workspaces.py       # MCP-layer multi-repo registry (tenancy; the engine stays single-repo)
   doctor.py cli.py mcp_server.py
@@ -84,8 +84,8 @@ These are load-bearing safety properties. A PR that breaks one will not be merge
 - **Backend is a per-call parameter**, never a global and never encoded in tool or skill names.
 - **`build_invocation` and `map_permission` are pure functions** returning argv / flags - unit
   testable without spawning a process.
-- **Tag every usage record with its `source`** (native / admin-api / estimated / scraped /
-  unavailable). Never present an estimate as ground truth, and never invent `$0` for an unknown cost.
+- **Tag every usage record with its `source`** (native / admin-api / unavailable). Never invent
+  `$0` for an unknown cost.
 - **Worktree isolation is the safety boundary.** The main branch is untouched until an explicit
   `integrate`.
 - **The engine is mechanism.** Planning, routing, and merge judgment live in Skills, not the engine.
@@ -126,8 +126,8 @@ hooks.
    from `build_invocation` for a representative task/opts, and the flags from `map_permission` for
    each `PermissionMode`. These run without spawning a process.
 
-6. **Price the model** (if it reports cost) by adding it to `data/prices.yaml`, or leave cost
-   `unavailable` - never fabricate a number.
+6. **Document cost provenance** in `docs/status.md` and the model playbook — native, `admin-api`
+   (via `usage_api`), or `unavailable`; never fabricate a number.
 
 Run the gate, then open a PR describing what the new backend supports and its verification state
 (see `docs/status.md` for the honesty conventions of the verification matrix).

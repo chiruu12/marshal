@@ -601,12 +601,12 @@ class MarshalService:
             for r in self.fleet.state.list()
             if r.task_id == task_id
         ]
-        # cheapest: only strategies that succeeded AND have a known cost - native, a real provider
-        # admin-api cost (e.g. EastRouter), or an estimate. Never an "unavailable" one.
+        # cheapest: only strategies that succeeded AND have a known cost - native or a real provider
+        # admin-api cost (e.g. EastRouter). Never an "unavailable" one.
         priced = [
             r for r in rows
             if r.status == RunStatus.EXITED_CLEAN.value
-            and r.source in (UsageSource.NATIVE, UsageSource.ADMIN_API, UsageSource.ESTIMATED)
+            and r.source in (UsageSource.NATIVE, UsageSource.ADMIN_API)
         ]
         cheapest = min(priced, key=lambda r: r.cost_usd).client if priced else None
         timed = [r for r in rows if r.status == RunStatus.EXITED_CLEAN.value and r.duration_ms > 0]

@@ -42,7 +42,6 @@ from .eastrouter import CostResolver, default_cost_resolvers
 from .env import merge_user_path
 from .layout import marshal_dir
 from .logs import RunLogStore
-from .pricing import PriceTable, PricingError
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
 from .types import AgentResult, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord, UsageSource
@@ -996,15 +995,6 @@ def _ended_before(rec: RunRecord, cutoff: datetime | None) -> bool:
     return ended <= cutoff
 
 
-def _load_default_prices() -> PriceTable:
-    """Load the shipped price table; on any problem fall back to empty (everything unpriced)."""
-    try:
-        return PriceTable.load()
-    except PricingError as exc:
-        print(f"[marshal] price table unavailable: {exc}; costs will be unpriced", file=sys.stderr)
-        return PriceTable({})
-
-
 class CollectResult(BaseModel):
     """A run's work surfaced read-only for the driver to review.
 
@@ -1115,8 +1105,8 @@ class BenchmarkResult(BaseModel):
     """Same task run through N strategies, compared on measured cost/latency/outcome (derived).
 
     `cheapest`/`fastest` name the winning client among *comparable* strategies only - succeeded,
-    and (for cheapest) with a known cost (native/admin-api/estimated, never `unavailable`). None when
-    no strategy qualifies. The per-strategy rows carry `source` so an estimate is never read as truth.
+    and (for cheapest) with a known cost (native/admin-api, never `unavailable`). None when
+    no strategy qualifies. The per-strategy rows carry `source` for audit.
     """
 
     task_id: str
@@ -1167,7 +1157,6 @@ class Fleet:
         allow_unsafe_commands: bool = False,
         integrate_run_hooks: bool = False,
         retries: RetryPolicy | None = None,
-        prices: PriceTable | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
         run_gate: threading.Semaphore | None = None,
         budgets: list[BudgetSpec] | None = None,
@@ -1196,7 +1185,6 @@ class Fleet:
         self.usage = UsageTracker(base / "usage")
         self.logs = RunLogStore(base / "logs")
         self.backends: dict[str, CodingAgentBackend] = dict(backends)
-        self.prices = prices if prices is not None else _load_default_prices()
         # Provider usage-API resolvers (keyed by a client's `usage_api`) that backfill REAL cost from a
         # provider's ledger after a run. Injectable for tests; defaults to the built-ins (EastRouter).
         self.cost_resolvers: dict[str, CostResolver] = (
@@ -1499,7 +1487,7 @@ class Fleet:
             with gate:
                 result, attempts = self._run_with_retries(backend, req.task, opts, run_id)
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
-            self._price_usage(usage, req.model)      # normalize cost + source (estimate/unavailable)
+            self._price_usage(usage, req.model)      # normalize cost + source (unavailable unless native)
             self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
             # The workspace's optional verify gate: only a would-be-SUCCEEDED run that actually
@@ -1729,39 +1717,21 @@ class Fleet:
             )
 
     def _price_usage(self, usage: UsageRecord | None, model: str | None) -> None:
-        """Normalize cost + source in place: keep native cost, else estimate, else unavailable.
-
-        `source` describes how we know the COST. Tokens are kept regardless; a tokened run with no
-        price is `unavailable` (cost unknown), never a misleading $0.
-        """
+        """Normalize cost + source in place: keep native cost, else unavailable (tokens kept)."""
         if usage is None:
             return
         if usage.source is UsageSource.NATIVE:
             return  # backend authoritatively reported the cost (a real $0 included) - never override
-        if usage.input_tokens + usage.output_tokens <= 0:
-            usage.cost_usd = 0.0
-            usage.source = UsageSource.UNAVAILABLE
-            return
-        est = self.prices.estimate(
-            model or usage.model,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cache_read_tokens=usage.cache_read_tokens,
-        )
-        if est is None:
-            usage.cost_usd = 0.0
-            usage.source = UsageSource.UNAVAILABLE  # unpriced -> cost unavailable (tokens kept)
-        else:
-            usage.cost_usd = est
-            usage.source = UsageSource.ESTIMATED
+        usage.cost_usd = 0.0
+        usage.source = UsageSource.UNAVAILABLE
 
     def _apply_external_cost(self, usage: UsageRecord | None, req: RunRequest, *, start_iso: str) -> None:
         """Override cost with the REAL charge from a provider usage-API, when the client opts in.
 
         Runs after `_price_usage`: if the client declares a `usage_api` (e.g. "eastrouter") and the
-        provider can attribute an actual cost to this run, replace the estimate with that real cost
-        (`source = admin-api`). A failure or an unattributable run is a no-op - the estimate/unavailable
-        cost stands. This must NEVER raise: a completed run is done, cost reconciliation is best-effort.
+        provider can attribute an actual cost to this run, replace unavailable with that real cost
+        (`source = admin-api`). A failure or an unattributable run is a no-op - unavailable stands.
+        This must NEVER raise: a completed run is done, cost reconciliation is best-effort.
         """
         if usage is None or not req.usage_api:
             return

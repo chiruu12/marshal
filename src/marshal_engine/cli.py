@@ -197,12 +197,11 @@ def _format_budget_amount(amount: float, *, known: bool) -> str:
 
 
 def _format_cost_split(b: Bucket) -> str:
-    """Compact native/admin-api/est split; zeros collapsed so the row stays readable."""
+    """Compact native/admin-api split; zeros collapsed so the row stays readable."""
     parts: list[str] = []
     for label, val in (
         ("native", b.cost_native),
         ("admin-api", b.cost_admin_api),
-        ("est", b.cost_estimated),
     ):
         if val > 0:
             parts.append(f"{label} ${val:.4f}")
