@@ -8,6 +8,11 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+- **Brand assets refined.** The wordmark lockup ships on a transparent background so it renders
+  correctly on light and dark surfaces; the crown geometry in `logo.svg` / `logo-dark.svg` /
+  `logo-mono.svg` matches it.
+
 ### Fixed
 - **CLI cost display no longer implies unmetered runs were free.** `marshal status` and `marshal
   usage` human output render `unavailable` when a run's cost provenance is unknown (or missing),

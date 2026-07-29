@@ -1,9 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <!-- Monochrome. Inherits its colour from context via currentColor - for docs,
-       dark-mode stylesheets, and single-colour print. -->
+  <!-- Monochrome: inherits its colour from context via currentColor. -->
   <g fill="currentColor">
-    <path d="M 50 18 L 64 62 L 57.5 62 L 50 51 L 42.5 62 L 36 62 Z"/>
-    <path d="M 6 40 L 33.5 62 L 8.5 62 Z"/>
-    <path d="M 94 40 L 66.5 62 L 91.5 62 Z"/>
+    <path d="M 50 22 L 63 68 L 55 68 L 50 57 L 45 68 L 37 68 Z"/>
+    <path d="M 8 38 L 34.5 68 L 15 68 Z"/>
+    <path d="M 92 38 L 65.5 68 L 85 68 Z"/>
   </g>
 </svg>
