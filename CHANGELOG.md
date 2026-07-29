@@ -9,6 +9,10 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **`claude plugin validate --strict` failed.** `marketplace.json` had no description, which the
+  strict validator treats as an error and which blocks submission to the community plugin registry.
+
+### Fixed
 - **Install instructions now describe an install that works.** The README pointed at
   `uv tool install "MarshalFleet[mcp]"`, which fails because the package is not on PyPI yet. It now
   leads with the Claude Code plugin and a verified `git+https://` install, and says plainly that

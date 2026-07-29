@@ -340,3 +340,13 @@ def test_plugin_manifests_list_every_backend() -> None:
             assert token.lower() in low or name.lower() in low, (
                 f"backend {name!r} is missing from a plugin manifest description"
             )
+
+
+def test_marketplace_manifest_has_a_description() -> None:
+    """`claude plugin validate --strict` fails without one, which blocks registry submission."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    market = json.loads((root / ".claude-plugin" / "marketplace.json").read_text())
+    assert market.get("description", "").strip(), "marketplace.json needs a description"
