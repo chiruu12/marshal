@@ -36,6 +36,8 @@ blocking `run` never freezes the event loop: the driver can still poll `status`/
 
 from __future__ import annotations
 
+from . import __version__
+
 import os
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -179,7 +181,10 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     from mcp.server.mcpserver import MCPServer
 
     registry = target if isinstance(target, WorkspaceRegistry) else WorkspaceRegistry.for_service(target)
-    app = MCPServer("marshal")
+    # Report our version in the initialize handshake. Without it every client sees an empty
+    # string, so "which Marshal am I talking to?" is unanswerable from the client side - exactly
+    # the question you ask first when a tool misbehaves.
+    app = MCPServer("marshal", version=__version__)
     # Captured ONCE at construction: mid-session os.environ mutation must not widen authority.
     allow_mcp_registration = os.environ.get(_ALLOW_MCP_REGISTRATION_ENV) == "1"
 

@@ -663,3 +663,21 @@ def test_quickstart_claims_are_true_of_the_actual_tool_surface(
     assert "run_workflow" in tools
     assert "only step that touches" not in " ".join(payload["the_loop"])
     assert "run_workflow" in payload["safety"]
+
+
+def test_server_reports_its_version_in_the_handshake(tmp_path: Path) -> None:
+    """An empty serverInfo.version makes "which Marshal is this?" unanswerable from the client.
+
+    That is the first question you ask when a tool misbehaves, so the handshake must answer it.
+    """
+    import marshal_engine
+    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
+    from marshal_engine.mcp_server import build_app
+    from marshal_engine.service import MarshalService
+
+    cfg = FleetConfig(
+        clients={"c": ClientConfig(name="c", backend="cursor", permission=PermissionMode.SAFE_EDIT)}
+    )
+    app = build_app(MarshalService(tmp_path, cfg, backends={}))
+    assert app.version == marshal_engine.__version__
+    assert app.version, "serverInfo.version must not be empty"

@@ -11,6 +11,9 @@ versions may include breaking API changes until 1.0.
 ### Fixed
 - **`claude plugin validate --strict` failed.** `marketplace.json` had no description, which the
   strict validator treats as an error and which blocks submission to the community plugin registry.
+- **The MCP server reported an empty version.** `serverInfo.version` was blank in every initialize
+  handshake, so a client could not answer "which Marshal am I talking to?" - the first question you
+  ask when a tool misbehaves. It now reports the package version.
 
 ### Fixed
 - **Install instructions now describe an install that works.** The README pointed at
