@@ -53,6 +53,29 @@ def test_build_invocation_model_and_readonly(backend: CodexBackend) -> None:
     assert "read-only" in argv
 
 
+def test_build_invocation_stock_openai_gpt55(backend: CodexBackend) -> None:
+    """Stock OpenAI Codex path: gpt-5.5, no usage_api — plain `codex exec` invocation."""
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="fix the bug"),
+        _opts(permission=PermissionMode.SAFE_EDIT, model="gpt-5.5"),
+    )
+    assert argv == [
+        "codex",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "workspace-write",
+        "-m",
+        "gpt-5.5",
+        "-C",
+        "/tmp/wt",
+        "fix the bug",
+    ]
+
+
 def test_build_invocation_resume(backend: CodexBackend) -> None:
     argv = backend.build_invocation(TaskSpec(id="t1", goal="continue"), _opts(session_id="sess-123"))
     i = argv.index("resume")
