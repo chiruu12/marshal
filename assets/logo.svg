@@ -1,20 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <!--
-    Marshal mark - dispatch. One origin fans out to four lanes, each ending in its
-    own agent. Lane lengths are deliberately unequal: fleet agents finish at
-    different times, and Marshal never pretends otherwise.
-    Open geometry (no closed outline), 4-unit stroke, 18-unit lane spacing - stays
-    four distinct lanes at 32x32 instead of filling into a blob.
-  -->
-  <g fill="none" stroke="#E8642C" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M 22 50 L 40 22 L 62 22"/>
-    <path d="M 22 50 L 36 40 L 78 40"/>
-    <path d="M 22 50 L 36 60 L 70 60"/>
-    <path d="M 22 50 L 40 78 L 54 78"/>
+  <g fill="#FF6B1A">
+    <path d="M 50 19 L 63 54 L 51.5 74 L 48.5 74 L 37 54 Z"/>
+    <path d="M 5 37 L 39.5 55.5 L 46.5 74 L 13 74 Z"/>
+    <path d="M 41.5 58 L 44.5 74 L 41 74 Z"/>
+    <path d="M 95 37 L 60.5 55.5 L 53.5 74 L 87 74 Z"/>
+    <path d="M 58.5 58 L 55.5 74 L 59 74 Z"/>
   </g>
-  <circle cx="22" cy="50" r="7" fill="#E8642C"/>
-  <circle cx="66" cy="22" r="4.5" fill="#E8642C"/>
-  <circle cx="82" cy="40" r="4.5" fill="#E8642C"/>
-  <circle cx="74" cy="60" r="4.5" fill="#E8642C"/>
-  <circle cx="58" cy="78" r="4.5" fill="#E8642C"/>
 </svg>

@@ -4,7 +4,7 @@
 
 | Token | Hex | Use |
 |-------|-----|-----|
-| Marshal Orange | `#E8642C` | All mark geometry, wordmark logotype, flow arrows |
+| Marshal Orange | `#FF6B1A` | All mark geometry, wordmark logotype, flow arrows |
 | Label Grey | `#6B7280` | Architecture box strokes, labels, merge-back arrow |
 | Surface Grey | `#F3F4F6` | Architecture box fills |
 
@@ -16,7 +16,7 @@ length, each ending in an agent. Use for light backgrounds, favicons, and genera
 Square viewBox, no width/height, so it scales freely. Verified legible down to 32x32.
 
 ### `logo-dark.svg`
-Identical geometry to `logo.svg`. The same `#E8642C` orange achieves ≥ 4.7:1 contrast against
+Identical geometry to `logo.svg`. The same `#FF6B1A` orange achieves ≥ 4.7:1 contrast against
 typical dark surfaces (`#1A1A1A` and darker), so no colour adjustment is applied — a lighter tint
 would weaken brand consistency without a real legibility gain.
 
