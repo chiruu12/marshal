@@ -575,8 +575,14 @@ def test_usage_window_param_mapping(
     svc = build_service()
     app = build_app(svc)
 
-    # Stamp one event in the (far) past, one at "now". The past one is outside every window.
+    # Stamp one event in the (far) past, one firmly inside every rolling window. Pin session_start
+    # before the "new" event so the session filter is deterministic (not wall-clock-relative).
+    from datetime import timedelta
+
     now = datetime.now(timezone.utc)
+    session_start = now - timedelta(hours=1)
+    new_ts = (now - timedelta(minutes=1)).isoformat()
+    svc.fleet.session_start = session_start
     u = tmp_path / "ledger" / "usage"
     u.mkdir(parents=True)
     (u / "events.jsonl").write_text(
@@ -584,7 +590,7 @@ def test_usage_window_param_mapping(
             ts="2020-01-01T00:00:00Z", run_id="old", backend="opencode", cost_usd=1.00,
         ).model_dump_json() + "\n"
         + UsageEvent(
-            ts=now.isoformat(), run_id="new", backend="opencode", cost_usd=0.01,
+            ts=new_ts, run_id="new", backend="opencode", cost_usd=0.01,
         ).model_dump_json() + "\n"
     )
     # Point the service's UsageTracker at our test ledger (replacing the default empty one).
@@ -620,15 +626,13 @@ def test_usage_window_param_mapping(
     assert out_day["since"] is not None
     assert out_day["totals"]["runs"] == 1
 
-    # session = since = svc.session_start (an event stamped at `now` is within the session window)
+    # session = since = svc.session_start; the "new" event is after that pinned start.
     out_session = _call("session")
     assert out_session["window"] == "session"
     since = datetime.fromisoformat(out_session["since"])
-    # session_start may be a few microseconds newer than `now`, so allow a small tolerance.
-    assert abs((since - svc.fleet.session_start).total_seconds()) < 1
-    # The "new" event at `now` is in [session_start, ...] (or its very near boundary); the 2020
-    # event is excluded. We assert the 2020 event is excluded, which is the contract that matters.
-    assert out_session["totals"]["runs"] in (0, 1)  # 0 if `now` < session_start, 1 otherwise
+    assert since == session_start
+    assert out_session["totals"]["runs"] == 1
+    assert abs(out_session["totals"]["cost_usd"] - 0.01) < 1e-9
     # Windowed JSON includes the new by_backend_model key
     assert "by_backend_model" in out_session
 

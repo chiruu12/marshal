@@ -30,7 +30,7 @@ from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.config import BudgetSpec
 from marshal_engine.eastrouter import ExternalCost
 from marshal_engine import fleet as fleet_mod
-from marshal_engine.fleet import Fleet, RunManyJob, RunRequest, _active_runs_guard, _register_inflight_run
+from marshal_engine.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
 from marshal_engine.retry import RetryPolicy
 from marshal_engine.state import FleetState, RunRecord
 from marshal_engine.worktree import WorktreeError
@@ -1665,11 +1665,14 @@ def test_check_budget_no_budgets_is_a_noop(
     assert capsys.readouterr().err == ""
 
 
-def test_check_budget_runs_before_worktree(repo: Path) -> None:
-    # The check is the FIRST statement of _start: it runs BEFORE the worktree is created, so a
-    # loud warning doesn't cost a worktree provision. Pin the order by spying on worktree.create
-    # on a normal advisory (soft-warn) path.
+def test_check_budget_runs_before_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The budget gate is the FIRST statement of _start: it runs BEFORE the worktree is created, so a
+    # loud warning doesn't cost a worktree provision. Pin the order with a shared call list.
     from unittest.mock import MagicMock
+
+    from marshal_engine import budgets as budgets_mod
 
     fleet = Fleet(
         repo,
@@ -1677,12 +1680,26 @@ def test_check_budget_runs_before_worktree(repo: Path) -> None:
         budgets=[BudgetSpec(backend="metered", window="week", limit_usd=0.10)],
     )
     _seed_run_event(fleet, cost=1.0)
+    order: list[str] = []
+    real_check = budgets_mod.check_budget
+
+    def _spy_check(*args: object, **kwargs: object) -> object:
+        order.append("budget")
+        return real_check(*args, **kwargs)
+
     create = MagicMock(side_effect=fleet.worktrees.create)
-    fleet.worktrees.create = create  # type: ignore[method-assign]
+
+    def _spy_create(*args: object, **kwargs: object) -> object:
+        order.append("worktree")
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(budgets_mod, "check_budget", _spy_check)
+    fleet.worktrees.create = _spy_create  # type: ignore[method-assign]
     fleet.run(
         "metered", TaskSpec(id="ord", goal="x"),
         permission=PermissionMode.SAFE_EDIT, ts="2026-06-19T00:00:00Z",
     )
+    assert order[:2] == ["budget", "worktree"], f"budget must precede worktree; got {order}"
     assert create.call_count == 1  # the worktree was created (budget is advisory, not blocking)
 
 
@@ -2531,8 +2548,10 @@ def test_a_run_records_its_pid_start_time(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="pst1", goal="x"))
     stored = fleet.state.get(rec.run_id)
-    # The run is finished, so pid is cleared - but the identity pair was recorded while it ran.
-    assert stored.pid_start_time is None or isinstance(stored.pid_start_time, str)
+    # A run that reached a live pid must have stamped the identity pair (pid + start time).
+    # `ps -o lstart=` shape is a non-empty string with a clock (`HH:MM:SS`).
+    assert isinstance(stored.pid_start_time, str) and stored.pid_start_time.strip()
+    assert ":" in stored.pid_start_time
 
 
 def test_cancel_before_the_pid_is_known_still_stops_the_agent(
@@ -2543,31 +2562,73 @@ def test_cancel_before_the_pid_is_known_still_stops_the_agent(
     its worktree behind an already-terminal record."""
     import os as _os
 
-    from marshal_engine.fleet import _inflight_handle, _register_inflight_run
+    from marshal_engine.fleet import _inflight_handle
 
     killed: list[int] = []
-    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+    killed_event = threading.Event()
 
-    fleet = Fleet(repo, {"writer": _Writer()})
-    run_id = "early.writer.deadbeef"
-    _register_inflight_run(fleet.state.dir, run_id)  # in flight, pid not yet known
-    fleet.state.add(
-        RunRecord(run_id=run_id, task_id="early", backend="writer", status="running")
-    )
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        killed.append(pgid)
+        killed_event.set()
 
-    fleet.cancel_run(run_id)  # cancel beats the pid
-    assert killed == [], "nothing to signal yet"
-    handle = _inflight_handle(fleet.state.dir, run_id)
-    assert handle is not None and handle.cancel_requested
+    monkeypatch.setattr(_os, "killpg", _fake_killpg)
 
-    # The pid arrives; the pending cancel must be applied instead of silently dropped.
-    fleet.state.update(run_id, pid=4242)
-    with _active_runs_guard:
-        handle.pid = 4242
-        pending = handle.cancel_requested and not handle.exited
-    if pending:
-        _os.killpg(4242, 15)
-    assert killed == [4242]
+    ready = threading.Event()
+    release = threading.Event()
+
+    class _HoldsBeforePid(CodingAgentBackend):
+        """Parks before publishing a pid so cancel can win the race, then drives opts.on_pid."""
+
+        name = "holder"
+        binary = "python"
+        capabilities = Capabilities()
+
+        def check_available(self) -> bool:
+            return True
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return [sys.executable, "-c", "print('x')"]
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(
+            self, raw_stdout: str, raw_stderr: str, exit_code: int
+        ) -> AgentResult:
+            return AgentResult(
+                status=RunStatus.EXITED_CLEAN, text="x", exit_code=exit_code
+            )
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            ready.set()
+            assert release.wait(timeout=30), "test never released the pre-pid hold"
+            # Same callback the run loop wires (`_record_pid`): publish + apply pending cancel.
+            if opts.on_pid is not None:
+                opts.on_pid(4242)
+            if opts.on_exit is not None:
+                opts.on_exit()
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="x")
+
+    fleet = Fleet(repo, {"holder": _HoldsBeforePid()})
+    try:
+        run_id = fleet.spawn(
+            RunRequest(backend_name="holder", task=TaskSpec(id="early", goal="x"))
+        )
+        assert ready.wait(timeout=30), "backend never reached the pre-pid hold"
+        handle = _inflight_handle(fleet.state.dir, run_id)
+        assert handle is not None and handle.pid is None
+
+        fleet.cancel_run(run_id)  # cancel beats the pid
+        assert killed == [], "nothing to signal yet"
+        assert handle.cancel_requested
+
+        # Pid arrives through the production on_pid path; pending cancel must killpg.
+        release.set()
+        assert killed_event.wait(timeout=30), "pending cancel never signalled the agent"
+        assert killed == [4242]
+    finally:
+        release.set()
+        fleet.shutdown()
 
 
 def test_cancel_does_not_signal_after_the_child_is_reaped(

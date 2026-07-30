@@ -146,7 +146,8 @@ def test_torn_line_enforce_fails_closed_actionable(
         gate.begin(tracker, SESSION, [budget], _scope())
     msg = str(ei.value)
     assert "events.jsonl" in msg
-    assert "1" in msg
+    # Phrase-bound so "$100.0" / timestamps / paths cannot satisfy the skipped-count claim.
+    assert "1 unreadable event" in msg
     assert "repair or remove the torn line" in msg
     assert gate._held == {}
     # Strict path must not emit the lenient reporting warn.
