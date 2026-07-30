@@ -15,6 +15,7 @@ Design rules (see docs/design.md):
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -226,10 +227,11 @@ class CodingAgentBackend(ABC):
                 text=True,
                 start_new_session=True,        # own process group so a timeout can kill the tree
             )
-        except FileNotFoundError:
+        except OSError as exc:
+            # FileNotFoundError, PermissionError (EACCES), ETXTBSY, etc. — never escape run().
             return AgentResult(
                 status=RunStatus.FAILED,
-                error=f"{self.name}: binary {self.binary!r} not found on PATH",
+                error=_spawn_os_error(self.name, self.binary, exc),
                 duration_ms=_elapsed_ms(),
             )
 
@@ -326,6 +328,20 @@ def _drain(proc: subprocess.Popen[str]) -> tuple[str, str]:
     except subprocess.TimeoutExpired as exc:
         proc.poll()  # non-blocking: reap the killed leader now (a setsid'd survivor keeps the pipe)
         return _as_text(exc.stdout), _as_text(exc.stderr)
+
+
+def _spawn_os_error(name: str, binary: str, exc: OSError) -> str:
+    """Actionable AgentResult.error when Popen cannot start the backend binary."""
+    if isinstance(exc, FileNotFoundError) or exc.errno == errno.ENOENT:
+        return f"{name}: binary {binary!r} not found on PATH"
+    if isinstance(exc, PermissionError) or exc.errno == errno.EACCES:
+        return f"{name}: binary {binary!r} not executable (permission denied)"
+    if exc.errno == errno.ETXTBSY:
+        return f"{name}: binary {binary!r} busy (text file busy; try again later)"
+    detail = exc.strerror or str(exc)
+    if exc.errno is not None:
+        return f"{name}: failed to spawn {binary!r}: [Errno {exc.errno}] {detail}"
+    return f"{name}: failed to spawn {binary!r}: {detail}"
 
 
 def _as_text(value: object) -> str:

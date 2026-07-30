@@ -10,32 +10,50 @@ It deliberately does NOT retry:
   * genuine task failures (the agent ran and produced a wrong/erroring result) - a retry just
     spends money to fail again.
 The marker list is intentionally conservative: a false positive wastes a whole run.
+
+HTTP status codes (429/502/503/504) only count when framed as transport/provider errors
+(``http 429``, ``status 503``, ``error code: 429``, or a bounded code next to a known reason
+phrase). A bare digit substring in task output must not trigger a retry.
 """
 
 from __future__ import annotations
+
+import re
 
 from pydantic import BaseModel
 
 from .types import AgentResult, RunStatus
 
 # Lowercased substrings that mark an INFRASTRUCTURE / transport failure (not a task failure),
-# matched against the failed result's error text.
+# matched against the failed result's error text. No bare HTTP status digits here — those need
+# framing (see ``_TRANSIENT_STATUS_RE``) so agent output that merely mentions a code is ignored.
 TRANSIENT_MARKERS: tuple[str, ...] = (
     "database is locked",       # opencode / sqlite contention from a sibling run
     "rate limit",
     "rate_limit",
-    "429",
     "too many requests",
     "overloaded",
-    "502",
-    "503",
-    "504",
     "service unavailable",
     "temporarily unavailable",
     "connection reset",
     "connection refused",
     "econnreset",
     "try again",
+)
+
+# Status codes only with HTTP/provider framing, or a word-bounded code next to a reason phrase.
+_TRANSIENT_STATUS_RE = re.compile(
+    r"(?:"
+    r"https?(?:/\d+\.\d)?\s*"              # HTTP 429 / HTTP/1.1 503
+    r"|status(?:\s*code)?\s*[:=]?\s*"     # status 503 / status code: 502
+    r"|error(?:\s*code)?\s*[:=]?\s*"      # error 429 / error code: 429
+    r"|code\s*[:=]\s*"                    # code: 429 (colon/equals required)
+    r")"
+    r"(?:429|502|503|504)\b"
+    r"|"
+    r"\b(?:429|502|503|504)\b\s*[-:]?\s*"
+    r"(?:too many|rate[_ ]?limit|bad gateway|service unavailable|gateway timeout|overloaded)",
+    re.IGNORECASE,
 )
 
 
@@ -49,7 +67,11 @@ def is_transient_failure(result: AgentResult) -> bool:
     if result.status is not RunStatus.FAILED:
         return False
     text = (result.error or "").lower()
-    return any(marker in text for marker in TRANSIENT_MARKERS)
+    if not text:
+        return False
+    if any(marker in text for marker in TRANSIENT_MARKERS):
+        return True
+    return _TRANSIENT_STATUS_RE.search(text) is not None
 
 
 class RetryPolicy(BaseModel):
