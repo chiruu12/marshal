@@ -205,6 +205,25 @@ def test_pagination_finds_records_beyond_the_first_page() -> None:
     assert ext is not None and ext.cost_usd == 0.005  # found despite being past the first page
 
 
+def test_pagination_does_not_stop_on_a_page_of_unusable_rows() -> None:
+    # A FULL page whose rows all lack a usable `amount_usd` is skipped for attribution, but it is
+    # not the last page: terminating on the usable count would read it as empty/short and never
+    # reach page 1, silently losing a real charge.
+    page0 = _usage(
+        {"model": "other/model", "prompt_tokens": 100, "completion_tokens": 10,
+         "created_at": "2026-06-28T12:00:01+00:00"},                      # no amount_usd
+        {"model": "other/model", "amount_usd": None, "prompt_tokens": 100,
+         "completion_tokens": 10, "created_at": "2026-06-28T12:00:02+00:00"},  # null amount_usd
+    )
+    page1 = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=7000, output_tokens=150,
+        api_key="sk-test", attempts=1, http=_paged_getter({0: page0, 2: page1}), page_size=2,  # type: ignore[arg-type]
+    )
+    assert ext is not None and ext.cost_usd == 0.005
+
+
 def test_pagination_terminates_when_offset_ignored() -> None:
     # the API ignores `offset` and returns the same FULL page forever; the no-progress guard must
     # stop the walk (not hang) and still attribute the in-window records on that page.

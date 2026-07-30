@@ -125,14 +125,20 @@ def _parse_amount_usd(value: object) -> float | None:
     return None
 
 
-def _parse_records(raw: str) -> list[_Rec]:
+def _parse_records(raw: str) -> tuple[list[_Rec], int]:
+    """Usable records plus the RAW row count the page carried.
+
+    Pagination must terminate on the raw count, not on the usable ones: a full page whose rows
+    were all skipped (no usable ``amount_usd``) would otherwise read as empty/short and stop the
+    walk before reaching later pages that do hold charges.
+    """
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return []
+        return [], 0
     rows = data.get("data") if isinstance(data, dict) else data
     if not isinstance(rows, list):
-        return []
+        return [], 0
     out: list[_Rec] = []
     for r in rows:
         if not isinstance(r, dict):
@@ -154,7 +160,7 @@ def _parse_records(raw: str) -> list[_Rec]:
                 created=_parse_dt(r.get("created_at")),
             )
         )
-    return out
+    return out, len(rows)
 
 
 def _rec_key(r: _Rec) -> tuple[str, str, float, int, int]:
@@ -186,16 +192,16 @@ def _collect_window_records(
         raw = getter(url, key, timeout_s)
         if raw is None:
             return None if page == 0 else out
-        recs = _parse_records(raw)
-        if not recs:
+        recs, raw_rows = _parse_records(raw)
+        if raw_rows == 0:
             break
         fresh = [r for r in recs if _rec_key(r) not in seen]
-        if not fresh:
+        if not fresh and recs:
             break  # the API returned no new records (e.g. ignored offset) - stop, never loop forever
         for r in fresh:
             seen.add(_rec_key(r))
             out.append(r)
-        if len(recs) < page_size:
+        if raw_rows < page_size:
             break  # a short page is the last page
         newest = max((r.created for r in recs if r.created is not None), default=None)
         if newest is not None and newest < lo:
