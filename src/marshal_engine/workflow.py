@@ -216,10 +216,22 @@ def load_workflow(path: Path | str) -> WorkflowSpec:
 
 
 def find_workflow(name: str, directory: Path | str) -> Path:
-    """Locate ``<directory>/<name>.yaml`` (or ``.yml``). Raises ConfigError if absent."""
+    """Locate ``<directory>/<name>.yaml`` (or ``.yml``). Raises ConfigError if absent or outside.
+
+    Containment is enforced HERE, not only in the caller that handles explicit paths: a bare name
+    is still a path fragment, so ``find_workflow("../evil", workflows_dir)`` would otherwise
+    resolve to a file outside the workspace's ``workflows/`` directory and feed its recipe -
+    attacker-authored goals that can ``integrate`` with ``auto: true`` - straight into the fleet.
+    """
     d = Path(directory)
+    base = d.resolve()
     for ext in (".yaml", ".yml"):
         candidate = d / f"{name}{ext}"
+        if not candidate.resolve().is_relative_to(base):
+            raise ConfigError(
+                f"workflow {name!r} resolves outside {base}; workflows must live in the "
+                "workspace's workflows/ directory"
+            )
         if candidate.exists():
             return candidate
     raise ConfigError(f"no workflow {name!r} in {d}; create {d / (name + '.yaml')} (see examples/workflows/)")

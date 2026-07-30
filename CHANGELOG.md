@@ -22,6 +22,13 @@ versions may include breaking API changes until 1.0.
   outside the managed `{prefix}/` namespace (fail-closed); the worktree directory is still
   reclaimed, and `clean` reports the refusal under `errors`. `SECURITY.md` no longer overstates
   worktree isolation as a filesystem sandbox.
+- **Workflow path loading is contained to the workspace's `workflows/` directory.**
+  `run_workflow` accepted any `.yaml`/`.yml` path (absolute or `../` traversal) and
+  `find_workflow` composed bare names without a resolve check, so a caller could feed an
+  attacker-authored recipe — including `integrate` with `auto: true` — into the fleet. Both
+  now mirror team-file containment: bare names and path forms must resolve inside
+  `workflows/`. The CLI still searches `workflows/` and `examples/workflows/` on its own
+  discovery path.
 - **First-run docs and missing-config hints no longer dead-end.** SETUP/usage install
   commands match the working `git+https://` path (MarshalFleet is not on PyPI yet); README's
   60-second path now scaffolds a config via `marshal init`, says the scaffold ships its clients
