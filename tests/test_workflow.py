@@ -225,6 +225,22 @@ def test_find_and_list_workflows(tmp_path: Path) -> None:
     assert names == ["review"]
 
 
+@pytest.mark.parametrize("name", ["../evil", "../../evil", "sub/../../evil"])
+def test_find_workflow_refuses_a_name_that_escapes_the_directory(
+    tmp_path: Path, name: str
+) -> None:
+    """REGRESSION: a bare name is still a path fragment. `../evil` loaded a workflow from
+    outside workflows/, feeding attacker-authored goals (incl. auto-integrate) into the fleet."""
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    _write(
+        tmp_path / "evil.yaml",
+        "phases:\n  - run: fan_out\n    clients: [a]\n    goal: g\n",
+    )
+    with pytest.raises(ConfigError, match="outside"):
+        find_workflow(name, workflows)
+
+
 # --- runner ------------------------------------------------------------------------------------
 
 

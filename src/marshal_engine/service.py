@@ -817,8 +817,19 @@ class MarshalService:
         self, name: str, inputs: dict[str, Any] | None = None, *, max_concurrency: int = 4
     ) -> WorkflowResult:
         """Run a workflow by name (or path). Validates the recipe before any agent spawns."""
-        path = Path(name)
-        if path.suffix in (".yaml", ".yml"):
+        # A workflow file can spawn the fleet and carry `integrate` with `auto: true`, so it must
+        # come from THIS repo's workflows/ directory. Without containment, `name="../../evil.yaml"`
+        # (or an absolute path) would let a caller hand fully attacker-authored recipes to the
+        # fleet. A bare name is resolved against workflows_dir; a path is accepted only if it
+        # lands inside it.
+        if Path(name).suffix in (".yaml", ".yml"):
+            directory = self.workflows_dir.resolve()
+            path = (directory / name if not Path(name).is_absolute() else Path(name)).resolve()
+            if not path.is_relative_to(directory):
+                raise ConfigError(
+                    f"workflow file {name!r} is outside {directory}; workflows must live in the "
+                    "workspace's workflows/ directory"
+                )
             if not path.exists():
                 raise ConfigError(f"no workflow file at {path}")
         else:
