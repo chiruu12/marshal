@@ -7,6 +7,8 @@ Uses a dummy backend over the local Python interpreter - portable, fast, no real
 
 from __future__ import annotations
 
+import errno
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -220,6 +222,60 @@ def test_run_missing_binary(tmp_path: Path) -> None:
     res = b.run(_task(), RunOpts(cwd=tmp_path))
     assert res.status is RunStatus.FAILED
     assert "not found" in (res.error or "")
+
+
+def test_run_non_executable_binary_returns_agent_result(tmp_path: Path) -> None:
+    # EACCES on the backend binary must not escape run() as a raw PermissionError.
+    binary = tmp_path / "noexec-backend"
+    binary.write_text("#!/bin/sh\necho hi\n")
+    binary.chmod(0o644)  # readable but not executable
+    res = _Dummy([str(binary)]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    err = res.error or ""
+    assert "not executable" in err
+    assert str(binary) in err
+
+
+def test_run_popen_etxtbsy_returns_agent_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _busy(*_a: object, **_k: object) -> None:
+        raise OSError(errno.ETXTBSY, "Text file busy", "busy-binary")
+
+    monkeypatch.setattr(subprocess, "Popen", _busy)
+    res = _Dummy(["busy-binary"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    err = res.error or ""
+    assert "busy-binary" in err
+    assert "busy" in err.lower() or "text file busy" in err.lower()
+
+
+def test_run_popen_eacces_message_names_binary_and_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _denied(*_a: object, **_k: object) -> None:
+        raise PermissionError(errno.EACCES, "Permission denied", "locked-bin")
+
+    monkeypatch.setattr(subprocess, "Popen", _denied)
+    res = _Dummy(["locked-bin"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    err = res.error or ""
+    assert "locked-bin" in err
+    assert "not executable" in err or "permission denied" in err.lower()
+
+
+def test_run_popen_other_oserror_returns_agent_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError(errno.EIO, "Input/output error", "weird-bin")
+
+    monkeypatch.setattr(subprocess, "Popen", _boom)
+    res = _Dummy(["weird-bin"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.FAILED
+    err = res.error or ""
+    assert "weird-bin" in err
+    assert str(errno.EIO) in err or "Input/output error" in err
 
 
 class _PartialUsage(CodingAgentBackend):
