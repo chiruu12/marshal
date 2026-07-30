@@ -59,11 +59,12 @@ def test_write_is_overwrite_semantics(tmp_path) -> None:
 
 
 def test_unsafe_run_id_is_rejected(tmp_path) -> None:
-    # Defense-in-depth: a run_id containing a path separator would let a malformed id write
-    # outside the logs dir. Run ids in production are `task.backend.<uuid8>` and safe, but the
-    # store never trusts its caller. Locks the contract that file paths stay inside self.dir.
+    # Defense-in-depth via the shared validate_run_id: a run_id containing a path separator
+    # (or leading `.`/`-`, unicode, over-length) would let a malformed id write outside the
+    # logs dir. Run ids in production are `task.backend.<uuid8>` and safe, but the store never
+    # trusts its caller. Locks the contract that file paths stay inside self.dir.
     store = RunLogStore(tmp_path / "logs")
-    for bad in ("../etc", "..", ".", "a/b", "a\\b", ""):
+    for bad in ("../etc", "..", ".", "a/b", "a\\b", "", ".hidden", "-lead", "café", "a" * 129):
         with pytest.raises(ValueError):
             store.path(bad)
         with pytest.raises(ValueError):

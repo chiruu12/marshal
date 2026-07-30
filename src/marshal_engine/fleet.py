@@ -1915,7 +1915,11 @@ class Fleet:
         if run_ids is not None:
             targets: list[RunRecord] = []
             for rid in run_ids:
-                rec = self.state.get(rid)
+                try:
+                    rec = self.state.get(rid)
+                except ValueError as exc:  # unsafe id: refused, reported like any non-target
+                    result.skipped.append({"run_id": rid, "reason": str(exc)})
+                    continue
                 if rec is None:
                     result.skipped.append({"run_id": rid, "reason": "no such run"})
                 elif not _is_terminal(rec):

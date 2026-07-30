@@ -33,9 +33,16 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
   worktree under `.marshal/worktrees/`. The agent edits files there, not in your working tree.
   Driver-supplied `task_id` / run directory names are validated before any `git worktree` op:
   charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`), length-capped, and
-  the resolved path must be a strict descendant of `.marshal/worktrees/` (`is_relative_to`,
+  the   resolved path must be a strict descendant of `.marshal/worktrees/` (`is_relative_to`,
   equality with the base dir refused so cleanup cannot wipe the shared root). Hostile ids fail
   closed with a clear error — they are never sanitize-rewritten.
+- **`run_id` is validated before it touches the filesystem.** The run-handle tools (`get_run`,
+  `collect_run`, `read_run_file`, `cancel_run`, `integrate`, `clean`) locate a run by composing
+  or stat'ing `<workspace>/.marshal/runs/<run_id>.json`. A `run_id` must be a safe flat segment
+  — the same charset, leading-character, and length rules as `task_id` — before any such path
+  exists: a `../` id would otherwise resolve into *another workspace's* ledger (reading one
+  tenant's run tagged as another's) or onto an arbitrary host path as an existence oracle.
+  Ledgers, worktrees, and run state stay per-workspace; they are never shared across them.
 - **Your main branch is never touched until you explicitly integrate.** Reviewing a diff
   (`collect_run`) is read-only; merging (`integrate`) is a separate, explicit step.
 - **Permission tiers gate what an agent may do.** `read-only` (no edits), `safe-edit` (the default -

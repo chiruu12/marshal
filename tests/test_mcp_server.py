@@ -416,6 +416,39 @@ def test_tool_params_carry_schema_descriptions(
     assert spawn_props["read_paths"].get("description")
 
 
+def test_run_handle_tools_refuse_a_traversal_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # REGRESSION: a `../../<ws>/.marshal/runs/<id>` run_id stat'ed through one workspace's ledger
+    # into ANOTHER workspace's run record (cross-tenant read), and resolved any host `*.json` as
+    # an existence oracle. Every run-handle tool now gets a clean validation error (refused at
+    # the registry boundary), never a resolved foreign record or a raw traceback.
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    traversal = "../../ws_b/.marshal/runs/abc"
+    # get_run/get_run_log go through resolve_run; the rest through require_run - same refusal.
+    # The MCP SDK wraps a tool exception as ToolError("Error executing tool <name>: <cause>"),
+    # so the driver sees the refusal reason, not a traceback.
+    for tool, args in (
+        ("get_run", {"run_id": traversal}),
+        ("get_run_log", {"run_id": traversal}),
+        ("collect_run", {"run_id": traversal}),
+        ("cancel_run", {"run_id": traversal}),
+        ("commit_run", {"run_id": traversal}),
+        ("read_run_file", {"run_id": traversal, "path": "x"}),
+        ("integrate", {"run_id": traversal}),
+    ):
+        with pytest.raises(Exception, match="unsafe run_id"):
+            asyncio.run(app.call_tool(tool, args))
+
+
 def test_get_run_log_round_trips_via_call_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

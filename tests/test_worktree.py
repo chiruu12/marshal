@@ -213,6 +213,34 @@ def test_validate_worktree_id_happy_and_task_cap() -> None:
         validate_worktree_id("a" * (MAX_TASK_ID_LEN + 1), max_len=MAX_TASK_ID_LEN)
 
 
+@pytest.mark.parametrize(
+    "good_id",
+    [
+        "t1.echo.ab12cd34",  # task.backend.<uuid8> - the production shape
+        "deadbeef.first.command-code.00ff00ff",  # dotted workflow task + dashed backend
+        "a.b-c_d.x",
+        "x" * 128,  # at the shared cap (a composed run_id fits under MAX_WORKTREE_ID_LEN)
+    ],
+)
+def test_validate_run_id_accepts_production_shapes(good_id: str) -> None:
+    from marshal_engine.worktree import validate_run_id
+
+    assert validate_run_id(good_id) == good_id
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    ["", ".", "..", "../x", "foo/bar", "a\\b", ".hidden", "-lead", "café", "a\x00b", "a" * 129],
+)
+def test_validate_run_id_refuses_unsafe_ids(bad_id: str) -> None:
+    from marshal_engine.worktree import validate_run_id
+
+    # ValueError, not WorktreeError: the state/MCP boundary's input-validation error type,
+    # matching how an invalid task_id surfaces there (TaskSpec wraps WorktreeError -> ValueError).
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        validate_run_id(bad_id)
+
+
 def test_setup_failure_tears_down_and_raises(repo: Path) -> None:
     m = WorktreeManager(repo, setup_cmd=[sys.executable, "-c", "import sys; sys.exit(1)"])
     wt = m.create("setup_fail")
