@@ -53,11 +53,11 @@ def test_build_invocation_model_and_readonly(backend: CodexBackend) -> None:
     assert "read-only" in argv
 
 
-def test_build_invocation_stock_openai_gpt55(backend: CodexBackend) -> None:
-    """Stock OpenAI Codex path: gpt-5.5, no usage_api — plain `codex exec` invocation."""
+def test_build_invocation_stock_openai_gpt56_luna(backend: CodexBackend) -> None:
+    """Stock OpenAI Codex path: gpt-5.6-luna, no usage_api — plain `codex exec` invocation."""
     argv = backend.build_invocation(
         TaskSpec(id="t1", goal="fix the bug"),
-        _opts(permission=PermissionMode.SAFE_EDIT, model="gpt-5.5"),
+        _opts(permission=PermissionMode.SAFE_EDIT, model="gpt-5.6-luna"),
     )
     assert argv == [
         "codex",
@@ -69,7 +69,7 @@ def test_build_invocation_stock_openai_gpt55(backend: CodexBackend) -> None:
         "--sandbox",
         "workspace-write",
         "-m",
-        "gpt-5.5",
+        "gpt-5.6-luna",
         "-C",
         "/tmp/wt",
         "fix the bug",
@@ -196,4 +196,4 @@ def test_account_info_none_when_binary_missing(
 
 
 def test_available_models_static_playbook(backend: CodexBackend) -> None:
-    assert backend.available_models() == ["gpt-5.5"]
+    assert backend.available_models() == ["gpt-5.6-luna"]

@@ -44,8 +44,8 @@ from ..types import (
 from .base import CodingAgentBackend, parse_jsonl
 
 #: Static list — Codex has no headless ``models`` probe (``codex models`` needs a TTY).
-#: Sourced from docs/model-playbook.md (codex / gpt-5.5).
-_STATIC_MODELS: tuple[str, ...] = ("gpt-5.5",)
+#: Sourced from docs/model-playbook.md (codex / gpt-5.6-luna).
+_STATIC_MODELS: tuple[str, ...] = ("gpt-5.6-luna",)
 
 
 class CodexBackend(CodingAgentBackend):

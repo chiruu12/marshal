@@ -39,6 +39,9 @@ versions may include breaking API changes until 1.0.
   `uv tool install "MarshalFleet[mcp]"` / `pipx install "MarshalFleet[mcp]"` now that
   MarshalFleet 0.2.0 is published; the `git+https://` path is documented only for tracking
   unreleased work on `main`.
+- **Codex stock model id is `gpt-5.6-luna`.** Scaffold stub, static `available_models()`,
+  playbook, and docs now pin the ChatGPT-account Codex identifier verified with the live CLI
+  (`gpt-5.6` alone is rejected).
 
 ## [0.2.0] - 2026-07-30
 
