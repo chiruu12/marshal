@@ -41,7 +41,7 @@ marshal/
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard + duration presets
 │   ├── retry.py             # transient-failure classifier + backoff for run retries
-│   ├── env.py               # child env hygiene (VIRTUAL_ENV scrub) + user PATH recovery
+│   ├── env.py               # child env allowlist (operational + per-backend credentials) + user PATH recovery
 │   ├── logs.py              # durable per-run stdout/stderr persistence
 │   ├── layout.py            # centralized .marshal directory layout helpers
 │   ├── scaffold.py          # repo-shape-aware fleet.config.yaml scaffold

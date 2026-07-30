@@ -469,6 +469,34 @@ def test_verify_output_keeps_the_tail(repo: Path) -> None:
     assert "..." in output  # truncation is visible
 
 
+def test_verify_output_redacts_secret_straddling_tail_cap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redact before the verify tail cut so a straddling credential leaves no fragment."""
+    from marshal_engine.env import redact_secrets
+    from marshal_engine.worktree import _VERIFY_OUTPUT_CAP
+
+    secret = "sk-ant-verify-straddle-x"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    # First `keep_prefix` chars sit just before the tail boundary; the rest is retained.
+    keep_prefix = 10
+    # len(secret) + len(suffix) - keep_prefix == CAP
+    suffix_len = _VERIFY_OUTPUT_CAP + keep_prefix - len(secret)
+    assert suffix_len > 0
+    body = ("v" * 500) + secret + ("s" * suffix_len)
+    leaked_suffix = secret[keep_prefix:]
+    broken = redact_secrets(body[-_VERIFY_OUTPUT_CAP:], credential_names=["ANTHROPIC_API_KEY"])
+    assert leaked_suffix in broken  # truncate-then-redact would persist this fragment
+
+    script = f"import sys; print({body!r}); sys.exit(1)"
+    m = WorktreeManager(repo, verify_cmd=[sys.executable, "-c", script])
+    wt = m.create("verify_straddle")
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert secret not in output
+    assert leaked_suffix not in output
+
+
 def test_changed_files_detects_edits_and_additions(repo: Path) -> None:
     m = WorktreeManager(repo)
     wt = m.create("task2")

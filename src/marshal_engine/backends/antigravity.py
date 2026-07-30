@@ -104,6 +104,7 @@ _DEFAULT_UNAVAILABLE = "CLI not on PATH / not runnable"
 class AntigravityBackend(CodingAgentBackend):
     name = "antigravity"
     binary = "agy"
+    credential_env_vars = ("ANTIGRAVITY_API_KEY",)
     # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs
     # in-process via this lock, cross-process via ``_settings_file_lock`` on a sibling sidecar).
     _settings_lock = threading.Lock()

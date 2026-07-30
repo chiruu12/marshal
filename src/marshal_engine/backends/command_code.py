@@ -60,6 +60,7 @@ _STATIC_MODELS: tuple[str, ...] = ("zai-org/glm-5.2",)
 class CommandCodeBackend(CodingAgentBackend):
     name = "command-code"
     binary = "command-code"
+    credential_env_vars = ("COMMAND_CODE_API_KEY",)
     capabilities = Capabilities(
         json_output=False,
         stream_json=False,

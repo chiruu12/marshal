@@ -1,4 +1,4 @@
-"""Tests for child-process environment hygiene (VIRTUAL_ENV scrub + user-PATH recovery)."""
+"""Tests for child-process environment hygiene (allowlist + user-PATH recovery)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ import pytest
 
 import marshal_engine.env as env_mod
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.env import child_env, merge_user_path, user_path
+from marshal_engine.backends.claude_code import ClaudeCodeBackend
+from marshal_engine.backends.cursor import CursorBackend
+from marshal_engine.env import child_env, merge_user_path, redact_secrets, user_path
+from marshal_engine.logs import RunLogStore
 from marshal_engine.types import (
     AgentResult,
     Capabilities,
@@ -35,7 +38,7 @@ def _reset_user_path_cache() -> None:
     env_mod._USER_PATH_CACHE = None
 
 
-# --- child_env: existing behavior is unchanged by the new helpers -------------------------
+# --- child_env: allowlist (operational base + per-backend credentials) --------------------
 
 
 def test_child_env_strips_driver_venv_pins(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,12 +71,23 @@ def test_child_env_strips_marshal_session_vars(monkeypatch: pytest.MonkeyPatch) 
     assert "MARSHAL_REPO" not in env
 
 
-def test_child_env_marshal_prefix_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MARSHALL_X", "keep")
-    monkeypatch.setenv("NOT_MARSHAL_CONFIG", "keep")
+def test_child_env_marshal_prefix_still_scrubbed_not_prefix_siblings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # MARSHAL_* is always dropped. Near-miss names are not special-cased either: they fall under
+    # the allowlist (dropped unless operational / credential / client / extra). Updated from the
+    # pre-allowlist test that asserted ambient inheritance of MARSHALL_X / NOT_MARSHAL_CONFIG.
+    monkeypatch.setenv("MARSHAL_CONFIG", "/driver/fleet.config.yaml")
+    monkeypatch.setenv("MARSHALL_X", "ambient")
+    monkeypatch.setenv("NOT_MARSHAL_CONFIG", "ambient")
     env = child_env()
-    assert env["MARSHALL_X"] == "keep"  # only the MARSHAL_ prefix matches, not MARSHALL_
-    assert env["NOT_MARSHAL_CONFIG"] == "keep"
+    assert "MARSHAL_CONFIG" not in env
+    assert "MARSHALL_X" not in env
+    assert "NOT_MARSHAL_CONFIG" not in env
+    # Client escape hatch can still pass a non-secret near-miss name.
+    env2 = child_env(client={"MARSHALL_X": "via-client", "NOT_MARSHAL_CONFIG": "via-client"})
+    assert env2["MARSHALL_X"] == "via-client"
+    assert env2["NOT_MARSHAL_CONFIG"] == "via-client"
 
 
 def test_child_env_extra_overrides_marshal_scrub(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,8 +98,10 @@ def test_child_env_extra_overrides_marshal_scrub(monkeypatch: pytest.MonkeyPatch
 
 def test_child_env_applies_client_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FOO", "driver-value")
+    # FOO is not on the allowlist; client env is the escape hatch that still delivers it.
     env = child_env(client={"FOO": "client-value"})
     assert env["FOO"] == "client-value"
+    assert "FOO" not in child_env()  # ambient FOO is dropped without client/extra
 
 
 def test_child_env_client_cannot_resurrect_virtual_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,6 +114,34 @@ def test_child_env_extra_still_overrides_after_client(monkeypatch: pytest.Monkey
     monkeypatch.setenv("VIRTUAL_ENV", "/driver/.venv")
     env = child_env({"VIRTUAL_ENV": "/wanted/.venv"}, client={"VIRTUAL_ENV": "/client/.venv"})
     assert env["VIRTUAL_ENV"] == "/wanted/.venv"
+
+
+def test_child_env_drops_unrelated_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-value-long")
+    monkeypatch.setenv("GH_TOKEN", "ghp_unrelated_token_value")
+    monkeypatch.setenv("EASTROUTER_API_KEY", "east-secret-value")
+    env = child_env(credentials=("CURSOR_API_KEY",))
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "GH_TOKEN" not in env
+    assert "EASTROUTER_API_KEY" not in env
+
+
+def test_child_env_forwards_only_requested_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-parent-value-long")
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-parent-value-long")
+    cursor_env = child_env(credentials=CursorBackend.credential_env_vars)
+    assert "CURSOR_API_KEY" in cursor_env
+    assert "ANTHROPIC_API_KEY" not in cursor_env
+    claude_env = child_env(credentials=ClaudeCodeBackend.credential_env_vars)
+    assert "ANTHROPIC_API_KEY" in claude_env
+    assert "CURSOR_API_KEY" not in claude_env
+
+
+def test_child_env_keeps_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", "/Users/test")
+    assert child_env()["HOME"] == "/Users/test"
 
 
 # --- user_path: derive the login-shell PATH ----------------------------------------------
@@ -520,3 +564,175 @@ def test_two_clients_on_one_backend_do_not_leak_env(tmp_path: Path) -> None:
     plain = _probe_run(tmp_path, "CODEX_HOME", {})
     assert (a, b) == ("/tmp/home-a", "/tmp/home-b")
     assert plain == "<unset>", "a client with no env: must not inherit a sibling client's value"
+
+
+# --- allowlist: real spawned children -----------------------------------------------------
+
+
+class _CredProbe(CodingAgentBackend):
+    """Real child that prints one env var; credential allowlist is injectable."""
+
+    name = "credprobe"
+    binary = "python"
+    capabilities = Capabilities()
+    credential_env_vars: tuple[str, ...] = ()
+
+    def __init__(self, var: str, out: Path, *, credentials: tuple[str, ...] = ()) -> None:
+        self._var, self._out = var, out
+        # Instance override so each probe can declare a different allowlist.
+        self.credential_env_vars = credentials
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            f"import os,pathlib; "
+            f"pathlib.Path({str(self._out)!r}).write_text("
+            f"os.environ.get({self._var!r},'<unset>'))"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout,
+            exit_code=exit_code,
+        )
+
+
+def _cred_probe_run(
+    tmp_path: Path,
+    var: str,
+    *,
+    credentials: tuple[str, ...] = (),
+    client_env: dict[str, str] | None = None,
+) -> str:
+    out = tmp_path / f"cred-{var}-{'-'.join(credentials) or 'none'}"
+    backend = _CredProbe(var, out, credentials=credentials)
+    opts = RunOpts(
+        cwd=tmp_path,
+        permission=PermissionMode.SAFE_EDIT,
+        client_env=client_env or {},
+    )
+    backend.run(TaskSpec(id="probe", goal="x"), opts)
+    return out.read_text()
+
+
+def test_real_child_does_not_see_unrelated_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-value-long-enough")
+    monkeypatch.setenv("GH_TOKEN", "ghp_unrelated_token_value_xx")
+    assert _cred_probe_run(tmp_path, "AWS_SECRET_ACCESS_KEY") == "<unset>"
+    assert _cred_probe_run(tmp_path, "GH_TOKEN") == "<unset>"
+
+
+def test_real_child_keeps_operational_path_and_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/custom/bin")
+    monkeypatch.setenv("HOME", "/Users/allowlist-home")
+    assert _cred_probe_run(tmp_path, "PATH") == "/usr/bin:/bin:/custom/bin"
+    assert _cred_probe_run(tmp_path, "HOME") == "/Users/allowlist-home"
+
+
+def test_cursor_child_does_not_see_anthropic_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-reach-cursor")
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-key-value-long-enough")
+    assert (
+        _cred_probe_run(
+            tmp_path, "ANTHROPIC_API_KEY", credentials=CursorBackend.credential_env_vars
+        )
+        == "<unset>"
+    )
+    assert (
+        _cred_probe_run(
+            tmp_path, "CURSOR_API_KEY", credentials=CursorBackend.credential_env_vars
+        )
+        == "cursor-key-value-long-enough"
+    )
+
+
+def test_claude_code_child_sees_anthropic_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-claude-child-sees-this")
+    assert (
+        _cred_probe_run(
+            tmp_path,
+            "ANTHROPIC_API_KEY",
+            credentials=ClaudeCodeBackend.credential_env_vars,
+        )
+        == "sk-ant-claude-child-sees-this"
+    )
+
+
+# --- log / text redaction -----------------------------------------------------------------
+
+
+def test_redact_secrets_replaces_credential_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-ant-redact-me-please-xx"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    text = f"running with key={secret} and done"
+    out = redact_secrets(text, credential_names=["ANTHROPIC_API_KEY"])
+    assert secret not in out
+    assert "[redacted:ANTHROPIC_API_KEY]" in out
+    assert "running with key=" in out
+
+
+def test_redact_secrets_skips_short_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "short")  # < 8 chars
+    text = "the value short appears in ordinary prose often"
+    assert redact_secrets(text, credential_names=["ANTHROPIC_API_KEY"]) == text
+
+
+def test_redact_secrets_leaves_ordinary_output_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-unique-secret-value")
+    text = "tests passed\nall green\n"
+    assert redact_secrets(text, credential_names=["ANTHROPIC_API_KEY"]) == text
+
+
+def test_run_log_store_redacts_credential_in_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "sk-ant-log-persist-secret-xx"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    store = RunLogStore(tmp_path / "logs")
+    store.write("r1", f"env dump: ANTHROPIC_API_KEY={secret}\n", "ok\n")
+    text = store.read("r1")
+    assert text is not None
+    assert secret not in text
+    assert "[redacted:ANTHROPIC_API_KEY]" in text
+    assert "env dump:" in text
+    assert "--- stderr ---\nok" in text
+
+
+def test_redact_before_truncate_removes_boundary_straddle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Value-based redaction must see the whole secret; truncate-then-redact leaks a prefix."""
+    secret = "sk-ant-straddle-secret-xx"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    cap = 16_000
+    keep_prefix = 10  # first chars of the secret land just before the cut
+    pad = "p" * (cap - keep_prefix)
+    raw = pad + secret + "trailer"
+    # Broken order (the defect): prefix of the secret survives in the retained window.
+    broken = redact_secrets(raw[:cap], credential_names=["ANTHROPIC_API_KEY"])
+    assert secret[:keep_prefix] in broken
+    # Correct order: redact on the full string, then cap.
+    fixed = redact_secrets(raw, credential_names=["ANTHROPIC_API_KEY"])[:cap]
+    assert secret not in fixed
+    assert secret[:keep_prefix] not in fixed
+    # Marker may itself be clipped by the cap; that is fine — no raw fragment remains.
+    assert "[redacted:" in fixed

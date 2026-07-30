@@ -37,6 +37,7 @@ import shutil
 import subprocess
 from typing import Any
 
+from ..env import redact_secrets
 from ..types import (
     AgentResult,
     Capabilities,
@@ -65,6 +66,8 @@ _STATIC_MODELS: tuple[str, ...] = ("cursor-agent/auto",)
 class GooseBackend(CodingAgentBackend):
     name = "goose"
     binary = "goose"
+    # GOOSE_MODE is stamped by prepare() via extra_env; provider/model may come from the parent.
+    credential_env_vars = ("GOOSE_PROVIDER", "GOOSE_MODEL")
     capabilities = Capabilities(
         json_output=True,
         stream_json=True,
@@ -404,7 +407,9 @@ def _auth_or_fatal_error_from_text(text: str) -> str | None:
         if needle in lower:
             # Prefer a short first line when the model wrapped the error.
             first = text.strip().splitlines()[0].strip() if text.strip() else text
-            return first[:500] or text[:500]
+            # Redact before the length cut so a credential cannot straddle and leak a prefix.
+            safe = redact_secrets(first or text)
+            return safe[:500]
     return None
 
 
@@ -424,6 +429,8 @@ def _plain_failure_from_streams(stdout: str, stderr: str) -> str | None:
 
 def _prefer_error_line(blob: str, limit: int = 500) -> str | None:
     """Prefer an ``error:`` / ``Error `` line; else a short non-empty tail. Skip JSON lines."""
+    # Redact before any length cut so a credential cannot straddle the boundary.
+    blob = redact_secrets(blob)
     lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
     if not lines:
         return None

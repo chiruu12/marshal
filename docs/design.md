@@ -305,9 +305,11 @@ documented state layouts assume local disk.
 **Worktree environment isolation.** The driver usually runs inside its own activated venv, so
 `os.environ` carries `VIRTUAL_ENV`/`PYTHONHOME` pointing at the *driver's* interpreter. The
 driver/MCP process also sets `MARSHAL_*` session variables (`MARSHAL_CONFIG`, `MARSHAL_REPO`, …).
-Every spawned child (agents and the worktree-setup command) has those scrubbed (`env.child_env`),
-so the worktree's own `.venv` wins and a worker's tests/`marshal` CLI resolve the worktree - not
-the driver's install or config path. A fresh worktree has no `.venv` (it's gitignored), so the optional
+Every spawned child (agents and the worktree-setup command) is built from an **allowlist**
+(`env.child_env`): operational base vars, plus (for agents) that backend's
+`credential_env_vars` only. `VIRTUAL_ENV` / `PYTHONHOME` / `MARSHAL_*` and unrelated secrets are
+dropped so the worktree's own `.venv` wins, a worker's tests/`marshal` CLI resolve the worktree,
+and ambient credentials do not leak into agent processes or run logs. A fresh worktree has no `.venv` (it's gitignored), so the optional
 top-level `worktree_setup` command (e.g. `uv sync --extra dev --extra mcp`) provisions one right
 after `git worktree add`; a non-zero exit tears the worktree down and fails the run early.
 Non-allowlisted setup/verify basenames and relative path argv[0] (without

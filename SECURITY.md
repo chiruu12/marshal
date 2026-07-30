@@ -68,10 +68,24 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
 - **Every run has a hard timeout and a process-group kill.** A run that exceeds its timeout is
   terminated, and the whole process group is killed so agent grandchildren (subagents, MCP servers,
   tool shells) are not orphaned (`src/marshal_engine/backends/base.py`).
-- **Marshal never injects secrets.** Backend authentication is the responsibility of each CLI's own
-  login (e.g. `opencode auth login`, `cursor-agent login`, `codex login`). `secret_ref` in
-  `fleet.config.yaml` is an **advisory preflight check only** - Marshal verifies the named env var
-  is present but does not read, store, or inject its value.
+- **Agent children inherit an env allowlist, not the driver's full environment.** Operational
+  vars (`PATH`, `HOME`, locale, certs, `XDG_*`, proxies, …) plus that backend's own credential
+  vars (e.g. `claude-code` → `ANTHROPIC_API_KEY`, `cursor` → `CURSOR_API_KEY`) are forwarded.
+  Unrelated secrets (`AWS_*`, `GH_TOKEN`, another backend's API key, `EASTROUTER_API_KEY`, …) are
+  dropped. There is no "inherit everything" flag. Escape hatch for an omitted **non-secret**
+  operational var: per-client `env:` in `fleet.config.yaml` (secret-shaped keys and `PATH` are
+  still refused at load — see `docs/config.md`).
+- **`secret_ref` is advisory only and never injects.** Backend authentication is primarily each
+  CLI's own login (e.g. `opencode auth login`, `cursor-agent login`, `codex login`).
+  `secret_ref: env:VAR` makes `marshal doctor` warn if `VAR` is unset; it does not copy `VAR`
+  into the child. A backend credential var reaches the child only when it appears on that
+  backend's `credential_env_vars` allowlist and is present in the parent environment. Doctor
+  surfaces what each configured backend will and will not forward (`child-env:*` checks).
+- **Run logs and the 16KB run-record `text` redact known credential values** before persistence
+  (value-based replacement with `[redacted:VAR]` markers; values shorter than 8 characters are
+  skipped to avoid mangling ordinary output). Redaction runs on the full string **before** any
+  truncate (run-record `text`, verify-output tail, error tails) so a credential cannot straddle
+  a size cut and leave a searchable fragment. `structured` string leaves are scrubbed the same way.
 
 ## MCP driver authority
 

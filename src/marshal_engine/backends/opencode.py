@@ -152,6 +152,9 @@ def permission_config_for(mode: PermissionMode) -> dict[str, Any] | None:
 class OpenCodeBackend(CodingAgentBackend):
     name = "opencode"
     binary = "opencode"
+    # Provider keys (ANTHROPIC_API_KEY, …) are NOT forwarded — use `opencode auth login`.
+    # OPENCODE_API_KEY is the OpenCode Zen / hosted credential referenced by Marshal docs.
+    credential_env_vars = ("OPENCODE_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
         stream_json=True,
