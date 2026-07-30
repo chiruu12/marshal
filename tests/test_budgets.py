@@ -942,6 +942,10 @@ def test_cross_process_enforce_admits_at_most_one(tmp_path: Path) -> None:
     result_dir = tmp_path / "results"
     result_dir.mkdir()
 
+    # Filesystem rendezvous, not sleeps: the holder announces its slot and waits to be told to
+    # release, so the peer's attempt provably happens WHILE the slot is held. Sleep-based staggering
+    # is a race - interpreter startup under load easily exceeds any stagger, and then neither
+    # process contends and the assertion means nothing.
     worker = r"""
 import sys
 import time
@@ -956,30 +960,53 @@ from marshal_engine.usage import UsageTracker
 usage = Path(sys.argv[1])
 gate_path = Path(sys.argv[2])
 out = Path(sys.argv[3])
-# Stagger slightly so both processes contend on flock + reservation, not just startup.
-time.sleep(float(sys.argv[4]))
+role = sys.argv[4]                 # "holder" | "peer"
+held = gate_path.parent / "held"   # holder announces here
+go = gate_path.parent / "go"       # test releases the holder here
+
+def wait_for(path, timeout=60.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.01)
+    return False
+
 tracker = UsageTracker(usage)
 budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
 gate = EnforceBudgetGate(path=gate_path)
 session = datetime(2026, 7, 1, tzinfo=timezone.utc)
 req = SimpleNamespace(client="worker", backend_name="opencode")
+
+if role == "peer" and not wait_for(held):
+    out.write_text("holder-never-started", encoding="utf-8")
+    sys.exit(0)
+
 try:
     keys = gate.begin(tracker, session, [budget], req)
 except BudgetExceeded:
     out.write_text("refused", encoding="utf-8")
     sys.exit(0)
-# Hold the slot long enough for the peer to observe it.
-time.sleep(0.8)
+
+if role == "holder":
+    held.write_text("1", encoding="utf-8")
+    wait_for(go)                   # hold until the peer has had its turn
 gate.release(keys)
 out.write_text("admitted", encoding="utf-8")
 """
     outs = [result_dir / f"p{i}.txt" for i in range(2)]
+    roles = ["holder", "peer"]
     procs = [
         subprocess.Popen(
-            [sys.executable, "-c", worker, str(usage), str(gate_path), str(outs[i]), str(i * 0.05)],
+            [sys.executable, "-c", worker, str(usage), str(gate_path), str(outs[i]), roles[i]],
         )
         for i in range(2)
     ]
+    # Let the peer finish contending, then release the holder.
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and not outs[1].exists():
+        time.sleep(0.01)
+    (tmp_path / "go").write_text("1", encoding="utf-8")
     for proc in procs:
         assert proc.wait(timeout=120) == 0
 
