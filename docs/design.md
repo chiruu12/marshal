@@ -127,7 +127,7 @@ or hang (bounded timeout + static fallback). Shared contract: `tests/test_backen
 | Final text | concat assistant ``message.content[].text``; prefer stream over shorter ``result.result`` | concat all `text` events' `part.text` | - | stdout (plain text, ANSI-stripped) | JSON ``response`` (plain-text fallback on envelope drift) | json field | concat assistant message text |
 | Tokens/cost in output | tokens from the `result` event's `usage{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}`; **no cost** — source stays `unavailable` (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | none (hosted account → `unavailable`) | tokens from JSON ``usage{input_tokens,output_tokens,cache_read_tokens}``; **no cost** — source stays `unavailable`; `native_usage=False` | `total_cost_usd` + `usage{...}` | stream cost native only when positive |
 | File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | diff worktree via git (`collect_run`); CLI emits none | diff worktree via git (`collect_run`); CLI emits none | - | diff worktree via git |
-| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>` (no headless session-id capture → `sessions=False`) | `session_id` returned | `--no-session` (Marshal one-shot) |
+| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>`; JSON ``conversation_id`` → ``session_id`` (`sessions=False`, resume not advertised) | `session_id` returned | `--no-session` (Marshal one-shot) |
 | Model select | `--model` / `cursor-agent models` | `-m provider/model` / `opencode models` | `-m MODEL` (no headless list) | `-m MODEL` / `--list-models` | `-m MODEL` / `agy models` | `--model` (no headless list) | `--provider` + `--model` (`provider/model`) |
 | `available_models` | probe `models` → static `composer-2.5` | probe `models` → static `opencode-go/*` playbook rows | static `gpt-5.5` | probe `--list-models` → static `zai-org/glm-5.2` | probe `models` → static playbook/docstring ids | static playbook Claude ids | static `cursor-agent/auto` |
 | Doctor auth | `status` → `isAuthenticated` | `auth list` | `login status` | `status --json` | **none** (`verifies_auth=False`) | `auth status` | `info -v --check` |
@@ -540,7 +540,8 @@ the last claimant releases. Documented for operators in [`usage.md`](usage.md).
 
 **Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
 usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
-safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` authenticates). 
+safe-edit worktree write; tokens in the CLI ``result.usage`` envelope, cost Admin API /
+``unavailable``, env `CURSOR_API_KEY` authenticates). 
 **Antigravity ✅ writes fixed (2026-06-27):** headless edits used to divert to
 `~/.gemini/antigravity-cli/scratch` (no TTY → no workspace trust); the adapter's `prepare()` now
 briefly registers the run's worktree in agy's host-global `trustedWorkspaces` (+ `--add-dir <cwd>`),

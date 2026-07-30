@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
-from marshal_engine.backends.antigravity import AntigravityBackend, _untrust_workspace
+from marshal_engine.backends import antigravity as agy_mod
+from marshal_engine.backends.antigravity import (
+    AntigravityBackend,
+    MIN_AGY_VERSION,
+    _parse_agy_version,
+    _untrust_workspace,
+)
 
 
 @pytest.fixture
@@ -108,6 +114,65 @@ def test_capabilities_json_without_native_cost(backend: AntigravityBackend) -> N
     assert backend.capabilities.json_output is True
     assert backend.capabilities.stream_json is True
     assert backend.capabilities.native_usage is False
+
+
+def test_parse_agy_version_shapes() -> None:
+    assert _parse_agy_version("1.1.8") == (1, 1, 8)
+    assert _parse_agy_version("agy 1.1.7\n") == (1, 1, 7)
+    assert _parse_agy_version("version: 1.2") == (1, 2, 0)
+    assert _parse_agy_version("not a version") is None
+    assert _parse_agy_version("") is None
+    assert MIN_AGY_VERSION == (1, 1, 8)
+
+
+def _stub_agy_version(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, *, returncode: int = 0
+) -> None:
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: "/usr/bin/agy")
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = ""
+
+    monkeypatch.setattr(agy_mod.subprocess, "run", lambda *_a, **_k: _Proc())
+
+
+def test_check_available_true_at_min_version(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_agy_version(monkeypatch, "1.1.8")
+    assert backend.check_available() is True
+
+
+def test_check_available_false_when_too_old(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_agy_version(monkeypatch, "1.1.7")
+    assert backend.check_available() is False
+    detail = backend.unavailable_detail()
+    assert "1.1.7" in detail
+    assert "1.1.8" in detail
+    assert "too old" in detail
+
+
+def test_check_available_false_on_unparsable_version(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_agy_version(monkeypatch, "not-a-semver-build")
+    assert backend.check_available() is False
+    detail = backend.unavailable_detail()
+    assert "unparsable" in detail
+    assert "1.1.8" in detail
+
+
+def test_check_available_false_when_binary_missing(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: None)
+    assert backend.check_available() is False
+    assert backend.unavailable_detail() == "CLI not on PATH / not runnable"
 
 
 def test_parse_output_success_text(backend: AntigravityBackend) -> None:

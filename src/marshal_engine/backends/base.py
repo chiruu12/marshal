@@ -66,9 +66,10 @@ class CodingAgentBackend(ABC):
         """Return True if ``binary`` is on PATH and responds to ``--version``.
 
         This is a presence probe only - it does not verify authentication or pin a minimum
-        version. Backends with a cheap authenticated probe override ``account_info()`` and
-        set ``verifies_auth()`` so ``marshal doctor`` can distinguish "installed" from
-        "logged in".
+        version. Backends that require a version floor (e.g. Antigravity ≥ 1.1.8 for JSON
+        output) override this so availability matches what the adapter will actually invoke.
+        Backends with a cheap authenticated probe override ``account_info()`` and set
+        ``verifies_auth()`` so ``marshal doctor`` can distinguish "installed" from "logged in".
         """
         if shutil.which(self.binary) is None:
             return False
@@ -82,6 +83,14 @@ class CodingAgentBackend(ABC):
         except (OSError, subprocess.SubprocessError):
             return False
         return proc.returncode == 0
+
+    def unavailable_detail(self) -> str:
+        """Doctor/CLI detail when ``check_available()`` is False.
+
+        Default covers the presence-only probe. Adapters with a version floor override to name
+        the minimum so a found-but-too-old CLI is not misreported as "not on PATH".
+        """
+        return "CLI not on PATH / not runnable"
 
     @abstractmethod
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:

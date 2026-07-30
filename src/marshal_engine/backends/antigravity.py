@@ -14,11 +14,13 @@ Honest gaps from research (these shape what we expose):
     Tokens are stamped; there is NO USD/cost field, so ``source=unavailable`` and
     ``native_usage=False`` (that flag means native cost). ``stream-json`` is also parseable
     (terminal ``event:"result"`` nests the same object under ``result``).
+    ``check_available()`` enforces this floor (unparsable / too-old → unavailable) so doctor
+    and graceful client-skip never green-light a CLI that will fail every run.
   * Auth is OAuth-first; unattended `ANTIGRAVITY_API_KEY` is an unconfirmed upstream request.
     Expect a one-time OAuth on a persistent runner. There is no cheap dedicated
     `auth`/`status`/`whoami` CLI probe (`agy --help` has none), so `verifies_auth()` stays
-    False — doctor reports CLI presence only and must not claim credentials are valid.
-    Prefer an honest path-only gap over a hang-prone "starts language server" probe.
+    False — doctor reports CLI presence + version floor only and must not claim credentials
+    are valid. Prefer an honest path-only gap over a hang-prone "starts language server" probe.
   * `agy` checks for a TTY; without one, stdout can be swallowed while exit code stays 0. A PTY
     wrapper (e.g. `script -q /dev/null`) belongs in the runner layer - TODO. Until then treat an
     empty success as suspect.
@@ -54,6 +56,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -81,6 +84,10 @@ from .base import CodingAgentBackend, parse_jsonl
 #: backend so tests can point it at a temp file instead of the real home.
 DEFAULT_SETTINGS_PATH = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
 
+#: Minimum ``agy`` that supports ``--output-format json`` (verified 1.1.8). Availability fails
+#: closed below this so doctor / client-skip never treat a too-old CLI as runnable.
+MIN_AGY_VERSION: tuple[int, int, int] = (1, 1, 8)
+
 #: Static fallback when ``agy models`` cannot be probed.
 #: Sourced from this module's docstring / docs/model-playbook.md (antigravity rows).
 _STATIC_MODELS: tuple[str, ...] = (
@@ -90,6 +97,8 @@ _STATIC_MODELS: tuple[str, ...] = (
     "claude-opus-4.6",
     "gpt-oss-120b",
 )
+
+_DEFAULT_UNAVAILABLE = "CLI not on PATH / not runnable"
 
 
 class AntigravityBackend(CodingAgentBackend):
@@ -138,10 +147,52 @@ class AntigravityBackend(CodingAgentBackend):
             "(only safe-edit and yolo)"
         )
 
+    def check_available(self) -> bool:
+        """True only when ``agy`` is on PATH and reports a JSON-capable version (≥ 1.1.8).
+
+        The adapter always passes ``--output-format json``; a pre-1.1.8 CLI would pass a
+        presence-only probe then fail every run. Unparsable ``--version`` output fails closed.
+        """
+        return self._probe_availability()[0]
+
+    def unavailable_detail(self) -> str:
+        """Doctor detail: names the ≥ 1.1.8 floor when the CLI is present but unusable."""
+        return self._probe_availability()[1]
+
+    def _probe_availability(self) -> tuple[bool, str]:
+        if shutil.which(self.binary) is None:
+            return False, _DEFAULT_UNAVAILABLE
+        try:
+            proc = subprocess.run(
+                [self.binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False, _DEFAULT_UNAVAILABLE
+        if proc.returncode != 0:
+            return False, _DEFAULT_UNAVAILABLE
+        raw = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        ver = _parse_agy_version(raw)
+        floor = _fmt_agy_version(MIN_AGY_VERSION)
+        if ver is None:
+            return False, (
+                f"agy version unparsable (need ≥ {floor} for --output-format json)"
+            )
+        if ver < MIN_AGY_VERSION:
+            return False, (
+                f"agy {_fmt_agy_version(ver)} too old "
+                f"(need ≥ {floor} for --output-format json)"
+            )
+        return True, ""
+
     def account_info(self) -> dict[str, str] | None:
         """No cheap auth/status/whoami probe on ``agy`` (``agy --help`` has none).
 
-        Always None. Hang-prone TTY probes are refused — doctor reports CLI presence only.
+        Always None. Hang-prone TTY probes are refused — doctor reports CLI presence +
+        version floor only.
         """
         return None
 
@@ -332,6 +383,18 @@ class AntigravityBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+def _parse_agy_version(raw: str) -> tuple[int, int, int] | None:
+    """Extract ``(major, minor, patch)`` from ``agy --version`` output. Pure; None if unparsable."""
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", raw)
+    if m is None:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+
+
+def _fmt_agy_version(ver: tuple[int, int, int]) -> str:
+    return f"{ver[0]}.{ver[1]}.{ver[2]}"
 
 
 def _extract_agy_envelope(raw: str) -> dict[str, Any] | None:
