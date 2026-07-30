@@ -501,9 +501,25 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Cursor | yes | no | `permission_fidelity=enforced-denies`. Tokens/cost only via Team/Enterprise Admin API. Doctor auth via `cursor-agent status` (`isAuthenticated`); `about` only enriches plan/model after auth. `safe-edit` temporarily merges an engine-managed deny list into the worktree's `.cursor/cli.json` alongside `--force` (includes Write denies for the policy file itself); the file's exact prior state is restored before the run returns, so the overlay never shows up in diffs, commits, or integration. A pre-existing malformed `cli.json` fails the run (preserved untouched). |
 | Codex | yes | best-effort | `permission_fidelity=enforced-denies`. Doctor auth via `codex login status`. `workspace-write` sandbox for safe-edit; real cost via EastRouter `usage_api` (`admin-api`), else `unavailable`. |
 | Command Code | yes | no | `permission_fidelity=boundary-only`. Hosted account; `-p` reports no tokens/cost, so usage is `unavailable` (spend in its dashboard). Doctor auth via `command-code status --json` (config.json alone is not auth). `plan` for read-only; `safe-edit`/`yolo` both `--yolo` (no per-tool deny grammar yet). |
-| Antigravity | yes | no | `permission_fidelity=boundary-only`. Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). Doctor is path-only (no cheap auth/status probe). PTY wrapper still TODO. |
+| Antigravity | yes | no | `permission_fidelity=boundary-only`. Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). Doctor is path-only (no cheap auth/status probe). PTY wrapper still TODO. **Single Marshal process per host** when using this backend — see note below. |
 | Claude Code | yes | yes (tokens + cost) | `permission_fidelity=boundary-only`. Native `acceptEdits` for safe-edit with **no Marshal deny layer**; cost is native (no estimation). Doctor auth via `claude auth status`. |
 | Goose | yes | best-effort | `permission_fidelity=boundary-only`. Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Doctor probes auth via `goose info --check` (fails closed if not configured / not logged in). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them; cost is `native` only when positive — `cost: 0` / tokens-only stay `unavailable`. |
+
+### Antigravity: one Marshal process per host
+
+`agy`'s `trustedWorkspaces` list lives in a **host-global** settings file
+(`~/.gemini/antigravity-cli/settings.json`). Marshal file-locks that settings transaction across
+processes (so concurrent writers cannot drop each other's grant from an interleaved
+read-modify-write), but the in-flight **refcount that decides when to revoke** a Marshal-introduced
+entry is **process-local**. If two Marshal processes (e.g. a long-lived MCP server and a CLI) both
+register the same cwd, the first to finish can revoke the grant while the other is still running —
+`agy` then diverts edits to its scratch dir.
+
+**Run one Marshal process per host when using the Antigravity backend** (MCP server *or* CLI, not
+both concurrently), or accept that mid-run revoke risk. Same-cwd collisions across processes are
+narrow in practice (each run gets a unique worktree path); a cross-process claim ledger was rejected
+because stale claims would leak trust grants forever and widen agy's write scope. See
+[`design.md`](design.md) for the same constraint.
 
 See [`design.md`](design.md) for per-backend invocation details and [`status.md`](status.md)
 for what's verified.

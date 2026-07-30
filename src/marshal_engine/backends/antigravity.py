@@ -101,6 +101,7 @@ class AntigravityBackend(CodingAgentBackend):
     #: there*: revoking on the first teardown would pull trust out from under a still-running agy
     #: process, silently redirecting its edits to the scratch dir. The entry is removed only when
     #: the last user finishes AND Marshal introduced it.
+    #: Process-local by design — single Marshal process per host for Antigravity (see docs/usage.md).
     _trust_added: dict[str, list[object]] = {}
     #: Per-thread record of which cwds this run claimed (see `_claimed_cwds`).
     _thread_claims = threading.local()

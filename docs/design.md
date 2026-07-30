@@ -511,6 +511,16 @@ wrapper in the runner, no headless session capture, no reliable read-only mode �
 exposed. Codex account is usage-limited until ~Jul 18 2026, so its success-path JSON parsing is
 verified for the failure path only (live success run pending).
 
+**Antigravity trust / single-process-per-host.** `prepare()` registers the run worktree in
+agy's host-global `trustedWorkspaces`; the settings JSON transaction is **file-locked** across
+processes (sidecar flock; atomic temp+replace write). The in-flight **refcount** that decides when
+to revoke a Marshal-introduced entry is **process-local** (`_trust_added`). Assumption: **one
+Marshal process per host** when using this backend (MCP *or* CLI, not both). Rationale: per-run
+worktree paths are globally unique, so a same-cwd collision across processes is a narrow edge; a
+cross-process claim ledger was rejected because stale claims would leak trust grants forever and
+widen agy's write scope. Within one process, overlapping runs on the same cwd keep the grant until
+the last claimant releases. Documented for operators in [`usage.md`](usage.md).
+
 **Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
 usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
 safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` authenticates). 
