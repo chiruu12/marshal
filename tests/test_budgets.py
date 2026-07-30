@@ -223,15 +223,17 @@ def test_begin_lock_hold_does_not_serialize_over_cap_scans(tmp_path: Path) -> No
     budget = BudgetSpec(backend="opencode", window="week", limit_usd=1.0, enforce=True)
     gate = EnforceBudgetGate()
     real = tracker.read_events
-    delay = 0.08
+    n = 4
+    # Rendezvous instead of a stopwatch: every scan must be inside read_events at the same moment
+    # to get past the barrier. Serialized scans never assemble, so the wait breaks. A slow machine
+    # only makes assembly slower, never impossible.
+    barrier = threading.Barrier(n)
 
     def slow(*, strict: bool = False) -> object:
-        time.sleep(delay)
+        barrier.wait(timeout=30)
         return real(strict=strict)
 
     tracker.read_events = slow  # type: ignore[method-assign]
-    n = 4
-    start = time.perf_counter()
     errors: list[BaseException] = []
 
     def worker() -> None:
@@ -242,10 +244,16 @@ def test_begin_lock_hold_does_not_serialize_over_cap_scans(tmp_path: Path) -> No
 
     with ThreadPoolExecutor(max_workers=n) as pool:
         list(pool.map(lambda _: worker(), range(n)))
-    elapsed = time.perf_counter() - start
 
+    # `not barrier.broken` is the load-bearing assertion: serialized scans never assemble, the
+    # wait times out, and the barrier breaks. Counting refusals is NOT enough - the fail-closed
+    # handler turns a BrokenBarrierError into BudgetExceeded, so a serialized run would still
+    # produce n errors and look like a pass.
+    assert not barrier.broken, "scans serialized under the lock (barrier never assembled)"
     assert len(errors) == n
-    assert elapsed < n * delay * 0.7, f"scans appear serialized under the lock ({elapsed:.3f}s)"
+    assert all("in-flight" not in str(e) and "lookup failed" not in str(e) for e in errors), (
+        f"expected over-cap refusals, got {[str(e) for e in errors]}"
+    )
 
 
 def test_concurrent_begin_admits_one_matching_spawn(tmp_path: Path) -> None:

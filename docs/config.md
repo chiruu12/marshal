@@ -97,6 +97,13 @@ limit). Parallel `run_many` / concurrent `spawn` would otherwise all pass the sa
 snapshot and overshoot the cap before any usage is recorded. The next matching spawn is refused
 until the holder finishes (and records spend). Advisory budgets do not take a concurrency slot.
 
+> **Scope: one process.** The concurrency slot is held in memory, so it binds spawns made by a
+> single Marshal process. Two processes against the same repo (a `marshal run` CLI invocation
+> alongside a running MCP server, or two Fleets) each evaluate the same ledger snapshot and can
+> both admit, so the cap can be overshot by roughly the number of processes. Treat `enforce` as a
+> strong guard within one driver, not a distributed lock. Tracked in
+> [#182](https://github.com/chiruu12/marshal/issues/182).
+
 Editing `fleet.config.yaml` hot-reloads budget **specs** (limits, scopes, `enforce`) on the next
 call, but never forks budget **state**: the in-flight guard and the `session` window clock are kept
 per workspace across the reload, so an **unrelated** config edit mid-run cannot admit a concurrent
@@ -110,7 +117,7 @@ run under the old key does not block a spawn admitted under the new key).
 | `client` | string \| omitted | `null` | Scope the cap to one configured client name. | `client: planner` |
 | `window` | `session` \| `week` \| `month` | *(required)* | Time window for spend aggregation. | `window: week` |
 | `limit_usd` | float (> 0) | *(required)* | Dollar cap for the scope and window. | `limit_usd: 25.0` |
-| `enforce` | bool | `false` | When `true`, refuse new matching spawns once spend ≥ cap, and serialize matching in-flight spawns. When `false`, print a soft warning only. | `enforce: true` |
+| `enforce` | bool | `false` | When `true`, refuse new matching spawns once spend ≥ cap, and serialize matching in-flight spawns **within one process** (see the scope note above). When `false`, print a soft warning only. | `enforce: true` |
 
 ## `<repo>/teams/*.yaml`
 
