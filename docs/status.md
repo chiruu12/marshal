@@ -171,8 +171,16 @@ fail-closed read-only (a team naming a writable client is refused before any spa
 nonce-delimited, refs validated, empty subjects refused. Surfaced as `list_teams`/`run_team` (MCP),
 `marshal teams`/`marshal team run` (CLI), the `marshal-adversarial-review` Skill, and starter panels
 in `examples/teams/`.
+**Robustness v3** (post-v0.1.0 audit wave, shipped) - fail-closed `run_id` validation at the
+state/MCP boundary; retry-classifier precision (anchored HTTP/provider framing; bare `429`/`5xx`
+mentions no longer transient) + `Popen` `OSError`s as actionable `AgentResult`; budget-gate
+reservation release on multi-budget conflict, torn-ledger tolerance on reporting with strict
+fail-closed enforce, and O(tail) under-lock re-check; failure-atomic setup/teardown/integrate;
+cross-process flock on run records and Antigravity settings; `spawn` returns the `run_id` before
+provisioning completes (`cancel_run` works during setup).
 
-Remaining: Antigravity native usage; Cursor admin-API usage; the first PyPI publish (the release
-infrastructure shipped - Trusted Publishing/OIDC with a tag-must-match-wheel guard, #86/#121,
-exercised by the v0.1.0 release #134 - what is left is the publish itself); and eventually
-**Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
+Remaining: structured output (#148); Antigravity/Cursor native usage (#149); Cursor
+`--approve-mcps` (#150); the first PyPI publish (the release infrastructure shipped - Trusted
+Publishing/OIDC with a tag-must-match-wheel guard, #86/#121, exercised by the v0.1.0 release #134 -
+what is left is the publish itself); and eventually **Chauffeur** (see
+[`chauffeur-future.md`](chauffeur-future.md)).

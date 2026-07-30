@@ -16,11 +16,49 @@ versions may include breaking API changes until 1.0.
   another's id (a cross-workspace tenant escape), and any host `*.json` became an existence
   oracle. `FleetState`, `RunLogStore`, and the registry now fail closed on the same safe-charset
   rules as `task_id`, before any path is composed.
+- **Retry classifier no longer treats bare status-code mentions as transient.** A stray `429` /
+  `502` / `503` / `504` in agent output used to trigger backoff retries; codes now need HTTP /
+  provider framing (`http 429`, `status 503`, `error code: 429`, …) or a word-bounded code next to
+  a known reason phrase. Phrase markers (`rate limit`, `overloaded`, …) still match. `Popen`
+  `OSError`s (not only `FileNotFoundError`) return an actionable `AgentResult` instead of crashing
+  `run()`.
+- **`marshal workflows` / `marshal workflow run` find bundled example recipes.** The CLI now
+  searches both `workflows/` and `examples/workflows/`; a repo-local recipe of the same stem
+  shadows the bundled example. Service/MCP resolution stays `<repo>/workflows/` only.
+- **Budget-gate reservations and torn ledger records no longer brick the fleet.**
+  - Reservation slots reserved so far are released when a later matching enforce budget is already
+    held — a multi-budget conflict no longer permanently locks out spawns.
+  - Reporting paths skip malformed/torn JSONL lines (stderr warn + count); enforced budgets stay
+    fail-closed with an actionable repair message instead of undercounting spend past a hard cap.
+  - The gate lock no longer spans a full ledger scan — spend is computed before the lock, then
+    revalidated from the appended tail (O(new events)) under the lock.
+- **Setup, teardown, and integrate reporting are failure-atomic.**
+  - Provisioning exceptions discard the worktree/branch before re-raising (no stranded state).
+  - `setup()` matches `verify()`'s `(OSError, SubprocessError)` catch and tears down.
+  - A failed `git worktree add -b` best-effort deletes only the branch it created, so a same-id
+    retry can succeed.
+  - `merged_diff_files` raises on git failure (no silent `changed_files=[]`).
+  - `cleanup=True` remove failures stamp a cleanup warning on the run after the terminal status.
+  - `clean` age-gates orphaned `*.tmp` under runs/logs; unreachable duplicate returns removed.
+- **Run-record and Antigravity settings writes serialize across processes.** `FleetState`
+  `update` / `update_if` take an `fcntl.flock` on `runs/<id>.json.lock` around the
+  read-modify-write (alongside the per-run thread lock), so a CLI and MCP server on one repo cannot
+  drop sibling fields. Antigravity `trustedWorkspaces` prepare/release flock a `settings.lock`
+  sidecar for the host-global settings transaction. The in-flight trust refcount remains
+  process-local — one Marshal process per host when using Antigravity (documented in usage/design).
 - **`claude plugin validate --strict` failed.** `marketplace.json` had no description, which the
   strict validator treats as an error and which blocks submission to the community plugin registry.
 - **The MCP server reported an empty version.** `serverInfo.version` was blank in every initialize
   handshake, so a client could not answer "which Marshal am I talking to?" - the first question you
   ask when a tool misbehaves. It now reports the package version.
+
+### Changed
+- **`spawn` returns a `run_id` before worktree provisioning completes.** The RUNNING record is
+  registered after `git worktree add` and returned immediately; `read_paths` / `worktree_setup`
+  run in the background task. Setup/provision failures terminal-stamp with phase errors
+  (`fleet: setup:` / `fleet: provision:`); `cancel_run` works during setup (killpg when a setup
+  pid exists, cooperative before); `clean` never reaps while a background task is in flight;
+  `collect_run` / `integrate` / `commit_run` return structured results on setup-failed runs.
 
 ### Fixed
 - **Install instructions now describe an install that works.** The README pointed at
