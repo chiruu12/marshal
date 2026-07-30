@@ -257,12 +257,15 @@ def test_list_clients(repo: Path) -> None:
     assert result.driver_context is None  # no context.driver in this config
 
 
-def test_list_clients_permission_fidelity_from_backend_capabilities(repo: Path) -> None:
-    # Fidelity comes from backend.capabilities, not the configured permission string.
-    class _Enforced(CodingAgentBackend):
-        name = "enforced"
+def _fidelity_backend(
+    name: str, fidelity: PermissionFidelity
+) -> type[CodingAgentBackend]:
+    """Minimal available backend with a fixed Capabilities.permission_fidelity."""
+
+    class _B(CodingAgentBackend):
+        # Class attrs set below after the class body (name must match registry key).
         binary = "python"
-        capabilities = Capabilities(permission_fidelity=PermissionFidelity.ENFORCED_DENIES)
+        capabilities = Capabilities(permission_fidelity=fidelity)
 
         def check_available(self) -> bool:
             return True
@@ -276,16 +279,83 @@ def test_list_clients_permission_fidelity_from_backend_capabilities(repo: Path) 
         def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
             return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok", exit_code=exit_code)
 
+    _B.name = name
+    return _B
+
+
+def test_list_clients_safe_edit_inherits_enforced_denies(repo: Path) -> None:
+    # safe-edit on an enforcing backend still reports enforced-denies (no regression).
     cfg = FleetConfig(
         clients={
-            "worker": ClientConfig(name="worker", backend="enforced", permission=PermissionMode.SAFE_EDIT)
+            "worker": ClientConfig(
+                name="worker", backend="enforced", permission=PermissionMode.SAFE_EDIT
+            )
         }
     )
-    svc = MarshalService(repo, cfg, backends={"enforced": _Enforced()})
+    svc = MarshalService(repo, cfg, backends={"enforced": _fidelity_backend("enforced", PermissionFidelity.ENFORCED_DENIES)()})
     clients = svc.list_clients().clients
     assert len(clients) == 1
     assert clients[0].permission == "safe-edit"
     assert clients[0].permission_fidelity == "enforced-denies"
+
+
+def test_list_clients_yolo_reports_unrestricted_not_enforced_denies(repo: Path) -> None:
+    # #178: yolo must not inherit the backend's safe-edit enforced-denies label.
+    cfg = FleetConfig(
+        clients={
+            "fast": ClientConfig(
+                name="fast", backend="enforced", permission=PermissionMode.YOLO
+            )
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"enforced": _fidelity_backend("enforced", PermissionFidelity.ENFORCED_DENIES)()})
+    clients = svc.list_clients().clients
+    assert len(clients) == 1
+    assert clients[0].permission == "yolo"
+    assert clients[0].permission_fidelity == "unrestricted"
+    assert clients[0].permission_fidelity != "enforced-denies"
+
+
+def test_list_clients_safe_edit_inherits_boundary_only(repo: Path) -> None:
+    # safe-edit on a boundary-only backend still reports boundary-only (no regression).
+    cfg = FleetConfig(
+        clients={
+            "worker": ClientConfig(
+                name="worker", backend="soft", permission=PermissionMode.SAFE_EDIT
+            )
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"soft": _fidelity_backend("soft", PermissionFidelity.BOUNDARY_ONLY)()})
+    clients = svc.list_clients().clients
+    assert len(clients) == 1
+    assert clients[0].permission == "safe-edit"
+    assert clients[0].permission_fidelity == "boundary-only"
+
+
+def test_list_clients_read_only_inherits_backend_fidelity(repo: Path) -> None:
+    # read-only keeps the backend's restriction honesty (plan/sandbox on enforcing backends).
+    enforced = FleetConfig(
+        clients={
+            "reviewer": ClientConfig(
+                name="reviewer", backend="enforced", permission=PermissionMode.READ_ONLY
+            )
+        }
+    )
+    soft = FleetConfig(
+        clients={
+            "reviewer": ClientConfig(
+                name="reviewer", backend="soft", permission=PermissionMode.READ_ONLY
+            )
+        }
+    )
+    e = MarshalService(
+        repo, enforced, backends={"enforced": _fidelity_backend("enforced", PermissionFidelity.ENFORCED_DENIES)()}
+    ).list_clients().clients[0]
+    s = MarshalService(
+        repo, soft, backends={"soft": _fidelity_backend("soft", PermissionFidelity.BOUNDARY_ONLY)()}
+    ).list_clients().clients[0]
+    assert e.permission == "read-only" and e.permission_fidelity == "enforced-denies"
+    assert s.permission == "read-only" and s.permission_fidelity == "boundary-only"
 
 
 def test_list_clients_surfaces_driver_context(repo: Path) -> None:

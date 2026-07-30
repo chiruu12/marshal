@@ -22,6 +22,7 @@ def test_backends_json(capsys: pytest.CaptureFixture[str]) -> None:
     data = json.loads(out)
     assert isinstance(data, list)
     assert len(data) >= 1
+    # backends reports adapter safe-edit capability (never client-resolved unrestricted).
     fidelity_values = {"enforced-denies", "boundary-only"}
     for item in data:
         assert set(item.keys()) == {
@@ -37,6 +38,7 @@ def test_backends_json(capsys: pytest.CaptureFixture[str]) -> None:
         assert isinstance(item["native_usage"], bool)
         assert isinstance(item["permission_modes"], list)
         assert item["permission_fidelity"] in fidelity_values
+        assert item["permission_fidelity"] != "unrestricted"
 
 
 def test_backends_human(capsys: pytest.CaptureFixture[str]) -> None:

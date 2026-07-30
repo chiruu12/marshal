@@ -178,16 +178,23 @@ clients:
 | `safe-edit` | Edit and run **inside the worktree**, no prompts. The default. What that mode actually enforces varies by backend — see `permission_fidelity` below and `docs/design.md` §5. |
 | `yolo` | Fully unrestricted (OpenCode still denies `question` so headless cannot deadlock). Opt-in only. |
 
-**`permission_fidelity`** (on each backend / client listing) is a coarse honesty signal:
+**`permission_fidelity`** is a coarse honesty signal. Two surfaces, keep them distinct:
 
-| Value | Meaning | Backends |
-|-------|---------|----------|
-| `enforced-denies` | safe-edit installs a restriction beyond the worktree (curated denies or native workspace sandbox). Not a true sandbox. | Cursor, OpenCode, Codex |
-| `boundary-only` | No Marshal deny layer; treat the worktree + explicit integrate as the boundary. | Command Code, Goose, Antigravity, Claude Code |
+| Surface | What it describes |
+|---------|-------------------|
+| `marshal backends` / doctor `permission:<backend>` | The backend's **safe-edit** capability |
+| `list_clients` | The resolved `(backend, permission)` pair for that client |
+
+| Value | Meaning |
+|-------|---------|
+| `enforced-denies` | This tier installs a restriction beyond the worktree (curated denies, workspace sandbox, or plan/read-only mode). Not a true process sandbox. On backends: Cursor, OpenCode, Codex safe-edit. |
+| `boundary-only` | No Marshal deny layer; treat the worktree + explicit integrate as the boundary. On backends: Command Code, Goose, Antigravity, Claude Code. |
+| `unrestricted` | Client-only: `permission: yolo` — deny/sandbox overlay dropped by design. Never claim `enforced-denies` for these. |
 
 `marshal backends` prints `fidelity=…` (and JSON `permission_fidelity`); `list_clients` includes the
-field per client; `marshal doctor` emits `permission:<backend>` (`ok` for enforced-denies, `warn`
-for boundary-only). Prefer `enforced-denies` clients for sensitive work.
+resolved field per client; `marshal doctor` emits `permission:<backend>` for backend safe-edit
+(`ok` for enforced-denies, `warn` for boundary-only). Prefer `enforced-denies` **safe-edit**
+clients for sensitive work; never treat a `yolo` client as restricted.
 
 Headless agents have no stdin, so Marshal never uses a prompting mode (it would deadlock).
 
@@ -288,8 +295,8 @@ the default workspace.
 
 ```bash
 marshal init               # scaffold a starter fleet.config.yaml in the current repo
-marshal doctor             # preflight: toolchain, auth, and safe-edit permission_fidelity
-marshal backends           # list backends, availability, and permission_fidelity
+marshal doctor             # preflight: toolchain, auth, and backend safe-edit permission_fidelity
+marshal backends           # list backends, availability, and safe-edit permission_fidelity
 marshal models             # list the optional `models:` catalog from fleet.config.yaml
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
 marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once

@@ -66,7 +66,7 @@ class CodingAgentBackend(ABC):
         server_mode: bool        # e.g. opencode serve
         native_usage: bool       # emits tokens/cost in output
         permission_modes: set[str]   # {"read-only","safe-edit","yolo"}
-        permission_fidelity: str     # "enforced-denies" | "boundary-only" (safe-edit honesty)
+        permission_fidelity: str     # "enforced-denies" | "boundary-only" | "unrestricted" (resolved)
 
     # four abstract hooks every backend implements:
     @abstractmethod
@@ -163,15 +163,19 @@ approvals, ever** - "sub-agents have no stdin, so any approval prompt deadlocks 
 | **read-only** | `--mode plan` (or no `--force` + allowlist) | agent `plan` / `permission` read+deny edit/bash | `-s read-only` | `--permission-mode plan` | - (unsupported headless) | `--permission-mode plan` | `GOOSE_MODE=chat` (via `prepare`) |
 | **safe-edit** (default) | `--force` + engine-managed deny list in `.cursor/cli.json` | `--dangerously-skip-permissions` + `OPENCODE_CONFIG_CONTENT` (`question: deny` + curated denies) | `-s workspace-write` | `--yolo` | `--dangerously-skip-permissions` (+ `trustedWorkspaces` via `prepare`) | `--permission-mode acceptEdits` | `GOOSE_MODE=auto` (via `prepare`; no argv flags) |
 | **yolo** (opt-in) | `--yolo` (no deny list) | `--dangerously-skip-permissions` + `question: deny` only | workspace-write, no approval | `--yolo` | `--dangerously-skip-permissions` | bypass | `GOOSE_MODE=auto` (same as safe-edit) |
-| **permission_fidelity** | `enforced-denies` | `enforced-denies` | `enforced-denies` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` |
+| **permission_fidelity** (safe-edit capability) | `enforced-denies` | `enforced-denies` | `enforced-denies` | `boundary-only` | `boundary-only` | `boundary-only` | `boundary-only` |
 
-`permission_fidelity` is a coarse routing signal on `Capabilities` (surfaced via `list_clients`,
-`marshal backends`, and `doctor`), not a sandbox ranking:
+`Capabilities.permission_fidelity` is the backend's **safe-edit** honesty (`marshal backends`,
+doctor `permission:<backend>`). `list_clients` resolves fidelity from the
+`(backend, permission)` pair via `resolve_permission_fidelity` — not a sandbox ranking:
 
-- **`enforced-denies`**: safe-edit installs a backend or Marshal restriction beyond the worktree
-  (Cursor/OpenCode curated denies; Codex `--sandbox workspace-write`). Still not a true sandbox.
+- **`enforced-denies`**: this tier installs a backend or Marshal restriction beyond the worktree
+  (Cursor/OpenCode curated denies; Codex `--sandbox workspace-write`; plan/read-only modes on
+  enforcing backends). Still not a true sandbox.
 - **`boundary-only`**: Marshal cannot promise a deny layer; the worktree and explicit integrate
   remain the dependable boundary (Command Code, Goose, Antigravity, Claude Code).
+- **`unrestricted`**: client `permission: yolo` — deny/sandbox overlay dropped by design
+  (OpenCode still denies `question` only so headless cannot deadlock).
 
 Key per-backend detail:
 - **Cursor / OpenCode permission config layer (v0, issues #17 / #40):** `safe-edit` is no longer a bare auto-approve flag for these two backends. Cursor `prepare()` merges a curated deny list into the worktree's `.cursor/cli.json` (`Shell(rm)`, `Write(**/.env*)`, `Write(**/.git/**)`, `Write(.cursor/cli.json)`, `Write(**/.cursor/cli.json)`, `Read(**/.env*)`) alongside `--force`. Reads of the policy file stay allowed. That write is a **transaction owned by `CursorBackend.run()`** (#37): the file's exact prior state (existence, bytes, mode) is snapshotted before the shared run loop and restored in a finally path before Fleet observes the worktree - so a no-op run stays EMPTY, verify isn't triggered by the overlay, and `commit_run`/`integrate` never land Marshal's transient policy. An existing malformed/unreadable/non-object/symlink/non-regular `cli.json` (or a symlinked `.cursor/`) fails the run closed (file preserved byte-for-byte, process never spawned); restore re-validates the same path constraints before unlink/replace so a mid-run `.cursor/`→symlink swap cannot escape the worktree, and a restoration failure fails the run. The Write deny protects the policy file through Cursor's permission grammar only — same-user shell/Python can still rewrite it mid-run; exact restore limits persistence, not mid-run bypass. Neither Cursor nor OpenCode denies are a sandbox. OpenCode `prepare()` stamps `OPENCODE_CONFIG_CONTENT` with `question: deny` plus curated `bash`/`edit`/`read`/`external_directory` denies for `safe-edit` (bash: `rm`, `git config`, redirection/`tee`/`sed` into `.env`/`.git` after `"*": "allow"` — simple `*` wildcards only; wrappers and alternate writers can bypass). Yolo still gets `question: deny` only so headless cannot deadlock on the `question` tool, which skip-permissions does not cover. Never emit `ask`.

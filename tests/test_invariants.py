@@ -28,6 +28,7 @@ from marshal_engine.types import (
     RunOpts,
     UsageRecord,
     UsageSource,
+    resolve_permission_fidelity,
 )
 
 _PKG = Path(marshal_engine.__file__).resolve().parent
@@ -118,6 +119,26 @@ _BOUNDARY_ONLY = frozenset({"command-code", "goose", "antigravity", "claude-code
 def test_capabilities_default_permission_fidelity_is_boundary_only() -> None:
     # Invariant: unknown/dummy adapters fail honest — never claim enforcement by accident.
     assert Capabilities().permission_fidelity is PermissionFidelity.BOUNDARY_ONLY
+
+
+@pytest.mark.parametrize(
+    ("backend_fidelity", "permission", "expected"),
+    [
+        (PermissionFidelity.ENFORCED_DENIES, PermissionMode.SAFE_EDIT, PermissionFidelity.ENFORCED_DENIES),
+        (PermissionFidelity.ENFORCED_DENIES, PermissionMode.READ_ONLY, PermissionFidelity.ENFORCED_DENIES),
+        (PermissionFidelity.ENFORCED_DENIES, PermissionMode.YOLO, PermissionFidelity.UNRESTRICTED),
+        (PermissionFidelity.BOUNDARY_ONLY, PermissionMode.SAFE_EDIT, PermissionFidelity.BOUNDARY_ONLY),
+        (PermissionFidelity.BOUNDARY_ONLY, PermissionMode.READ_ONLY, PermissionFidelity.BOUNDARY_ONLY),
+        (PermissionFidelity.BOUNDARY_ONLY, PermissionMode.YOLO, PermissionFidelity.UNRESTRICTED),
+    ],
+)
+def test_resolve_permission_fidelity(
+    backend_fidelity: PermissionFidelity,
+    permission: PermissionMode,
+    expected: PermissionFidelity,
+) -> None:
+    # #178: client fidelity is the (backend, permission) pair; yolo is never enforced-denies.
+    assert resolve_permission_fidelity(backend_fidelity, permission) is expected
 
 
 @pytest.mark.parametrize("name", sorted(_BACKENDS))

@@ -432,6 +432,7 @@ def test_permission_fidelity_enforced_denies_is_ok(tmp_path: Path) -> None:
     perm = _by_name(checks, "permission:opencode")
     assert perm.status == OK
     assert "enforced-denies" in perm.detail
+    assert "backend safe-edit" in perm.detail  # backend capability, not per-client
     assert "worktree" in perm.detail
 
 
@@ -452,6 +453,7 @@ def test_permission_fidelity_boundary_only_warns(tmp_path: Path) -> None:
     perm = _by_name(checks, "permission:opencode")
     assert perm.status == WARN
     assert "boundary-only" in perm.detail
+    assert "backend safe-edit" in perm.detail  # backend capability, not per-client
     assert "worktree" in perm.detail
     assert perm.fix  # actionable guidance
     fails, _ = summarize(checks)
