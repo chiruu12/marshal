@@ -20,6 +20,15 @@ versions may include breaking API changes until 1.0.
   re-export (import from `marshal_engine.budgets`), unused `fetch_run_cost(..., output_tokens=)`
   parameter, and the never-selected `missing_config="silent"` arm.
 
+### Added
+- **Usage ledger routing facts (Phase 1).** Each `UsageEvent` may carry `task_kind` (caller
+  free-text tag) and `goal_digest` (truncated sha256 of the goal — never the text). Both are
+  optional so older `events.jsonl` lines still parse and roll up. `task_kind` is accepted on
+  `TaskSpec` and threaded through MCP `run_agent` / `spawn` / `run_many` and CLI `run` / `spawn`
+  (`--task-kind`). Judgment about the work arrives after the usage line is written, so successful
+  `integrate` stamps `outcome: integrated` on the **run record** instead — the ledger stays
+  immutable and one-line-per-run. No ranking, registry file, or new MCP tools in this phase.
+
 ## [0.2.1] - 2026-07-31
 
 ### Changed

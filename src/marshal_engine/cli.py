@@ -728,6 +728,11 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--goal", required=True, help="natural-language task for the agent")
     parser.add_argument("--task-id", default=None, help="optional grouping id (default: random)")
+    parser.add_argument(
+        "--task-kind",
+        default=None,
+        help="optional free-text tag for the kind of work (e.g. refactor, bugfix); stamped on the usage event",
+    )
     parser.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     parser.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     parser.add_argument("--json", action="store_true", help="output JSON")
@@ -745,6 +750,7 @@ def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
         return 1
     run_kwargs = {
         "task_id": args.task_id,
+        "task_kind": args.task_kind,
         "model": args.model,
         "backend": args.backend,
         "duration": args.duration,

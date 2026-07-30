@@ -198,10 +198,19 @@ Key per-backend detail:
 `usage/events.jsonl` (append-only, one line per run):
 ```json
 {"ts":"...","run_id":"...","client":"reviewer","backend":"cursor","model":"...",
- "worktree":"feat-x","tokens":{"input":1234,"output":567,"cache_read":0},
- "cost_usd":0.041,"duration_ms":8200,"status":"success",
- "source":"native|admin-api|unavailable"}
+ "input_tokens":1234,"output_tokens":567,"cache_read_tokens":0,"cache_write_tokens":0,
+ "cost_usd":0.041,"duration_ms":8200,"status":"exited_clean",
+ "source":"native|admin-api|unavailable",
+ "task_kind":"refactor","goal_digest":"a1b2c3d4e5f67890"}
 ```
+`task_kind` / `goal_digest` are optional routing facts (additive; pre-field lines omit them and
+still parse). `task_kind` is a caller-supplied free-text tag (safe token; not a closed enum).
+`goal_digest` is a truncated sha256 of the goal text — **never the goal itself** (the ledger is
+long-lived and user-readable). Judgment about the work is deliberately *not* on the usage line: it
+arrives after the line is written, so successful `integrate` stamps `RunRecord.outcome` instead of
+rewriting the usage line or appending a second cost event — the ledger stays immutable and
+one-line-per-run for cost rollups. A clean exit is not an outcome, and rejection stays
+explicit-only (never inferred from absence).
 `usage/summary.json` (cumulative rollup, updated each run): `by_client`, `by_backend`, `by_model`, `totals`, plus a compound `by_backend_model` keyed `<backend>/<model>` for when one backend runs multiple models.
 
 **Per-run raw logs** (`logs/<run_id>.log`): one file per terminal run (success or failure) with the

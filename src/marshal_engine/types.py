@@ -136,6 +136,9 @@ class TaskSpec(BaseModel):
 
     id: str
     goal: str                              # natural-language task for the agent
+    # Caller-supplied free-text tag for the kind of work (`refactor`, `bugfix`, `docs`, …).
+    # Taxonomy is the user's — not a closed enum. Validated as a short safe token (same rules as id).
+    task_kind: str | None = None
     context_files: list[str] = []          # minimal files the worker should see
     # Declared read-only escape hatch: absolute paths, or paths relative to the driver's repo root,
     # copied into the worktree under `.marshal-context/` (see Fleet provisioning). Unlike
@@ -152,6 +155,19 @@ class TaskSpec(BaseModel):
     @classmethod
     def _id_must_be_safe_path_segment(cls, v: str) -> str:
         return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
+
+    @field_validator("task_kind")
+    @classmethod
+    def _task_kind_must_be_safe_token(cls, v: str | None) -> str | None:
+        # Same fail-closed token rules as task id (reuse validate_worktree_id; no second charset).
+        if v is None:
+            return None
+        from .worktree import MAX_TASK_ID_LEN, WorktreeError, validate_worktree_id
+
+        try:
+            return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
+        except WorktreeError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("output_schema")
     @classmethod

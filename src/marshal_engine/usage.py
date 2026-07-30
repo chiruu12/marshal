@@ -8,6 +8,7 @@ optionally filtered to a `[since, until]` time window over each event's `ts`.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,15 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ValidationError, field_validator, Field
 
 from .types import AgentResult, RunStatus, UsageRecord, UsageSource, canonical_status
+
+# Truncated sha256 hex prefix stored on usage events. Long enough to group repeat attempts at the
+# same goal; short enough for the ledger. Never store the goal text itself (secrets / proprietary).
+GOAL_DIGEST_PREFIX_LEN: Final[int] = 16
+
+
+def goal_digest(goal: str) -> str:
+    """Return a stable sha256 hex prefix of ``goal`` for grouping — never the text itself."""
+    return hashlib.sha256(goal.encode("utf-8")).hexdigest()[:GOAL_DIGEST_PREFIX_LEN]
 
 
 @dataclass(frozen=True)
@@ -110,6 +120,13 @@ class UsageEvent(BaseModel):
     duration_ms: int = 0
     status: str = ""
     source: str = UsageSource.UNAVAILABLE.value
+    # Routing facts (optional / additive): pre-Phase-1 ledger lines omit them and still parse.
+    # task_kind = caller tag for the kind of work; goal_digest = sha256 prefix of the goal text
+    # (never the text). Judgment about the work is deliberately *not* here: it arrives after this
+    # line is written, and is stamped on RunRecord.outcome (see Fleet.integrate) so the ledger line
+    # is never rewritten and cost rollups stay one event per run.
+    task_kind: str | None = None
+    goal_digest: str | None = None
 
     @field_validator("status", mode="before")
     @classmethod
@@ -134,6 +151,8 @@ class UsageEvent(BaseModel):
         usage: UsageRecord | None = None,
         client: str | None = None,
         model: str | None = None,
+        task_kind: str | None = None,
+        goal_digest: str | None = None,
     ) -> UsageEvent:
         # `usage` lets the caller pass a priced/normalized record; default to what the run carried.
         u = usage if usage is not None else result.usage
@@ -151,6 +170,8 @@ class UsageEvent(BaseModel):
             duration_ms=result.duration_ms,  # wall-clock from base.run(), always present
             status=result.status.value,
             source=(u.source.value if u else UsageSource.UNAVAILABLE.value),
+            task_kind=task_kind,
+            goal_digest=goal_digest,
         )
 
 

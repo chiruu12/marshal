@@ -315,6 +315,7 @@ class MarshalService:
         backend: str | None = None,
         duration: str | int | None = None,
         output_schema: dict[str, Any] | None = None,
+        task_kind: str | None = None,
     ) -> RunRequest:
         # Harness-first model selection: pick the strategy by (client, [model], [backend]).
         #   - client only: today's path (lookup + resolve_model).
@@ -327,14 +328,15 @@ class MarshalService:
         # `duration` is a per-spawn timeout override: a preset name (short/medium/large/long) or a
         # positive int of seconds. When set, it OVERRIDES the resolved timeout_s on the RunRequest.
         # Validated up front so a typo fails fast before any worktree is created.
-        # `task_id` is fail-closed (charset + length) via TaskSpec; map ValidationError → ValueError
-        # so CLI/MCP surfaces match other driver-input errors (not a pydantic traceback).
-        # Use `is not None` (not truthiness): an explicit empty string must hit the validator,
-        # not silently become a generated id.
+        # `task_id` / `task_kind` are fail-closed (charset + length) via TaskSpec; map
+        # ValidationError → ValueError so CLI/MCP surfaces match other driver-input errors (not a
+        # pydantic traceback). Use `is not None` (not truthiness): an explicit empty string must
+        # hit the validator, not silently become a generated id.
         try:
             task = TaskSpec(
                 id=task_id if task_id is not None else uuid.uuid4().hex[:8],
                 goal=self._compose_goal(goal),
+                task_kind=task_kind,
                 context_files=context_files or [],
                 read_paths=read_paths or [],
                 base_branch=base_branch,
@@ -504,19 +506,20 @@ class MarshalService:
         backend: str | None = None,
         duration: str | int | None = None,
         output_schema: dict[str, Any] | None = None,
+        task_kind: str | None = None,
     ) -> RunRecord:
         req = self._request_for(
             client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
-            output_schema=output_schema,
+            output_schema=output_schema, task_kind=task_kind,
         )
         return self.fleet.run_request(req)
 
     def job_request(self, job: dict[str, Any]) -> RunRequest:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
-        Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?,
+        Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, task_kind?, context_files?,
         read_paths?, model?, backend?, duration?, output_schema?}``. Strips ``then`` and
         ``workspace`` (registry-only). Used by single-repo ``run_many`` and the registry's
         cross-workspace fan-out so validation stays fail-fast before any worktree is created.
@@ -532,6 +535,7 @@ class MarshalService:
             backend=body.get("backend"),
             duration=body.get("duration"),
             output_schema=body.get("output_schema"),
+            task_kind=body.get("task_kind"),
         )
 
     def run_many_job(self, job: dict[str, Any]) -> RunManyJob:
@@ -550,7 +554,8 @@ class MarshalService:
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
         """Run several clients in parallel. Each job is
-        {client, goal, task_id?, context_files?, read_paths?, model?, backend?, duration?, then?}.
+        {client, goal, task_id?, task_kind?, context_files?, read_paths?, model?, backend?,
+        duration?, then?}.
 
         Optional ``then`` is the same field set as a job; it runs in the same worker as soon as that
         job's primary finishes (does not wait for sibling jobs). Client names and ``then`` specs are
@@ -574,6 +579,7 @@ class MarshalService:
         backend: str | None = None,
         duration: str | int | None = None,
         output_schema: dict[str, Any] | None = None,
+        task_kind: str | None = None,
     ) -> RunRecord:
         """Start a worker agent in the background; return its RUNNING record at once.
 
@@ -585,7 +591,7 @@ class MarshalService:
             client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
-            output_schema=output_schema,
+            output_schema=output_schema, task_kind=task_kind,
         )
         run_id = self.fleet.spawn(req)
         rec = self.fleet.state.get(run_id)

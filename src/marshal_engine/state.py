@@ -58,6 +58,11 @@ class RunRecord(BaseModel):
     ended_at: str | None = None
     error: str | None = None
     merged_into: str | None = None  # branch this run was integrated into, once merged
+    # Judgment about the work, distinct from process ``status``. Values: ``integrated`` /
+    # ``rejected`` / ``abandoned``. Late-arriving (integrate succeeds after the usage event was
+    # written): stamped here rather than rewriting ``events.jsonl`` or appending a second cost
+    # event that would double-count in the rollup. Absence means "no judgment yet", never rejected.
+    outcome: str | None = None
     commit: str | None = None  # branch tip after commit_run froze the work (for chaining/integrate)
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
     # Start time of `pid` as the OS reports it. Pids are reused, so this is what makes the pid an

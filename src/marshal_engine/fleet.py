@@ -46,7 +46,7 @@ from .logs import RunLogStore
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
 from .types import AgentResult, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord, UsageSource
-from .usage import UsageEvent, UsageTracker
+from .usage import UsageEvent, UsageTracker, goal_digest
 from .worktree import Worktree, WorktreeError, WorktreeManager, is_git_object_id
 
 logger = logging.getLogger(__name__)
@@ -1828,8 +1828,12 @@ class Fleet:
             event = UsageEvent.from_result(
                 result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
                 client=req.client, model=req.model,
+                task_kind=req.task.task_kind,
+                # Digest of the goal text the agent received (worker preamble included; schema
+                # suffix is applied later on a copy). Never the raw text — ledger is long-lived.
+                goal_digest=goal_digest(req.task.goal),
             )
-            event.status = status.value              # report the authoritative outcome (incl. EMPTY)
+            event.status = status.value              # report the authoritative process status (incl. EMPTY)
             self.usage.record(event)
             # Stamp the terminal record ONLY if the run is still running, so a `cancel_run` that
             # already marked it `cancelled` (the common cancel-wins-first race) is preserved rather
@@ -2594,7 +2598,9 @@ class Fleet:
                 commit=commit,
             )
 
-        self.state.update(run_id, merged_into=target)
+        # Judgment lands on the run record (not a second usage event): events.jsonl is one line
+        # per run for cost rollups, and rewriting that line would break ledger immutability.
+        self.state.update(run_id, merged_into=target, outcome="integrated")
         if cleanup:
             self.worktrees.remove(wt)
         drift, drift_msg = _base_branch_drift_warning(rec, target)
