@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+import marshal_engine.state as state_mod
 from marshal_engine.state import FleetState, RunRecord
 from marshal_engine.types import RunStatus
+
+# Sleep inside the locked RMW (between read and write) long enough that a one-shot wave of
+# concurrent writers all observe the same pre-update record before any write lands. Without
+# flock that yields reliable final-state sibling-field loss; with flock they serialize and
+# both fields survive. Production leaves ``_rmw_between_read_write`` unset.
+_RMW_RACE_DELAY_S = 0.05
 
 
 def test_agent_liveness_is_never_written_to_the_ledger(tmp_path: Path) -> None:
@@ -209,27 +217,32 @@ class TestCrossProcessRunRecordUpdates:
     closes that hole.
     """
 
-    def test_separate_lock_holders_do_not_lose_sibling_fields(self, tmp_path: Path) -> None:
+    def test_separate_lock_holders_do_not_lose_sibling_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runs = tmp_path / "runs"
         FleetState(runs).add(
             RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running")
         )
         # Separate FleetState instances => independent threading.Lock maps; only the flock
         # serializes them (same shape as a CLI + MCP server on one repo).
-        n = 80
+        # One-shot wave + RMW delay: without flock every writer reads the initial record and
+        # the last write drops a sibling field; with flock, updates serialize and both survive.
+        monkeypatch.setattr(
+            state_mod, "_rmw_between_read_write", lambda: time.sleep(_RMW_RACE_DELAY_S)
+        )
+        writers_per_role = 4
 
         def stamp_merged() -> None:
-            st = FleetState(runs)
-            for _ in range(n):
-                st.update("r1", merged_into="main")
+            FleetState(runs).update("r1", merged_into="main")
 
         def stamp_terminal() -> None:
-            st = FleetState(runs)
-            for i in range(n):
-                st.update("r1", status="exited_clean", cost_usd=0.01 * i)
+            FleetState(runs).update("r1", status="exited_clean", cost_usd=0.5)
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(stamp_merged), pool.submit(stamp_terminal)]
+        with ThreadPoolExecutor(max_workers=writers_per_role * 2) as pool:
+            futures = [
+                pool.submit(stamp_merged) for _ in range(writers_per_role)
+            ] + [pool.submit(stamp_terminal) for _ in range(writers_per_role)]
             for fut in futures:
                 fut.result()
 
@@ -249,33 +262,38 @@ class TestCrossProcessRunRecordUpdates:
         )
         worker = r"""
 import sys
+import time
 from pathlib import Path
+
+import marshal_engine.state as state_mod
 from marshal_engine.state import FleetState
+
+state_mod._rmw_between_read_write = lambda: time.sleep(0.05)
 
 runs = Path(sys.argv[1])
 role = sys.argv[2]
-n = int(sys.argv[3])
 st = FleetState(runs)
-for i in range(n):
-    if role == "merged":
-        st.update("r1", merged_into="main")
-    else:
-        st.update("r1", status="exited_clean", cost_usd=0.01 * (i + 1))
+if role == "merged":
+    st.update("r1", merged_into="main")
+else:
+    st.update("r1", status="exited_clean", cost_usd=0.5)
 """
-        n = 60
+        # Eight one-shot processes (4 merged + 4 terminal) with an injected RMW delay: without
+        # flock, sibling fields are lost in the final record; with flock, both survive.
+        roles = ["merged"] * 4 + ["terminal"] * 4
         procs = [
             subprocess.Popen(
-                [sys.executable, "-c", worker, str(runs), role, str(n)],
+                [sys.executable, "-c", worker, str(runs), role],
             )
-            for role in ("merged", "terminal")
+            for role in roles
         ]
         for proc in procs:
-            assert proc.wait(timeout=60) == 0
+            assert proc.wait(timeout=120) == 0
 
         got = FleetState(runs).get("r1")
         assert got is not None
-        assert got.merged_into == "main"
-        assert got.status == "exited_clean"
+        assert got.merged_into == "main", "merged_into was lost across OS-process writers"
+        assert got.status == "exited_clean", "terminal status was lost across OS-process writers"
         assert got.cost_usd > 0.0
         # Sidecar must not be mistaken for a run record.
         assert (runs / "r1.json.lock").exists()
