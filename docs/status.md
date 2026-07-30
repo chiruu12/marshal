@@ -180,8 +180,9 @@ fail-closed enforce, and O(tail) under-lock re-check; failure-atomic setup/teard
 cross-process flock on run records and Antigravity settings; `spawn` returns the `run_id` before
 provisioning completes (`cancel_run` works during setup).
 
-Remaining: structured output (#148); Antigravity/Cursor **cost** / Admin-API half of #149
-(token parsing shipped); Cursor `--approve-mcps` (#150); the first PyPI publish (the release
+Remaining: Cursor **cost** via the Enterprise Admin API (#168; token parsing shipped for both
+Cursor and Antigravity, Antigravity cost has no upstream path); Cursor `--approve-mcps` (#150,
+design posted - opt-in allowlist path); the first PyPI publish (the release
 infrastructure shipped - Trusted Publishing/OIDC with a tag-must-match-wheel guard, #86/#121,
 exercised by the v0.1.0 release #134 - what is left is the publish itself); and eventually
 **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
