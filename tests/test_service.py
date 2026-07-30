@@ -1322,6 +1322,21 @@ def test_read_run_file_on_a_cleaned_worktree_says_so(repo: Path) -> None:
         svc.read_run_file(rec.run_id, "anything.md")
 
 
+def test_get_run_and_status_return_liveness_enriched_records(repo: Path) -> None:
+    """get_run/status must return the with_liveness path (not a dead duplicate return) (M12)."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "x")
+    got = svc.get_run(rec.run_id)
+    assert got is not None
+    assert got.run_id == rec.run_id
+    # Terminal records get agent_alive=None from with_liveness (question is meaningless).
+    assert got.agent_alive is None
+    rows = svc.status()
+    assert any(r.run_id == rec.run_id for r in rows)
+    match = next(r for r in rows if r.run_id == rec.run_id)
+    assert match.agent_alive is None
+
+
 def test_list_models_probes_backends_concurrently(tmp_path: Path) -> None:
     """Serial probes make the worst case the SUM of their timeouts, which can exceed an MCP
     client's deadline. Four 0.4s probes must finish in well under 1.6s."""

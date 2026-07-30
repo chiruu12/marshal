@@ -4072,3 +4072,100 @@ def test_an_unprovisioned_worktree_records_none(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="bare", goal="x"))
     assert rec.worktree_setup is None
+
+
+# --- failure atomicity (#143) -----------------------------------------------------------------
+
+
+def test_provision_oserror_tears_down_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OSError mid-copy must discard the worktree+branch, not strand them (M2)."""
+    outside = repo.parent / "prov-oserr.md"
+    outside.write_text("content")
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("injected disk full")
+
+    monkeypatch.setattr(fleet_mod, "_copy_read_path_tree", boom)
+    with pytest.raises(OSError, match="disk full"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="oserr", goal="x", read_paths=[str(outside)]),
+        )
+    assert fleet.state.list() == []
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/*oserr*"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert branches.strip() == "", f"leaked branch(es): {branches!r}"
+
+
+def test_cleanup_remove_failure_stamps_warning_sync(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup=True remove failure must not raise after the terminal stamp (M8, sync)."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def boom(_wt: object, delete_branch: bool = True) -> None:
+        raise WorktreeError("injected remove failure")
+
+    monkeypatch.setattr(fleet.worktrees, "remove", boom)
+    rec = fleet.run("writer", TaskSpec(id="cu-sync", goal="x"), cleanup=True)
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.error is not None and "cleanup warning" in rec.error
+    stored = fleet.state.get(rec.run_id)
+    assert stored is not None
+    assert stored.error is not None and "cleanup warning" in stored.error
+    # Worktree remains (remove failed); outcome still stands.
+    assert Path(rec.worktree or "").exists()
+
+
+def test_cleanup_remove_failure_stamps_warning_background(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same cleanup failure via the background path must not leave a silent contradiction (M8)."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    req = RunRequest(
+        backend_name="writer",
+        task=TaskSpec(id="cu-bg", goal="x"),
+    )
+    run_id, wt, started = fleet._start(req, None)
+
+    def boom(_wt: object, delete_branch: bool = True) -> None:
+        raise WorktreeError("injected remove failure")
+
+    monkeypatch.setattr(fleet.worktrees, "remove", boom)
+
+    # Mirror `_execute_bg`: swallow exceptions. After the fix, `_execute` itself must not raise
+    # on a cleanup remove failure — the warning lands on the record instead.
+    try:
+        fleet._execute(req, run_id, wt, started, cleanup=True)
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"_execute raised after terminal stamp: {exc!r}")
+
+    stored = fleet.state.get(run_id)
+    assert stored is not None
+    assert stored.status == RunStatus.EXITED_CLEAN.value
+    assert stored.error is not None and "cleanup warning" in stored.error
+    assert Path(wt.path).exists()
+
+
+def test_clean_sweeps_orphaned_tmp_files(repo: Path) -> None:
+    """A crash between mkstemp and os.replace leaves `*.tmp`; clean must reap them (M12)."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.run("writer", TaskSpec(id="tmp1", goal="x"))  # ensure .marshal layout exists
+    stale_run = fleet.state.dir / "orphan-run.json.XXXX.tmp"
+    stale_log = fleet.logs.dir / "orphan-log.log.YYYY.tmp"
+    fleet.state.dir.mkdir(parents=True, exist_ok=True)
+    fleet.logs.dir.mkdir(parents=True, exist_ok=True)
+    stale_run.write_text("{partial")
+    stale_log.write_text("partial log")
+    assert stale_run.exists() and stale_log.exists()
+    fleet.clean(scope="finished")
+    assert not stale_run.exists()
+    assert not stale_log.exists()

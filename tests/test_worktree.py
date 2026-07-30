@@ -694,3 +694,105 @@ def test_merge_conflict_aborts_and_reports(repo: Path) -> None:
     assert not conflict.ok
     assert "README.md" in conflict.conflicts
     assert (repo / "README.md").read_text() == "from a\n"  # aborted -> main untouched
+
+
+# --- failure atomicity (#143) -----------------------------------------------------------------
+
+
+def test_setup_oserror_tears_down_and_raises(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A generic OSError from the setup binary must become WorktreeError with teardown (M6)."""
+    m = WorktreeManager(
+        repo,
+        setup_cmd=[sys.executable, "-c", "pass"],
+    )
+    wt = m.create("setup_eacces")
+    real_run = subprocess.run
+
+    def boom(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == sys.executable:
+            raise PermissionError("injected EACCES")
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(WorktreeError, match="could not run"):
+        m.setup(wt)
+    assert not (m.base_dir / "setup_eacces").exists()
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/setup_eacces"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "marshal/setup_eacces" not in branches
+
+
+def test_verify_oserror_reports_not_raises(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """verify() already catches OSError; pin the path so a PermissionError stays soft (M6)."""
+    m = WorktreeManager(
+        repo,
+        verify_cmd=[sys.executable, "-c", "pass"],
+    )
+    wt = m.create("verify_eacces")
+    real_run = subprocess.run
+
+    def boom(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == sys.executable:
+            raise PermissionError("injected EACCES")
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    ok, output = m.verify(wt)
+    assert ok is False
+    assert "could not run" in output
+    assert wt.path.exists()  # verify never tears down
+
+
+def test_create_failure_deletes_leaked_branch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed `git worktree add -b` must not leave the branch behind (M7)."""
+    m = WorktreeManager(repo)
+    real_git = m._git
+
+    def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("worktree", "add") and "-b" in args:
+            # Reproduce git's leak: create the branch, then fail the worktree checkout.
+            branch = args[args.index("-b") + 1]
+            real_git("branch", branch, cwd=cwd)
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=1, stdout="", stderr="simulated worktree add fail"
+            )
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", flaky)
+    with pytest.raises(WorktreeError, match="worktree add failed"):
+        m.create("leak_branch")
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/leak_branch"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "marshal/leak_branch" not in branches
+    # Retry on the same id must succeed (the whole point of deleting the leaked branch).
+    monkeypatch.undo()
+    wt = m.create("leak_branch")
+    assert wt.path.exists()
+    m.remove(wt)
+
+
+def test_merged_diff_files_raises_on_git_failure(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """merged_diff_files must raise WorktreeError on git failure, matching merged_diff (M5)."""
+    m = WorktreeManager(repo)
+    real_git = m._git
+
+    def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ("diff",) and "--name-only" in args:
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=128, stdout="", stderr="fatal: bad revision"
+            )
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", flaky)
+    with pytest.raises(WorktreeError, match="could not list files"):
+        m.merged_diff_files("marshal/missing", "main")

@@ -239,6 +239,10 @@ class WorktreeManager:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         proc = self._git("worktree", "add", "-b", branch, str(path), base_branch or "HEAD")
         if proc.returncode != 0:
+            # git may have created the branch before failing the worktree checkout (disk full,
+            # unwritable path, ...). Leave it and a retry on the same id dies with "branch already
+            # exists" - best-effort delete so the failure is atomic from the caller's perspective.
+            self._git("branch", "-D", branch)
             raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
         return Worktree(task_id=task_id, path=path, branch=branch)
 
@@ -278,6 +282,10 @@ class WorktreeManager:
                 reason = f"timed out after {self.setup_timeout_s}s"
             except FileNotFoundError:
                 reason = f"command not found: {self.setup_cmd[0]!r}"
+            except (OSError, subprocess.SubprocessError) as exc:
+                # Match verify(): a generic OSError (EACCES on the binary, etc.) must become a
+                # WorktreeError with teardown, not escape as a raw crash that strands the worktree.
+                reason = f"could not run {self.setup_cmd[0]!r}: {exc}"
         if reason:
             # Best-effort teardown so a failed setup doesn't strand an orphan worktree (and a retry
             # can reuse the task_id); never let teardown mask the original setup failure.
@@ -439,6 +447,12 @@ class WorktreeManager:
         those - they don't land from this run).
         """
         proc = self._git("diff", "--name-only", "-z", f"{target}...{branch}")
+        if proc.returncode != 0:
+            # Match merged_diff: a git failure must not silently report changed_files=[] for a
+            # merged run (integrate would then claim nothing landed).
+            raise WorktreeError(
+                f"could not list files for {target}...{branch}: {proc.stderr.strip()}"
+            )
         return [f for f in proc.stdout.split("\0") if f]
 
     def merged_diff(self, branch: str, target: str) -> str:
