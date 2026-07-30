@@ -8,11 +8,35 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-30
+
 ### Added
 - **`marshal init` scaffolds a starter `fleet.config.yaml`.** Repo-shape-aware stub via the
   existing `scaffold_fleet_config` helper; does not touch the workspace registry. Refuses to
   overwrite an existing config (exit 1). First-run docs and missing-config hints point here
   instead of `marshal workspace add`.
+- **Schema-validated structured output on runs.** `TaskSpec.output_schema` (also on the MCP
+  `run_agent`/`run_many`/`spawn` tools) asks the agent for a final message that is one JSON object
+  conforming to a JSON Schema; the engine extracts and `jsonschema`-validates it and carries the
+  result as `structured` on `AgentResult` / `RunRecord` / `collect_run`. A schema-invalid result is
+  an honest `failed` run with a `structured_output:` error after retries - never silent prose
+  success, never a transient retry. Backends are untouched: the mechanism is prompt-level and
+  works with every adapter.
+- **Token usage for Cursor and Antigravity (cost stays `unavailable`).** Cursor stamps
+  `cacheReadTokens`/`cacheWriteTokens` alongside input/output from the CLI envelope; Antigravity
+  runs `--output-format json` and parses text + tokens (availability now requires agy >= 1.1.8,
+  surfaced by `doctor`). `cache_write_tokens` flows through `UsageEvent`/bucket rollups to the
+  `marshal usage` human and JSON surfaces. No cost is inferred from tokens.
+- Requirements stated up front in the README: Python 3.11+, git, and at least one authenticated
+  backend CLI - Marshal drives agents, it does not ship one.
+
+### Changed
+- **`spawn` returns a `run_id` before worktree provisioning completes.** The RUNNING record is
+  registered after `git worktree add` and returned immediately; `read_paths` / `worktree_setup`
+  run in the background task. Setup/provision failures terminal-stamp with phase errors
+  (`fleet: setup:` / `fleet: provision:`); `cancel_run` works during setup (killpg when a setup
+  pid exists, cooperative before); `clean` never reaps while a background task is in flight;
+  `collect_run` / `integrate` / `commit_run` return structured results on setup-failed runs.
 
 ### Fixed
 - **`clean` / `discard` no longer delete non-Marshal branches.** Worktree path cleanup was
@@ -91,16 +115,6 @@ versions may include breaking API changes until 1.0.
 - **The MCP server reported an empty version.** `serverInfo.version` was blank in every initialize
   handshake, so a client could not answer "which Marshal am I talking to?" - the first question you
   ask when a tool misbehaves. It now reports the package version.
-
-### Changed
-- **`spawn` returns a `run_id` before worktree provisioning completes.** The RUNNING record is
-  registered after `git worktree add` and returned immediately; `read_paths` / `worktree_setup`
-  run in the background task. Setup/provision failures terminal-stamp with phase errors
-  (`fleet: setup:` / `fleet: provision:`); `cancel_run` works during setup (killpg when a setup
-  pid exists, cooperative before); `clean` never reaps while a background task is in flight;
-  `collect_run` / `integrate` / `commit_run` return structured results on setup-failed runs.
-
-### Fixed
 - **Install instructions now describe an install that works.** The README pointed at
   `uv tool install "MarshalFleet[mcp]"`, which fails because the package is not on PyPI yet. It now
   leads with the Claude Code plugin and a verified `git+https://` install, and says plainly that
@@ -112,22 +126,6 @@ versions may include breaking API changes until 1.0.
   Gemini backend (removed in #123) and "PyPI publish" as wholly outstanding (the Trusted Publishing
   infrastructure shipped in #86/#121 and was exercised by the v0.1.0 release, #134); it now says the
   publish itself is what remains.
-
-### Added
-- **Schema-validated structured output on runs.** `TaskSpec.output_schema` (also on the MCP
-  `run_agent`/`run_many`/`spawn` tools) asks the agent for a final message that is one JSON object
-  conforming to a JSON Schema; the engine extracts and `jsonschema`-validates it and carries the
-  result as `structured` on `AgentResult` / `RunRecord` / `collect_run`. A schema-invalid result is
-  an honest `failed` run with a `structured_output:` error after retries - never silent prose
-  success, never a transient retry. Backends are untouched: the mechanism is prompt-level and
-  works with every adapter.
-- **Token usage for Cursor and Antigravity (cost stays `unavailable`).** Cursor stamps
-  `cacheReadTokens`/`cacheWriteTokens` alongside input/output from the CLI envelope; Antigravity
-  runs `--output-format json` and parses text + tokens (availability now requires agy >= 1.1.8,
-  surfaced by `doctor`). `cache_write_tokens` flows through `UsageEvent`/bucket rollups to the
-  `marshal usage` human and JSON surfaces. No cost is inferred from tokens.
-- Requirements stated up front in the README: Python 3.11+, git, and at least one authenticated
-  backend CLI - Marshal drives agents, it does not ship one.
 
 ## [0.1.0] - 2026-07-29
 
@@ -1052,5 +1050,7 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
   present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
-[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/chiruu12/marshal/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/chiruu12/marshal/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/chiruu12/marshal/releases/tag/v0.0.1
