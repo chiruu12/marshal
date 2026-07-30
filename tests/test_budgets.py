@@ -407,6 +407,31 @@ def test_multi_window_one_strict_ledger_read(tmp_path: Path) -> None:
     assert snap.cursor.size > 0
 
 
+def test_check_budget_enforce_never_reads_last_star_attrs(tmp_path: Path) -> None:
+    """Enforce path must consume read_events' return pair — not last_events/last_cursor.
+
+    A concurrent check_budget can interleave between separate attribute loads and pair a
+    stale spend baseline with a newer cursor (fail-open). Guard: any last_* *read* raises
+    (writes from read_events' stamps still go through ``__setattr__``).
+    """
+
+    class _NoLastStarTracker(UsageTracker):
+        def __getattribute__(self, name: str) -> object:
+            if name in ("last_events", "last_cursor"):
+                raise AssertionError(f"check_budget must not read {name}")
+            return object.__getattribute__(self, name)
+
+    tracker = _NoLastStarTracker(tmp_path / "usage")
+    _seed(tracker, cost=0.40)
+    budgets = [
+        BudgetSpec(backend="opencode", window="week", limit_usd=1.0, enforce=True),
+        BudgetSpec(backend="opencode", window="month", limit_usd=10.0, enforce=True),
+    ]
+    snap = check_budget(tracker, SESSION, budgets, _scope())
+    assert abs(snap.enforce_spent[_enforce_budget_key(budgets[0])] - 0.40) < 1e-9
+    assert snap.cursor.size > 0
+
+
 def test_multi_window_peer_append_between_reads_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

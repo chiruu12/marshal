@@ -226,7 +226,8 @@ def check_budget(
     ``enforce_only=True`` skips advisory budgets (no soft-warn). Returns a
     ``BudgetCheckSnapshot`` (ledger cursor + per-enforce-budget spend) so
     ``EnforceBudgetGate.begin`` can revalidate from the appended tail under its lock without a
-    full O(ledger) rescan.
+    full O(ledger) rescan. The snapshot's events/cursor come from one
+    ``read_events`` return pair (atomic handoff) — never from ``last_*`` attributes.
 
     A subscription / unknown-cost backend reports $0, so a $ budget on it never triggers (and
     shows $0 spent); we don't fabricate a percentage or "remaining" from that.
@@ -252,14 +253,12 @@ def check_budget(
 
     if enforce_budgets:
         try:
-            # ONE strict ledger read for the whole check. Going through summary() keeps the
-            # fleet-test monkeypatch fail-closed; summary → read_events stamps last_events +
-            # last_cursor for that single instant. Every window's spend is then derived in
-            # memory from that same event list — never a second read that could advance the
-            # cursor past a peer append while leaving an earlier window's spend stale.
-            tracker.summary(strict=True)
-            events = list(tracker.last_events)
-            cursor = tracker.last_cursor
+            # Diagnostics may monkeypatch summary() to simulate ledger failure — probe that
+            # first. The authoritative (events, cursor) pair comes ONLY from read_events'
+            # return values (never post-hoc last_events / last_cursor attribute loads, which
+            # a concurrent check_budget could interleave between).
+            _probe_summary_if_patched(tracker, strict=True)
+            events, cursor = tracker.read_events(strict=True)
             for b in enforce_budgets:
                 spent = _spend_from_events(
                     events, b, session_start=session_start, now=now
@@ -287,10 +286,8 @@ def check_budget(
     if advisory_budgets and not enforce_only:
         if events is None:
             try:
-                # One lenient read for advisory-only checks (reporting posture).
-                tracker.summary(strict=False)
-                events = list(tracker.last_events)
-                cursor = tracker.last_cursor
+                # One lenient read for advisory-only checks; reuse enforce's pair when present.
+                events, cursor = tracker.read_events(strict=False)
             except Exception:  # noqa: BLE001 - soft budget never breaks a run
                 events = []
         for b in advisory_budgets:
@@ -309,6 +306,20 @@ def check_budget(
             )
 
     return BudgetCheckSnapshot(cursor=cursor, enforce_spent=enforce_spent)
+
+
+def _probe_summary_if_patched(tracker: UsageTracker, *, strict: bool) -> None:
+    """Call ``summary`` only when it has been monkeypatched (fleet diagnostics / tests).
+
+    Production uses the real ``UsageTracker.summary``; we skip it and go straight to the
+    atomic ``read_events`` handoff. A replaced ``summary`` is still probed so
+    ``spend lookup failed`` fail-closed behavior is preserved.
+    """
+    current = tracker.summary
+    real = UsageTracker.summary
+    if getattr(current, "__func__", None) is real:
+        return
+    current(strict=strict)
 
 
 def _enforce_budget_key(budget: BudgetSpec) -> str:
