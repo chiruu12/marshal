@@ -88,25 +88,27 @@ Headless agents have no stdin — Marshal never uses a prompting permission mode
 | `safe-edit` | Edit and run inside the worktree, no prompts (default) |
 | `yolo` | Unrestricted (opt-in) |
 
-**`permission_fidelity`** (on `list_clients`, `marshal backends`, `doctor`) is what `safe-edit`
-actually enforces — not a sandbox ranking:
+**`permission_fidelity`** is a coarse honesty signal — not a sandbox ranking. Backend surfaces
+(`marshal backends`, doctor `permission:<backend>`) report **safe-edit** capability; `list_clients`
+resolves the `(backend, permission)` pair (`yolo` → `unrestricted`).
 
-| Value | Backends | What it means |
+| Value | Where | What it means |
 |---|---|---|
-| `enforced-denies` | Cursor, OpenCode, Codex | Backend or Marshal restriction beyond the worktree (curated deny overlay or native workspace sandbox). Still not a true process sandbox. |
+| `enforced-denies` | Cursor/OpenCode/Codex safe-edit (and their read-only clients) | Backend or Marshal restriction beyond the worktree. Still not a true process sandbox. |
 | `boundary-only` | Command Code, Goose, Antigravity, Claude Code | No Marshal deny layer; worktree + explicit `integrate` is the dependable boundary |
+| `unrestricted` | Any `permission: yolo` client | Deny/sandbox overlay dropped by design |
 
 Per-backend permission mapping (read-only / safe-edit / yolo → native flags):
 
-| Backend | read-only | safe-edit | yolo | fidelity |
+| Backend | read-only | safe-edit | yolo | safe-edit fidelity |
 |---|---|---|---|---|
-| Cursor | `--mode plan` | `--force` + deny list in `.cursor/cli.json` | `--yolo` | enforced-denies |
-| OpenCode | `plan` / read + deny edit | skip-permissions + curated denies | skip-permissions + `question: deny` | enforced-denies |
-| Codex | `-s read-only` | `-s workspace-write` | workspace-write, no approval | enforced-denies |
-| Command Code | `--permission-mode plan` | `--yolo` | `--yolo` | boundary-only |
-| Antigravity | unsupported headless | `--dangerously-skip-permissions` + trusted workspace | same as safe-edit | boundary-only |
-| Claude Code | `--permission-mode plan` | `--permission-mode acceptEdits` | bypass | boundary-only |
-| Goose | `GOOSE_MODE=chat` | `GOOSE_MODE=auto` | `GOOSE_MODE=auto` | boundary-only |
+| Cursor | `--mode plan` | `--force` + deny list in `.cursor/cli.json` | `--yolo` (`unrestricted`) | enforced-denies |
+| OpenCode | `plan` / read + deny edit | skip-permissions + curated denies | skip-permissions + `question: deny` (`unrestricted`) | enforced-denies |
+| Codex | `-s read-only` | `-s workspace-write` | bypass sandbox (`unrestricted`) | enforced-denies |
+| Command Code | `--permission-mode plan` | `--yolo` | `--yolo` (`unrestricted`) | boundary-only |
+| Antigravity | unsupported headless | `--dangerously-skip-permissions` + trusted workspace | same as safe-edit (`unrestricted`) | boundary-only |
+| Claude Code | `--permission-mode plan` | `--permission-mode acceptEdits` | bypass (`unrestricted`) | boundary-only |
+| Goose | `GOOSE_MODE=chat` | `GOOSE_MODE=auto` | `GOOSE_MODE=auto` (`unrestricted`) | boundary-only |
 
 Prefer `enforced-denies` clients for sensitive work. Full cheat sheets: [`design.md`](design.md) §5.
 

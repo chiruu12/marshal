@@ -53,11 +53,14 @@ expensive to skip across a whole fan-out.
 Call `list_clients` to see the configured workers (name, backend, model, permission,
 `permission_fidelity`). Each client is a routing choice the user set up (a cheap bulk worker, a
 careful reviewer, etc.). You route tasks to clients **by name** - you never choose backends
-directly. Use `permission_fidelity` when routing sensitive work:
-- `enforced-denies` — safe-edit has a backend/Marshal restriction beyond the worktree (still not a
-  sandbox; prefer these for secrets-adjacent or destructive-risk tasks).
-- `boundary-only` — treat as worktree isolation only; do **not** assume a safe-edit deny guarantee
-  (Command Code, Goose, Antigravity, Claude Code). Doctor warns on these.
+directly. Use `permission_fidelity` when routing sensitive work (it is resolved from that
+client's `(backend, permission)` — a `yolo` client is never `enforced-denies`):
+- `enforced-denies` — this client's tier has a backend/Marshal restriction beyond the worktree
+  (still not a sandbox; prefer these for secrets-adjacent or destructive-risk tasks).
+- `boundary-only` — treat as worktree isolation only; do **not** assume a deny guarantee
+  (Command Code, Goose, Antigravity, Claude Code). Doctor warns on these backends' safe-edit.
+- `unrestricted` — `permission: yolo`; deny/sandbox overlay dropped by design. Do **not** route
+  sensitive work here.
 To decide *which* client a task should go to (by task weight - heavy/standard/light - and cost),
 see [`docs/model-playbook.md`](../../docs/model-playbook.md).
 

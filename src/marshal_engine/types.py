@@ -29,19 +29,41 @@ class PermissionMode(str, Enum):
 
 
 class PermissionFidelity(str, Enum):
-    """How much ``safe-edit`` actually enforces beyond worktree isolation.
+    """How much a permission tier actually enforces beyond worktree isolation.
 
-    Support for the normalized mode (``Capabilities.permission_modes``) and the strength of
-    that mode are separate. ``enforced-denies`` means the backend or Marshal installs a
-    restriction beyond "runs in a worktree" (curated deny overlay, sandbox flag, etc.).
-    ``boundary-only`` means Marshal cannot promise a deny layer — the worktree and explicit
-    integrate remain the dependable boundary. Default is the honest fail-closed value so
-    unknown/dummy adapters never claim enforcement by accident. This is a coarse routing
+    ``Capabilities.permission_fidelity`` is the backend's **safe-edit** honesty
+    (``marshal backends`` / doctor ``permission:<backend>``). Client listings resolve
+    fidelity from the ``(backend, permission)`` pair via ``resolve_permission_fidelity`` —
+    so a ``yolo`` client never inherits an ``enforced-denies`` label it does not earn.
+
+    ``enforced-denies`` means the backend or Marshal installs a restriction beyond "runs in
+    a worktree" (curated deny overlay, sandbox flag, plan mode, etc.). ``boundary-only``
+    means Marshal cannot promise a deny layer — the worktree and explicit integrate remain
+    the dependable boundary. ``unrestricted`` means the resolved tier intentionally drops
+    the deny/sandbox overlay (``yolo``). Default on Capabilities is the honest fail-closed
+    value so unknown/dummy adapters never claim enforcement by accident. Coarse routing
     signal, not a sandbox guarantee or a strength ranking between backends.
     """
 
     ENFORCED_DENIES = "enforced-denies"
     BOUNDARY_ONLY = "boundary-only"
+    UNRESTRICTED = "unrestricted"
+
+
+def resolve_permission_fidelity(
+    backend_fidelity: PermissionFidelity,
+    permission: PermissionMode,
+) -> PermissionFidelity:
+    """Client-facing fidelity for a resolved ``(backend capability, permission)`` pair.
+
+    ``yolo`` is unrestricted by design on every backend (no curated deny / sandbox overlay).
+    ``safe-edit`` and ``read-only`` inherit the backend's declared safe-edit fidelity:
+    enforcing backends install a real restriction for both tiers; boundary-only backends
+    stay honest that Marshal cannot promise a deny layer (cooperative plan/chat modes).
+    """
+    if permission is PermissionMode.YOLO:
+        return PermissionFidelity.UNRESTRICTED
+    return backend_fidelity
 
 
 #: Persisted status spellings that have been renamed, mapped to their current value. Applied when

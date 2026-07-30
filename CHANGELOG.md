@@ -17,6 +17,11 @@ versions may include breaking API changes until 1.0.
   now raises `WorktreeError`, rejects non-sha tips, and the `then` chain prefers running the
   follow-up when the tip cannot be resolved. Ledger load strips a non-sha `base_commit` to
   `None` so old poisoned records still parse.
+- **`list_clients` no longer reports `permission_fidelity: enforced-denies` for `yolo` clients
+  (#178).** Fidelity is resolved from the `(backend, permission)` pair: `yolo` → `unrestricted`,
+  while `safe-edit` / `read-only` still inherit the backend's safe-edit capability. Doctor
+  `permission:<backend>` and `marshal backends` remain backend safe-edit capability (wording
+  clarified so the two surfaces are not conflated).
 
 ## [0.2.0] - 2026-07-30
 

@@ -93,7 +93,7 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
   right now**, and why (backend CLI absent, or a backend name that does not exist). Previously
   these were filtered out silently: Marshal warned on stderr, which an MCP driver never sees, so
   the client just vanished from the list with no error.
-- `permission_fidelity`: `enforced-denies` \| `boundary-only` — what `safe-edit` actually enforces for this client's backend (see `docs/design.md` §5 / `SECURITY.md`)
+- `permission_fidelity`: `enforced-denies` \| `boundary-only` \| `unrestricted` — resolved from the client's `(backend, permission)` pair (see `docs/design.md` §5 / `SECURITY.md`). `yolo` is always `unrestricted`; `safe-edit` / `read-only` inherit the backend's safe-edit capability. Distinct from doctor's `permission:<backend>`, which reports backend safe-edit capability only.
 - `driver_context`: string \| null — from `fleet.config.yaml` `context.driver`
 
 ### `list_models`

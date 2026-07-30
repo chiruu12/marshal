@@ -372,10 +372,11 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Preflight the SELECTED workspace: toolchain, repo, config, each configured backend's
-        CLI availability + auth, and static safe-edit permission_fidelity (ok for enforced-denies,
-        warn for boundary-only). Read-only - run it before spawning to catch a missing/
-        unauthenticated backend up front. Returns per-check results + a fails/warns roll-up +
-        the workspace."""
+        CLI availability + auth, and backend safe-edit permission_fidelity (ok for
+        enforced-denies, warn for boundary-only — capability of the adapter, not per-client
+        yolo/read-only resolution from list_clients). Read-only - run it before spawning to
+        catch a missing/unauthenticated backend up front. Returns per-check results + a
+        fails/warns roll-up + the workspace."""
         return await ws_call(workspace, lambda svc: svc.doctor())
 
     @app.tool()

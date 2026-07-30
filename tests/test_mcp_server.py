@@ -248,7 +248,11 @@ def test_tools_are_async_and_round_trip_via_call_tool(
     # when absent, clients is empty (graceful skip). Either way the field shape is stable.
     for client in payload["clients"]:
         assert "permission_fidelity" in client
-        assert client["permission_fidelity"] in {"enforced-denies", "boundary-only"}
+        assert client["permission_fidelity"] in {
+            "enforced-denies",
+            "boundary-only",
+            "unrestricted",
+        }
 
 
 def test_list_models_round_trips_via_call_tool(

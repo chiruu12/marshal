@@ -214,11 +214,14 @@ def _git_repo_check(repo: Path) -> Check:
 
 
 def _permission_fidelity_check(name: str, backend: CodingAgentBackend) -> Check:
-    """Static adapter metadata: what ``safe-edit`` actually enforces for this backend.
+    """Backend safe-edit capability — not the per-client resolved fidelity from ``list_clients``.
 
-    Independent of CLI availability/auth — fidelity is declared on the adapter, so the check
-    still appears when the binary is missing. ``boundary-only`` warns; it never fails a doctor
-    run (worktree isolation remains the dependable boundary either way).
+    ``permission:<backend>`` reports what this adapter's ``safe-edit`` installs. A configured
+    client's ``yolo`` / ``read-only`` fidelity is resolved separately on ``list_clients`` (see
+    ``resolve_permission_fidelity``). Independent of CLI availability/auth — fidelity is
+    declared on the adapter, so the check still appears when the binary is missing.
+    ``boundary-only`` warns; it never fails a doctor run (worktree isolation remains the
+    dependable boundary either way).
     """
     fidelity = backend.capabilities.permission_fidelity
     if fidelity is PermissionFidelity.ENFORCED_DENIES:
@@ -226,20 +229,20 @@ def _permission_fidelity_check(name: str, backend: CodingAgentBackend) -> Check:
             f"permission:{name}",
             OK,
             (
-                f"safe-edit fidelity={fidelity.value}: backend/Marshal installs a restriction "
-                "beyond the worktree; the worktree remains the isolation boundary"
+                f"backend safe-edit fidelity={fidelity.value}: backend/Marshal installs a "
+                "restriction beyond the worktree; the worktree remains the isolation boundary"
             ),
         )
     return Check(
         f"permission:{name}",
         WARN,
         (
-            f"safe-edit fidelity={fidelity.value}: no Marshal-enforced deny layer; "
+            f"backend safe-edit fidelity={fidelity.value}: no Marshal-enforced deny layer; "
             "the worktree and explicit integrate are the dependable boundary"
         ),
         (
             "prefer an enforced-denies backend (cursor/opencode/codex) for sensitive work, "
-            "or treat this client as worktree-isolated only"
+            "or treat this backend as worktree-isolated only"
         ),
     )
 

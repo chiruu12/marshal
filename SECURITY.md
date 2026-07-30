@@ -53,14 +53,18 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
   non-prompting writes inside the worktree), and `yolo` (unrestricted, opt-in). `safe-edit` is
   **not** uniformly a deny sandbox across backends — see `permission_fidelity` below. `yolo`
   removes the guardrails by design; only use it when you trust the task prompt and the backend.
-- **`permission_fidelity` tells you what `safe-edit` actually enforces.** Surfaced on
-  `list_clients`, `marshal backends`, and `doctor` (`permission:<backend>`):
-  - `enforced-denies` — Cursor, OpenCode, and Codex: a backend or Marshal restriction beyond the
-    worktree (curated deny overlay or native workspace sandbox). Still not a true process sandbox.
+- **`permission_fidelity` tells you what a permission tier actually enforces.** Two surfaces:
+  - `marshal backends` / doctor `permission:<backend>` — the backend's **safe-edit** capability.
+  - `list_clients` — resolved from the client's `(backend, permission)` pair.
+  - `enforced-denies` — Cursor, OpenCode, and Codex safe-edit (and their read-only clients): a
+    backend or Marshal restriction beyond the worktree (curated deny overlay, native workspace
+    sandbox, or plan/read-only mode). Still not a true process sandbox.
   - `boundary-only` — Command Code, Goose, Antigravity, and Claude Code: Marshal cannot promise a
     deny layer; the worktree and explicit `integrate` remain the dependable boundary. Doctor warns
     (never fails) on `boundary-only`. Claude Code's native `acceptEdits` mode has **no Marshal
     deny layer** around it.
+  - `unrestricted` — any client with `permission: yolo`: deny/sandbox overlay dropped by design.
+    Never reported as `enforced-denies`.
 - **Every run has a hard timeout and a process-group kill.** A run that exceeds its timeout is
   terminated, and the whole process group is killed so agent grandchildren (subagents, MCP servers,
   tool shells) are not orphaned (`src/marshal_engine/backends/base.py`).

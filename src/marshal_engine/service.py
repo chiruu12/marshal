@@ -47,7 +47,7 @@ from .fleet import (
 from .retry import RetryPolicy
 from .state import RunRecord
 from .registry import make_backend
-from .types import RunStatus, TaskSpec, UsageSource
+from .types import RunStatus, TaskSpec, UsageSource, resolve_permission_fidelity
 from .usage import UsageSummary
 from .layout import reports_dir
 from .worktree import WorktreeError
@@ -83,7 +83,11 @@ _WORKER_PREAMBLE = (
 
 
 class ClientInfo(BaseModel):
-    """A configured client as surfaced to the driver (resolved model, permission as a string)."""
+    """A configured client as surfaced to the driver (resolved model, permission as a string).
+
+    ``permission_fidelity`` is resolved from the ``(backend, permission)`` pair — not the
+    backend's safe-edit capability alone — so ``yolo`` reports ``unrestricted``.
+    """
 
     name: str
     backend: str
@@ -236,7 +240,10 @@ class MarshalService:
                     backend=c.backend,
                     model=resolve_model(c),
                     permission=c.permission.value,
-                    permission_fidelity=self.fleet.backends[c.backend].capabilities.permission_fidelity.value,
+                    permission_fidelity=resolve_permission_fidelity(
+                        self.fleet.backends[c.backend].capabilities.permission_fidelity,
+                        c.permission,
+                    ).value,
                 )
                 for c in self._clients.values()
             ],
