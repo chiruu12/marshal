@@ -1544,14 +1544,35 @@ class Fleet:
             # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
             # parallel instead of one-at-a-time behind the lock.
             resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
-            with self._create_lock:
-                wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+            # Renew the unbound placeholder while `git worktree add` runs so a slow-but-alive
+            # holder is not TTL-reclaimed mid-create; bind still verifies ownership on disk.
+            wt = None
+            try:
+                with self._budget_gate.keep_alive(budget_keys):
+                    with self._create_lock:
+                        wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+            except Exception:
+                if wt is not None:
+                    with contextlib.suppress(WorktreeError):
+                        self.worktrees.discard(str(wt.path), wt.branch)
+                raise
+            assert wt is not None  # create either returned or raised
             # Pin the sha AFTER creation, from the new worktree's own branch tip. Resolving the ref
             # beforehand was racy: if the base branch moved between the lookup and `worktree add`,
             # the record claimed one commit while the worktree was cut from another, and reviews
             # were then computed against a base the agent never had. The created branch's tip IS
             # what it was cut from, so there is no window to lose.
             resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
+            # Bind immediately after worktree create (before provision) so the durable
+            # reservation carries a real run_id for the long setup window. Bind before the
+            # RUNNING record so a reservation I/O / ownership failure is failure-atomic
+            # (discard worktree/branch, then re-raise; outer release frees the slot).
+            try:
+                self._budget_gate.bind(budget_keys, run_id)
+            except Exception:
+                with contextlib.suppress(WorktreeError):
+                    self.worktrees.discard(str(wt.path), wt.branch)
+                raise
             if not defer_provisioning:
                 # Sync path (run_agent): provision before recording so a failure leaves no RUNNING
                 # zombie and no orphan worktree (M2). setup() tears down + raises on failure.
@@ -1561,15 +1582,6 @@ class Fleet:
                     with contextlib.suppress(WorktreeError):
                         self.worktrees.discard(str(wt.path), wt.branch)
                     raise
-            # Bind before the RUNNING record so a reservation I/O failure is failure-atomic
-            # (same shape as provision: discard worktree/branch, then re-raise; outer release
-            # frees the slot). Recording first would strand a RUNNING zombie on bind failure.
-            try:
-                self._budget_gate.bind(budget_keys, run_id)
-            except Exception:
-                with contextlib.suppress(WorktreeError):
-                    self.worktrees.discard(str(wt.path), wt.branch)
-                raise
             _register_inflight_run(self.state.dir, run_id)
             self.state.add(
                 RunRecord(

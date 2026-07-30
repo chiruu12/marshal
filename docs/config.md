@@ -96,12 +96,16 @@ triggers.
 limit), across processes (CLI + MCP on the same repo) as well as threads. Parallel `run_many` /
 concurrent `spawn` would otherwise all pass the same pre-run ledger snapshot and overshoot the
 cap before any usage is recorded. Reservations live in `.marshal/budget_gate.json` under an
-`fcntl.flock`; a dead holder's pid is reclaimed so a crash cannot lock out future spawns. Lock
+`fcntl.flock`; a dead holder's pid is reclaimed so a crash cannot lock out future spawns.
+Unbound placeholders (empty `run_id`) older than a short TTL are also reclaimed so a failed
+bind whose release cannot re-take the flock cannot poison the slot for the life of the
+process; a live holder renews that TTL while `git worktree add` runs, and `bind` verifies
+ownership (never steals a peer's entry). Bound in-flight reservations are not aged out. Lock
 acquire times out after 5s and refuses the spawn (fail-closed). A present but
-corrupt/unreadable reservation file likewise refuses (delete it when no runs are in flight to
-repair); soft-warn budgets never read that file. The next matching spawn is refused until the
-holder finishes (and records spend). Advisory budgets do not take a concurrency slot and stay
-lock-free.
+corrupt/unreadable reservation file, or a malformed `held` entry, likewise refuses (delete
+the file when no runs are in flight to repair); soft-warn budgets never read that file. The
+next matching spawn is refused until the holder finishes (and records spend). Advisory
+budgets do not take a concurrency slot and stay lock-free.
 
 > **Scope: one process.** The concurrency slot is held in memory, so it binds spawns made by a
 > single Marshal process. Two processes against the same repo (a `marshal run` CLI invocation
