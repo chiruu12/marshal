@@ -236,8 +236,9 @@ backends that record `$0` or `unavailable` never trip a dollar cap — see the l
 [`usage.md`](usage.md) (Backend notes) rather than treating `enforce: true` as a universal
 kill-switch. We do NOT fabricate a percentage or "remaining" from a missing cost. The MCP `usage`
 tool (and `marshal usage --config fleet.config.yaml --json`) returns a `budgets` list with
-`scope / window / spent_usd / limit_usd / remaining_usd / enforce` (remaining floored at 0) per
-budget, so the driver can see remaining alongside spend.
+`scope / window / spent_usd / limit_usd / remaining_usd / enforce / spent_known` (remaining
+floored at 0) per budget, so the driver can see remaining alongside spend. When
+`spent_known` is false, spend is unknown — do not treat the dollar fields as measured.
 
 ---
 

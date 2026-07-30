@@ -29,6 +29,17 @@ versions may include breaking API changes until 1.0.
   now mirror team-file containment: bare names and path forms must resolve inside
   `workflows/`. The CLI still searches `workflows/` and `examples/workflows/` on its own
   discovery path.
+- **Cost honesty: never claim a measured $0 the provider did not report.**
+  - EastRouter rows with missing/null `amount_usd` are skipped for cost attribution (run stays
+    `unavailable`) instead of becoming a fabricated `admin-api` $0; an explicit `0.0` still
+    attributes as a real free charge.
+  - `_apply_external_cost` only replaces `unavailable` cost — a native-cost backend with
+    `usage_api` configured keeps its backend-reported cost and `native` source.
+  - Budget status lookup failures set `spent_known=false` (spend unknown) instead of asserting
+    a known $0; `spent_known` is included in MCP / `marshal usage --json` payloads so drivers
+    can tell when `spent_usd` / `remaining_usd` are not measured.
+  - Claude Code treats `total_cost_usd: 0` with tokens as `unavailable` (OpenCode/Goose parity)
+    rather than claiming a native free run; tokens are preserved.
 - **First-run docs and missing-config hints no longer dead-end.** SETUP/usage install
   commands match the working `git+https://` path (MarshalFleet is not on PyPI yet); README's
   60-second path now scaffolds a config via `marshal init`, says the scaffold ships its clients

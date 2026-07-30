@@ -840,11 +840,13 @@ def test_usage_json_includes_budgets_when_configured(
     assert abs(worker["spent_usd"] - 0.40) < 1e-6
     assert worker["limit_usd"] == 1.0
     assert abs(worker["remaining_usd"] - 0.60) < 1e-6
+    assert worker["spent_known"] is True  # machine consumers see honesty flag
     # The backend budget under session has no spend (CLI session_start == now) -> $0.50 remaining.
     be = next(b for b in data["budgets"] if b["scope"] == "backend:opencode")
     assert be["spent_usd"] == 0.0
     assert be["limit_usd"] == 0.5
     assert be["remaining_usd"] == 0.5
+    assert "spent_known" in be
 
 
 def test_usage_json_omits_budgets_when_no_config(

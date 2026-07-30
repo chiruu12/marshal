@@ -153,8 +153,9 @@ def compute_budget_status(
 ) -> list[BudgetStatus]:
     """Build a `BudgetStatus` per configured budget from the ledger at `now`.
 
-    Lookup failures for an individual budget degrade to spent=0 (same honesty as a scope with
-    no events) so the display never crashes the usage surface. Always lenient (reporting path).
+    Lookup failures for an individual budget degrade to spent=0 with ``spent_known=False`` so
+    the display never crashes the usage surface and machine consumers can tell spend is unknown.
+    Always lenient (reporting path).
     """
     cache: dict[str, UsageSummary] = {}
     out: list[BudgetStatus] = []
@@ -172,7 +173,7 @@ def compute_budget_status(
             spent_known = _budget_spent_known(bucket)
         except Exception:  # noqa: BLE001 - display never fails a usage query
             spent = 0.0
-            spent_known = True
+            spent_known = False  # error => spend unknown, never claim a known $0
         out.append(
             BudgetStatus(
                 scope=_budget_scope_label(b),
@@ -198,8 +199,11 @@ class BudgetStatus(BaseModel):
     enforce: bool = False
     spent_known: bool = Field(
         default=True,
-        exclude=True,
-        description="CLI-only: False when scope has runs but no priced cost source",
+        description=(
+            "False when spend could not be determined (lookup failure, or scope has runs "
+            "but no priced cost source). Machine consumers (MCP / --json) must read this "
+            "before treating spent_usd / remaining_usd as known."
+        ),
     )
 
 

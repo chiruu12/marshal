@@ -106,6 +106,25 @@ def _parse_dt(value: object) -> datetime | None:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def _parse_amount_usd(value: object) -> float | None:
+    """A usable numeric ``amount_usd``, or None when absent/null/unparseable.
+
+    Explicit ``0`` / ``0.0`` is a real reported charge (keep it). Missing or null must NOT
+    coerce to ``0.0`` — that would fabricate an ``admin-api`` $0 when the provider reported
+    no charge at all.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _parse_records(raw: str) -> list[_Rec]:
     try:
         data = json.loads(raw)
@@ -118,10 +137,17 @@ def _parse_records(raw: str) -> list[_Rec]:
     for r in rows:
         if not isinstance(r, dict):
             continue
+        # Row without a usable amount_usd is unusable for cost attribution — skip it so the
+        # run stays unavailable rather than claiming a fake admin-api $0.
+        if "amount_usd" not in r:
+            continue
+        amount = _parse_amount_usd(r.get("amount_usd"))
+        if amount is None:
+            continue
         out.append(
             _Rec(
                 model=str(r.get("model", "")),
-                amount=float(r.get("amount_usd", 0.0) or 0.0),
+                amount=amount,
                 prompt=int(r.get("prompt_tokens", 0) or 0),
                 completion=int(r.get("completion_tokens", 0) or 0),
                 reasoning=int(r.get("reasoning_tokens", 0) or 0),

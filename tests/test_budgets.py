@@ -14,10 +14,12 @@ import pytest
 import marshal_engine.budgets as budgets_mod
 from marshal_engine.budgets import (
     BudgetExceeded,
+    BudgetStatus,
     EnforceBudgetGate,
     _enforce_budget_key,
     _recheck_enforce_from_tail,
     check_budget,
+    compute_budget_status,
 )
 from marshal_engine.config import BudgetSpec
 from marshal_engine.usage import UsageEvent, UsageTracker
@@ -516,3 +518,36 @@ def test_same_inode_append_still_fast_paths(tmp_path: Path) -> None:
     _seed(tracker, cost=0.05)
     # Must not raise — append is the happy path.
     _recheck_enforce_from_tail(tracker, snap, SESSION, [budget], _scope())
+
+
+def test_budget_status_lookup_failure_reports_spent_unknown(tmp_path: Path) -> None:
+    # Honesty: a summary lookup error means spend is unknown — never claim a known $0.
+    tracker = _tracker(tmp_path)
+
+    def boom(*, since=None, until=None, strict=False):  # noqa: ANN001, ARG001
+        raise RuntimeError("ledger unreadable")
+
+    tracker.summary = boom  # type: ignore[method-assign]
+    now = datetime.now(timezone.utc)
+    rows = compute_budget_status(
+        tracker, SESSION, [BudgetSpec(window="week", limit_usd=1.0)], now
+    )
+    assert len(rows) == 1
+    assert rows[0].spent_usd == 0.0
+    assert rows[0].spent_known is False
+
+
+def test_budget_status_spent_known_is_serialized() -> None:
+    # Machine consumers (MCP / --json) must see spent_known — it is not CLI-only.
+    row = BudgetStatus(
+        scope="global",
+        window="week",
+        spent_usd=0.0,
+        limit_usd=1.0,
+        remaining_usd=1.0,
+        enforce=False,
+        spent_known=False,
+    )
+    dumped = row.model_dump(mode="json")
+    assert dumped["spent_known"] is False
+    assert "spent_known" in row.model_dump_json()

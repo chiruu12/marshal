@@ -984,6 +984,24 @@ def test_usage_api_overrides_cost_with_admin_api(repo: Path) -> None:
     assert seen["model"] == "z-ai/glm-5.1"
 
 
+def test_usage_api_does_not_overwrite_native_cost(repo: Path) -> None:
+    # Native cost is ground truth. A client with both native cost AND usage_api must keep
+    # the backend-reported cost — admin-api only fills unavailable.
+    def resolver(**_kw: object) -> ExternalCost:
+        return ExternalCost(9.99, UsageSource.ADMIN_API, 10, 0, 1)
+
+    fleet = Fleet(
+        repo,
+        {"metered": _Metered(cost_usd=0.50)},
+        cost_resolvers={"eastrouter": resolver},
+    )
+    rec = fleet.run(
+        "metered", TaskSpec(id="er-native", goal="x"), model="m", usage_api="eastrouter"
+    )
+    assert rec.source == "native"
+    assert abs(rec.cost_usd - 0.50) < 1e-9
+
+
 def test_usage_api_no_attribution_keeps_unavailable(repo: Path) -> None:
     fleet = Fleet(
         repo, {"tok": _Tokened()}, cost_resolvers={"eastrouter": lambda **_kw: None}
