@@ -391,6 +391,30 @@ def test_extract_usage_default_returns_result_usage() -> None:
     assert b.extract_usage(result) is result.usage
 
 
+def test_failure_tail_redacts_secret_before_length_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Error tails truncate; redact must run first or a straddling credential leaks a prefix."""
+    from marshal_engine.backends.base import _failure_tail
+    from marshal_engine.env import redact_secrets
+
+    secret = "sk-ant-err-tail-secret-x"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    limit = 500
+    keep_prefix = 10
+    prefix = "error: "
+    # Place the secret so its first keep_prefix chars land just before the length cut.
+    pad = "e" * (limit - len(prefix) - keep_prefix)
+    line = prefix + pad + secret + " trailing"
+    broken = redact_secrets(line[:limit], credential_names=["ANTHROPIC_API_KEY"])
+    assert secret[:keep_prefix] in broken
+
+    out = _failure_tail(line, limit=limit)
+    assert secret not in out
+    assert secret[:keep_prefix] not in out
+    assert "[redacted:" in out
+
+
 def test_extract_usage_override_receives_post_parse_output() -> None:
     # The seam must be called with the AgentResult parse_output produced - same status, text,
     # exit_code - so a backend can condition on them. Locks down the contract Cursor's

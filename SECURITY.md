@@ -83,7 +83,9 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
   surfaces what each configured backend will and will not forward (`child-env:*` checks).
 - **Run logs and the 16KB run-record `text` redact known credential values** before persistence
   (value-based replacement with `[redacted:VAR]` markers; values shorter than 8 characters are
-  skipped to avoid mangling ordinary output).
+  skipped to avoid mangling ordinary output). Redaction runs on the full string **before** any
+  truncate (run-record `text`, verify-output tail, error tails) so a credential cannot straddle
+  a size cut and leave a searchable fragment. `structured` string leaves are scrubbed the same way.
 
 ## MCP driver authority
 

@@ -26,7 +26,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
-from ..env import child_env
+from ..env import child_env, redact_secrets
 from ..types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord
 
 _VERSION_PROBE_TIMEOUT_S = 15.0
@@ -419,6 +419,8 @@ def _failure_reason(name: str, exit_code: int, stderr: str, stdout: str = "") ->
 
 
 def _failure_tail(blob: str, limit: int = 500) -> str:
+    # Redact before the length cut so a credential cannot straddle the boundary and leak a prefix.
+    blob = redact_secrets(blob)
     lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
     if not lines:
         return ""

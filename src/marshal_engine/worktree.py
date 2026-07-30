@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .config import setup_command_refusal
-from .env import child_env
+from .env import child_env, redact_secrets
 from .layout import worktrees_dir
 
 
@@ -436,6 +436,8 @@ class WorktreeManager:
         except (OSError, subprocess.SubprocessError) as exc:
             return False, f"verify could not run {self.verify_cmd[0]!r}: {exc}"
         output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        # Redact before the tail cut: a credential straddling the cap would otherwise leak a prefix.
+        output = redact_secrets(output)
         # Failures print last: keep the TAIL, where test runners put the summary.
         if len(output) > _VERIFY_OUTPUT_CAP:
             output = "..." + output[-_VERIFY_OUTPUT_CAP:]

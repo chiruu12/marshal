@@ -49,12 +49,14 @@ versions may include breaking API changes until 1.0.
   operational vars plus that backend's own credential allowlist only; unrelated secrets are
   dropped. Per-client `env:` remains the escape hatch for omitted **non-secret** vars
   (secret-shaped keys and `PATH` still refused). Run logs and the 16KB run-record `text`
-  redact known credential *values* before persistence. `marshal doctor` reports
-  `child-env` / `child-env:<backend>` forwarding and warns when a set `secret_ref` var is not
-  on that backend's allowlist. **Upgrade:** if a backend fails auth after upgrading, check
-  `marshal doctor` — env-based keys that are not on the backend allowlist are no longer
-  inherited; prefer CLI login (`opencode auth login`, etc.). See `docs/config.md` and
-  `SECURITY.md`.
+  redact known credential *values* before persistence (redact **before** any size cut so a
+  value straddling the 16KB / verify-tail / error-tail boundary cannot leave a fragment).
+  `structured` string leaves and `error` are scrubbed the same way. `marshal doctor`
+  reports `child-env` / `child-env:<backend>` forwarding and warns when a set `secret_ref`
+  var is not on that backend's allowlist. **Upgrade:** if a backend fails auth after
+  upgrading, check `marshal doctor` — env-based keys that are not on the backend allowlist
+  are no longer inherited; prefer CLI login (`opencode auth login`, etc.). See
+  `docs/config.md` and `SECURITY.md`.
 
 ## [0.2.0] - 2026-07-30
 

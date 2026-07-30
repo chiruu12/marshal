@@ -1077,6 +1077,24 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     return obj
 
 
+def _redact_structured(obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Value-scrub string leaves of a structured payload (same markers as run-record text)."""
+    if obj is None:
+        return None
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return redact_secrets(value)
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        return value
+
+    walked = _walk(obj)
+    return walked if isinstance(walked, dict) else obj
+
+
 def _apply_structured_output(task: TaskSpec, result: AgentResult) -> AgentResult:
     """Validate the final message against ``task.output_schema`` when one was requested.
 
@@ -1799,11 +1817,11 @@ class Fleet:
                 output_tokens=event.output_tokens,
                 duration_ms=result.duration_ms,
                 source=event.source,
-                # Final message for review; redact credential values (same pass as run logs).
-                text=redact_secrets(result.text[:16000]),
-                structured=result.structured,
+                # Redact before the 16KB cut: value-based scrub needs the whole secret present.
+                text=redact_secrets(result.text)[:16000],
+                structured=_redact_structured(result.structured),
                 ended_at=_now(),
-                error=result.error,
+                error=redact_secrets(result.error) if result.error else result.error,
                 attempts=attempts,
                 verify_passed=verify_passed,
                 verify_output=verify_output,

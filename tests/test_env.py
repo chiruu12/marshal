@@ -715,3 +715,24 @@ def test_run_log_store_redacts_credential_in_stdout(
     assert "[redacted:ANTHROPIC_API_KEY]" in text
     assert "env dump:" in text
     assert "--- stderr ---\nok" in text
+
+
+def test_redact_before_truncate_removes_boundary_straddle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Value-based redaction must see the whole secret; truncate-then-redact leaks a prefix."""
+    secret = "sk-ant-straddle-secret-xx"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    cap = 16_000
+    keep_prefix = 10  # first chars of the secret land just before the cut
+    pad = "p" * (cap - keep_prefix)
+    raw = pad + secret + "trailer"
+    # Broken order (the defect): prefix of the secret survives in the retained window.
+    broken = redact_secrets(raw[:cap], credential_names=["ANTHROPIC_API_KEY"])
+    assert secret[:keep_prefix] in broken
+    # Correct order: redact on the full string, then cap.
+    fixed = redact_secrets(raw, credential_names=["ANTHROPIC_API_KEY"])[:cap]
+    assert secret not in fixed
+    assert secret[:keep_prefix] not in fixed
+    # Marker may itself be clipped by the cap; that is fine — no raw fragment remains.
+    assert "[redacted:" in fixed

@@ -706,6 +706,72 @@ def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
     assert runs[0].error and "kaboom" in runs[0].error
 
 
+# --- run-record text redaction: must precede the 16KB truncate -----------------------------
+
+
+def test_run_record_text_redacts_secret_straddling_16kb_boundary(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A credential cut by the 16KB text cap must not leave a prefix on the run record."""
+    secret = "sk-ant-fleet-straddle-xx"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    cap = 16_000
+    keep_prefix = 12
+    message = ("p" * (cap - keep_prefix)) + secret + ("t" * 100)
+    fleet = Fleet(repo, {"talker": _Talker(message)})
+    rec = fleet.run("talker", TaskSpec(id="rd-straddle", goal="x"))
+    assert len(rec.text) == cap
+    assert secret not in rec.text
+    # The raw fragment that truncate-then-redact would have kept must be absent.
+    assert secret[:keep_prefix] not in rec.text
+    # Marker may be clipped by the 16KB cap; absence of the raw prefix is the property.
+    assert "[redacted:" in rec.text
+
+
+def test_run_record_text_still_truncates_long_output_without_secrets(repo: Path) -> None:
+    message = "z" * 20_000
+    fleet = Fleet(repo, {"talker": _Talker(message)})
+    rec = fleet.run("talker", TaskSpec(id="rd-trunc", goal="x"))
+    assert len(rec.text) == 16_000
+    assert rec.text == message[:16_000]
+
+
+def test_run_record_text_redacts_secret_inside_retained_window(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "sk-ant-inside-window-xx"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    message = f"prefix {secret} suffix"
+    fleet = Fleet(repo, {"talker": _Talker(message)})
+    rec = fleet.run("talker", TaskSpec(id="rd-inside", goal="x"))
+    assert secret not in rec.text
+    assert "[redacted:ANTHROPIC_API_KEY]" in rec.text
+    assert "prefix " in rec.text and " suffix" in rec.text
+
+
+def test_run_record_structured_redacts_credential_values(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "sk-ant-structured-secret"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+
+    class _StructuredTalker(_Talker):
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(
+                status=RunStatus.EXITED_CLEAN,
+                text=self._message,
+                structured={"token": secret, "nested": {"k": secret}},
+                exit_code=exit_code,
+            )
+
+    fleet = Fleet(repo, {"talker": _StructuredTalker('{"ok": true}')})
+    rec = fleet.run("talker", TaskSpec(id="rd-struct", goal="x"))
+    assert rec.structured is not None
+    assert secret not in str(rec.structured)
+    assert rec.structured["token"] == "[redacted:ANTHROPIC_API_KEY]"
+    assert rec.structured["nested"]["k"] == "[redacted:ANTHROPIC_API_KEY]"
+
+
 # --- per-run log storage: full raw stdout/stderr persisted for every terminal run -------------
 
 
