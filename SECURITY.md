@@ -29,13 +29,17 @@ disclosure.
 
 Marshal's job is to run autonomous coding agents safely. The guarantees and boundaries:
 
-- **Worktree isolation is the safety boundary.** Each run executes inside its own isolated git
-  worktree under `.marshal/worktrees/`. The agent edits files there, not in your working tree.
-  Driver-supplied `task_id` / run directory names are validated before any `git worktree` op:
-  charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`), length-capped, and
-  the   resolved path must be a strict descendant of `.marshal/worktrees/` (`is_relative_to`,
-  equality with the base dir refused so cleanup cannot wipe the shared root). Hostile ids fail
-  closed with a clear error — they are never sanitize-rewritten.
+- **Worktree isolation is a git-branch boundary, not a filesystem sandbox.** Each run gets its
+  own checkout on a separate `marshal/<id>` branch under `.marshal/worktrees/`. No commits reach
+  your branch without an explicit `integrate`. That is the guarantee — not that the agent cannot
+  write elsewhere on disk. Worktrees live inside the repo, and a determined or prompt-injected
+  agent can reach paths outside its checkout (e.g. via `../..`); only point Marshal at repos and
+  backends you trust. Driver-supplied `task_id` / run directory names are validated before any
+  `git worktree` op: charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`),
+  length-capped, and the resolved path must be a strict descendant of `.marshal/worktrees/`
+  (`is_relative_to`, equality with the base dir refused so cleanup cannot wipe the shared root).
+  Hostile ids fail closed with a clear error — they are never sanitize-rewritten. Cleanup also
+  refuses to `git branch -D` any name outside the managed `marshal/` prefix.
 - **`run_id` is validated before it touches the filesystem.** The run-handle tools (`get_run`,
   `collect_run`, `read_run_file`, `cancel_run`, `integrate`, `clean`) locate a run by composing
   or stat'ing `<workspace>/.marshal/runs/<run_id>.json`. A `run_id` must be a safe flat segment

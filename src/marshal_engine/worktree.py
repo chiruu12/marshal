@@ -105,6 +105,21 @@ def _ensure_under_base(path: Path, base_dir: Path) -> Path:
     return resolved
 
 
+def _ensure_managed_branch(branch: str, branch_prefix: str) -> str:
+    """Return `branch` if it is under ``branch_prefix/``; raise ``WorktreeError`` otherwise.
+
+    Symmetrical with ``_ensure_under_base``: create always names branches
+    ``{prefix}/{task_id}``, so ``git branch -D`` must refuse anything else. A poisoned run
+    record (``branch: main``) must not delete the operator's branch on clean.
+    """
+    prefix = f"{branch_prefix}/"
+    if not branch.startswith(prefix) or branch == prefix:
+        raise WorktreeError(
+            f"branch {branch!r} is outside managed prefix {branch_prefix!r}"
+        )
+    return branch
+
+
 def _restore_writable_dirs(root: Path) -> None:
     """Add owner-write on directories under ``root`` so remove/rmtree can unlink entries.
 
@@ -259,7 +274,7 @@ class WorktreeManager:
                 # Best-effort only: never let cleanup mask the original add failure (e.g. a
                 # TimeoutExpired from `branch -D` surfacing as WorktreeError).
                 with contextlib.suppress(Exception):
-                    self._git("branch", "-D", branch)
+                    self._delete_managed_branch(branch)
             raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
         return Worktree(task_id=task_id, path=path, branch=branch)
 
@@ -620,6 +635,11 @@ class WorktreeManager:
             worktrees.append(_from_porcelain(current))
         return worktrees
 
+    def _delete_managed_branch(self, branch: str) -> None:
+        """Force-delete a Marshal-managed branch; refuse anything outside ``branch_prefix``."""
+        _ensure_managed_branch(branch, self.branch_prefix)
+        self._git("branch", "-D", branch)
+
     def remove(self, wt: Worktree, delete_branch: bool = True) -> None:
         _ensure_under_base(wt.path, self.base_dir)
         _restore_writable_dirs(wt.path)
@@ -627,7 +647,7 @@ class WorktreeManager:
         if proc.returncode != 0:
             raise WorktreeError(f"worktree remove failed for {wt.task_id!r}: {proc.stderr.strip()}")
         if delete_branch and wt.branch:
-            self._git("branch", "-D", wt.branch)
+            self._delete_managed_branch(wt.branch)
 
     def prune(self) -> None:
         """Clean up administrative files for worktrees whose directories are gone."""
@@ -641,12 +661,14 @@ class WorktreeManager:
         dir survives but git's admin entry was pruned, so `git worktree remove` refuses with "not a
         working tree"). Reclaiming the disk is the whole point, so when git won't remove a still-
         present dir we fall back to a best-effort `rmtree`. Then `prune` the admin files and delete
-        the branch (failures ignored - already gone, or checked out in a live worktree). The
-        immutable usage ledger and the run-state record are NOT touched here.
+        the branch (git `-D` failures ignored - already gone, or checked out in a live worktree).
+        The immutable usage ledger and the run-state record are NOT touched here.
 
         Paths outside ``base_dir`` are refused before any remove/rmtree (poisoned state must not
-        delete host directories). Owner-write is restored on directories first so read-only trees
-        (e.g. provisioned ``read_paths`` at 0o555) cannot strand the worktree.
+        delete host directories). A branch outside ``branch_prefix/`` is refused *after* the
+        worktree dir is reclaimed so cleanup is not stranded — only the `-D` is skipped.
+        Owner-write is restored on directories first so read-only trees (e.g. provisioned
+        ``read_paths`` at 0o555) cannot strand the worktree.
         """
         p = Path(path)
         _ensure_under_base(p, self.base_dir)
@@ -659,7 +681,7 @@ class WorktreeManager:
                 shutil.rmtree(p, ignore_errors=True)
         self.prune()
         if branch:
-            self._git("branch", "-D", branch)
+            self._delete_managed_branch(branch)
 
 
 def _kill_setup_process_group(pgid: int, grace_s: float = 0.5) -> None:

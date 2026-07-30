@@ -1328,6 +1328,29 @@ def test_clean_reports_an_unsafe_explicit_run_id_as_skipped(repo: Path) -> None:
     )
 
 
+def test_clean_poisoned_branch_does_not_destroy_main(repo: Path) -> None:
+    # RunRecord.branch is unvalidated JSON on disk. A terminal record with branch=main must not
+    # make clean run `git branch -D main`. Park HEAD off main so an unguarded -D would succeed.
+    _git(repo, "branch", "-M", "main")
+    _git(repo, "checkout", "-b", "operator")
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="poison-main", goal="x"))
+    assert rec.status == "empty"
+    wt = Path(rec.worktree or "")
+    fleet.state.update(rec.run_id, branch="main")  # poison after a real worktree exists
+    result = fleet.clean()  # finished scope reclaims empty runs
+    listed = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "main"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "main" in listed, "clean must not destroy main via a poisoned run record"
+    assert any(
+        e["run_id"] == rec.run_id and "outside managed prefix" in e["error"]
+        for e in result.errors
+    )
+    assert not wt.exists()  # worktree dir still reclaimed; only branch -D is refused
+
+
 def test_clean_dry_run_reports_without_removing(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="cl6", goal="x"))

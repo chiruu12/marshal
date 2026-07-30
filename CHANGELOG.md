@@ -15,6 +15,13 @@ versions may include breaking API changes until 1.0.
   instead of `marshal workspace add`.
 
 ### Fixed
+- **`clean` / `discard` no longer delete non-Marshal branches.** Worktree path cleanup was
+  contained under `.marshal/worktrees/`, but `git branch -D` took `RunRecord.branch` unchecked.
+  A poisoned terminal run record with `"branch": "main"` made the next `marshal clean` delete
+  the operator's main branch without an `integrate`. Branch deletion now refuses any name
+  outside the managed `{prefix}/` namespace (fail-closed); the worktree directory is still
+  reclaimed, and `clean` reports the refusal under `errors`. `SECURITY.md` no longer overstates
+  worktree isolation as a filesystem sandbox.
 - **First-run docs and missing-config hints no longer dead-end.** SETUP/usage install
   commands match the working `git+https://` path (MarshalFleet is not on PyPI yet); README's
   60-second path now scaffolds a config via `marshal init`, says the scaffold ships its clients
