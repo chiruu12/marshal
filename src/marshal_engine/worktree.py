@@ -11,7 +11,10 @@ import contextlib
 import os
 import re
 import shutil
+import signal
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -260,46 +263,37 @@ class WorktreeManager:
             raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
         return Worktree(task_id=task_id, path=path, branch=branch)
 
-    def setup(self, wt: Worktree) -> None:
+    def setup(
+        self,
+        wt: Worktree,
+        *,
+        on_pid: Callable[[int], None] | None = None,
+        on_exit: Callable[[], None] | None = None,
+    ) -> None:
         """Provision a fresh worktree by running the configured ``setup_cmd`` (no-op if unset).
 
         Runs with the driver's VIRTUAL_ENV scrubbed (so `uv sync` provisions the worktree's own
         `.venv`, not the driver's), stdin closed, and a hard timeout - the same headless guards as
-        agent runs. Safe to run concurrently across worktrees (each is a distinct dir), so the fleet
-        calls it OUTSIDE the create lock and a fan-out provisions in parallel. A non-zero exit (or
-        missing binary / timeout) tears the half-made worktree back down and raises: a
-        half-provisioned worktree would have the agent run against a broken or stale environment, so
-        fail fast rather than hand it a trap.
+        agent runs. The child is started in its own process group (``start_new_session``) so a
+        timeout — or ``cancel_run`` via ``on_pid`` — can ``killpg`` the whole tree. ``on_pid`` /
+        ``on_exit`` mirror the agent-run hooks: publish the pid for cancel, then mark it reaped.
+        Safe to run concurrently across worktrees (each is a distinct dir), so the fleet calls it
+        OUTSIDE the create lock and a fan-out provisions in parallel. A non-zero exit (or missing
+        binary / timeout) tears the half-made worktree back down and raises: a half-provisioned
+        worktree would have the agent run against a broken or stale environment, so fail fast
+        rather than hand it a trap.
         """
         if not self.setup_cmd:
             return
         refused = setup_command_refusal(self.setup_cmd, allow_unsafe=self.allow_unsafe_commands)
         if refused:
             reason = refused
+        elif on_pid is not None or on_exit is not None:
+            # Cancel-aware path: own process group + pid hooks so cancel_run can killpg.
+            reason = self._run_setup_cmd(wt, on_pid=on_pid, on_exit=on_exit)
         else:
-            try:
-                proc = subprocess.run(
-                    self.setup_cmd,
-                    cwd=str(wt.path),
-                    capture_output=True,
-                    text=True,
-                    stdin=subprocess.DEVNULL,
-                    env=child_env(),
-                    timeout=self.setup_timeout_s,
-                )
-                reason = (
-                    ""
-                    if proc.returncode == 0
-                    else _setup_reason(proc.returncode, proc.stderr, proc.stdout)
-                )
-            except subprocess.TimeoutExpired:
-                reason = f"timed out after {self.setup_timeout_s}s"
-            except FileNotFoundError:
-                reason = f"command not found: {self.setup_cmd[0]!r}"
-            except (OSError, subprocess.SubprocessError) as exc:
-                # Match verify(): a generic OSError (EACCES on the binary, etc.) must become a
-                # WorktreeError with teardown, not escape as a raw crash that strands the worktree.
-                reason = f"could not run {self.setup_cmd[0]!r}: {exc}"
+            # Default path keeps subprocess.run (tests/monkeypatches target it; no cancel hooks).
+            reason = self._run_setup_cmd_simple(wt)
         if reason:
             # Best-effort teardown so a failed setup doesn't strand an orphan worktree (and a retry
             # can reuse the task_id); never let teardown mask the original setup failure.
@@ -310,6 +304,83 @@ class WorktreeManager:
             raise WorktreeError(
                 f"worktree setup {self.setup_cmd!r} failed for {wt.task_id!r}: {reason}"
             )
+
+    def _run_setup_cmd_simple(self, wt: Worktree) -> str:
+        """Run ``setup_cmd`` via ``subprocess.run`` (no cancel hooks)."""
+        assert self.setup_cmd is not None
+        try:
+            proc = subprocess.run(
+                self.setup_cmd,
+                cwd=str(wt.path),
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=child_env(),
+                timeout=self.setup_timeout_s,
+            )
+            return (
+                ""
+                if proc.returncode == 0
+                else _setup_reason(proc.returncode, proc.stderr, proc.stdout)
+            )
+        except subprocess.TimeoutExpired:
+            return f"timed out after {self.setup_timeout_s}s"
+        except FileNotFoundError:
+            return f"command not found: {self.setup_cmd[0]!r}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Match verify(): a generic OSError (EACCES on the binary, etc.) must become a
+            # WorktreeError with teardown, not escape as a raw crash that strands the worktree.
+            return f"could not run {self.setup_cmd[0]!r}: {exc}"
+
+    def _run_setup_cmd(
+        self,
+        wt: Worktree,
+        *,
+        on_pid: Callable[[int], None] | None,
+        on_exit: Callable[[], None] | None,
+    ) -> str:
+        """Run ``setup_cmd`` in its own process group with optional cancel hooks."""
+        assert self.setup_cmd is not None
+        try:
+            proc = subprocess.Popen(
+                self.setup_cmd,
+                cwd=str(wt.path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=child_env(),
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            return f"command not found: {self.setup_cmd[0]!r}"
+        except OSError as exc:
+            return f"could not run {self.setup_cmd[0]!r}: {exc}"
+
+        if on_pid is not None:
+            try:
+                on_pid(proc.pid)
+            except Exception:  # noqa: BLE001 - never leak the process over a pid-record failure
+                pass
+        pgid = proc.pid
+        out, err = "", ""
+        try:
+            out, err = proc.communicate(timeout=self.setup_timeout_s)
+        except subprocess.TimeoutExpired:
+            _kill_setup_process_group(pgid)
+            try:
+                out, err = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.poll()
+                out, err = "", ""
+            return f"timed out after {self.setup_timeout_s}s"
+        finally:
+            if on_exit is not None:
+                with contextlib.suppress(Exception):
+                    on_exit()
+        if proc.returncode == 0:
+            return ""
+        return _setup_reason(proc.returncode, err, out)
 
     def verify(self, wt: Worktree) -> tuple[bool, str]:
         """Run the configured ``verify_cmd`` in the worktree; ``(ok, tail-truncated output)``.
@@ -589,6 +660,19 @@ class WorktreeManager:
         self.prune()
         if branch:
             self._git("branch", "-D", branch)
+
+
+def _kill_setup_process_group(pgid: int, grace_s: float = 0.5) -> None:
+    """SIGTERM then SIGKILL the setup child's process group (same shape as agent timeout kills)."""
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    time.sleep(grace_s)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return
 
 
 def _setup_reason(exit_code: int, stderr: str, stdout: str) -> str:

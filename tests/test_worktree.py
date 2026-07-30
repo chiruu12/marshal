@@ -890,3 +890,24 @@ def test_merged_diff_files_raises_on_git_failure(
     monkeypatch.setattr(m, "_git", flaky)
     with pytest.raises(WorktreeError, match="could not list files"):
         m.merged_diff_files("marshal/missing", "main")
+
+
+def test_setup_on_pid_publishes_and_on_exit_fires(repo: Path) -> None:
+    """setup() process-group spawn publishes pid via on_pid and reaps via on_exit (#146 cancel hook)."""
+    seen: dict[str, object] = {}
+
+    def on_pid(pid: int) -> None:
+        seen["pid"] = pid
+
+    def on_exit() -> None:
+        seen["exited"] = True
+
+    m = WorktreeManager(
+        repo,
+        setup_cmd=[sys.executable, "-c", "open('marker','w').write('ok')"],
+    )
+    wt = m.create("setup_hooks")
+    m.setup(wt, on_pid=on_pid, on_exit=on_exit)
+    assert isinstance(seen.get("pid"), int) and seen["pid"] > 0
+    assert seen.get("exited") is True
+    assert (wt.path / "marker").read_text() == "ok"

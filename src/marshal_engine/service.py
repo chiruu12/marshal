@@ -567,8 +567,9 @@ class MarshalService:
     ) -> RunRecord:
         """Start a worker agent in the background; return its RUNNING record at once.
 
-        Same delegation primitive as ``run_agent`` (product may be a diff or text). Poll
-        ``status()`` / ``get_run()``.
+        Returns before worktree provisioning (``setup_cmd`` / read_paths) completes — the record
+        is pollable and cancellable during setup. Same delegation primitive as ``run_agent``
+        (product may be a diff or text). Poll ``status()`` / ``get_run()``.
         """
         req = self._request_for(
             client_name, goal, task_id, context_files, read_paths,
