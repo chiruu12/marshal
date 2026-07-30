@@ -238,14 +238,21 @@ class WorktreeManager:
         path = self.base_dir / task_id
         _ensure_under_base(path, self.base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        # Remember whether the branch already existed: a failed `worktree add -b` can leak a
-        # branch IT created, but must never `branch -D` a pre-existing one (unmerged work).
+        # Fast-path probe: skip leaked-branch cleanup when the ref already existed. Not
+        # authoritative alone (TOCTOU: another process can create the same name between probe
+        # and add) — the add's own stderr is the source of truth below.
         branch_existed = (
             self._git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
         )
         proc = self._git("worktree", "add", "-b", branch, str(path), base_branch or "HEAD")
         if proc.returncode != 0:
-            if not branch_existed:
+            # NEVER delete a branch this add attempt did not create. Git's atomic decision at
+            # add time is authoritative: "already exists" means the branch is foreign (or left
+            # by an earlier attempt) — deleting it is the data-loss vector. The show-ref probe
+            # is only a fast-path for the pre-existing case.
+            add_out = f"{proc.stderr}\n{proc.stdout}"
+            already_exists = "already exists" in add_out
+            if not branch_existed and not already_exists:
                 # Best-effort only: never let cleanup mask the original add failure (e.g. a
                 # TimeoutExpired from `branch -D` surfacing as WorktreeError).
                 with contextlib.suppress(Exception):

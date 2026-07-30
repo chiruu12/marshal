@@ -836,6 +836,43 @@ def test_create_failure_cleanup_timeout_does_not_mask_add_error(
         m.create("mask_me")
 
 
+def test_create_failure_skips_delete_on_already_exists_despite_stale_probe(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TOCTOU: probe says absent, but add fails with 'already exists' → never `-D` (M7)."""
+    m = WorktreeManager(repo)
+    real_git = m._git
+    # Concurrent creator's branch (exists before add; probe will lie and say absent).
+    real_git("branch", "marshal/race")
+    tip = real_git("rev-parse", "marshal/race").stdout.strip()
+    deleted: list[str] = []
+
+    def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("show-ref", "--verify"):
+            # Stale probe: report absent even though the concurrent branch is already there.
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=1, stdout="", stderr=""
+            )
+        if args[:2] == ("worktree", "add") and "-b" in args:
+            branch = args[args.index("-b") + 1]
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=128,
+                stdout="",
+                stderr=f"fatal: a branch named '{branch}' already exists\n",
+            )
+        if args[:2] == ("branch", "-D"):
+            deleted.append(args[2] if len(args) > 2 else "")
+            return real_git(*args, cwd=cwd)
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", flaky)
+    with pytest.raises(WorktreeError, match="already exists"):
+        m.create("race")
+    assert deleted == [], f"branch -D must not run on already-exists; got {deleted!r}"
+    assert real_git("rev-parse", "marshal/race").stdout.strip() == tip
+
+
 def test_merged_diff_files_raises_on_git_failure(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
