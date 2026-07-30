@@ -22,6 +22,19 @@ versions may include breaking API changes until 1.0.
   while `safe-edit` / `read-only` still inherit the backend's safe-edit capability. Doctor
   `permission:<backend>` and `marshal backends` remain backend safe-edit capability (wording
   clarified so the two surfaces are not conflated).
+### Changed
+- **Relative-path `argv[0]` in `worktree_setup` / `verify` now needs `allow_unsafe_commands: true`.**
+  A relative binary (e.g. `.venv/bin/python`, `./scripts/setup.sh`) resolves against the worktree
+  and may have been rewritten by the agent whose work it is about to gate. Bare names and absolute
+  paths are unaffected. **Upgrade note:** a config using a relative `argv[0]` fails at load until
+  you switch to a bare name or an absolute path, or set the opt-in.
+
+### Fixed
+- **Setup/verify allowlist docs no longer overstate the control (#177).** The gate screens
+  argv[0]'s basename (a typo / wrong-binary guard) and does not sandbox args — `python -c`,
+  `uv run sh -c`, and `make -f` are accepted without `allow_unsafe_commands`, which the docs
+  previously denied. `docs/config.md`, `SECURITY.md`, `docs/usage.md`, `docs/design.md`, and the
+  in-code comments now describe the real contract.
 
 ## [0.2.0] - 2026-07-30
 

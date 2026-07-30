@@ -103,8 +103,9 @@ clients:
   own venv. Accepts a string or an argv list; omit it for repos that need no setup. Marshal scrubs
   the driver's `VIRTUAL_ENV`/`PYTHONHOME` for the command (and for agent runs), so the worktree's
   own environment wins - without it, an agent's `uv run pytest` would resolve the driver's venv and
-  test stale code. A non-zero exit tears the worktree down and fails the run early. By default
-  argv[0] must be an allowlisted basename; shells / other binaries need `allow_unsafe_commands`
+  test stale code.   A non-zero exit tears the worktree down and fails the run early. By default
+  argv[0]'s basename must be allowlisted (typo guard only — `python -c` and similar still pass);
+  non-allowlisted basenames and relative path argv[0] need `allow_unsafe_commands`
   (see `docs/config.md`).
 - **`retries`** (optional, top-level, default `2`): how many times to re-run a run that failed for a
   **transient** reason - a backend state-DB lock, a rate limit, a 5xx, a dropped connection - with
@@ -117,9 +118,9 @@ clients:
   (`verify_output`). Same string-or-argv shape, env hygiene, and allowlist rules as `worktree_setup`.
   Executes worktree content the agent may have modified — see `SECURITY.md`.
 - **`allow_unsafe_commands`** (optional, top-level, default `false`): opt-in so `worktree_setup` /
-  `verify` may use a non-allowlisted binary (including `sh -c …`). Without it, those commands are
-  rejected at config load (runtime setup/verify keep the same check as a backstop). Not a sandbox
-  for allowlisted tools either — see `SECURITY.md`.
+  `verify` may use a non-allowlisted basename (including `sh -c …`) or a relative path argv[0].
+  Without it, those forms are rejected at config load (runtime setup/verify keep the same check as
+  a backstop). Does not restrict args of allowlisted tools — see `SECURITY.md`.
 - **`integrate_run_hooks`** (optional, top-level, default `false`): when `false`, `commit_run` /
   `integrate` use `git --no-verify` so prompting hooks cannot deadlock a headless merge. Set
   `true` only for known non-interactive hooks; prompting hooks can still hang until the git

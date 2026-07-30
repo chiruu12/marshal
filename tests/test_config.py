@@ -191,6 +191,52 @@ def test_setup_command_refusal_allowlist_and_opt_in() -> None:
     assert setup_command_refusal(["curl", "x"], allow_unsafe=True) is None
 
 
+def test_allowlist_accepts_interpreter_arbitrary_code_without_opt_in() -> None:
+    """Contract (#177): basename allowlist is not an arg sandbox — these pass without opt-in."""
+    from marshal_engine.config import setup_command_refusal
+
+    cases = [
+        ["python", "-c", "print(1)"],
+        ["python3", "-c", "import os; os.system('id')"],
+        ["uv", "run", "sh", "-c", "echo pwned"],
+        ["make", "-f", "evil.mk"],
+        ["npm", "run", "postinstall"],
+    ]
+    for argv in cases:
+        assert setup_command_refusal(argv, allow_unsafe=False) is None, argv
+
+
+def test_allowlist_refuses_relative_path_argv0_without_opt_in() -> None:
+    """Relative argv[0] resolves in the worktree and may be agent-rewritten (#177)."""
+    from marshal_engine.config import is_relative_setup_argv0, setup_command_refusal
+
+    assert is_relative_setup_argv0(".venv/bin/python")
+    assert is_relative_setup_argv0("./bin/pytest")
+    assert not is_relative_setup_argv0("python")
+    assert not is_relative_setup_argv0("/usr/bin/python3")
+    refused = setup_command_refusal([".venv/bin/python", "-c", "pass"], allow_unsafe=False)
+    assert refused is not None
+    assert "relative path" in refused
+    assert setup_command_refusal([".venv/bin/python", "-c", "pass"], allow_unsafe=True) is None
+    # Absolute paths still pass via basename.
+    assert setup_command_refusal(["/usr/bin/python3", "-c", "pass"], allow_unsafe=False) is None
+
+
+def test_load_rejects_relative_path_verify_without_opt_in(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text('verify: .venv/bin/python -c "pass"\n' + _YAML)
+    with pytest.raises(ConfigError, match="relative path|allow_unsafe_commands"):
+        load_config(p)
+
+
+def test_load_allows_interpreter_code_forms_without_opt_in(tmp_path: Path) -> None:
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text('verify: python -c "print(1)"\n' + _YAML)
+    cfg = load_config(p)
+    assert cfg.verify == ["python", "-c", "print(1)"]
+    assert cfg.allow_unsafe_commands is False
+
+
 def test_load_rejects_non_allowlisted_worktree_setup(tmp_path: Path) -> None:
     p = tmp_path / "fleet.config.yaml"
     p.write_text('worktree_setup: sh -c "uv sync"\n' + _YAML)

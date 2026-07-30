@@ -135,8 +135,9 @@ Worktree isolation is the **safety boundary**. Each run executes inside its own 
 - **`safe-edit` is not uniformly a deny sandbox.** `boundary-only` backends rely on the worktree
   boundary; curated denies on Cursor/OpenCode/Codex are not full sandboxes either.
 - **`yolo` removes guardrails by design** — only when you trust the task and backend.
-- **`worktree_setup` / `verify`** run config-driven subprocesses as your user; allowlisted tools
-  are not a sandbox. `verify` runs after the agent may have modified the worktree.
+- **`worktree_setup` / `verify`** run config-driven subprocesses as your user; the basename
+  allowlist is not a sandbox (`python -c` still passes). `verify` runs after the agent may have
+  modified the worktree.
 - **`integrate`** merges onto the workspace's current branch — review diffs first.
 - **`cancel_run`** signals only a live child of the current process; an agent that outlived its
   supervisor cannot be stopped by Marshal.

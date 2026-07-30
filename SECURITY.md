@@ -166,17 +166,19 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   everywhere else, the worktree plus explicit integrate is the dependable boundary.
 - **`worktree_setup` / `verify` are config-driven subprocesses** when configured. They run
   argv from `fleet.config.yaml` in each worktree as your user. By default only an allowlisted
-  binary basename may run (`uv`, `npm`, `pnpm`, `make`, `cargo`, `go`, `pytest`, `python`, …);
-  shells (`sh`/`bash`) and anything else require `allow_unsafe_commands: true`. The allowlist
-  is **not** a sandbox (allowlisted tools can still execute arbitrary scripts/code). **Timing
-  matters:** `worktree_setup` runs **before** the agent (base checkout + operator config).
-  `verify` runs **after** the agent may have modified the worktree, so allowlisted runners
-  (`make`, `npm`, `pytest`, `uv`, `python`, …) execute project content the agent could have
-  authored or changed (`Makefile`, `package.json` scripts, tests, `conftest.py`, package code)
-  under your identity. Use `verify:` when you trust the workspace config **and** treat agent
-  tasks as code you might run yourself; prefer narrow allowlisted runners; still review
-  `collect_run` / CI before integrate. Treat the config like executable code; only use trusted
-  configs. See `docs/config.md`.
+  binary **basename** may run (`uv`, `npm`, `pnpm`, `make`, `cargo`, `go`, `pytest`, `python`, …);
+  non-allowlisted basenames (including `sh`/`bash`) and relative path argv[0] (e.g.
+  `.venv/bin/python`, which resolves inside the worktree) require `allow_unsafe_commands: true`.
+  The allowlist is a typo / wrong-binary guard, **not** a sandbox: allowlisted tools still
+  execute arbitrary scripts/code via their args (`python -c`, `uv run sh -c`, `make -f`, …).
+  Absolute path argv[0] is checked by basename only. **Timing matters:** `worktree_setup` runs
+  **before** the agent (base checkout + operator config). `verify` runs **after** the agent may
+  have modified the worktree, so allowlisted runners (`make`, `npm`, `pytest`, `uv`, `python`, …)
+  execute project content the agent could have authored or changed (`Makefile`, `package.json`
+  scripts, tests, `conftest.py`, package code) under your identity. Use `verify:` when you trust
+  the workspace config **and** treat agent tasks as code you might run yourself; prefer narrow
+  allowlisted runners; still review `collect_run` / CI before integrate. Treat the config like
+  executable code; only use trusted configs. See `docs/config.md`.
 - **`commit_run` / `integrate` default to `git --no-verify`.** Hooks are skipped so a prompting
   pre-commit cannot deadlock a headless merge, and so Marshal does not execute
   repo-/worktree-controlled hook scripts the agent may have changed. Set

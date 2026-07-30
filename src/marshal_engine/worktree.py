@@ -190,7 +190,8 @@ class WorktreeManager:
         # the repo's full test suite). None = skip. See verify() - a failure never tears down.
         # Post-agent: cwd content may be agent-authored (allowlist is not a sandbox).
         self.verify_cmd = verify_cmd
-        # When false, setup/verify refuse non-allowlisted basenames (see config.setup_command_refusal).
+        # When false, setup/verify refuse non-allowlisted basenames / relative path argv[0]
+        # (see config.setup_command_refusal). Basename screen only — not a sandbox for args.
         self.allow_unsafe_commands = allow_unsafe_commands
         # When false (default), commit/merge pass --no-verify so prompting hooks cannot deadlock
         # headless integrate and so agent-touched hook scripts are not executed. True = run hooks;

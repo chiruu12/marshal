@@ -45,7 +45,7 @@ Fleet-wide layered context strings.
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| string or argv list \| omitted | `null` | Command run once in each fresh worktree **before** the agent starts (e.g. `uv sync`). Accepts a shell string or YAML list. Marshal scrubs the driver's `VIRTUAL_ENV`. Non-zero exit fails the run early. **Security:** argv[0]'s basename must be on the allowlist (`uv`, `npm`, `pnpm`, `yarn`, `bun`, `make`, `cargo`, `go`, `pytest`, `python`/`python3`, `poetry`, `pip`/`pip3`, `ruff`, `mypy`, `tox`, `nox`) unless `allow_unsafe_commands: true`. Shells (`sh`/`bash`/…) always need the opt-in. Non-allowlisted commands are **rejected at config load** (and again at runtime as a backstop). Allowlist is **not** a sandbox — `marshal doctor` still warns for allowlisted / opted-in setups. | `worktree_setup: uv sync --extra dev` |
+| string or argv list \| omitted | `null` | Command run once in each fresh worktree **before** the agent starts (e.g. `uv sync`). Accepts a shell string or YAML list. Marshal scrubs the driver's `VIRTUAL_ENV`. Non-zero exit fails the run early. **Security:** argv[0]'s **basename** must be on the allowlist (`uv`, `npm`, `pnpm`, `yarn`, `bun`, `make`, `cargo`, `go`, `pytest`, `python`/`python3`, `poetry`, `pip`/`pip3`, `ruff`, `mypy`, `tox`, `nox`) unless `allow_unsafe_commands: true`. This is a typo / wrong-binary guard, **not** a sandbox: allowlisted tools still run arbitrary code via their args (e.g. `python -c …`, `uv run sh -c …`, `make -f …`). Non-allowlisted basenames (including `sh`/`bash`) need the opt-in. Relative path argv[0] (e.g. `.venv/bin/python`) is refused without the opt-in — it resolves against the worktree cwd and may be agent-rewritten; bare names and absolute paths are basename-checked. Refusals happen at **config load** (runtime setup/verify keep the same check as a backstop). `marshal doctor` still warns for allowlisted / opted-in setups. | `worktree_setup: uv sync --extra dev` |
 
 ### `verify`
 
@@ -57,7 +57,7 @@ Fleet-wide layered context strings.
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| bool \| omitted | `false` | Opt-in to run `worktree_setup` / `verify` when argv[0] is **not** on the allowlist (including any `sh -c …` form). When false, non-allowlisted commands are **rejected at config load** (runtime setup/verify keep the same check as a backstop). Does not sandbox allowlisted tools. | `allow_unsafe_commands: true` |
+| bool \| omitted | `false` | Opt-in to run `worktree_setup` / `verify` when argv[0]'s basename is **not** on the allowlist (e.g. `sh -c …`) or when argv[0] is a relative path. When false, those forms are **rejected at config load** (runtime setup/verify keep the same check as a backstop). Does not restrict args of allowlisted tools and is not a sandbox. | `allow_unsafe_commands: true` |
 
 ### `integrate_run_hooks`
 
