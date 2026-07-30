@@ -378,6 +378,11 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _workflow_dirs(repo: Path) -> list[Path]:
+    """Workflow search order: repo-local recipes shadow the bundled examples."""
+    return [repo / "workflows", repo / "examples" / "workflows"]
+
+
 def _cmd_workflows(args: argparse.Namespace) -> int:
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
@@ -388,27 +393,31 @@ def _cmd_workflows(args: argparse.Namespace) -> int:
         except ConfigError:
             config = None  # a broken config is its own `doctor` problem; still list/parse recipes
 
-    wdir = repo / "workflows"
     rows: list[dict[str, Any]] = []
-    for p in workflow_paths(wdir):
-        row: dict[str, Any] = {"file": p.name, "name": p.stem, "inputs": [], "phases": [], "error": None}
-        try:
-            spec = load_workflow(p)
-            row["name"] = spec.name
-            row["inputs"] = spec.inputs
-            row["phases"] = [{"name": ph.name, "run": ph.run} for ph in spec.phases]
-            if config is not None:
-                validate_workflow(spec, config)  # cross-check client names; fail-fast on a typo
-        except ConfigError as exc:
-            row["error"] = str(exc)
-        rows.append(row)
+    seen: set[str] = set()
+    for wdir in _workflow_dirs(repo):
+        for p in workflow_paths(wdir):
+            if p.stem in seen:
+                continue  # shadowed by the same-named recipe earlier in the search order
+            seen.add(p.stem)
+            row: dict[str, Any] = {"file": p.name, "name": p.stem, "inputs": [], "phases": [], "error": None}
+            try:
+                spec = load_workflow(p)
+                row["name"] = spec.name
+                row["inputs"] = spec.inputs
+                row["phases"] = [{"name": ph.name, "run": ph.run} for ph in spec.phases]
+                if config is not None:
+                    validate_workflow(spec, config)  # cross-check client names; fail-fast on a typo
+            except ConfigError as exc:
+                row["error"] = str(exc)
+            rows.append(row)
 
     if args.json:
         print(json.dumps(rows, indent=2))
         return 1 if any(r["error"] for r in rows) else 0
 
     if not rows:
-        print(f"no workflows in {wdir} (copy a template from examples/workflows/)")
+        print("no workflows found (copy a template from examples/workflows/)")
         return 0
     for row in rows:
         glyph = "✗" if row["error"] else "✓"
@@ -427,15 +436,17 @@ def _cmd_workflow_run(args: argparse.Namespace) -> int:
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
     config = load_config(cfg_path) if cfg_path.exists() else FleetConfig()
 
-    # Find the workflow file by name (search examples/workflows/ and workflows/)
-    wdir = repo / "workflows"
+    # Find the workflow file by name (repo-local recipes shadow examples/workflows/)
     spec = None
-    for p in workflow_paths(wdir):
-        if p.stem == args.name:
-            spec = load_workflow(p)
+    for wdir in _workflow_dirs(repo):
+        for p in workflow_paths(wdir):
+            if p.stem == args.name:
+                spec = load_workflow(p)
+                break
+        if spec is not None:
             break
     if spec is None:
-        print(f"error: workflow {args.name!r} not found in {wdir}", file=sys.stderr)
+        print(f"error: workflow {args.name!r} not found in workflows/ or examples/workflows/", file=sys.stderr)
         return 1
 
     # Parse inputs from --input key=value flags
