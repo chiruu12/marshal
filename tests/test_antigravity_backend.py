@@ -249,6 +249,30 @@ def test_parse_output_nonzero_exit_empty_stderr(backend: AntigravityBackend) -> 
     assert res.error == "agy exited 1"
 
 
+def test_parse_output_nonzero_exit_keeps_json_usage(backend: AntigravityBackend) -> None:
+    """A failed run may still have emitted a JSON envelope — keep tokens for the ledger."""
+    envelope = {
+        "conversation_id": "fail-conv",
+        "status": "FAILED",
+        "response": "partial\n",
+        "usage": {
+            "input_tokens": 500,
+            "output_tokens": 12,
+            "cache_read_tokens": 100,
+        },
+    }
+    res = backend.parse_output(json.dumps(envelope), "boom", 1)
+    assert res.status is RunStatus.FAILED
+    assert "boom" in (res.error or "")
+    assert res.text == "partial"
+    assert res.session_id == "fail-conv"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 500
+    assert res.usage.output_tokens == 12
+    assert res.usage.cache_read_tokens == 100
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
 def test_prepare_trusts_the_worktree(backend: AntigravityBackend, tmp_path: Path) -> None:
     # prepare() must register cwd in agy's trustedWorkspaces so headless edits land in the worktree.
     backend.settings_path = tmp_path / "settings.json"

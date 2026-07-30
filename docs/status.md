@@ -44,7 +44,7 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 | Backend | Installed | Read-only | Safe-edit (worktree write) | Native usage |
 |---------|-----------|-----------|----------------------------|--------------|
 | OpenCode | yes | verified | verified | verified (tokens + cost) |
-| Cursor | yes | verified | verified | n/a by design (Admin API only) |
+| Cursor | yes | verified | verified | tokens in CLI / cost Admin API |
 | Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost `admin-api` or `unavailable`) |
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
@@ -180,8 +180,8 @@ fail-closed enforce, and O(tail) under-lock re-check; failure-atomic setup/teard
 cross-process flock on run records and Antigravity settings; `spawn` returns the `run_id` before
 provisioning completes (`cancel_run` works during setup).
 
-Remaining: structured output (#148); Antigravity/Cursor native usage (#149); Cursor
-`--approve-mcps` (#150); the first PyPI publish (the release infrastructure shipped - Trusted
-Publishing/OIDC with a tag-must-match-wheel guard, #86/#121, exercised by the v0.1.0 release #134 -
-what is left is the publish itself); and eventually **Chauffeur** (see
-[`chauffeur-future.md`](chauffeur-future.md)).
+Remaining: structured output (#148); Antigravity/Cursor **cost** / Admin-API half of #149
+(token parsing shipped); Cursor `--approve-mcps` (#150); the first PyPI publish (the release
+infrastructure shipped - Trusted Publishing/OIDC with a tag-must-match-wheel guard, #86/#121,
+exercised by the v0.1.0 release #134 - what is left is the publish itself); and eventually
+**Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

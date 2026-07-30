@@ -64,6 +64,67 @@ def test_from_result_builds_event() -> None:
     assert ev.model == "opencode-go/glm-5.2"
 
 
+def test_from_result_carries_cache_write_tokens_to_summary(tmp_path: Path) -> None:
+    """Stamped cache_write_tokens must survive UsageEvent → events.jsonl → Bucket rollup."""
+    res = AgentResult(
+        status=RunStatus.EXITED_CLEAN,
+        usage=UsageRecord(
+            backend="cursor",
+            input_tokens=100,
+            output_tokens=10,
+            cache_read_tokens=40,
+            cache_write_tokens=8,
+            source=UsageSource.UNAVAILABLE,
+        ),
+    )
+    ev = UsageEvent.from_result(
+        res, run_id="cw1", backend="cursor", ts="2026-07-30T00:00:00Z"
+    )
+    assert ev.cache_read_tokens == 40
+    assert ev.cache_write_tokens == 8
+
+    t = UsageTracker(tmp_path / "usage")
+    t.record(ev)
+    tot = t.summary().totals
+    assert tot.cache_read_tokens == 40
+    assert tot.cache_write_tokens == 8
+    assert t.summary().by_backend["cursor"].cache_write_tokens == 8
+
+
+def test_old_ledger_lines_without_cache_write_still_load(tmp_path: Path) -> None:
+    """Additive field: pre-field events.jsonl lines omit cache_write_tokens and must still parse."""
+    events = tmp_path / "usage" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        '{"ts":"2026-01-01T00:00:00Z","run_id":"old1","backend":"cursor",'
+        '"input_tokens":10,"output_tokens":2,"cache_read_tokens":5,'
+        '"cost_usd":0.0,"status":"exited_clean","source":"unavailable"}\n'
+    )
+    loaded = UsageTracker(tmp_path / "usage").events()
+    assert len(loaded) == 1
+    assert loaded[0].cache_read_tokens == 5
+    assert loaded[0].cache_write_tokens == 0  # default for missing field
+    assert UsageTracker(tmp_path / "usage").summary().totals.cache_write_tokens == 0
+
+
+def test_mixed_old_and_new_ledger_summarizes_cache_write(tmp_path: Path) -> None:
+    events = tmp_path / "usage" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        '{"ts":"2026-01-01T00:00:00Z","run_id":"old1","backend":"cursor",'
+        '"input_tokens":10,"output_tokens":1,"cache_read_tokens":3,'
+        '"cost_usd":0.0,"status":"exited_clean","source":"unavailable"}\n'
+        '{"ts":"2026-07-30T00:00:00Z","run_id":"new1","backend":"cursor",'
+        '"input_tokens":20,"output_tokens":2,"cache_read_tokens":7,'
+        '"cache_write_tokens":9,"cost_usd":0.0,"status":"exited_clean",'
+        '"source":"unavailable"}\n'
+    )
+    tot = UsageTracker(tmp_path / "usage").summary().totals
+    assert tot.runs == 2
+    assert tot.cache_read_tokens == 10
+    assert tot.cache_write_tokens == 9  # old line contributes 0; new contributes 9
+
+
 def test_concurrent_records_do_not_corrupt_the_log(tmp_path: Path) -> None:
     # Parallel runs each append their own line; the append-only log must not lose or tear records.
     t = UsageTracker(tmp_path / "usage")

@@ -104,6 +104,8 @@ class UsageEvent(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    # Additive (default 0): pre-field ledger lines omit it and still parse.
+    cache_write_tokens: int = 0
     cost_usd: float = 0.0
     duration_ms: int = 0
     status: str = ""
@@ -144,6 +146,7 @@ class UsageEvent(BaseModel):
             input_tokens=u.input_tokens if u else 0,
             output_tokens=u.output_tokens if u else 0,
             cache_read_tokens=u.cache_read_tokens if u else 0,
+            cache_write_tokens=u.cache_write_tokens if u else 0,
             cost_usd=u.cost_usd if u else 0.0,
             duration_ms=result.duration_ms,  # wall-clock from base.run(), always present
             status=result.status.value,
@@ -167,6 +170,7 @@ class Bucket(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     cost_per_run: float = 0.0
     # None (not 0) when there are no successes - a real outcome cost can't be claimed.
     cost_per_succeeded: float | None = None
@@ -414,6 +418,7 @@ def _add(bucket: Bucket, e: UsageEvent) -> None:
     bucket.input_tokens += e.input_tokens
     bucket.output_tokens += e.output_tokens
     bucket.cache_read_tokens += e.cache_read_tokens
+    bucket.cache_write_tokens += e.cache_write_tokens
 
 
 def _finalize(bucket: Bucket) -> None:
