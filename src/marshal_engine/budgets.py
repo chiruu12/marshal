@@ -492,16 +492,26 @@ def _flock_exclusive(lock_path: Path, *, timeout_s: float) -> Iterator[None]:
 
 
 def _load_reservations(path: Path) -> dict[str, dict[str, Any]]:
+    """Load durable reservation slots. Absent file → empty (nobody holds a slot).
+
+    A present but unreadable/corrupt file is UNKNOWN state: raise ``BudgetExceeded`` so
+    ``enforce: true`` refuses rather than admitting past a hard cap. Soft-warn / reporting
+    never call this (they stay lock-free and lenient).
+    """
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         held = data.get("held", {})
         if not isinstance(held, dict):
-            return {}
+            raise ValueError("held must be a JSON object")
         return {str(k): v for k, v in held.items() if isinstance(v, dict)}
-    except (OSError, ValueError, json.JSONDecodeError):
-        return {}  # corrupt → treat as empty; next write repairs
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise BudgetExceeded(
+            f"budget gate reservation file unreadable ({path}): {exc}; "
+            "refusing spawn because enforce=true. Delete the file when no runs are in flight "
+            "to repair."
+        ) from exc
 
 
 def _write_reservations(path: Path, held: dict[str, dict[str, Any]]) -> None:

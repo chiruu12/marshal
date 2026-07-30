@@ -617,6 +617,49 @@ def test_dead_process_reservation_is_reclaimed(tmp_path: Path) -> None:
     gate.release(keys)
 
 
+def test_corrupt_reservation_file_enforce_refuses(tmp_path: Path) -> None:
+    """Present-but-garbage budget_gate.json must fail closed under enforce (not admit)."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    path.write_text("{this is not valid json@@@@", encoding="utf-8")
+    gate = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="reservation file unreadable") as ei:
+        gate.begin(tracker, SESSION, [budget], _scope())
+    msg = str(ei.value)
+    assert str(path) in msg
+    assert "Delete the file" in msg
+    assert gate._held == {}
+
+
+def test_absent_reservation_file_still_admits(tmp_path: Path) -> None:
+    """No reservation file means nobody holds a slot — admit as before."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    assert not path.exists()
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys == [_enforce_budget_key(budget)]
+    gate.release(keys)
+
+
+def test_corrupt_reservation_file_soft_warn_and_reporting_stay_lenient(
+    tmp_path: Path,
+) -> None:
+    """Advisory begin + compute_budget_status must not raise on a corrupt gate file."""
+    tracker = _tracker(tmp_path)
+    path = tmp_path / "budget_gate.json"
+    path.write_text("{this is not valid json@@@@", encoding="utf-8")
+    advisory = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=False)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [advisory], _scope())
+    assert keys == []
+    rows = compute_budget_status(tracker, SESSION, [advisory], datetime.now(timezone.utc))
+    assert len(rows) == 1
+    assert rows[0].spent_known is True
+
+
 def test_cross_process_enforce_admits_at_most_one(tmp_path: Path) -> None:
     """Two OS processes racing the same enforce cap: total admitted must not exceed one.
 
