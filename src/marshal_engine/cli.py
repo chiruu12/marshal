@@ -366,7 +366,7 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     log_dir = Path(args.dir) if args.dir is not None else logs_dir(repo)
     try:
         text = RunLogStore(log_dir).read(args.run_id)
-    except ValueError as exc:  # unsafe run_id (path separators) - fail clean, not a traceback
+    except ValueError as exc:  # unsafe run_id (charset/leading-dot/length) - fail clean, not a traceback
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if text is None:

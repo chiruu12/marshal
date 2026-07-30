@@ -9,6 +9,23 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **A failed provision no longer strands the worktree.** Spawn caught only `ValueError` from
+  context/read-path provisioning, so an `OSError` mid-copy (disk full, EACCES) skipped teardown
+  and left a worktree + branch with no run record. Any provisioning exception now discards first.
+- **Worktree `setup()` matches `verify()`'s failure breadth.** A generic `OSError` (EACCES on the
+  setup binary) escaped as a raw crash; it now becomes a `WorktreeError` with teardown.
+- **A failed `git worktree add -b` no longer leaks its branch - and never deletes one it did not
+  create.** The best-effort `git branch -D` is skipped when git's own add-time refusal says the
+  branch already exists (a foreign or concurrently created branch survives), and a retry on the
+  same id no longer dies with "branch already exists".
+- **`merged_diff_files` raises on git failure** (matching `merged_diff`) instead of silently
+  reporting `changed_files=[]` for a merged run.
+- **A `cleanup=True` remove failure no longer contradicts the run record.** It raised after the
+  terminal stamp (silently swallowed in the background path); the run keeps its outcome and the
+  record gets a `cleanup warning` instead.
+- **`clean` reaps orphaned `*.tmp` files.** A crash between `mkstemp` and `os.replace` in state or
+  log persistence leaked temps nothing collected; clean now unlinks ones older than five minutes,
+  age-gated so a live writer is never raced.
 - **Path-traversal `run_id`s are refused at the state/MCP boundary.** `run_id` was never
   validated where it becomes a filesystem path: `FleetState` composed `runs/<run_id>.json`
   directly, and the workspace registry's run-owner scan stat'ed it against every registered
