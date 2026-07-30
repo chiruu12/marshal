@@ -172,5 +172,7 @@ nonce-delimited, refs validated, empty subjects refused. Surfaced as `list_teams
 `marshal teams`/`marshal team run` (CLI), the `marshal-adversarial-review` Skill, and starter panels
 in `examples/teams/`.
 
-Remaining: Antigravity native usage; Cursor admin-API usage; a Gemini backend;
-PyPI publish; and eventually **Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).
+Remaining: Antigravity native usage; Cursor admin-API usage; the first PyPI publish (the release
+infrastructure shipped - Trusted Publishing/OIDC with a tag-must-match-wheel guard, #86/#121,
+exercised by the v0.1.0 release #134 - what is left is the publish itself); and eventually
+**Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

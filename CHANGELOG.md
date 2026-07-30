@@ -23,6 +23,10 @@ versions may include breaking API changes until 1.0.
 - **Claude Code plugin manifests no longer drift from the package version.** `plugin.json` and
   `marketplace.json` advertised `0.0.1` against a `0.1.0` package, and both listed six of the seven
   backends. Tests now fail on either drift.
+- **The status page's remaining-work list matches reality again.** `docs/status.md` still listed a
+  Gemini backend (removed in #123) and "PyPI publish" as wholly outstanding (the Trusted Publishing
+  infrastructure shipped in #86/#121 and was exercised by the v0.1.0 release, #134); it now says the
+  publish itself is what remains.
 
 ### Added
 - Requirements stated up front in the README: Python 3.11+, git, and at least one authenticated
