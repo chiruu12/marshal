@@ -62,8 +62,13 @@ _active_runs: dict[str, dict[str, "_RunHandle"]] = {}
 #: Production leaves this ``None``. Tests assign a callback to force the copy→reap window.
 _cancel_after_handle_snapshot: Callable[[], None] | None = None
 
-#: Sidecar written before ``worktrees.create`` and cleared after ``state.add`` so a concurrent
-#: ``clean`` in another process can see an in-progress creation (the create→add gap has no record).
+#: Test-only seam: called after the RUNNING record's ``os.replace`` and before the creating claim
+#: is cleared. Production leaves this ``None``.
+_after_creating_record_published: Callable[[], None] | None = None
+
+#: Sidecar written before ``worktrees.create`` and cleared only after the RUNNING record's
+#: ``os.replace`` publishes, so a concurrent ``clean`` always sees the claim and/or the record
+#: (the create→add gap has no record; the add→clear handoff must not open a second gap).
 _CREATING_SUFFIX = ".creating"
 
 
@@ -1651,6 +1656,10 @@ class Fleet:
                             self.worktrees.discard(str(wt.path), wt.branch)
                         raise
                 _register_inflight_run(self.state.dir, run_id)
+                # Publish the record FIRST (state.add → os.replace). Clear the claim only after
+                # that replace: reverse order opens a gap where a concurrent sweep sees neither
+                # claim nor record and discards a live worktree. Between replace and clear both
+                # shields are up, so there is no unprotected window.
                 self.state.add(
                     RunRecord(
                         run_id=run_id,
@@ -1678,11 +1687,14 @@ class Fleet:
                         started_at=started,
                     )
                 )
-                _clear_creating_claim(self.state.dir, run_id)
+                if _after_creating_record_published is not None:
+                    _after_creating_record_published()
                 return run_id, wt, started
-            except Exception:
+            finally:
+                # Always release the claim: after a successful publish the record shields the dir;
+                # on any failure (including a raise between publish and here) a stuck claim would
+                # lock out orphan reclaim for the life of this process.
                 _clear_creating_claim(self.state.dir, run_id)
-                raise
         except Exception:
             self._budget_gate.release(budget_keys)
             raise
@@ -2380,10 +2392,10 @@ class Fleet:
 
         Scope-mode cleans also reconcile the worktree base dir against the ledger and reap
         ORPHANS - dirs whose run record is missing or unreadable (hand-pruned, or torn). A live
-        create writes a ``.creating`` claim before the worktree exists and clears it after the
-        RUNNING record lands, so the create→add gap is not mistaken for an orphan (#181). Reported
-        under ``orphans_removed``; ``older_than_hours`` does not apply (an orphan has no trustworthy
-        end timestamp).
+        create writes a ``.creating`` claim before the worktree exists and clears it only after
+        the RUNNING record's ``os.replace`` publishes, so neither the create→add gap nor the
+        add→clear handoff is mistaken for an orphan (#181). Reported under ``orphans_removed``;
+        ``older_than_hours`` does not apply (an orphan has no trustworthy end timestamp).
         """
         result = CleanResult(dry_run=dry_run)
         if run_ids is not None:
@@ -2523,6 +2535,9 @@ class Fleet:
         # pid stops being safe to signal. A run owned by another (or dead) process gets no signal:
         # guessing at a pid we do not own risks SIGTERM to an unrelated process group.
         handle = _inflight_handle(self.state.dir, run_id)
+        # When identity is unprovable for a live in-process child, do not signal AND do not stamp
+        # cancelled — either alone is wrong (blind killpg / lie about a still-running agent).
+        cancel_unconfirmed = False
         if handle is None:
             # Three cases, and the pid is kept in two of them. Clearing it is what once left an
             # operator with no handle on a process that was still writing, and left `clean` with no
@@ -2558,22 +2573,44 @@ class Fleet:
                 _cancel_after_handle_snapshot()
             # Re-check under the lock immediately before signalling so a reap that landed after
             # cancel_requested cannot let us killpg a recycled pid (#183). When we have a start
-            # time, also require the live process to still match - communicate() reaps before
-            # on_exit can set exited, so the flag alone is not enough in that window.
+            # time, require a successful probe that still matches — a failed probe is not a
+            # mismatch: signalling risks a stranger, and stamping cancelled would lie.
             with _active_runs_guard:
                 if handle.exited or handle.pid is None:
                     pass  # finished, or cancel beat the pid (applied when published)
                 else:
                     pid = handle.pid
                     started = handle.pid_start_time
-                    if (
-                        started is not None
-                        and _pid_start_time(pid) != started
-                    ):
-                        pass  # recycled (or gone): do not signal a stranger
+                    if started is not None:
+                        live_started = _pid_start_time(pid)
+                        if live_started is None:
+                            # Probe failed or process gone. Distinguish: an alive pid whose
+                            # identity we cannot read must not be claimed cancelled.
+                            if _pid_alive(pid):
+                                cancel_unconfirmed = True
+                                cancel_error = (
+                                    "fleet: cancel not confirmed - the agent's process identity "
+                                    "could not be verified, so Marshal did not signal it. The "
+                                    "run may still be running; re-check with get_run before "
+                                    "assuming it stopped."
+                                )
+                            # else: dead — stamp cancelled without signalling
+                        elif live_started != started:
+                            pass  # recycled: do not signal a stranger
+                        else:
+                            with contextlib.suppress(ProcessLookupError, OSError):
+                                os.killpg(pid, signal.SIGTERM)
                     else:
                         with contextlib.suppress(ProcessLookupError, OSError):
                             os.killpg(pid, signal.SIGTERM)
+        if cancel_unconfirmed:
+            # Keep status running; only record the uncertainty. update_if so a natural finish
+            # that landed mid-cancel is not clobbered with a stale warning.
+            return self.state.update_if(
+                run_id,
+                lambda r: r.status == RunStatus.RUNNING.value,
+                error=cancel_error,
+            )
         stamp: dict[str, object] = {"status": "cancelled", "ended_at": _now(), **cancel_extra}
         if cancel_error:
             stamp["error"] = cancel_error
