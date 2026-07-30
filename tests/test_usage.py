@@ -408,3 +408,28 @@ def test_events_after_truncated_raises(tmp_path: Path) -> None:
     t.events_path.write_bytes(b"")
     with pytest.raises(UnreadableUsageLedgerError, match="truncated"):
         t.events_after(cursor)
+
+
+def test_events_after_same_size_mtime_rewrite_raises(tmp_path: Path) -> None:
+    """Same inode + same byte size + different mtime is an in-place rewrite, not a no-op."""
+    import os
+
+    from marshal_engine.usage import UnreadableUsageLedgerError
+
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    raw = t.events_path.read_bytes()
+    t.events_path.write_bytes(b"Y" * len(raw))
+    os.utime(t.events_path, ns=(cursor.mtime_ns + 1_000_000, cursor.mtime_ns + 1_000_000))
+    assert t.events_path.stat().st_size == cursor.size
+    assert t.events_path.stat().st_mtime_ns != cursor.mtime_ns
+    with pytest.raises(UnreadableUsageLedgerError, match="rewritten in place"):
+        t.events_after(cursor)
+
+
+def test_events_after_same_size_same_mtime_is_noop(tmp_path: Path) -> None:
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    assert t.events_after(cursor) == []

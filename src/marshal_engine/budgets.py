@@ -109,6 +109,25 @@ def _event_matches_budget_scope(event: UsageEvent, budget: BudgetSpec) -> bool:
     return True
 
 
+def _spend_from_events(
+    events: list[UsageEvent],
+    budget: BudgetSpec,
+    *,
+    session_start: datetime,
+    now: datetime,
+) -> float:
+    """Windowed + scoped spend from an already-loaded event list (no I/O)."""
+    since = _budget_window_since(budget.window, session_start, now)
+    total = 0.0
+    for e in events:
+        if not _in_window(e, since, None):
+            continue
+        if not _event_matches_budget_scope(e, budget):
+            continue
+        total += e.cost_usd
+    return total
+
+
 def _budget_scope_label(budget: BudgetSpec) -> str:
     """Human-readable scope label for a budget (what the warning / display names)."""
     if budget.client is not None:
@@ -229,21 +248,22 @@ def check_budget(
 
     cursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
     enforce_spent: dict[str, float] = {}
-    # Windowed summaries keyed by window name; at most one ledger read per distinct window.
-    enforce_cache: dict[str, UsageSummary] = {}
-    advisory_cache: dict[str, UsageSummary] = {}
+    events: list[UsageEvent] | None = None
 
     if enforce_budgets:
         try:
-            # Go through summary() so a monkeypatched summary still fails closed (fleet tests /
-            # diagnostics), and so last_cursor is stamped for the gate's O(tail) recheck.
+            # ONE strict ledger read for the whole check. Going through summary() keeps the
+            # fleet-test monkeypatch fail-closed; summary → read_events stamps last_events +
+            # last_cursor for that single instant. Every window's spend is then derived in
+            # memory from that same event list — never a second read that could advance the
+            # cursor past a peer append while leaving an earlier window's spend stale.
+            tracker.summary(strict=True)
+            events = list(tracker.last_events)
+            cursor = tracker.last_cursor
             for b in enforce_budgets:
-                if b.window not in enforce_cache:
-                    enforce_cache[b.window] = tracker.summary(
-                        since=_budget_window_since(b.window, session_start, now),
-                        strict=True,
-                    )
-                spent = _budget_spend_from_summary(enforce_cache[b.window], b)
+                spent = _spend_from_events(
+                    events, b, session_start=session_start, now=now
+                )
                 enforce_spent[_enforce_budget_key(b)] = spent
                 if spent < b.limit_usd:
                     continue
@@ -253,7 +273,6 @@ def check_budget(
                     "refusing new spawn (enforce=true). "
                     "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
                 )
-            cursor = tracker.last_cursor
         except BudgetExceeded:
             raise
         except UnreadableUsageLedgerError as exc:
@@ -266,20 +285,20 @@ def check_budget(
             ) from exc
 
     if advisory_budgets and not enforce_only:
+        if events is None:
+            try:
+                # One lenient read for advisory-only checks (reporting posture).
+                tracker.summary(strict=False)
+                events = list(tracker.last_events)
+                cursor = tracker.last_cursor
+            except Exception:  # noqa: BLE001 - soft budget never breaks a run
+                events = []
         for b in advisory_budgets:
             try:
-                # Reuse a strict window summary when present (no skipped lines); else lenient.
-                if b.window in enforce_cache:
-                    spent = _budget_spend_from_summary(enforce_cache[b.window], b)
-                else:
-                    if b.window not in advisory_cache:
-                        advisory_cache[b.window] = tracker.summary(
-                            since=_budget_window_since(b.window, session_start, now),
-                            strict=False,
-                        )
-                    spent = _budget_spend_from_summary(advisory_cache[b.window], b)
-                    cursor = tracker.last_cursor
-            except Exception:  # noqa: BLE001 - soft budget never breaks a run
+                spent = _spend_from_events(
+                    events, b, session_start=session_start, now=now
+                )
+            except Exception:  # noqa: BLE001
                 continue
             if spent < b.limit_usd:
                 continue

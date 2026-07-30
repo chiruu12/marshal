@@ -193,8 +193,9 @@ class UsageTracker:
     def __init__(self, usage_dir: Path | str) -> None:
         self.dir = Path(usage_dir)
         self.events_path = self.dir / "events.jsonl"
-        # Cursor from the most recent successful read_events/summary (budget gate tail recheck).
+        # Snapshot from the most recent successful read_events/summary (budget gate recheck).
         self.last_cursor: LedgerCursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
+        self.last_events: list[UsageEvent] = []
 
     def record(self, event: UsageEvent) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -207,10 +208,14 @@ class UsageTracker:
         ``strict=False`` (reporting): skip malformed lines, stderr-warn with the count.
         ``strict=True`` (enforce): any skipped line raises ``UnreadableUsageLedgerError``.
         File-level faults (OSError, whole-file decode failure) always propagate.
+
+        Also stamps ``last_events`` / ``last_cursor`` so a caller (e.g. ``check_budget``) can
+        window multiple budget scopes against the SAME ledger instant after one read.
         """
         if not self.events_path.exists():
             cursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
             self.last_cursor = cursor
+            self.last_events = []
             return [], cursor
         st = self.events_path.stat()
         data = self.events_path.read_bytes()
@@ -218,6 +223,7 @@ class UsageTracker:
         text = data.decode("utf-8")  # UnicodeDecodeError propagates (file-level fault)
         events = _parse_event_lines(text, path=self.events_path, strict=strict)
         self.last_cursor = cursor
+        self.last_events = events
         return events, cursor
 
     def events(self, *, strict: bool = False) -> list[UsageEvent]:
@@ -227,9 +233,16 @@ class UsageTracker:
     def events_after(self, cursor: LedgerCursor, *, strict: bool = False) -> list[UsageEvent]:
         """Parse only bytes appended since ``cursor`` (O(new events), normally O(1)).
 
-        Identity/size regressions (rewrite, truncate, disappear) raise
-        ``UnreadableUsageLedgerError`` so enforce paths can fail closed. A missing ledger that
-        was already empty at ``cursor`` yields ``[]``.
+        Identity is ``(inode, size, mtime_ns)``:
+        * same inode + larger size → append-only fast path (parse the tail);
+        * same inode + same size + same mtime → no-op ``[]``;
+        * same inode + same size + **different mtime** → in-place rewrite, fail closed;
+        * inode change / truncate / disappear → fail closed.
+
+        Empty baseline (``cursor`` all zeros) + file appears: read from offset 0 through the
+        same parse path (not ``read_events``/``summary``). That is O(file) but only when the
+        ledger did not exist at the outside-lock snapshot — bounded by what one spawn window
+        could have written, and keeps the under-lock call graph on ``events_after`` alone.
         """
         if not self.events_path.exists():
             if cursor.size == 0:
@@ -239,8 +252,12 @@ class UsageTracker:
             )
         st = self.events_path.stat()
         if cursor.size == 0 and cursor.inode == 0:
-            # Baseline was "no file"; anything present is new — read it as the tail.
-            return self.events(strict=strict)
+            # Empty baseline → file appeared. Read bytes from offset 0 as the "tail".
+            with self.events_path.open("rb") as f:
+                data = f.read()
+            return _parse_event_lines(
+                data.decode("utf-8"), path=self.events_path, strict=strict
+            )
         if st.st_ino != cursor.inode:
             raise UnreadableUsageLedgerError(
                 self.events_path, reason="ledger was rewritten"
@@ -250,7 +267,12 @@ class UsageTracker:
                 self.events_path, reason="ledger was truncated"
             )
         if st.st_size == cursor.size:
+            if st.st_mtime_ns != cursor.mtime_ns:
+                raise UnreadableUsageLedgerError(
+                    self.events_path, reason="ledger was rewritten in place"
+                )
             return []
+        # size > cursor.size: append-only fast path (mtime advancing is expected).
         with self.events_path.open("rb") as f:
             f.seek(cursor.size)
             tail = f.read()

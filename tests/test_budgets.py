@@ -382,3 +382,112 @@ def test_begin_optimistic_ledger_scan_outside_lock(tmp_path: Path) -> None:
     assert held_during_read, "read_events() was never called"
     assert held_during_read[0] is False, "optimistic scan must not hold the gate lock"
     gate.release(keys)
+
+
+def test_multi_window_one_strict_ledger_read(tmp_path: Path) -> None:
+    """Hole A guard: week+month enforce shares ONE read_events; no per-window rescan."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=0.40)
+    budgets = [
+        BudgetSpec(backend="opencode", window="week", limit_usd=1.0, enforce=True),
+        BudgetSpec(backend="opencode", window="month", limit_usd=10.0, enforce=True),
+    ]
+    reads: list[bool] = []
+    real = tracker.read_events
+
+    def spy(*, strict: bool = False) -> object:
+        reads.append(strict)
+        return real(strict=strict)
+
+    tracker.read_events = spy  # type: ignore[method-assign]
+    snap = check_budget(tracker, SESSION, budgets, _scope())
+    assert reads == [True], f"expected one strict read, got {reads}"
+    assert abs(snap.enforce_spent[_enforce_budget_key(budgets[0])] - 0.40) < 1e-9
+    assert abs(snap.enforce_spent[_enforce_budget_key(budgets[1])] - 0.40) < 1e-9
+    assert snap.cursor.size > 0
+
+
+def test_multi_window_peer_append_between_reads_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hole A: peer append after the (single) ledger read must still refuse the week cap.
+
+    Simulates the old multi-summary race by appending on the first summary() return; with a
+    single-read design the append lands after the snapshot cursor and the under-lock tail
+    recheck counts it for every enforce window.
+    """
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=0.40)
+    budgets = [
+        BudgetSpec(backend="opencode", window="week", limit_usd=1.0, enforce=True),
+        BudgetSpec(backend="opencode", window="month", limit_usd=10.0, enforce=True),
+    ]
+    gate = EnforceBudgetGate()
+    real_summary = tracker.summary
+    calls = {"n": 0}
+
+    def summary_then_peer_append(*args: object, **kwargs: object) -> object:
+        result = real_summary(*args, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            _seed(tracker, cost=0.70)  # peer append mid-check
+        return result
+
+    monkeypatch.setattr(tracker, "summary", summary_then_peer_append)
+    with pytest.raises(BudgetExceeded, match=r"\$1\.1000 >= cap \$1\.0000"):
+        gate.begin(tracker, SESSION, budgets, _scope())
+    assert calls["n"] == 1, "multi-window must not re-enter summary per window"
+    assert gate._held == {}
+
+
+def test_multi_window_admit_under_caps(tmp_path: Path) -> None:
+    """Normal multi-window path: under both caps → admit; unchanged size → tail is no-op."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=0.40)
+    budgets = [
+        BudgetSpec(backend="opencode", window="week", limit_usd=1.0, enforce=True),
+        BudgetSpec(backend="opencode", window="month", limit_usd=10.0, enforce=True),
+    ]
+    gate = EnforceBudgetGate()
+    after_calls: list[int] = []
+    real_after = tracker.events_after
+
+    def spy_after(cursor: object, *, strict: bool = False) -> object:
+        st = tracker.events_path.stat()
+        after_calls.append(st.st_size - cursor.size)  # type: ignore[attr-defined]
+        return real_after(cursor, strict=strict)  # type: ignore[arg-type]
+
+    tracker.events_after = spy_after  # type: ignore[method-assign]
+    keys = gate.begin(tracker, SESSION, budgets, _scope())
+    assert len(keys) == 2
+    assert after_calls == [0], "unchanged ledger → events_after reads zero new bytes"
+    gate.release(keys)
+
+
+def test_same_size_inplace_rewrite_fails_closed(tmp_path: Path) -> None:
+    """Hole B: same inode + same size + different mtime must not trust the stale snapshot."""
+    import os
+
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=0.25)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    snap = check_budget(tracker, SESSION, [budget], _scope())
+    raw = tracker.events_path.read_bytes()
+    # Same-size overwrite (preserves inode on typical filesystems); force mtime forward.
+    tracker.events_path.write_bytes(b"X" * len(raw))
+    os.utime(tracker.events_path, ns=(snap.cursor.mtime_ns + 1_000_000, snap.cursor.mtime_ns + 1_000_000))
+    assert tracker.events_path.stat().st_size == snap.cursor.size
+    assert tracker.events_path.stat().st_mtime_ns != snap.cursor.mtime_ns
+    with pytest.raises(BudgetExceeded, match="rewritten in place|unreadable"):
+        _recheck_enforce_from_tail(tracker, snap, SESSION, [budget], _scope())
+
+
+def test_same_inode_append_still_fast_paths(tmp_path: Path) -> None:
+    """Hole B companion: same-inode growth still parses the tail (not a rewrite)."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=0.10)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    snap = check_budget(tracker, SESSION, [budget], _scope())
+    _seed(tracker, cost=0.05)
+    # Must not raise — append is the happy path.
+    _recheck_enforce_from_tail(tracker, snap, SESSION, [budget], _scope())
