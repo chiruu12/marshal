@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -111,11 +112,22 @@ class _Patcher(CodingAgentBackend):
 
 
 class _Sleeper(CodingAgentBackend):
-    """Sleeps then prints - used to prove run_many actually runs concurrently."""
+    """Sleeps then prints - used to prove run_many overlaps and spawn is non-blocking."""
 
     name = "sleeper"
     binary = "python"
     capabilities = Capabilities()
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._inflight = 0
+        self.max_inflight = 0
+        self.entered = threading.Event()  # set once a run reaches the backend
+        self.gate = threading.Event()     # held open unless a test closes it
+        self.gate.set()
+        # Optional rendezvous: every run parks until `parties` of them have arrived. Runs that
+        # cannot overlap never assemble, so the wait breaks instead of merely being slow.
+        self.barrier: threading.Barrier | None = None
 
     def check_available(self) -> bool:
         return True
@@ -132,6 +144,26 @@ class _Sleeper(CodingAgentBackend):
             text=raw_stdout.strip(),
             exit_code=exit_code,
         )
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        with self._lock:
+            self._inflight += 1
+            if self._inflight > self.max_inflight:
+                self.max_inflight = self._inflight
+        self.entered.set()
+        try:
+            if self.barrier is not None:
+                self.barrier.wait(timeout=30)  # BrokenBarrierError => the runs never overlapped
+            self.gate.wait(timeout=30)  # an unset gate is pre-set, so this returns at once
+            return super().run(task, opts)
+        finally:
+            with self._lock:
+                self._inflight -= 1
+
+    @property
+    def inflight(self) -> int:
+        with self._lock:
+            return self._inflight
 
 
 class _SelfCommitter(CodingAgentBackend):
@@ -763,27 +795,33 @@ def test_run_many_runs_all_in_isolated_worktrees(repo: Path) -> None:
 
 
 def test_run_many_runs_concurrently(repo: Path) -> None:
-    fleet = Fleet(repo, {"sleeper": _Sleeper()})  # each run sleeps ~0.5s
+    sleeper = _Sleeper()  # each run sleeps ~0.5s; tracks peak in-flight count
+    fleet = Fleet(repo, {"sleeper": sleeper})
     reqs = [RunManyJob(request=RunRequest(backend_name="sleeper", task=TaskSpec(id=f"s{i}", goal="x"))) for i in range(4)]
-    start = time.monotonic()
+    sleeper.barrier = threading.Barrier(4)  # all four must be in the backend at once to proceed
     results = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
-    elapsed = time.monotonic() - start
+    # Concurrency is proven by the rendezvous, not by a clock: runs executed sequentially never
+    # assemble at the barrier, so each wait breaks and its run ends FAILED. A slow machine only
+    # makes the assembly slower, never impossible.
     assert all(r.primary.status == "exited_clean" for r in results)
-    # Sequential would be ≥ ~2s of sleep alone (4 × 0.5s). Bound is loose enough for
-    # CI/load jitter while still proving overlap.
-    assert elapsed < 1.9
+    assert sleeper.max_inflight == 4  # deterministic: the barrier held all four simultaneously
 
 
 def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> None:
-    fleet = Fleet(repo, {"sleeper": _Sleeper()})  # each run sleeps ~0.5s
+    sleeper = _Sleeper()
+    sleeper.gate.clear()  # hold the run inside the backend until this test releases it
+    fleet = Fleet(repo, {"sleeper": sleeper})
     try:
-        start = time.monotonic()
         run_id = fleet.spawn(RunRequest(backend_name="sleeper", task=TaskSpec(id="sp1", goal="x")))
-        assert time.monotonic() - start < 0.4  # returned without waiting for the 0.5s run
-
+        # spawn returned while the run is still executing. Asserted by state, not by a clock:
+        # the backend is parked on the gate, so a spawn that waited for completion would report
+        # inflight == 0 here (it could only return once the run had finished).
+        assert sleeper.entered.wait(timeout=30), "backend never started"
+        assert sleeper.inflight == 1
         rec = fleet.state.get(run_id)
-        assert rec is not None and rec.status == "running"  # recorded RUNNING at once
+        assert rec is not None and rec.status == "running"
 
+        sleeper.gate.set()  # let it finish
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             rec = fleet.state.get(run_id)
@@ -792,7 +830,8 @@ def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> N
             time.sleep(0.05)
         assert rec is not None and rec.status == "exited_clean"  # finished in the background
     finally:
-        fleet.shutdown()
+        sleeper.gate.set()  # before shutdown: a failed assertion above must not strand the
+        fleet.shutdown()    # backend on a closed gate, which would hang the drain for 30s
 
 
 def test_spawn_terminal_stamps_a_background_failure(repo: Path) -> None:
