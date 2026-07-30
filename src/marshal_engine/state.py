@@ -108,6 +108,11 @@ _DERIVED_FIELDS = {"agent_alive"}
 #: not asked for. Omitted from a listing by default and fetched per run with `get_run`.
 _BULKY_FIELDS = ("text", "verify_output")
 
+#: Test-only seam: called between read and write inside the locked RMW in ``_update_locked``.
+#: Production leaves this ``None``. Tests may assign a short sleep to widen the race window when
+#: verifying that the flock prevents sibling-field loss under concurrent writers.
+_rmw_between_read_write: Callable[[], None] | None = None
+
 
 def compact_run(rec: RunRecord) -> dict[str, Any]:
     """A run as a dict without its unbounded text fields, plus flags saying what was dropped.
@@ -258,6 +263,9 @@ class FleetState:
         rec = self.get(run_id)
         if rec is None:
             raise KeyError(run_id)
+        # Test-only: widen the RMW window so concurrent writers can race without flock.
+        if _rmw_between_read_write is not None:
+            _rmw_between_read_write()
         # Re-validate the merged record (model_copy(update=...) would skip validation, so a
         # wrong-typed field could write a corrupt file that then vanishes from get()/list()).
         record = RunRecord.model_validate({**rec.model_dump(), **fields})

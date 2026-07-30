@@ -282,6 +282,21 @@ records use: a bare pid the OS later recycled would otherwise impersonate a live
 and permanently suppress reaping. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
+**Per-run record locking (cross-process).** Each run is `runs/<run_id>.json`. Most runs have a
+single writer (the thread executing them), but `cancel_run` can write the same record from another
+thread, and a CLI + long-lived MCP server can race the same record across processes. Per-run
+writes are serialized by a per-run `threading.Lock` (in-process) plus an `fcntl.flock` on a
+sidecar `runs/<run_id>.json.lock` (cross-process). The flock is held only for the
+read-modify-write critical section in `update`/`update_if` — never across a backend run. Callers
+take the thread lock before the flock (consistent ordering). The flock auto-releases on process
+death, so no stale-lock reaper is needed. `list` and `clean` glob `*.json`, so `.json.lock`
+sidecars are never mistaken for records. Each write goes through a unique temp file then an
+atomic `os.replace`.
+
+**NFS / no-flock filesystems (document, don't fix).** `fcntl.flock` on NFS or filesystems without
+flock support fails loudly inside `update`/`update_if` — fail-closed; no soft fallback. All
+documented state layouts assume local disk.
+
 **Worktree environment isolation.** The driver usually runs inside its own activated venv, so
 `os.environ` carries `VIRTUAL_ENV`/`PYTHONHOME` pointing at the *driver's* interpreter. The
 driver/MCP process also sets `MARSHAL_*` session variables (`MARSHAL_CONFIG`, `MARSHAL_REPO`, …).
