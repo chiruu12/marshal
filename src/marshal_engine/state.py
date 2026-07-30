@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import sys
 import tempfile
 import threading
 from collections.abc import Callable, Iterator, Sequence
@@ -273,9 +274,18 @@ class FleetState:
         if not self.dir.exists():
             return []
         records: list[RunRecord] = []
+        skipped = 0
         for path in sorted(self.dir.glob("*.json")):
             try:
                 records.append(RunRecord.model_validate_json(path.read_text(encoding="utf-8")))
             except (ValidationError, OSError, ValueError):
-                continue  # skip a torn/foreign/binary file (ValueError covers UnicodeDecodeError)
+                # Skip a torn/foreign/binary file (ValueError covers UnicodeDecodeError) rather
+                # than failing the whole listing; warn with the count so operators can find it.
+                skipped += 1
+                continue
+        if skipped:
+            print(
+                f"[marshal] skipping {skipped} unreadable run record(s)",
+                file=sys.stderr,
+            )
         return records

@@ -315,3 +315,121 @@ def test_pre_rename_ledger_events_still_count_as_successes(tmp_path: Path) -> No
     assert summary.totals.runs == 1
     assert summary.totals.succeeded == 1, "a pre-rename success stopped counting"
     assert summary.totals.cost_per_succeeded == 0.1
+
+
+def test_events_skips_torn_final_line_and_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Crash-mid-append leaves a partial final line; summary must still succeed (#142)."""
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="ok1", cost_usd=0.01, status="exited_clean", source="native"))
+    t.record(_ev(run_id="ok2", cost_usd=0.02, status="exited_clean", source="native"))
+    with t.events_path.open("a", encoding="utf-8") as f:
+        f.write('{"ts":"2026-06-19T00:00:00Z","run_id":"torn","backend":"openco')  # no closing
+
+    events = t.events()
+    assert [e.run_id for e in events] == ["ok1", "ok2"]
+    err = capsys.readouterr().err
+    assert "skipping 1 malformed usage event line" in err
+
+    s = t.summary()
+    assert s.totals.runs == 2
+    assert abs(s.totals.cost_usd - 0.03) < 1e-9
+
+
+def test_events_skips_mid_file_malformed_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A corrupt middle line is skipped with a count; neighbors still roll up."""
+    usage = tmp_path / "usage"
+    usage.mkdir()
+    (usage / "events.jsonl").write_text(
+        '{"ts":"2026-06-19T00:00:00Z","run_id":"a","backend":"opencode",'
+        '"cost_usd":0.01,"status":"exited_clean","source":"native"}\n'
+        "{not valid json\n"
+        '{"ts":"2026-06-19T00:00:00Z","run_id":"b","backend":"opencode",'
+        '"cost_usd":0.02,"status":"exited_clean","source":"native"}\n'
+        "also-not-json\n",
+        encoding="utf-8",
+    )
+    t = UsageTracker(usage)
+    assert [e.run_id for e in t.events()] == ["a", "b"]
+    assert "skipping 2 malformed usage event line" in capsys.readouterr().err
+    assert t.summary().totals.runs == 2
+
+
+def test_events_file_level_read_failure_still_propagates(tmp_path: Path) -> None:
+    """Fail-closed for REAL unreadable ledgers: only malformed *lines* are skipped (#142)."""
+    usage = tmp_path / "usage"
+    usage.mkdir()
+    # events.jsonl as a directory makes read_bytes raise IsADirectoryError (OSError).
+    (usage / "events.jsonl").mkdir()
+    with pytest.raises(OSError):
+        UsageTracker(usage).events()
+    with pytest.raises(OSError):
+        UsageTracker(usage).summary()
+
+
+def test_events_strict_raises_on_torn_line(tmp_path: Path) -> None:
+    """Strict reader (enforce path) refuses when any line is unreadable."""
+    from marshal_engine.usage import UnreadableUsageLedgerError
+
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="ok", cost_usd=0.01))
+    with t.events_path.open("a", encoding="utf-8") as f:
+        f.write('{"ts":"2026-06-19T00:00:00Z","run_id":"torn","backend":"openco')
+
+    with pytest.raises(UnreadableUsageLedgerError, match="unreadable event") as ei:
+        t.events(strict=True)
+    assert ei.value.skipped == 1
+    assert "events.jsonl" in str(ei.value)
+    assert "repair or remove the torn line" in str(ei.value)
+
+    with pytest.raises(UnreadableUsageLedgerError):
+        t.summary(strict=True)
+
+
+def test_events_after_reads_only_appended_tail(tmp_path: Path) -> None:
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    t.record(_ev(run_id="b", cost_usd=0.02))
+    t.record(_ev(run_id="c", cost_usd=0.03))
+    tail = t.events_after(cursor)
+    assert [e.run_id for e in tail] == ["b", "c"]
+
+
+def test_events_after_truncated_raises(tmp_path: Path) -> None:
+    from marshal_engine.usage import UnreadableUsageLedgerError
+
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    t.events_path.write_bytes(b"")
+    with pytest.raises(UnreadableUsageLedgerError, match="truncated"):
+        t.events_after(cursor)
+
+
+def test_events_after_same_size_mtime_rewrite_raises(tmp_path: Path) -> None:
+    """Same inode + same byte size + different mtime is an in-place rewrite, not a no-op."""
+    import os
+
+    from marshal_engine.usage import UnreadableUsageLedgerError
+
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    raw = t.events_path.read_bytes()
+    t.events_path.write_bytes(b"Y" * len(raw))
+    os.utime(t.events_path, ns=(cursor.mtime_ns + 1_000_000, cursor.mtime_ns + 1_000_000))
+    assert t.events_path.stat().st_size == cursor.size
+    assert t.events_path.stat().st_mtime_ns != cursor.mtime_ns
+    with pytest.raises(UnreadableUsageLedgerError, match="rewritten in place"):
+        t.events_after(cursor)
+
+
+def test_events_after_same_size_same_mtime_is_noop(tmp_path: Path) -> None:
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    assert t.events_after(cursor) == []

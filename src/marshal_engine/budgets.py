@@ -15,13 +15,22 @@ from __future__ import annotations
 
 import sys
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from pydantic import BaseModel, Field
 
 from .config import BudgetSpec
-from .usage import Bucket, UsageSummary, UsageTracker
+from .usage import (
+    Bucket,
+    LedgerCursor,
+    UnreadableUsageLedgerError,
+    UsageEvent,
+    UsageSummary,
+    UsageTracker,
+    _in_window,
+)
 
 
 class BudgetExceeded(RuntimeError):
@@ -34,6 +43,14 @@ class BudgetRunScope(Protocol):
 
     client: str | None
     backend_name: str
+
+
+@dataclass(frozen=True)
+class BudgetCheckSnapshot:
+    """Outside-lock spend baseline + ledger cursor for O(tail) under-lock revalidation."""
+
+    cursor: LedgerCursor
+    enforce_spent: dict[str, float] = field(default_factory=dict)
 
 
 def _budget_window_since(window: str, session_start: datetime, now: datetime) -> datetime:
@@ -84,23 +101,31 @@ def _budget_spend_from_summary(summary: UsageSummary, budget: BudgetSpec) -> flo
     return summary.totals.cost_usd
 
 
-def _budget_spend_cached(
-    cache: dict[str, UsageSummary],
-    tracker: UsageTracker,
-    session_start: datetime,
+def _event_matches_budget_scope(event: UsageEvent, budget: BudgetSpec) -> bool:
+    if budget.client is not None:
+        return event.client == budget.client
+    if budget.backend is not None:
+        return event.backend == budget.backend
+    return True
+
+
+def _spend_from_events(
+    events: list[UsageEvent],
     budget: BudgetSpec,
+    *,
+    session_start: datetime,
     now: datetime,
 ) -> float:
-    """Windowed spend for a budget's scope, scanning the ledger once per DISTINCT window via `cache`.
-
-    Budgets sharing a window (session/week/month - only three possible) reuse one `summary(since=)`
-    scan instead of one per budget, so a run-start check with N budgets does at most 3 ledger reads.
-    """
-    if budget.window not in cache:
-        cache[budget.window] = tracker.summary(
-            since=_budget_window_since(budget.window, session_start, now)
-        )
-    return _budget_spend_from_summary(cache[budget.window], budget)
+    """Windowed + scoped spend from an already-loaded event list (no I/O)."""
+    since = _budget_window_since(budget.window, session_start, now)
+    total = 0.0
+    for e in events:
+        if not _in_window(e, since, None):
+            continue
+        if not _event_matches_budget_scope(e, budget):
+            continue
+        total += e.cost_usd
+    return total
 
 
 def _budget_scope_label(budget: BudgetSpec) -> str:
@@ -129,7 +154,7 @@ def compute_budget_status(
     """Build a `BudgetStatus` per configured budget from the ledger at `now`.
 
     Lookup failures for an individual budget degrade to spent=0 (same honesty as a scope with
-    no events) so the display never crashes the usage surface.
+    no events) so the display never crashes the usage surface. Always lenient (reporting path).
     """
     cache: dict[str, UsageSummary] = {}
     out: list[BudgetStatus] = []
@@ -138,7 +163,8 @@ def compute_budget_status(
             summary = cache.get(b.window)
             if summary is None:
                 summary = tracker.summary(
-                    since=_budget_window_since(b.window, session_start, now)
+                    since=_budget_window_since(b.window, session_start, now),
+                    strict=False,
                 )
                 cache[b.window] = summary
             spent = _budget_spend_from_summary(summary, b)
@@ -182,53 +208,172 @@ def check_budget(
     session_start: datetime,
     budgets: list[BudgetSpec],
     req: BudgetRunScope,
-) -> None:
+    *,
+    enforce_only: bool = False,
+) -> BudgetCheckSnapshot:
     """Warn (advisory) or raise ``BudgetExceeded`` (enforce) for matching over-cap budgets.
 
     For every budget whose scope matches `req` (client match, backend match, or global), the
     windowed spend is recomputed from the usage ledger; if it meets or exceeds the cap:
 
     * ``enforce=false`` (default): soft-warn on stderr; never raise from this path's own
-      lookup failures (a soft budget never breaks a run).
+      lookup failures (a soft budget never breaks a run). Lenient ledger reads (torn lines
+      skipped + warned).
     * ``enforce=true``: raise ``BudgetExceeded`` so the spawn is refused before a worktree is
-      created. Lookup failures for an enforced budget also raise (fail closed).
+      created. Lookup failures and any skipped/torn ledger lines also raise (fail closed) with
+      an actionable repair message.
+
+    ``enforce_only=True`` skips advisory budgets (no soft-warn). Returns a
+    ``BudgetCheckSnapshot`` (ledger cursor + per-enforce-budget spend) so
+    ``EnforceBudgetGate.begin`` can revalidate from the appended tail under its lock without a
+    full O(ledger) rescan. The snapshot's events/cursor come from one
+    ``read_events`` return pair (atomic handoff) — never from ``last_*`` attributes.
 
     A subscription / unknown-cost backend reports $0, so a $ budget on it never triggers (and
     shows $0 spent); we don't fabricate a percentage or "remaining" from that.
     """
+    empty = BudgetCheckSnapshot(cursor=LedgerCursor(size=0, inode=0, mtime_ns=0))
     if not budgets:
-        return
+        return empty
     now = datetime.now(timezone.utc)
-    cache: dict[str, UsageSummary] = {}
-    for b in budgets:
-        if not _budget_matches(b, req):
-            continue
+    matching = [
+        b
+        for b in budgets
+        if _budget_matches(b, req) and (not enforce_only or b.enforce)
+    ]
+    if not matching:
+        return empty
+
+    enforce_budgets = [b for b in matching if b.enforce]
+    advisory_budgets = [b for b in matching if not b.enforce]
+
+    cursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
+    enforce_spent: dict[str, float] = {}
+    events: list[UsageEvent] | None = None
+
+    if enforce_budgets:
         try:
-            spent = _budget_spend_cached(cache, tracker, session_start, b, now)
-        except Exception as exc:  # noqa: BLE001
-            if b.enforce:
+            # Diagnostics may monkeypatch summary() to simulate ledger failure — probe that
+            # first. The authoritative (events, cursor) pair comes ONLY from read_events'
+            # return values (never post-hoc last_events / last_cursor attribute loads, which
+            # a concurrent check_budget could interleave between).
+            _probe_summary_if_patched(tracker, strict=True)
+            events, cursor = tracker.read_events(strict=True)
+            for b in enforce_budgets:
+                spent = _spend_from_events(
+                    events, b, session_start=session_start, now=now
+                )
+                enforce_spent[_enforce_budget_key(b)] = spent
+                if spent < b.limit_usd:
+                    continue
                 raise BudgetExceeded(
-                    f"budget {_budget_scope_label(b)} ({b.window}): spend lookup failed; "
-                    f"refusing spawn because enforce=true ({exc})"
-                ) from exc
-            continue
-        if spent < b.limit_usd:
-            continue
-        msg = (
-            f"[marshal] budget: {_budget_scope_label(b)} spent "
-            f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window})"
-        )
-        if b.enforce:
+                    f"[marshal] budget: {_budget_scope_label(b)} spent "
+                    f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window}); "
+                    "refusing new spawn (enforce=true). "
+                    "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
+                )
+        except BudgetExceeded:
+            raise
+        except UnreadableUsageLedgerError as exc:
+            raise BudgetExceeded(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - OSError / decode / unexpected
             raise BudgetExceeded(
-                f"{msg}; refusing new spawn (enforce=true). "
-                "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
+                f"budget {_budget_scope_label(enforce_budgets[0])} "
+                f"({enforce_budgets[0].window}): spend lookup failed; "
+                f"refusing spawn because enforce=true ({exc})"
+            ) from exc
+
+    if advisory_budgets and not enforce_only:
+        if events is None:
+            try:
+                # One lenient read for advisory-only checks; reuse enforce's pair when present.
+                events, cursor = tracker.read_events(strict=False)
+            except Exception:  # noqa: BLE001 - soft budget never breaks a run
+                events = []
+        for b in advisory_budgets:
+            try:
+                spent = _spend_from_events(
+                    events, b, session_start=session_start, now=now
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if spent < b.limit_usd:
+                continue
+            print(
+                f"[marshal] budget: {_budget_scope_label(b)} spent "
+                f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window})",
+                file=sys.stderr,
             )
-        print(msg, file=sys.stderr)
+
+    return BudgetCheckSnapshot(cursor=cursor, enforce_spent=enforce_spent)
+
+
+def _probe_summary_if_patched(tracker: UsageTracker, *, strict: bool) -> None:
+    """Call ``summary`` only when it has been monkeypatched (fleet diagnostics / tests).
+
+    Production uses the real ``UsageTracker.summary``; we skip it and go straight to the
+    atomic ``read_events`` handoff. A replaced ``summary`` is still probed so
+    ``spend lookup failed`` fail-closed behavior is preserved.
+    """
+    current = tracker.summary
+    real = UsageTracker.summary
+    if getattr(current, "__func__", None) is real:
+        return
+    current(strict=strict)
 
 
 def _enforce_budget_key(budget: BudgetSpec) -> str:
     """Stable key for an enforce-budget concurrency slot (scope + window + limit)."""
     return f"{_budget_scope_label(budget)}|{budget.window}|{budget.limit_usd}"
+
+
+def _recheck_enforce_from_tail(
+    tracker: UsageTracker,
+    snap: BudgetCheckSnapshot,
+    session_start: datetime,
+    budgets: list[BudgetSpec],
+    req: BudgetRunScope,
+) -> None:
+    """Under-lock revalidation: apply only appended ledger bytes to the outside spend baseline.
+
+    Lock-body work is O(new events), normally O(1). A rewritten/truncated/torn tail fails closed.
+    """
+    if not snap.enforce_spent:
+        return
+    try:
+        new_events = tracker.events_after(snap.cursor, strict=True)
+    except UnreadableUsageLedgerError as exc:
+        raise BudgetExceeded(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise BudgetExceeded(
+            f"usage ledger unreadable ({tracker.events_path}): {exc}; "
+            "enforced budgets cannot verify spend - repair or remove the torn line"
+        ) from exc
+
+    now = datetime.now(timezone.utc)
+    spent = dict(snap.enforce_spent)
+    matching = [b for b in budgets if b.enforce and _budget_matches(b, req)]
+    for e in new_events:
+        for b in matching:
+            since = _budget_window_since(b.window, session_start, now)
+            if not _in_window(e, since, None):
+                continue
+            if not _event_matches_budget_scope(e, b):
+                continue
+            key = _enforce_budget_key(b)
+            spent[key] = spent.get(key, 0.0) + e.cost_usd
+
+    for b in matching:
+        key = _enforce_budget_key(b)
+        cur = spent.get(key, 0.0)
+        if cur < b.limit_usd:
+            continue
+        raise BudgetExceeded(
+            f"[marshal] budget: {_budget_scope_label(b)} spent "
+            f"${cur:.4f} >= cap ${b.limit_usd:.4f} ({b.window}); "
+            "refusing new spawn (enforce=true). "
+            "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
+        )
 
 
 class EnforceBudgetGate:
@@ -252,25 +397,39 @@ class EnforceBudgetGate:
         budgets: list[BudgetSpec],
         req: BudgetRunScope,
     ) -> list[str]:
-        """Check ledger caps, then reserve concurrency slots for matching enforce budgets."""
+        """Check ledger caps, then reserve concurrency slots for matching enforce budgets.
+
+        Full ledger spend is computed *before* acquiring ``_lock`` so fleet-wide spawns do not
+        serialize behind O(ledger) scans. Under the lock we revalidate from only the appended
+        tail (O(new events), normally O(1)), then reserve slots. If reservation fails partway
+        through a multi-budget match, every key reserved so far is released before re-raising.
+        """
+        # Optimistic check outside the lock (advisory soft-warn + enforce refuse + cursor).
+        snap = check_budget(tracker, session_start, budgets, req)
         with self._lock:
-            check_budget(tracker, session_start, budgets, req)
+            # Tail-only enforce re-check — never a full summary()/events() rescan under the lock.
+            _recheck_enforce_from_tail(tracker, snap, session_start, budgets, req)
             keys: list[str] = []
-            for b in budgets:
-                if not b.enforce or not _budget_matches(b, req):
-                    continue
-                key = _enforce_budget_key(b)
-                holder = self._held.get(key)
-                if holder is not None:
-                    held_by = holder or "starting"
-                    raise BudgetExceeded(
-                        f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
-                        f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
-                        "prevent overshoot. Wait for it to finish, or set enforce: false."
-                    )
-                self._held[key] = ""
-                keys.append(key)
-            return keys
+            try:
+                for b in budgets:
+                    if not b.enforce or not _budget_matches(b, req):
+                        continue
+                    key = _enforce_budget_key(b)
+                    holder = self._held.get(key)
+                    if holder is not None:
+                        held_by = holder or "starting"
+                        raise BudgetExceeded(
+                            f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
+                            f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
+                            "prevent overshoot. Wait for it to finish, or set enforce: false."
+                        )
+                    self._held[key] = ""
+                    keys.append(key)
+                return keys
+            except Exception:
+                for key in keys:
+                    self._held.pop(key, None)
+                raise
 
     def bind(self, keys: list[str], run_id: str) -> None:
         """Attach reserved slots to the concrete run_id after worktree creation."""

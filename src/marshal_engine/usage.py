@@ -8,13 +8,59 @@ optionally filtered to a `[since, until]` time window over each event's `ts`.
 
 from __future__ import annotations
 
+import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, field_validator, Field
+from pydantic import BaseModel, ValidationError, field_validator, Field
 
 from .types import AgentResult, RunStatus, UsageRecord, UsageSource, canonical_status
+
+
+@dataclass(frozen=True)
+class LedgerCursor:
+    """Byte-offset identity of a usage ledger snapshot (for O(tail) re-reads)."""
+
+    size: int
+    inode: int
+    mtime_ns: int
+
+
+class UnreadableUsageLedgerError(Exception):
+    """Strict-mode ledger fault: skipped/torn lines or an unexpected rewrite/truncate.
+
+    Reporting paths catch nothing here (they use ``strict=False``). Enforce-budget paths
+    translate this into an actionable ``BudgetExceeded``.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        skipped: int = 0,
+        reason: str = "",
+    ) -> None:
+        self.path = path
+        self.skipped = skipped
+        self.reason = reason
+        if skipped:
+            msg = (
+                f"usage ledger has {skipped} unreadable event(s) ({path}); "
+                "enforced budgets cannot verify spend - repair or remove the torn line"
+            )
+        elif reason:
+            msg = (
+                f"usage ledger unreadable ({path}): {reason}; "
+                "enforced budgets cannot verify spend - repair or remove the torn line"
+            )
+        else:
+            msg = (
+                f"usage ledger unreadable ({path}); "
+                "enforced budgets cannot verify spend - repair or remove the torn line"
+            )
+        super().__init__(msg)
 
 # Canonical usage time-window vocabulary shared by CLI (`marshal usage --window`) and MCP
 # (`usage(window=...)`). Both surfaces must accept exactly this set — never diverge.
@@ -147,62 +193,170 @@ class UsageTracker:
     def __init__(self, usage_dir: Path | str) -> None:
         self.dir = Path(usage_dir)
         self.events_path = self.dir / "events.jsonl"
+        # Snapshot from the most recent successful read_events/summary (budget gate recheck).
+        self.last_cursor: LedgerCursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
+        self.last_events: list[UsageEvent] = []
 
     def record(self, event: UsageEvent) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as f:
             f.write(event.model_dump_json() + "\n")
 
-    def events(self) -> list[UsageEvent]:
+    def read_events(self, *, strict: bool = False) -> tuple[list[UsageEvent], LedgerCursor]:
+        """Read the ledger once; return events plus a cursor for later O(tail) re-reads.
+
+        ``strict=False`` (reporting): skip malformed lines, stderr-warn with the count.
+        ``strict=True`` (enforce): any skipped line raises ``UnreadableUsageLedgerError``.
+        File-level faults (OSError, whole-file decode failure) always propagate.
+
+        Also stamps ``last_events`` / ``last_cursor`` so a caller (e.g. ``check_budget``) can
+        window multiple budget scopes against the SAME ledger instant after one read.
+        """
         if not self.events_path.exists():
+            cursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
+            self.last_cursor = cursor
+            self.last_events = []
+            return [], cursor
+        st = self.events_path.stat()
+        data = self.events_path.read_bytes()
+        cursor = LedgerCursor(size=len(data), inode=st.st_ino, mtime_ns=st.st_mtime_ns)
+        text = data.decode("utf-8")  # UnicodeDecodeError propagates (file-level fault)
+        events = _parse_event_lines(text, path=self.events_path, strict=strict)
+        self.last_cursor = cursor
+        self.last_events = events
+        return events, cursor
+
+    def events(self, *, strict: bool = False) -> list[UsageEvent]:
+        events, _ = self.read_events(strict=strict)
+        return events
+
+    def events_after(self, cursor: LedgerCursor, *, strict: bool = False) -> list[UsageEvent]:
+        """Parse only bytes appended since ``cursor`` (O(new events), normally O(1)).
+
+        Identity is ``(inode, size, mtime_ns)``:
+        * same inode + larger size → append-only fast path (parse the tail);
+        * same inode + same size + same mtime → no-op ``[]``;
+        * same inode + same size + **different mtime** → in-place rewrite, fail closed;
+        * inode change / truncate / disappear → fail closed.
+
+        Empty baseline (``cursor`` all zeros) + file appears: read from offset 0 through the
+        same parse path (not ``read_events``/``summary``). That is O(file) but only when the
+        ledger did not exist at the outside-lock snapshot — bounded by what one spawn window
+        could have written, and keeps the under-lock call graph on ``events_after`` alone.
+        """
+        if not self.events_path.exists():
+            if cursor.size == 0:
+                return []
+            raise UnreadableUsageLedgerError(
+                self.events_path, reason="ledger disappeared after the baseline read"
+            )
+        st = self.events_path.stat()
+        if cursor.size == 0 and cursor.inode == 0:
+            # Empty baseline → file appeared. Read bytes from offset 0 as the "tail".
+            with self.events_path.open("rb") as f:
+                data = f.read()
+            return _parse_event_lines(
+                data.decode("utf-8"), path=self.events_path, strict=strict
+            )
+        if st.st_ino != cursor.inode:
+            raise UnreadableUsageLedgerError(
+                self.events_path, reason="ledger was rewritten"
+            )
+        if st.st_size < cursor.size:
+            raise UnreadableUsageLedgerError(
+                self.events_path, reason="ledger was truncated"
+            )
+        if st.st_size == cursor.size:
+            if st.st_mtime_ns != cursor.mtime_ns:
+                raise UnreadableUsageLedgerError(
+                    self.events_path, reason="ledger was rewritten in place"
+                )
             return []
-        out: list[UsageEvent] = []
-        for line in self.events_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            out.append(UsageEvent.model_validate_json(line))
-        return out
+        # size > cursor.size: append-only fast path (mtime advancing is expected).
+        with self.events_path.open("rb") as f:
+            f.seek(cursor.size)
+            tail = f.read()
+        text = tail.decode("utf-8")
+        return _parse_event_lines(text, path=self.events_path, strict=strict)
 
     def summary(
         self,
         since: datetime | None = None,
         until: datetime | None = None,
+        *,
+        strict: bool = False,
     ) -> UsageSummary:
         """Roll up events; optionally restrict to a [since, until] window over each event's `ts`.
 
         Both bounds are compared in UTC against the event's ISO-8601 timestamp. Either bound may
         be None (open-ended). No args = aggregate over the whole ledger (unchanged behavior).
+        ``strict`` is forwarded to the ledger reader (default lenient for reporting surfaces).
         """
-        by_backend: dict[str, Bucket] = {}
-        by_client: dict[str, Bucket] = {}
-        by_model: dict[str, Bucket] = {}
-        by_backend_model: dict[str, Bucket] = {}
-        totals = Bucket()
-        for e in self.events():
-            if not _in_window(e, since, until):
-                continue
-            _add(totals, e)
-            _add(by_backend.setdefault(e.backend, Bucket()), e)
-            _add(by_client.setdefault(e.client or "-", Bucket()), e)
-            _add(by_model.setdefault(e.model or "-", Bucket()), e)
-            bm_key = f"{e.backend}/{e.model or '-'}"
-            _add(by_backend_model.setdefault(bm_key, Bucket()), e)
-        for bucket in (
-            totals,
-            *by_backend.values(),
-            *by_client.values(),
-            *by_model.values(),
-            *by_backend_model.values(),
-        ):
-            _finalize(bucket)
-        return UsageSummary(
-            totals=totals,
-            by_backend=by_backend,
-            by_client=by_client,
-            by_model=by_model,
-            by_backend_model=by_backend_model,
+        events, _ = self.read_events(strict=strict)
+        return summarize_events(events, since=since, until=until)
+
+
+def _parse_event_lines(
+    text: str, *, path: Path, strict: bool
+) -> list[UsageEvent]:
+    """Parse JSONL event lines; lenient skips + warns, strict raises on any bad line."""
+    out: list[UsageEvent] = []
+    skipped = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(UsageEvent.model_validate_json(line))
+        except (ValidationError, ValueError):
+            skipped += 1
+            continue
+    if skipped:
+        if strict:
+            raise UnreadableUsageLedgerError(path, skipped=skipped)
+        print(
+            f"[marshal] skipping {skipped} malformed usage event line(s)",
+            file=sys.stderr,
         )
+    return out
+
+
+def summarize_events(
+    events: list[UsageEvent],
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> UsageSummary:
+    """Roll up an already-loaded event list (shared by summary() and budget checks)."""
+    by_backend: dict[str, Bucket] = {}
+    by_client: dict[str, Bucket] = {}
+    by_model: dict[str, Bucket] = {}
+    by_backend_model: dict[str, Bucket] = {}
+    totals = Bucket()
+    for e in events:
+        if not _in_window(e, since, until):
+            continue
+        _add(totals, e)
+        _add(by_backend.setdefault(e.backend, Bucket()), e)
+        _add(by_client.setdefault(e.client or "-", Bucket()), e)
+        _add(by_model.setdefault(e.model or "-", Bucket()), e)
+        bm_key = f"{e.backend}/{e.model or '-'}"
+        _add(by_backend_model.setdefault(bm_key, Bucket()), e)
+    for bucket in (
+        totals,
+        *by_backend.values(),
+        *by_client.values(),
+        *by_model.values(),
+        *by_backend_model.values(),
+    ):
+        _finalize(bucket)
+    return UsageSummary(
+        totals=totals,
+        by_backend=by_backend,
+        by_client=by_client,
+        by_model=by_model,
+        by_backend_model=by_backend_model,
+    )
 
 
 def _to_utc(ts: datetime) -> datetime:
