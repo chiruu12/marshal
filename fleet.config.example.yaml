@@ -18,7 +18,8 @@ defaults:
 # Accepts a string or an argv list; omit it entirely for repos that need no setup. Marshal scrubs
 # the driver's VIRTUAL_ENV so the command targets the worktree. A non-zero exit fails the run early.
 # Allowlisted basenames (uv, npm, pnpm, make, cargo, go, pytest, python, …) run without opt-in;
-# shells (sh/bash) and anything else need `allow_unsafe_commands: true`. See docs/config.md.
+# non-allowlisted basenames (sh/bash, …) and relative path argv[0] need
+# `allow_unsafe_commands: true`. Basename screen only — not a sandbox for args. See docs/config.md.
 # worktree_setup: uv sync --extra dev --extra mcp
 
 # Optional: a gate command run in the worktree AFTER a run that would otherwise be `succeeded`
@@ -29,9 +30,10 @@ defaults:
 # env hygiene, and allowlist rules as worktree_setup. Omit to trust the agent's own outcome.
 # verify: uv run pytest -q
 
-# Required for non-allowlisted setup/verify binaries (including any `sh -c …` form). Default
-# false — Marshal refuses those commands at run time until you opt in. Allowlisted tools still
-# execute as your user; this is not a sandbox (see SECURITY.md).
+# Required for non-allowlisted setup/verify basenames (including any `sh -c …` form) and for
+# relative path argv[0]. Default false — Marshal refuses those forms at config load until you
+# opt in. Allowlisted tools still execute as your user (args unrestricted); not a sandbox
+# (see SECURITY.md).
 # allow_unsafe_commands: true
 
 # Optional: run git hooks on commit_run / integrate. Default false uses `git --no-verify` so a

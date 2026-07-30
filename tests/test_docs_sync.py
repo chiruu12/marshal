@@ -17,6 +17,8 @@ from marshal_engine.config import FleetConfig
 _REPO_ROOT = Path(marshal_engine.__file__).resolve().parents[2]
 _USAGE_MD = _REPO_ROOT / "docs" / "usage.md"
 _MCP_TOOLS_MD = _REPO_ROOT / "docs" / "mcp-tools.md"
+_CONFIG_MD = _REPO_ROOT / "docs" / "config.md"
+_SECURITY_MD = _REPO_ROOT / "SECURITY.md"
 _FLEET_EXAMPLE = _REPO_ROOT / "fleet.config.example.yaml"
 
 _CONFIG = """
@@ -159,4 +161,26 @@ def test_fleet_config_example_mentions_every_top_level_field() -> None:
     missing = sorted(field for field in fields if field not in example_text)
     assert not missing, (
         "fleet.config.example.yaml missing FleetConfig field names: " + ", ".join(missing)
+    )
+
+
+def test_setup_verify_allowlist_docs_match_basename_only_contract() -> None:
+    """docs/config.md + SECURITY.md must not overstate the setup/verify allowlist (#177)."""
+    config_text = _CONFIG_MD.read_text(encoding="utf-8")
+    security_text = _SECURITY_MD.read_text(encoding="utf-8")
+    # True contract markers (basename screen; args still arbitrary; relative path hazard).
+    for label, text in (("docs/config.md", config_text), ("SECURITY.md", security_text)):
+        assert "basename" in text.lower(), f"{label} must say the allowlist checks basename"
+        assert "python -c" in text, f"{label} must document that python -c still passes"
+        assert "not** a sandbox" in text or "not a sandbox" in text.lower(), (
+            f"{label} must state the allowlist is not a sandbox"
+        )
+        assert "relative path" in text.lower(), f"{label} must document relative path argv[0]"
+    # Reject the old false implication that excluding shells alone makes allowlisted tools safe.
+    false_shells_claim = re.compile(
+        r"Shells\s*\(`sh`/`bash`[^)]*\)\s+always need the opt-in\.",
+        re.IGNORECASE,
+    )
+    assert not false_shells_claim.search(config_text), (
+        "docs/config.md still claims shells uniquely need the opt-in without the basename caveat"
     )

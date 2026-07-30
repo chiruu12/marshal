@@ -26,8 +26,9 @@ from .types import PermissionMode
 DEFAULT_OPENCODE_MODEL = "opencode-go/glm-5.2"
 
 # Basenames allowed for ``worktree_setup`` / ``verify`` without ``allow_unsafe_commands: true``.
-# Not a sandbox: allowlisted tools can still run arbitrary scripts/code (e.g. ``python -c``,
-# ``make`` recipes). Shells (``sh``/``bash``/…) are intentionally excluded — they need the opt-in.
+# Typo / wrong-binary guard only — not a sandbox. Allowlisted tools still run arbitrary
+# scripts/code (``python -c``, ``uv run sh -c``, ``make`` recipes, …). Shells (``sh``/``bash``)
+# are excluded as non-allowlisted basenames; that does not make allowlisted interpreters safer.
 SAFE_SETUP_VERIFY_BINARIES: frozenset[str] = frozenset(
     {
         "uv",
@@ -191,8 +192,8 @@ class FleetConfig(BaseModel):
     # same string-or-argv YAML shape.
     verify: list[str] | None = None
     # When false (default), ``worktree_setup`` / ``verify`` may only use an allowlisted binary
-    # basename (see ``SAFE_SETUP_VERIFY_BINARIES``). Shells and anything else need
-    # ``allow_unsafe_commands: true``. Not a sandbox — see SECURITY.md.
+    # basename (see ``SAFE_SETUP_VERIFY_BINARIES``); relative path argv[0] also needs the opt-in.
+    # Basename screen only — not a sandbox for args (``python -c``, …). See SECURITY.md.
     allow_unsafe_commands: bool = False
     # When false (default), ``commit_run`` / ``integrate`` pass ``git --no-verify`` so prompting
     # pre-commit/pre-merge hooks cannot deadlock a headless driver. Set true only when hooks are
@@ -277,6 +278,14 @@ def setup_command_basename(argv0: str) -> str:
     return name
 
 
+def is_relative_setup_argv0(argv0: str) -> bool:
+    """True when ``argv0`` is a relative path (resolves against worktree cwd), not a bare name."""
+    path = Path(argv0)
+    if path == Path(path.name):
+        return False
+    return not path.is_absolute()
+
+
 def is_safe_setup_binary(argv0: str) -> bool:
     """True when ``argv0``'s basename is on the setup/verify allowlist (incl. ``python3.N``)."""
     lower = setup_command_basename(argv0).lower()
@@ -286,21 +295,30 @@ def is_safe_setup_binary(argv0: str) -> bool:
 def setup_command_refusal(argv: list[str], *, allow_unsafe: bool) -> str | None:
     """Return a refusal reason if ``argv`` must not run, else ``None``.
 
-    Allowlisted basenames pass without opt-in. Anything else (including ``sh``/``bash``) requires
-    ``allow_unsafe=True``. Empty argv is treated as unset by callers; this helper assumes a
-    non-empty command.
+    Screens argv[0] only: allowlisted basenames pass without opt-in even when later args execute
+    arbitrary code (``python -c``, ``uv run sh -c``, ``make -f``, …). Relative path argv[0]
+    (e.g. ``.venv/bin/python``) and non-allowlisted basenames (including ``sh``/``bash``) require
+    ``allow_unsafe=True``. Absolute path argv[0] is checked by basename. Empty argv is treated as
+    unset by callers; this helper assumes a non-empty command.
     """
     if allow_unsafe:
         return None
     binary = argv[0] if argv else ""
     if not binary:
         return "empty command"
+    # Relative paths resolve against the worktree cwd and may point at agent-rewritten binaries.
+    if is_relative_setup_argv0(binary):
+        return (
+            f"relative path argv[0] {binary!r} is refused without allow_unsafe_commands: true "
+            "(resolves inside the worktree; use a bare basename or an absolute path)"
+        )
     if is_safe_setup_binary(binary):
         return None
     name = setup_command_basename(binary)
     return (
         f"binary {name!r} is not on the worktree_setup/verify allowlist; "
-        "set allow_unsafe_commands: true to run it (shells and arbitrary argv always need this)"
+        "set allow_unsafe_commands: true to run it "
+        "(allowlist checks basename only — not a sandbox for args)"
     )
 
 

@@ -432,8 +432,9 @@ def run_checks(
                 "allow_unsafe_commands: true (or switch to an allowlisted basename)"
             )
             hint = (
-                "allowlist includes uv/npm/pnpm/make/cargo/go/pytest/python/…; "
-                "shells (sh/bash) always need the opt-in — see docs/config.md"
+                "allowlist checks argv[0] basename only (uv/npm/pnpm/make/cargo/go/pytest/"
+                "python/…); non-allowlisted basenames and relative path argv[0] need the "
+                "opt-in — see docs/config.md"
             )
             if config.verify:
                 hint += (
