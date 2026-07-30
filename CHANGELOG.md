@@ -8,37 +8,14 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
-### Fixed
-- **`branch_tip` no longer poisons `base_commit` with a ref name when `git rev-parse` fails.**
-  A failed rev-parse echoes its argument on stdout (exit 128); that value was stored as
-  `base_commit` and compared equal to the branch tip in the `then` chain, silently skipping
-  follow-up review stages with a false "primary produced no diff" while the primary had real
-  work. `collect_run` on those chained runs also failed with `ambiguous argument`. `branch_tip`
-  now raises `WorktreeError`, rejects non-sha tips, and the `then` chain prefers running the
-  follow-up when the tip cannot be resolved. Ledger load strips a non-sha `base_commit` to
-  `None` so old poisoned records still parse.
-- **`list_clients` no longer reports `permission_fidelity: enforced-denies` for `yolo` clients
-  (#178).** Fidelity is resolved from the `(backend, permission)` pair: `yolo` → `unrestricted`,
-  while `safe-edit` / `read-only` still inherit the backend's safe-edit capability. Doctor
-  `permission:<backend>` and `marshal backends` remain backend safe-edit capability (wording
-  clarified so the two surfaces are not conflated).
+## [0.2.1] - 2026-07-31
+
 ### Changed
 - **Relative-path `argv[0]` in `worktree_setup` / `verify` now needs `allow_unsafe_commands: true`.**
   A relative binary (e.g. `.venv/bin/python`, `./scripts/setup.sh`) resolves against the worktree
   and may have been rewritten by the agent whose work it is about to gate. Bare names and absolute
   paths are unaffected. **Upgrade note:** a config using a relative `argv[0]` fails at load until
   you switch to a bare name or an absolute path, or set the opt-in.
-
-### Fixed
-- **Setup/verify allowlist docs no longer overstate the control (#177).** The gate screens
-  argv[0]'s basename (a typo / wrong-binary guard) and does not sandbox args — `python -c`,
-  `uv run sh -c`, and `make -f` are accepted without `allow_unsafe_commands`, which the docs
-  previously denied. `docs/config.md`, `SECURITY.md`, `docs/usage.md`, `docs/design.md`, and the
-  in-code comments now describe the real contract.
-- **Install docs point at PyPI.** README, SETUP, and `docs/usage.md` recommend
-  `uv tool install "MarshalFleet[mcp]"` / `pipx install "MarshalFleet[mcp]"` now that
-  MarshalFleet 0.2.0 is published; the `git+https://` path is documented only for tracking
-  unreleased work on `main`.
 - **Codex stock model id is `gpt-5.6-luna`.** Scaffold stub, static `available_models()`,
   playbook, and docs now pin the ChatGPT-account Codex identifier verified with the live CLI
   (`gpt-5.6` alone is rejected).
@@ -57,6 +34,30 @@ versions may include breaking API changes until 1.0.
   upgrading, check `marshal doctor` — env-based keys that are not on the backend allowlist
   are no longer inherited; prefer CLI login (`opencode auth login`, etc.). See
   `docs/config.md` and `SECURITY.md`.
+
+### Fixed
+- **`branch_tip` no longer poisons `base_commit` with a ref name when `git rev-parse` fails.**
+  A failed rev-parse echoes its argument on stdout (exit 128); that value was stored as
+  `base_commit` and compared equal to the branch tip in the `then` chain, silently skipping
+  follow-up review stages with a false "primary produced no diff" while the primary had real
+  work. `collect_run` on those chained runs also failed with `ambiguous argument`. `branch_tip`
+  now raises `WorktreeError`, rejects non-sha tips, and the `then` chain prefers running the
+  follow-up when the tip cannot be resolved. Ledger load strips a non-sha `base_commit` to
+  `None` so old poisoned records still parse.
+- **`list_clients` no longer reports `permission_fidelity: enforced-denies` for `yolo` clients
+  (#178).** Fidelity is resolved from the `(backend, permission)` pair: `yolo` → `unrestricted`,
+  while `safe-edit` / `read-only` still inherit the backend's safe-edit capability. Doctor
+  `permission:<backend>` and `marshal backends` remain backend safe-edit capability (wording
+  clarified so the two surfaces are not conflated).
+- **Setup/verify allowlist docs no longer overstate the control (#177).** The gate screens
+  argv[0]'s basename (a typo / wrong-binary guard) and does not sandbox args — `python -c`,
+  `uv run sh -c`, and `make -f` are accepted without `allow_unsafe_commands`, which the docs
+  previously denied. `docs/config.md`, `SECURITY.md`, `docs/usage.md`, `docs/design.md`, and the
+  in-code comments now describe the real contract.
+- **Install docs point at PyPI.** README, SETUP, and `docs/usage.md` recommend
+  `uv tool install "MarshalFleet[mcp]"` / `pipx install "MarshalFleet[mcp]"` now that
+  MarshalFleet 0.2.0 is published; the `git+https://` path is documented only for tracking
+  unreleased work on `main`.
 
 ## [0.2.0] - 2026-07-30
 
@@ -1100,7 +1101,8 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
   present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
-[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/chiruu12/marshal/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/chiruu12/marshal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chiruu12/marshal/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/chiruu12/marshal/releases/tag/v0.0.1
