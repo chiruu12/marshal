@@ -737,7 +737,7 @@ def test_scaffold_includes_stock_openai_codex_example(tmp_path: Path) -> None:
     stub = (repo / "fleet.config.yaml").read_text(encoding="utf-8")
     assert "# codex:" in stub
     assert "backend: codex" in stub
-    assert "model: gpt-5.5" in stub
+    assert "model: gpt-5.6-luna" in stub
     assert "codex login" in stub and "OPENAI_API_KEY" in stub
     assert "codex-readonly" in stub
     assert load_config(repo / "fleet.config.yaml").clients == {}

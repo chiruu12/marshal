@@ -75,7 +75,7 @@ The scaffold ships every client **commented out**, so uncomment at least one and
 clients:
   codex:
     backend: codex
-    model: gpt-5.5
+    model: gpt-5.6-luna
 ```
 
 **2. Check the fleet is ready.** `doctor` verifies auth, not just that a CLI is on `$PATH`. A backend you cannot actually run fails here rather than 3 seconds into a job.
@@ -92,7 +92,7 @@ $ marshal doctor
 
 ```console
 $ marshal spawn --client codex --goal "Add a docstring to hello()"
-hello-docstring.codex.d56489fe  codex/gpt-5.5  running  (poll: marshal status)
+hello-docstring.codex.d56489fe  codex/gpt-5.6-luna  running  (poll: marshal status)
 ```
 
 **4. Watch the fleet.** Any number of agents, any mix of providers, each with its own cost line.
@@ -130,7 +130,7 @@ Seven backend adapters. Model is set per client in `fleet.config.yaml` (or ad-ho
 |---|---|---|
 | `cursor` | optional (defaults to CLI default) | **unavailable** (individual plans expose no per-run cost) |
 | `opencode` | `opencode-go/*` (required pattern) | **native** (tokens + cost from the CLI) |
-| `codex` | provider/model (e.g. `gpt-5.5`) | **admin-api** via EastRouter `usage_api`; else **unavailable** |
+| `codex` | provider/model (e.g. `gpt-5.6-luna`) | **admin-api** via EastRouter `usage_api`; else **unavailable** |
 | `claude-code` | `claude-*` (e.g. `claude-sonnet-4-6`) | **native** (`total_cost_usd` + tokens) |
 | `command-code` | provider/model (e.g. `zai-org/GLM-5.2`) | **unavailable** (hosted account, no token/cost in stdout) |
 | `goose` | `provider/model` or bare model (e.g. `cursor-agent/auto`) | **native** when the provider reports positive cost; else **unavailable** (best-effort stream-json) |

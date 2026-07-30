@@ -25,7 +25,7 @@ clients:
 
   # codex:
   #   backend: codex
-  #   model: gpt-5.5
+  #   model: gpt-5.6-luna
   # Auth: `codex login` (ChatGPT account) or OPENAI_API_KEY.
 
   # --- read-only reviewers -------------------------------------------------------------------
@@ -43,7 +43,7 @@ clients:
   #   permission: read-only
   # codex-readonly:
   #   backend: codex
-  #   model: gpt-5.5
+  #   model: gpt-5.6-luna
   #   permission: read-only
 """
 

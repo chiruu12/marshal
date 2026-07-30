@@ -43,7 +43,7 @@ returns the curated static ids in this table. Every concrete adapter answers wit
 | `opencode` | `opencode-go/minimax-m3` | Standard | native | probe `opencode models` | General coder. |
 | `opencode` | `opencode-go/deepseek-v4-flash` | Light | native | probe `opencode models` | Fast/cheap for bulk. |
 | `cursor` | `composer-2.5` | Standard-Heavy | **unavailable** | probe `cursor-agent models` | Strong coder; individual plans expose no per-run cost (`doctor` shows plan tier). |
-| `codex` | `gpt-5.5` | Standard-Heavy | **unavailable** (tokens only) | static (this table; `codex models` needs a TTY) | Stock OpenAI Codex: auth via `codex login` (ChatGPT) or `OPENAI_API_KEY`. Reports tokens but no native cost — use `usage_api: eastrouter` for real **admin-api** cost. |
+| `codex` | `gpt-5.6-luna` | Standard-Heavy | **unavailable** (tokens only) | static (this table; `codex models` needs a TTY) | Stock OpenAI Codex: auth via `codex login` (ChatGPT) or `OPENAI_API_KEY`. Reports tokens but no native cost — use `usage_api: eastrouter` for real **admin-api** cost. |
 | `command-code` | `zai-org/glm-5.2` | Standard | **unavailable** | probe `command-code --list-models` | Hosted coding agent on its own account; `-p` prints text with no tokens/cost, so spend lives in its own dashboard (`doctor` surfaces its provider + default model). |
 | `antigravity` *(experimental)* | `gemini-3.1-pro` (heavy), `gemini-3.5-flash` (light), also `claude-sonnet-4.6` / `claude-opus-4.6` / `gpt-oss-120b` | varies | **unavailable** | probe `agy models` | Worktree **writes** now land correctly (worktree pre-registered as a trusted workspace); supports `safe-edit`/`yolo` only (no `read-only`). Doctor is path-only (no cheap auth probe). |
 | `goose` | `cursor-agent/auto` (Cursor-backed), or bare model / `provider/model` for other providers | Standard | **native** when provider reports positive cost; else **unavailable** | static (`cursor-agent/auto`; `local-models` is GGUF/MLX only) | Headless via `GOOSE_MODE=auto`; `permission_fidelity=boundary-only`. Pin Cursor with `cursor-agent/auto` (needs `cursor-agent login`). CLI ≥ 1.43 live-verified. Doctor auth via `goose info -v --check`. |
@@ -62,7 +62,7 @@ returns the curated static ids in this table. Every concrete adapter answers wit
 clients:
   codex-stock:
     backend: codex
-    model: gpt-5.5
+    model: gpt-5.6-luna
     # default ~/.codex — ChatGPT auth from `codex login`
 
   codex-eastrouter:
