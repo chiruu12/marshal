@@ -1316,11 +1316,18 @@ class Fleet:
         """Start a run in the background and return its run_id immediately (does NOT wait).
 
         The run is recorded RUNNING after ``git worktree add`` but BEFORE provisioning
-        (``read_paths`` / ``setup_cmd``, which can take up to ``setup_timeout_s``). Provisioning and
-        the agent then run on a persistent pool that outlives this call, so the driver can poll
-        ``get_run`` / ``status`` and ``cancel_run`` during setup. Cancel mid-setup SIGTERMs the
-        setup process group when its pid is known; otherwise it stamps ``cancelled`` and the
-        background task skips launching the agent after tearing down the half-made worktree.
+        (``read_paths`` / ``setup_cmd``, which can take up to ``setup_timeout_s``). ``RUNNING``
+        therefore spans provisioning — ``pid`` / ``agent_alive`` may be null until setup or the
+        agent publishes one. Provisioning and the agent then run on a persistent pool that
+        outlives this call, so the driver can poll ``get_run`` / ``status`` and ``cancel_run``
+        during setup.
+
+        Cancel-during-setup guarantees: when a setup pid is published, ``cancel_run`` killpg's
+        that process group; otherwise cancel is cooperative (pure-Python provisioning such as
+        ``read_paths`` copies is not killable — only ``setup_cmd``'s timeout bounds that phase).
+        The record is stamped ``cancelled`` immediately; the background task discards the
+        worktree when it reaches the next cancel checkpoint; ``clean`` will not reap while the
+        task is still in-flight in this process.
         """
         run_id, wt, started = self._start(request, ts, defer_provisioning=True)
         try:
@@ -1502,11 +1509,11 @@ class Fleet:
     ) -> RunRecord | None:
         """Spawn-path provisioning. Returns a terminal record if the run ended; else None.
 
-        Guarantees: no zombie RUNNING — every failure/cancel path terminal-stamps (cancel wins via
-        ``update_if`` + ``_still_running``). Setup/provision failures discard the worktree.
-        Cancel-during-setup: if the setup pid is published, ``cancel_run`` killpg's it; if cancel
-        arrives before the pid exists, this method sees the terminal/cancel flag and discards
-        without launching the agent.
+        Guarantees: no zombie RUNNING — every failure/cancel path terminal-stamps. Setup/provision
+        failures discard the worktree. Cancel intent always wins the *final* stamp: if
+        ``cancel_requested`` is set when setup exits non-zero, this stamps ``cancelled`` (not
+        ``failed``), even when the except path races ahead of ``cancel_run``'s own update_if.
+        Pre-pid cancel is cooperative — see ``spawn`` docstring.
         """
         if self._cancel_requested(run_id):
             with contextlib.suppress(WorktreeError):
@@ -1524,8 +1531,19 @@ class Fleet:
             with contextlib.suppress(WorktreeError):
                 if wt.path.exists():
                     self.worktrees.discard(str(wt.path), wt.branch)
-            # Cancel that won the race (kill mid-setup) keeps `cancelled`; otherwise FAILED with
-            # a phase-named error so drivers can tell setup/provision from an agent failure.
+            # Cancel intent wins even when killpg caused this exception and cancel_run's
+            # RUNNING→cancelled update_if has not landed yet (Trace 1).
+            if self._cancel_requested(run_id):
+                return self.state.update_if(
+                    run_id,
+                    _still_running,
+                    status=RunStatus.CANCELLED.value,
+                    ended_at=_now(),
+                    error=(
+                        f"fleet: cancelled during setup "
+                        f"({_deferred_provision_error(exc)})"
+                    ),
+                )
             err = _deferred_provision_error(exc)
             return self.state.update_if(
                 run_id,
@@ -1535,7 +1553,12 @@ class Fleet:
                 error=err,
             )
         if self._cancel_requested(run_id):
-            # Setup finished but cancel won before the agent — do not launch the backend.
+            # Setup/provision finished (or was a no-op) but cancel won before the agent —
+            # discard the worktree and do not launch the backend. Discard here too: cancel may
+            # have arrived mid-provision (pre-pid) after the opening checkpoint, so the start-of-
+            # method discard never ran.
+            with contextlib.suppress(WorktreeError):
+                self.worktrees.discard(str(wt.path), wt.branch)
             return self.state.update_if(
                 run_id,
                 _still_running,
@@ -1963,16 +1986,18 @@ class Fleet:
         """Surface a run's diff + changed files. Read-only - nothing is merged.
 
         A setup-failed (or otherwise torn-down) run has no worktree: returns ``produced="nothing"``
-        with ``text`` set to the record's error so the driver sees why, not a crash.
+        with ``text`` set to the record's error so the driver sees why, not a crash. A worktree
+        that vanishes mid-op (provisioning discard racing collect) is the same structured path —
+        never an uncaught ``WorktreeError``.
         """
         rec = self.state.get(run_id)
         if rec is None:
             raise ValueError(f"no such run: {run_id!r}")
-        try:
-            wt = self._worktree_for(run_id)
-        except ValueError:
-            # Setup failure / clean / discard left no tree — surface the record error, not a raise.
-            err = _worktree_gone_message(rec)
+
+        def _gone(detail: str | None = None) -> CollectResult:
+            text = _worktree_gone_message(rec)
+            if detail and not rec.error:
+                text = detail
             return CollectResult(
                 run_id=run_id,
                 branch=rec.branch or None,
@@ -1980,19 +2005,27 @@ class Fleet:
                 changed_files=[],
                 diff="",
                 produced="nothing",
-                text=err,
+                text=text,
             )
-        changed_files = self.worktrees.changed_files(wt)
-        diff = self.worktrees.diff(wt)
-        committed_changed_files: list[str] = []
-        committed_diff = ""
-        commit_count = 0
-        if wt.branch:
-            target = self._collect_target(rec)
-            commit_count = self.worktrees.unmerged_commit_count(wt.branch, target)
-            if commit_count:
-                committed_changed_files = self.worktrees.merged_diff_files(wt.branch, target)
-                committed_diff = self.worktrees.merged_diff(wt.branch, target)
+
+        try:
+            wt = self._worktree_for(run_id)
+        except ValueError:
+            return _gone()
+        try:
+            changed_files = self.worktrees.changed_files(wt)
+            diff = self.worktrees.diff(wt)
+            committed_changed_files: list[str] = []
+            committed_diff = ""
+            commit_count = 0
+            if wt.branch:
+                target = self._collect_target(rec)
+                commit_count = self.worktrees.unmerged_commit_count(wt.branch, target)
+                if commit_count:
+                    committed_changed_files = self.worktrees.merged_diff_files(wt.branch, target)
+                    committed_diff = self.worktrees.merged_diff(wt.branch, target)
+        except WorktreeError as exc:
+            return _gone(str(exc))
         # A run with no files changed is not necessarily a run that did nothing: a research or
         # review agent's artifact is its final message, and the engine already treats text alone as
         # SUCCEEDED. Returning an empty diff and stopping there made `collect_run` - the tool a
@@ -2048,7 +2081,9 @@ class Fleet:
             sha = self.worktrees.commit_all(wt, message or f"marshal: {run_id}")
             tip = self.worktrees.branch_tip(wt.branch)
         except WorktreeError as exc:
-            return CommitResult(run_id=run_id, status="error", branch=wt.branch, message=str(exc))
+            # Mid-op vanish (discard racing commit) or ordinary git failure — structured error.
+            msg = _worktree_gone_message(rec) if not Path(rec.worktree or "").exists() else str(exc)
+            return CommitResult(run_id=run_id, status="error", branch=wt.branch, message=msg)
         self.state.update(run_id, commit=tip)
         return CommitResult(
             run_id=run_id,
@@ -2126,14 +2161,23 @@ class Fleet:
                 if _in_clean_scope(r, scope) and _ended_before(r, cutoff)
             ]
         for rec in targets:
-            # A terminal record does not always mean a finished process. `cancel_run` on a run this
-            # process did not start stamps `cancelled` without being able to signal, so the agent
-            # can still be writing this worktree. Pulling it out from under a live writer loses its
-            # work and leaves git confused, so skip it and say why.
-            # Fail OPEN here, unlike the `kill` instruction on the record. The two questions have
-            # opposite costs: naming an unverified pid could send an operator after an unrelated
-            # process, but refusing to delete a worktree that MIGHT still have a writer only leaves
-            # a directory behind - deleting one that does destroys work in progress.
+            # A terminal record does not always mean a finished process. Mirror `_is_reapable`:
+            # a background task still registered in this process (e.g. cancel-before-pid during
+            # deferred provisioning) may still be using the worktree even though the record already
+            # reads `cancelled`/`failed`. Reaping under that writer loses work / confuses git.
+            if _inflight_in_this_process(self.state.dir, rec.run_id):
+                result.skipped.append(
+                    {
+                        "run_id": rec.run_id,
+                        "reason": "background task still in flight in this process",
+                    }
+                )
+                continue
+            # `cancel_run` on a run this process did not start stamps `cancelled` without being
+            # able to signal, so the agent can still be writing this worktree. Fail OPEN here,
+            # unlike the `kill` instruction on the record: naming an unverified pid could send an
+            # operator after an unrelated process, but refusing to delete a worktree that MIGHT
+            # still have a writer only leaves a directory behind.
             if _pid_is_still_ours(rec):
                 result.skipped.append(
                     {"run_id": rec.run_id, "reason": f"agent may still be running at pid {rec.pid}"}
@@ -2200,9 +2244,12 @@ class Fleet:
     def cancel_run(self, run_id: str) -> RunRecord:
         """Cancel a running run: SIGTERM its process group, then mark cancelled.
 
-        Covers the spawn provisioning window: when setup has published a pid, that process group
-        is signalled; when cancel arrives before any pid, the record is stamped ``cancelled`` and
-        the background task skips launching the agent after discarding the worktree.
+        Spawn provisioning: when a setup pid is published, that process group is signalled; when
+        cancel arrives before any pid, the record is stamped ``cancelled`` immediately and the
+        background task cooperatively stops at its next checkpoint (discards the worktree, does
+        not launch the agent). Pure-Python provisioning (e.g. ``read_paths`` copies) is not
+        killable — only ``setup_cmd`` has an external timeout/kill. Cancel intent still wins the
+        final stamp if setup exits non-zero after killpg (see ``_run_deferred_provisioning``).
 
         If the run is not running (or its pid is missing / already exited) this is a safe no-op
         that still returns the (updated) record. The run may finish concurrently between the status
@@ -2305,8 +2352,8 @@ class Fleet:
         if rec is not None:
             try:
                 wt = self._worktree_for(run_id)
-            except ValueError:
-                # Setup-failed / discarded worktree: structured refusal, not a crash.
+            except (ValueError, WorktreeError):
+                # Setup-failed / discarded / mid-op vanish: structured refusal, not a crash.
                 return IntegrateResult(
                     run_id=run_id,
                     status="error",
@@ -2314,7 +2361,12 @@ class Fleet:
                     message=_worktree_gone_message(rec),
                 )
         else:
-            wt = self._worktree_for(run_id)
+            try:
+                wt = self._worktree_for(run_id)
+            except (ValueError, WorktreeError) as exc:
+                return IntegrateResult(
+                    run_id=run_id, status="error", branch=None, message=str(exc)
+                )
         if not wt.branch:
             raise ValueError(f"run {run_id!r} has no branch to integrate")
         try:
@@ -2338,9 +2390,14 @@ class Fleet:
                 commit = self.worktrees.branch_tip(wt.branch)
             merge = self.worktrees.merge(wt.branch)
         except WorktreeError as exc:
-            # a git op failed in a way we can't classify as cleanly recoverable (commit failure,
-            # repo left mid-merge, timeout). Surface a distinct "error" status (not the recoverable
-            # "blocked") so a driver doesn't blindly retry - the cause needs a human.
+            # Mid-op vanish under a racing discard, or a git op we can't classify as recoverable.
+            if rec is not None and not Path(rec.worktree or "").exists():
+                return IntegrateResult(
+                    run_id=run_id,
+                    status="error",
+                    branch=wt.branch,
+                    message=_worktree_gone_message(rec),
+                )
             return IntegrateResult(
                 run_id=run_id, status="error", branch=wt.branch, merged_into=target, message=str(exc)
             )
