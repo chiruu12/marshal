@@ -44,11 +44,11 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 | Backend | Installed | Read-only | Safe-edit (worktree write) | Native usage |
 |---------|-----------|-----------|----------------------------|--------------|
 | OpenCode | yes | verified | verified | verified (tokens + cost) |
-| Cursor | yes | verified | verified | n/a by design (Admin API only) |
+| Cursor | yes | verified | verified | tokens in CLI / cost Admin API |
 | Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost `admin-api` or `unavailable`) |
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
-| Antigravity | yes | verified (reply) | verified** | none |
+| Antigravity | yes | verified (reply) | verified** | tokens via JSON (cost `unavailable`) |
 | Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
@@ -62,7 +62,8 @@ own dashboard, never a fabricated $0); `doctor` surfaces its provider + default 
 \*\* Antigravity headless writes now land in the worktree (verified end-to-end 2026-06-27). The
 adapter's `prepare()` pre-registers the run's worktree in `~/.gemini/antigravity-cli/settings.json`
 `trustedWorkspaces` and passes `--add-dir <cwd>`; without the trust entry, agy diverts edits to its
-scratch dir (`--add-dir` alone was insufficient). Still no native usage (text-only output).
+scratch dir (`--add-dir` alone was insufficient). Tokens via `--output-format json` (agy ≥ 1.1.8);
+cost stays `unavailable` (`native_usage=False` — that flag means native cost, not tokens).
 Goose live-verified headless (2026-07-20) via `goose-cursor` / `cursor-agent/auto` (CLI 1.43,
 `GOOSE_MODE=auto`); reply-only smoke succeeded. Usage remains best-effort (provider-dependent
 stream-json tokens/cost).
@@ -179,8 +180,8 @@ fail-closed enforce, and O(tail) under-lock re-check; failure-atomic setup/teard
 cross-process flock on run records and Antigravity settings; `spawn` returns the `run_id` before
 provisioning completes (`cancel_run` works during setup).
 
-Remaining: structured output (#148); Antigravity/Cursor native usage (#149); Cursor
-`--approve-mcps` (#150); the first PyPI publish (the release infrastructure shipped - Trusted
-Publishing/OIDC with a tag-must-match-wheel guard, #86/#121, exercised by the v0.1.0 release #134 -
-what is left is the publish itself); and eventually **Chauffeur** (see
-[`chauffeur-future.md`](chauffeur-future.md)).
+Remaining: structured output (#148); Antigravity/Cursor **cost** / Admin-API half of #149
+(token parsing shipped); Cursor `--approve-mcps` (#150); the first PyPI publish (the release
+infrastructure shipped - Trusted Publishing/OIDC with a tag-must-match-wheel guard, #86/#121,
+exercised by the v0.1.0 release #134 - what is left is the publish itself); and eventually
+**Chauffeur** (see [`chauffeur-future.md`](chauffeur-future.md)).

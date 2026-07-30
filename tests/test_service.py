@@ -682,6 +682,33 @@ def test_unavailable_client_skipped(repo: Path) -> None:
     assert svc.skipped_clients == ["ghost"]
 
 
+def test_too_old_agy_client_skipped(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Graceful skip: agy below the JSON floor fails check_available → client skipped."""
+    import marshal_engine.backends.antigravity as agy_mod
+    from marshal_engine.backends.antigravity import AntigravityBackend
+
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: "/usr/bin/agy")
+
+    class _Proc:
+        returncode = 0
+        stdout = "1.1.7"
+        stderr = ""
+
+    monkeypatch.setattr(agy_mod.subprocess, "run", lambda *_a, **_k: _Proc())
+    be = AntigravityBackend()
+    assert be.check_available() is False
+    cfg = FleetConfig(
+        clients={
+            "agy": ClientConfig(
+                name="agy", backend="antigravity", permission=PermissionMode.SAFE_EDIT
+            ),
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"antigravity": be})
+    assert svc.skipped_clients == ["agy"]
+    assert {c.name for c in svc.list_clients().clients} == set()
+
+
 def test_run_agent_on_skipped_client_raises(repo: Path) -> None:
     svc = _mixed_svc(repo)
     # (b) run_agent on a skipped client raises ValueError (it is no longer in self._clients)

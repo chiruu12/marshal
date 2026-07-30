@@ -49,7 +49,10 @@ BACKEND_HINTS: dict[str, str] = {
     "cursor": "install the Cursor CLI (cursor-agent), then `cursor-agent login` (or set CURSOR_API_KEY)",
     "codex": "install the Codex CLI, then `codex login` (ChatGPT) or set OPENAI_API_KEY",
     "command-code": "npm i -g command-code, then `command-code login`",
-    "antigravity": "install the Antigravity CLI (agy), then complete its OAuth login",
+    "antigravity": (
+        "install the Antigravity CLI (agy) ≥ 1.1.8 (required for --output-format json), "
+        "then complete its OAuth login"
+    ),
     "claude-code": "install Claude Code (claude), then authenticate via its login or set ANTHROPIC_API_KEY",
     "goose": (
         "install Goose CLI (https://block.github.io/goose), then `goose configure`. "
@@ -353,7 +356,7 @@ def run_checks(
         # Fidelity is static adapter metadata — emit even when the CLI is missing/unauthed.
         checks.append(_permission_fidelity_check(name, backend))
         if not backend.check_available():
-            checks.append(Check(f"backend:{name}", FAIL, "CLI not on PATH / not runnable", hint))
+            checks.append(Check(f"backend:{name}", FAIL, backend.unavailable_detail(), hint))
             continue
         # The CLI is present. If the backend exposes an authenticated-only probe (account_info),
         # use it to verify credentials too: a logged-out CLI still passes `--version` but dies on

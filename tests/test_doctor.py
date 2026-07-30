@@ -6,6 +6,8 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.doctor import FAIL, OK, WARN, run_checks, summarize
 from marshal_engine.layout import runs_dir
@@ -248,6 +250,36 @@ def test_missing_backend_cli_fails(tmp_path: Path) -> None:
     assert "opencode auth login" in backend.fix
     fails, _ = summarize(checks)
     assert fails >= 1
+
+
+def test_too_old_agy_fails_with_version_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found-but-too-old agy must FAIL with the ≥ 1.1.8 floor named — not OK / not 'not on PATH'."""
+    import marshal_engine.backends.antigravity as agy_mod
+    from marshal_engine.backends.antigravity import AntigravityBackend
+
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(
+        tmp_path / "fleet.config.yaml",
+        "clients:\n  agy:\n    backend: antigravity\n",
+    )
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: "/usr/bin/agy")
+
+    class _Proc:
+        returncode = 0
+        stdout = "1.1.7"
+        stderr = ""
+
+    monkeypatch.setattr(agy_mod.subprocess, "run", lambda *_a, **_k: _Proc())
+    checks = run_checks(repo, cfg, backends={"antigravity": AntigravityBackend()})
+    backend = _by_name(checks, "backend:antigravity")
+    assert backend.status == FAIL
+    assert "1.1.7" in backend.detail
+    assert "1.1.8" in backend.detail
+    assert "too old" in backend.detail
+    assert "not on PATH" not in backend.detail
+    assert "1.1.8" in (backend.fix or "")
 
 
 def test_probe_missing_from_snapshot_constructs_fresh_backend(tmp_path: Path, monkeypatch) -> None:

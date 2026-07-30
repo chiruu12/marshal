@@ -714,5 +714,59 @@ def test_failed_run_still_reports_tokens_and_session(backend: CursorBackend) -> 
     assert res.usage is not None
     assert res.usage.input_tokens == 120
     assert res.usage.output_tokens == 7
+    assert res.usage.cache_read_tokens == 3
     assert res.usage.source.value == "unavailable"  # tokens yes, cost still never invented
     assert "partial" in res.text  # partial output is preserved, not discarded
+
+
+def test_parse_output_cache_tokens_from_live_envelope(backend: CursorBackend) -> None:
+    # Real envelope captured 2026-07-30 from cursor-agent 2026.07.23-e383d2b:
+    #   cursor-agent -p --output-format json --trust --mode plan --model composer-2.5
+    #   "Reply with exactly: ok"
+    envelope = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "duration_ms": 6976,
+        "duration_api_ms": 6976,
+        "result": "ok",
+        "session_id": "cb1239df-1162-4599-9bce-7045b6fbb11d",
+        "request_id": "de365b56-c1fe-42cc-9fb7-14de50a4773d",
+        "usage": {
+            "inputTokens": 13468,
+            "outputTokens": 113,
+            "cacheReadTokens": 4820,
+            "cacheWriteTokens": 0,
+        },
+    }
+    res = backend.parse_output(json.dumps(envelope), "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "ok"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 13468
+    assert res.usage.output_tokens == 113
+    assert res.usage.cache_read_tokens == 4820
+    assert res.usage.cache_write_tokens == 0
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source.value == "unavailable"
+    assert backend.capabilities.native_usage is False  # tokens ≠ native cost
+
+
+def test_parse_output_cache_write_tokens(backend: CursorBackend) -> None:
+    envelope = {
+        "type": "result",
+        "is_error": False,
+        "result": "ok",
+        "session_id": "s-write",
+        "usage": {
+            "inputTokens": 10,
+            "outputTokens": 2,
+            "cacheReadTokens": 4,
+            "cacheWriteTokens": 8,
+        },
+    }
+    res = backend.parse_output(json.dumps(envelope), "", 0)
+    assert res.usage is not None
+    assert res.usage.cache_read_tokens == 4
+    assert res.usage.cache_write_tokens == 8
+    assert res.usage.source.value == "unavailable"

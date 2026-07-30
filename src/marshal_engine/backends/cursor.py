@@ -16,8 +16,10 @@ On failure the process exits non-zero and writes to stderr; a timeout-killed run
 ``result`` event but partial stream text is still returned.
 
 Notes / gaps baked in from research:
-  * Cursor CLI emits NO tokens or cost in its output - usage is reported as unavailable here.
-    The account-level Cursor Admin API (team/enterprise, per service-account) is wired later.
+  * Cursor CLI emits per-run token counts on the terminal ``result`` event
+    (``usage.{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}``) but NO USD/cost.
+    Tokens are stamped with ``source=unavailable``; ``native_usage`` stays False (that flag
+    means native cost). The Cursor Admin API (Enterprise) is the deferred cost path.
   * `--force`/`--yolo` mean "allow everything not explicitly denied". For ``safe-edit``,
     ``prepare()`` writes a curated deny list into the worktree's ``.cursor/cli.json``
     (alongside ``--force``). The write is TEMPORARY: ``run()`` snapshots the file's exact
@@ -84,7 +86,7 @@ class CursorBackend(CodingAgentBackend):
         stream_json=True,
         sessions=True,
         server_mode=False,
-        native_usage=False,  # no tokens/cost in CLI output; admin-API path added later
+        native_usage=False,  # tokens yes; no USD in CLI output — Admin API cost path later
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
@@ -574,15 +576,25 @@ def _content_texts(content: object) -> list[str]:
 
 
 def _apply_cursor_usage(usage: UsageRecord, usage_raw: object) -> None:
-    """Stamp token counts from a ``result`` event when present; source stays unavailable."""
+    """Stamp token counts from a ``result`` event when present; source stays unavailable.
+
+    Cursor reports tokens but never USD in the CLI envelope — cost provenance stays
+    ``unavailable`` (do not invent a $0). Cache read/write are additive optional fields.
+    """
     if not isinstance(usage_raw, dict):
         return
     inp = usage_raw.get("inputTokens", usage_raw.get("input_tokens"))
     out = usage_raw.get("outputTokens", usage_raw.get("output_tokens"))
+    cache_read = usage_raw.get("cacheReadTokens", usage_raw.get("cache_read_tokens"))
+    cache_write = usage_raw.get("cacheWriteTokens", usage_raw.get("cache_write_tokens"))
     if isinstance(inp, int) and inp > 0:
         usage.input_tokens += inp
     if isinstance(out, int) and out > 0:
         usage.output_tokens += out
+    if isinstance(cache_read, int) and cache_read > 0:
+        usage.cache_read_tokens += cache_read
+    if isinstance(cache_write, int) and cache_write > 0:
+        usage.cache_write_tokens += cache_write
 
 
 def _find_result(raw: str) -> dict[str, Any] | None:

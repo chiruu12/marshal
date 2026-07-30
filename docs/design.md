@@ -123,11 +123,11 @@ or hang (bounded timeout + static fallback). Shared contract: `tests/test_backen
 | | **Cursor (`cursor-agent`)** | **OpenCode (`opencode`)** | **Codex** | **Command Code (`command-code`)** | **Antigravity (`agy`)** | **Claude Code** | **Goose** |
 |---|---|---|---|---|---|---|---|
 | Headless run | `cursor-agent -p "..."` | `opencode run "..."` | `codex ...` | `command-code -p "..."` | `agy -p "..."` | `claude --print` | `goose run -t "..."` |
-| JSON | ``--output-format stream-json`` (NDJSON; default adapter path) | `--format json` (NDJSON event stream) | json | none (plain text only) | none (plain text only) | `--output-format json\|stream-json` | `--output-format stream-json` |
-| Final text | concat assistant ``message.content[].text``; prefer stream over shorter ``result.result`` | concat all `text` events' `part.text` | - | stdout (plain text, ANSI-stripped) | stdout (plain text) | json field | concat assistant message text |
-| Tokens/cost in output | tokens from the `result` event's `usage{inputTokens,outputTokens,cacheReadTokens}`; **no cost** — source stays `unavailable` (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | none (hosted account → `unavailable`) | none (no native usage headless → `unavailable`) | `total_cost_usd` + `usage{...}` | stream cost native only when positive |
+| JSON | ``--output-format stream-json`` (NDJSON; default adapter path) | `--format json` (NDJSON event stream) | json | none (plain text only) | ``--output-format json`` (default adapter path; ``stream-json`` also parseable) | `--output-format json\|stream-json` | `--output-format stream-json` |
+| Final text | concat assistant ``message.content[].text``; prefer stream over shorter ``result.result`` | concat all `text` events' `part.text` | - | stdout (plain text, ANSI-stripped) | JSON ``response`` (plain-text fallback on envelope drift) | json field | concat assistant message text |
+| Tokens/cost in output | tokens from the `result` event's `usage{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}`; **no cost** — source stays `unavailable` (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | none (hosted account → `unavailable`) | tokens from JSON ``usage{input_tokens,output_tokens,cache_read_tokens}``; **no cost** — source stays `unavailable`; `native_usage=False` | `total_cost_usd` + `usage{...}` | stream cost native only when positive |
 | File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | diff worktree via git (`collect_run`); CLI emits none | diff worktree via git (`collect_run`); CLI emits none | - | diff worktree via git |
-| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>` (no headless session-id capture → `sessions=False`) | `session_id` returned | `--no-session` (Marshal one-shot) |
+| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>`; JSON ``conversation_id`` → ``session_id`` (`sessions=False`, resume not advertised) | `session_id` returned | `--no-session` (Marshal one-shot) |
 | Model select | `--model` / `cursor-agent models` | `-m provider/model` / `opencode models` | `-m MODEL` (no headless list) | `-m MODEL` / `--list-models` | `-m MODEL` / `agy models` | `--model` (no headless list) | `--provider` + `--model` (`provider/model`) |
 | `available_models` | probe `models` → static `composer-2.5` | probe `models` → static `opencode-go/*` playbook rows | static `gpt-5.5` | probe `--list-models` → static `zai-org/glm-5.2` | probe `models` → static playbook/docstring ids | static playbook Claude ids | static `cursor-agent/auto` |
 | Doctor auth | `status` → `isAuthenticated` | `auth list` | `login status` | `status --json` | **none** (`verifies_auth=False`) | `auth status` | `info -v --check` |
@@ -513,18 +513,20 @@ and contract tests:
 | Backend | Headless invocation | read-only / safe-edit / yolo | Usage in output |
 |---|---|---|---|
 | Codex | `codex exec --json` | `-s read-only` / `-s workspace-write` / `--dangerously-bypass-approvals-and-sandbox` | tokens in JSON (cost `admin-api` via EastRouter `usage_api`, else `unavailable`) |
-| Cursor | `cursor-agent -p --output-format json` | `--mode plan` / `--force` / `--yolo` | none (admin API later) |
+| Cursor | `cursor-agent -p --output-format stream-json` | `--mode plan` / `--force` / `--yolo` | tokens in CLI JSON (incl. cache read/write); cost Admin API later (`native_usage=False`) |
 | OpenCode | `opencode run --format json` | `--agent plan` / `--dangerously-skip-permissions` (+deny list) | cost+tokens in `step-finish` (native only when cost is positive; an unpriced custom provider stays `unavailable`) |
 | Command Code | `command-code -p` (text only) | `--permission-mode plan` / `--yolo` / `--yolo` | none (hosted account → `unavailable`) |
-| Antigravity | `agy -p` (text only) | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | none |
+| Antigravity | `agy -p --output-format json` | - / `--dangerously-skip-permissions` / `--dangerously-skip-permissions` | tokens in JSON ``usage``; cost `unavailable` (`native_usage=False`) |
 | Claude Code | `claude -p --output-format json` | `--permission-mode plan` / `acceptEdits` / `bypassPermissions` | cost+tokens in JSON (native) |
 | Goose | `goose run --output-format stream-json` | `GOOSE_MODE=chat` / `GOOSE_MODE=auto` / `GOOSE_MODE=auto` | stream-json cost native **only when positive**; `cost: 0` / tokens-only → `unavailable` (estimate path may apply; OpenCode parity) |
 
-Antigravity caveats (young CLI): text-only output (no stable JSON), OAuth-first auth with **no
+Antigravity caveats (young CLI): structured ``--output-format json`` works (agy ≥ 1.1.8; tokens
+parsed, no USD → `unavailable` / `native_usage=False`), OAuth-first auth with **no
 cheap dedicated auth/status probe** (doctor is path-only; `verifies_auth=False`), needs a PTY
-wrapper in the runner, no headless session capture, no reliable read-only mode → only safe-edit/yolo
-exposed. Codex account is usage-limited until ~Jul 18 2026, so its success-path JSON parsing is
-verified for the failure path only (live success run pending).
+wrapper in the runner, ``conversation_id`` stamped from JSON but ``sessions=False`` (resume not
+advertised), no reliable read-only mode → only safe-edit/yolo exposed. Codex account is
+usage-limited until ~Jul 18 2026, so its success-path JSON parsing is verified for the failure
+path only (live success run pending).
 
 **Antigravity trust / single-process-per-host.** `prepare()` registers the run worktree in
 agy's host-global `trustedWorkspaces`; the settings JSON transaction is **file-locked** across
@@ -538,12 +540,13 @@ the last claimant releases. Documented for operators in [`usage.md`](usage.md).
 
 **Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
 usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
-safe-edit worktree write; usage unavailable by design, env `CURSOR_API_KEY` authenticates). 
+safe-edit worktree write; tokens in the CLI ``result.usage`` envelope, cost Admin API /
+``unavailable``, env `CURSOR_API_KEY` authenticates). 
 **Antigravity ✅ writes fixed (2026-06-27):** headless edits used to divert to
 `~/.gemini/antigravity-cli/scratch` (no TTY → no workspace trust); the adapter's `prepare()` now
 briefly registers the run's worktree in agy's host-global `trustedWorkspaces` (+ `--add-dir <cwd>`),
-removed when `run()` completes, so edits land in the worktree - live-verified end-to-end. Still
-text-only output (no native usage). **Codex ✅
+removed when `run()` completes, so edits land in the worktree - live-verified end-to-end. Tokens
+via `--output-format json` (cost still `unavailable`; `native_usage=False`). **Codex ✅
 verified end-to-end through EastRouter:** worktree writes land, the JSONL parser extracts text +
 tokens, and a `usage_api: eastrouter` client puts its real `admin-api` cost on the ledger; a
 token-only Codex client stays `unavailable`. **Claude Code ✅ fully (2026-06-26):**

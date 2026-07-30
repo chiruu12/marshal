@@ -220,7 +220,7 @@ def _print_bucket_table(title: str, buckets: dict[str, Bucket]) -> None:
     print(f"\n{title}")
     header = (
         "name", "runs", "succeeded", "cost_usd", "cost split",
-        "input_tokens", "output_tokens", "cache_read_tokens",
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
     )
     rows = [
         (
@@ -232,6 +232,7 @@ def _print_bucket_table(title: str, buckets: dict[str, Bucket]) -> None:
             str(v.input_tokens),
             str(v.output_tokens),
             str(v.cache_read_tokens),
+            str(v.cache_write_tokens),
         )
         for name, v in sorted(buckets.items())
     ]
@@ -296,7 +297,8 @@ def _cmd_usage(args: argparse.Namespace) -> int:
     )
     print(
         f"  $/run={_format_bucket_rate(t.cost_per_run, t)}  $/succeeded={cps_str}  "
-        f"in={t.input_tokens}  out={t.output_tokens}  cache_read={t.cache_read_tokens}"
+        f"in={t.input_tokens}  out={t.output_tokens}  "
+        f"cache_read={t.cache_read_tokens}  cache_write={t.cache_write_tokens}"
     )
     _print_bucket_table("by_backend", s.by_backend)
     _print_bucket_table("by_client", s.by_client)

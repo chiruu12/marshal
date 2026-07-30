@@ -2,24 +2,31 @@
 
 Invocation reference (Antigravity CLI 2.0, `agy`):
 
-    agy [-m MODEL] [--dangerously-skip-permissions] [--conversation ID] -p "<PROMPT>"
+    agy [--dangerously-skip-permissions] [--output-format json] [--add-dir CWD]
+        [-m MODEL] [--conversation ID] -p "<PROMPT>"
 
 `agy -p` runs one prompt non-interactively. Run with cwd = the target repo (agy operates on
 its launch folder; there is no `--dir` flag).
 
 Honest gaps from research (these shape what we expose):
-  * NO reliable structured output yet - `--output-format json` is reported broken, so we parse
-    PLAIN TEXT stdout. native_usage = False (no tokens/cost available headless).
+  * Structured output works (agy ≥ 1.1.8): ``--output-format json`` returns
+    ``{response, conversation_id, usage:{input_tokens,output_tokens,cache_read_tokens,...}}``.
+    Tokens are stamped; there is NO USD/cost field, so ``source=unavailable`` and
+    ``native_usage=False`` (that flag means native cost). ``stream-json`` is also parseable
+    (terminal ``event:"result"`` nests the same object under ``result``).
+    ``check_available()`` enforces this floor (unparsable / too-old → unavailable) so doctor
+    and graceful client-skip never green-light a CLI that will fail every run.
   * Auth is OAuth-first; unattended `ANTIGRAVITY_API_KEY` is an unconfirmed upstream request.
     Expect a one-time OAuth on a persistent runner. There is no cheap dedicated
     `auth`/`status`/`whoami` CLI probe (`agy --help` has none), so `verifies_auth()` stays
-    False — doctor reports CLI presence only and must not claim credentials are valid.
-    Prefer an honest path-only gap over a hang-prone "starts language server" probe.
+    False — doctor reports CLI presence + version floor only and must not claim credentials
+    are valid. Prefer an honest path-only gap over a hang-prone "starts language server" probe.
   * `agy` checks for a TTY; without one, stdout can be swallowed while exit code stays 0. A PTY
     wrapper (e.g. `script -q /dev/null`) belongs in the runner layer - TODO. Until then treat an
     empty success as suspect.
-  * No headless session-id capture (`-p` doesn't return its conversation id), so sessions=False;
-    `--conversation` is passed through only if the caller already has an id.
+  * JSON envelopes carry ``conversation_id`` (stamped onto ``session_id``); ``sessions`` stays
+    False until resume is a first-class advertised capability. ``--conversation`` is still
+    passed through when the caller already has an id.
   * Only `safe-edit` and `yolo` are reliably non-prompting headless. There is no confirmed
     one-shot read-only flag (the read-only presets prompt), so READ_ONLY is unsupported here.
   * WORKSPACE TRUST (fixed 2026-06-27): headless `agy` cannot establish workspace trust without a
@@ -49,6 +56,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +64,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from ..types import (
     AgentResult,
@@ -68,12 +77,16 @@ from ..types import (
     UsageRecord,
     UsageSource,
 )
-from .base import CodingAgentBackend
+from .base import CodingAgentBackend, parse_jsonl
 
 
 #: Where the agy CLI keeps its user settings (incl. `trustedWorkspaces`). An attribute on the
 #: backend so tests can point it at a temp file instead of the real home.
 DEFAULT_SETTINGS_PATH = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+
+#: Minimum ``agy`` that supports ``--output-format json`` (verified 1.1.8). Availability fails
+#: closed below this so doctor / client-skip never treat a too-old CLI as runnable.
+MIN_AGY_VERSION: tuple[int, int, int] = (1, 1, 8)
 
 #: Static fallback when ``agy models`` cannot be probed.
 #: Sourced from this module's docstring / docs/model-playbook.md (antigravity rows).
@@ -84,6 +97,8 @@ _STATIC_MODELS: tuple[str, ...] = (
     "claude-opus-4.6",
     "gpt-oss-120b",
 )
+
+_DEFAULT_UNAVAILABLE = "CLI not on PATH / not runnable"
 
 
 class AntigravityBackend(CodingAgentBackend):
@@ -107,11 +122,11 @@ class AntigravityBackend(CodingAgentBackend):
     _thread_claims = threading.local()
     settings_path = DEFAULT_SETTINGS_PATH
     capabilities = Capabilities(
-        json_output=False,  # --output-format json reported broken; text output only
-        stream_json=False,
-        sessions=False,  # -p does not return its conversation id
+        json_output=True,  # --output-format json (agy ≥ 1.1.8)
+        stream_json=True,  # terminal event:"result" nests the same envelope
+        sessions=False,  # conversation_id is stamped; resume not advertised yet
         server_mode=False,
-        native_usage=False,  # no tokens/cost available headless
+        native_usage=False,  # tokens yes; no USD in CLI output — stay honest
         permission_modes=frozenset({PermissionMode.SAFE_EDIT, PermissionMode.YOLO}),
         permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
     )
@@ -132,10 +147,52 @@ class AntigravityBackend(CodingAgentBackend):
             "(only safe-edit and yolo)"
         )
 
+    def check_available(self) -> bool:
+        """True only when ``agy`` is on PATH and reports a JSON-capable version (≥ 1.1.8).
+
+        The adapter always passes ``--output-format json``; a pre-1.1.8 CLI would pass a
+        presence-only probe then fail every run. Unparsable ``--version`` output fails closed.
+        """
+        return self._probe_availability()[0]
+
+    def unavailable_detail(self) -> str:
+        """Doctor detail: names the ≥ 1.1.8 floor when the CLI is present but unusable."""
+        return self._probe_availability()[1]
+
+    def _probe_availability(self) -> tuple[bool, str]:
+        if shutil.which(self.binary) is None:
+            return False, _DEFAULT_UNAVAILABLE
+        try:
+            proc = subprocess.run(
+                [self.binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False, _DEFAULT_UNAVAILABLE
+        if proc.returncode != 0:
+            return False, _DEFAULT_UNAVAILABLE
+        raw = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        ver = _parse_agy_version(raw)
+        floor = _fmt_agy_version(MIN_AGY_VERSION)
+        if ver is None:
+            return False, (
+                f"agy version unparsable (need ≥ {floor} for --output-format json)"
+            )
+        if ver < MIN_AGY_VERSION:
+            return False, (
+                f"agy {_fmt_agy_version(ver)} too old "
+                f"(need ≥ {floor} for --output-format json)"
+            )
+        return True, ""
+
     def account_info(self) -> dict[str, str] | None:
         """No cheap auth/status/whoami probe on ``agy`` (``agy --help`` has none).
 
-        Always None. Hang-prone TTY probes are refused — doctor reports CLI presence only.
+        Always None. Hang-prone TTY probes are refused — doctor reports CLI presence +
+        version floor only.
         """
         return None
 
@@ -170,6 +227,8 @@ class AntigravityBackend(CodingAgentBackend):
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary]
         argv += self.map_permission(opts.permission)
+        # Structured envelope: response text + per-run token usage (no USD).
+        argv += ["--output-format", "json"]
         # Add the worktree to the active workspace; paired with the trust entry prepare() writes,
         # this makes edits land in cwd instead of agy's scratch dir.
         argv += ["--add-dir", str(opts.cwd)]
@@ -279,18 +338,44 @@ class AntigravityBackend(CodingAgentBackend):
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         if exit_code != 0:
+            # Best-effort: a failed run may still have emitted a partial JSON envelope with
+            # tokens / conversation id — keep them for the ledger and investigation.
+            envelope = _extract_agy_envelope(raw_stdout)
+            usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
+            session_id: str | None = None
+            text = ""
+            if envelope is not None:
+                text = _agy_response_text(envelope)
+                session_id = _agy_conversation_id(envelope)
+                _apply_agy_usage(usage, envelope.get("usage"))
             return AgentResult(
                 status=RunStatus.FAILED,
+                text=text,
+                session_id=session_id,
+                usage=usage,
                 error=raw_stderr.strip() or f"agy exited {exit_code}",
                 exit_code=exit_code,
                 raw_stdout=raw_stdout,
                 raw_stderr=raw_stderr,
             )
-        # Plain-text output; no machine-readable usage/session available.
+        envelope = _extract_agy_envelope(raw_stdout)
+        usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
+        if envelope is None:
+            # Envelope drift / non-JSON: fall back to plain-text (at least as good as before).
+            return AgentResult(
+                status=RunStatus.EXITED_CLEAN,
+                text=raw_stdout.strip(),
+                usage=usage,
+                exit_code=exit_code,
+                raw_stdout=raw_stdout,
+                raw_stderr=raw_stderr,
+            )
+        _apply_agy_usage(usage, envelope.get("usage"))
         return AgentResult(
             status=RunStatus.EXITED_CLEAN,
-            text=raw_stdout.strip(),
-            usage=UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE),
+            text=_agy_response_text(envelope),
+            session_id=_agy_conversation_id(envelope),
+            usage=usage,
             exit_code=exit_code,
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
@@ -298,6 +383,78 @@ class AntigravityBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+def _parse_agy_version(raw: str) -> tuple[int, int, int] | None:
+    """Extract ``(major, minor, patch)`` from ``agy --version`` output. Pure; None if unparsable."""
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", raw)
+    if m is None:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+
+
+def _fmt_agy_version(ver: tuple[int, int, int]) -> str:
+    return f"{ver[0]}.{ver[1]}.{ver[2]}"
+
+
+def _extract_agy_envelope(raw: str) -> dict[str, Any] | None:
+    """Pull the terminal result object from ``json`` or ``stream-json`` stdout.
+
+    Loose dict parse (adapter convention): tolerate missing keys and envelope drift. Prefer a
+    single-object ``json`` document; for NDJSON take the last ``event == "result"`` and unwrap
+    its nested ``result`` when present. Pure.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        whole = json.loads(stripped)
+    except json.JSONDecodeError:
+        whole = None
+    if isinstance(whole, dict):
+        # Single-object json mode, or a lone stream event that is itself the result wrapper.
+        if whole.get("event") == "result":
+            nested = whole.get("result")
+            return nested if isinstance(nested, dict) else whole
+        return whole
+    found: dict[str, Any] | None = None
+    for ev in parse_jsonl(raw):
+        if ev.get("event") == "result":
+            nested = ev.get("result")
+            found = nested if isinstance(nested, dict) else ev
+    return found
+
+
+def _agy_response_text(envelope: dict[str, Any]) -> str:
+    """Final assistant text from an agy result envelope. Missing/wrong-type → empty string."""
+    resp = envelope.get("response")
+    if isinstance(resp, str):
+        return resp.strip()
+    return ""
+
+
+def _agy_conversation_id(envelope: dict[str, Any]) -> str | None:
+    sid = envelope.get("conversation_id")
+    return sid if isinstance(sid, str) and sid else None
+
+
+def _apply_agy_usage(usage: UsageRecord, usage_raw: object) -> None:
+    """Stamp token counts from agy's ``usage`` block; source stays unavailable (no USD).
+
+    Do not trust any cost-like key without verification — tokens only. ``thinking_tokens`` /
+    ``total_tokens`` are ignored (no UsageRecord fields; total would double-count).
+    """
+    if not isinstance(usage_raw, dict):
+        return
+    inp = usage_raw.get("input_tokens", usage_raw.get("inputTokens"))
+    out = usage_raw.get("output_tokens", usage_raw.get("outputTokens"))
+    cache_read = usage_raw.get("cache_read_tokens", usage_raw.get("cacheReadTokens"))
+    if isinstance(inp, int) and not isinstance(inp, bool) and inp > 0:
+        usage.input_tokens += inp
+    if isinstance(out, int) and not isinstance(out, bool) and out > 0:
+        usage.output_tokens += out
+    if isinstance(cache_read, int) and not isinstance(cache_read, bool) and cache_read > 0:
+        usage.cache_read_tokens += cache_read
 
 
 def _settings_lock_path(settings_path: Path) -> Path:

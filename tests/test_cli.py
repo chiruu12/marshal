@@ -142,7 +142,7 @@ def test_usage_human_surfaces_by_model_and_tokens(
             ts=datetime.now(timezone.utc).isoformat(),
             run_id="r1", backend="opencode", model="<provider>/<model-a>",
             client="worker", cost_usd=0.01, input_tokens=100, output_tokens=10,
-            cache_read_tokens=5, status="exited_clean", source="native",
+            cache_read_tokens=5, cache_write_tokens=8, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
     ret = cli.main(["usage", "--dir", str(u)])
@@ -154,6 +154,9 @@ def test_usage_human_surfaces_by_model_and_tokens(
     assert "input_tokens" in out  # the token columns are labeled
     assert "output_tokens" in out
     assert "cache_read_tokens" in out
+    assert "cache_write_tokens" in out  # sibling column; JSON keeps fields separate
+    assert "cache_read=5" in out
+    assert "cache_write=8" in out
     # The actual token counts are visible too (the by_model row)
     assert "100" in out and "10" in out
 
