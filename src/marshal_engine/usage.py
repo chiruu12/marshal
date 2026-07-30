@@ -8,11 +8,12 @@ optionally filtered to a `[since, until]` time window over each event's `ts`.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, field_validator, Field
+from pydantic import BaseModel, ValidationError, field_validator, Field
 
 from .types import AgentResult, RunStatus, UsageRecord, UsageSource, canonical_status
 
@@ -156,12 +157,25 @@ class UsageTracker:
     def events(self) -> list[UsageEvent]:
         if not self.events_path.exists():
             return []
+        # File-level read failures (missing perms, not a file, decode of whole file) propagate so
+        # enforce budgets can fail closed. Only per-line parse failures are skipped — a torn final
+        # line from crash-mid-append must not poison the entire usage/budget surface.
         out: list[UsageEvent] = []
+        skipped = 0
         for line in self.events_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
-            out.append(UsageEvent.model_validate_json(line))
+            try:
+                out.append(UsageEvent.model_validate_json(line))
+            except (ValidationError, ValueError):
+                skipped += 1
+                continue
+        if skipped:
+            print(
+                f"[marshal] skipping {skipped} malformed usage event line(s)",
+                file=sys.stderr,
+            )
         return out
 
     def summary(

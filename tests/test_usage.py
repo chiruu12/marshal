@@ -315,3 +315,56 @@ def test_pre_rename_ledger_events_still_count_as_successes(tmp_path: Path) -> No
     assert summary.totals.runs == 1
     assert summary.totals.succeeded == 1, "a pre-rename success stopped counting"
     assert summary.totals.cost_per_succeeded == 0.1
+
+
+def test_events_skips_torn_final_line_and_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Crash-mid-append leaves a partial final line; summary must still succeed (#142)."""
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="ok1", cost_usd=0.01, status="exited_clean", source="native"))
+    t.record(_ev(run_id="ok2", cost_usd=0.02, status="exited_clean", source="native"))
+    with t.events_path.open("a", encoding="utf-8") as f:
+        f.write('{"ts":"2026-06-19T00:00:00Z","run_id":"torn","backend":"openco')  # no closing
+
+    events = t.events()
+    assert [e.run_id for e in events] == ["ok1", "ok2"]
+    err = capsys.readouterr().err
+    assert "skipping 1 malformed usage event line" in err
+
+    s = t.summary()
+    assert s.totals.runs == 2
+    assert abs(s.totals.cost_usd - 0.03) < 1e-9
+
+
+def test_events_skips_mid_file_malformed_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A corrupt middle line is skipped with a count; neighbors still roll up."""
+    usage = tmp_path / "usage"
+    usage.mkdir()
+    (usage / "events.jsonl").write_text(
+        '{"ts":"2026-06-19T00:00:00Z","run_id":"a","backend":"opencode",'
+        '"cost_usd":0.01,"status":"exited_clean","source":"native"}\n'
+        "{not valid json\n"
+        '{"ts":"2026-06-19T00:00:00Z","run_id":"b","backend":"opencode",'
+        '"cost_usd":0.02,"status":"exited_clean","source":"native"}\n'
+        "also-not-json\n",
+        encoding="utf-8",
+    )
+    t = UsageTracker(usage)
+    assert [e.run_id for e in t.events()] == ["a", "b"]
+    assert "skipping 2 malformed usage event line" in capsys.readouterr().err
+    assert t.summary().totals.runs == 2
+
+
+def test_events_file_level_read_failure_still_propagates(tmp_path: Path) -> None:
+    """Fail-closed for REAL unreadable ledgers: only malformed *lines* are skipped (#142)."""
+    usage = tmp_path / "usage"
+    usage.mkdir()
+    # events.jsonl as a directory makes read_text raise IsADirectoryError (OSError).
+    (usage / "events.jsonl").mkdir()
+    with pytest.raises(OSError):
+        UsageTracker(usage).events()
+    with pytest.raises(OSError):
+        UsageTracker(usage).summary()

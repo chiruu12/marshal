@@ -280,3 +280,34 @@ for i in range(n):
         # Sidecar must not be mistaken for a run record.
         assert (runs / "r1.json.lock").exists()
         assert {r.run_id for r in FleetState(runs).list()} == {"r1"}
+
+
+def test_list_skips_torn_record_and_warns_with_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Torn/corrupt run JSON is skipped; listing succeeds and stderr names the skipped count."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    st = FleetState(runs)
+    st.add(RunRecord(run_id="good", task_id="t", backend="b", status="running"))
+    (runs / "torn.json").write_text("{not json", encoding="utf-8")
+    (runs / "partial.json").write_text(
+        '{"run_id":"partial","task_id":"t","backend":"b"', encoding="utf-8"
+    )
+
+    assert [r.run_id for r in st.list()] == ["good"]
+    err = capsys.readouterr().err
+    assert "skipping 2 unreadable run record" in err
+
+
+def test_list_skips_binary_file_and_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    st = FleetState(runs)
+    st.add(RunRecord(run_id="good", task_id="t", backend="b"))
+    (runs / "garbage.json").write_bytes(b"\xff\xfe\x00not utf8")
+
+    assert [r.run_id for r in st.list()] == ["good"]
+    assert "skipping 1 unreadable run record" in capsys.readouterr().err

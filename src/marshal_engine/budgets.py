@@ -182,6 +182,8 @@ def check_budget(
     session_start: datetime,
     budgets: list[BudgetSpec],
     req: BudgetRunScope,
+    *,
+    enforce_only: bool = False,
 ) -> None:
     """Warn (advisory) or raise ``BudgetExceeded`` (enforce) for matching over-cap budgets.
 
@@ -193,6 +195,9 @@ def check_budget(
     * ``enforce=true``: raise ``BudgetExceeded`` so the spawn is refused before a worktree is
       created. Lookup failures for an enforced budget also raise (fail closed).
 
+    ``enforce_only=True`` skips advisory budgets (no soft-warn). Used for the under-lock re-check
+    in ``EnforceBudgetGate.begin`` so the optimistic outside scan is the only warn pass.
+
     A subscription / unknown-cost backend reports $0, so a $ budget on it never triggers (and
     shows $0 spent); we don't fabricate a percentage or "remaining" from that.
     """
@@ -201,6 +206,8 @@ def check_budget(
     now = datetime.now(timezone.utc)
     cache: dict[str, UsageSummary] = {}
     for b in budgets:
+        if enforce_only and not b.enforce:
+            continue
         if not _budget_matches(b, req):
             continue
         try:
@@ -252,25 +259,40 @@ class EnforceBudgetGate:
         budgets: list[BudgetSpec],
         req: BudgetRunScope,
     ) -> list[str]:
-        """Check ledger caps, then reserve concurrency slots for matching enforce budgets."""
+        """Check ledger caps, then reserve concurrency slots for matching enforce budgets.
+
+        Ledger spend is computed *before* acquiring ``_lock`` so fleet-wide spawns do not
+        serialize behind O(ledger) ``summary()`` scans. Under the lock we re-check enforce
+        budgets (a peer may have recorded spend and released between the optimistic check and
+        our acquire) and reserve slots. If reservation fails partway through a multi-budget
+        match, every key reserved so far is released before re-raising.
+        """
+        # Optimistic check outside the lock (advisory soft-warn + enforce refuse).
+        check_budget(tracker, session_start, budgets, req)
         with self._lock:
-            check_budget(tracker, session_start, budgets, req)
+            # Re-check enforce budgets only — avoid double soft-warn for advisory caps.
+            check_budget(tracker, session_start, budgets, req, enforce_only=True)
             keys: list[str] = []
-            for b in budgets:
-                if not b.enforce or not _budget_matches(b, req):
-                    continue
-                key = _enforce_budget_key(b)
-                holder = self._held.get(key)
-                if holder is not None:
-                    held_by = holder or "starting"
-                    raise BudgetExceeded(
-                        f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
-                        f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
-                        "prevent overshoot. Wait for it to finish, or set enforce: false."
-                    )
-                self._held[key] = ""
-                keys.append(key)
-            return keys
+            try:
+                for b in budgets:
+                    if not b.enforce or not _budget_matches(b, req):
+                        continue
+                    key = _enforce_budget_key(b)
+                    holder = self._held.get(key)
+                    if holder is not None:
+                        held_by = holder or "starting"
+                        raise BudgetExceeded(
+                            f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
+                            f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
+                            "prevent overshoot. Wait for it to finish, or set enforce: false."
+                        )
+                    self._held[key] = ""
+                    keys.append(key)
+                return keys
+            except Exception:
+                for key in keys:
+                    self._held.pop(key, None)
+                raise
 
     def bind(self, keys: list[str], run_id: str) -> None:
         """Attach reserved slots to the concrete run_id after worktree creation."""
