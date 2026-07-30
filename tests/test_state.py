@@ -195,3 +195,88 @@ def test_migrating_a_status_on_read_does_not_rewrite_the_file(tmp_path: Path) ->
     path.write_text(original, encoding="utf-8")
     FleetState(runs).get("old")
     assert path.read_text(encoding="utf-8") == original
+
+
+# --- cross-process run-record integrity (issue #144 / M9) ------------------------------------
+
+
+class TestCrossProcessRunRecordUpdates:
+    """Run-record RMW must serialize across processes, not only threads.
+
+    Two FleetState instances (separate in-process locks) or two real OS processes updating the
+    same ``runs/<id>.json`` used to interleave read-modify-write and drop a sibling field
+    (e.g. ``merged_into`` clobbered by a concurrent terminal stamp). The ``.json.lock`` flock
+    closes that hole.
+    """
+
+    def test_separate_lock_holders_do_not_lose_sibling_fields(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        FleetState(runs).add(
+            RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running")
+        )
+        # Separate FleetState instances => independent threading.Lock maps; only the flock
+        # serializes them (same shape as a CLI + MCP server on one repo).
+        n = 80
+
+        def stamp_merged() -> None:
+            st = FleetState(runs)
+            for _ in range(n):
+                st.update("r1", merged_into="main")
+
+        def stamp_terminal() -> None:
+            st = FleetState(runs)
+            for i in range(n):
+                st.update("r1", status="exited_clean", cost_usd=0.01 * i)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(stamp_merged), pool.submit(stamp_terminal)]
+            for fut in futures:
+                fut.result()
+
+        got = FleetState(runs).get("r1")
+        assert got is not None
+        assert got.merged_into == "main", "merged_into was lost to an interleaved terminal stamp"
+        assert got.status == "exited_clean", "terminal status was lost to an interleaved merge stamp"
+        assert got.cost_usd > 0.0
+
+    def test_concurrent_os_processes_do_not_lose_sibling_fields(self, tmp_path: Path) -> None:
+        import subprocess
+        import sys
+
+        runs = tmp_path / "runs"
+        FleetState(runs).add(
+            RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running")
+        )
+        worker = r"""
+import sys
+from pathlib import Path
+from marshal_engine.state import FleetState
+
+runs = Path(sys.argv[1])
+role = sys.argv[2]
+n = int(sys.argv[3])
+st = FleetState(runs)
+for i in range(n):
+    if role == "merged":
+        st.update("r1", merged_into="main")
+    else:
+        st.update("r1", status="exited_clean", cost_usd=0.01 * (i + 1))
+"""
+        n = 60
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", worker, str(runs), role, str(n)],
+            )
+            for role in ("merged", "terminal")
+        ]
+        for proc in procs:
+            assert proc.wait(timeout=60) == 0
+
+        got = FleetState(runs).get("r1")
+        assert got is not None
+        assert got.merged_into == "main"
+        assert got.status == "exited_clean"
+        assert got.cost_usd > 0.0
+        # Sidecar must not be mistaken for a run record.
+        assert (runs / "r1.json.lock").exists()
+        assert {r.run_id for r in FleetState(runs).list()} == {"r1"}
