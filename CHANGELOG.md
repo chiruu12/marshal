@@ -14,10 +14,14 @@ versions may include breaking API changes until 1.0.
   admit past a documented hard cap. Reservations now live in `.marshal/budget_gate.json` under
   an `fcntl.flock` (same RMW idiom as run-record state); a dead holder's pid is reclaimed so a
   crash cannot lock out future spawns. Lock acquire times out after 5s and refuses the spawn
-  (fail-closed). A present but corrupt/unreadable reservation file also refuses (fail-closed)
-  rather than treating unknown state as empty; soft-warn/reporting stay lenient. A failed
-  `bind` discards the worktree before any RUNNING record is written and releases the slot.
-  Soft-warn budgets stay lock-free.
+  (fail-closed). A present but corrupt/unreadable reservation file, or a `held` entry with an
+  invalid shape, also refuses (fail-closed) rather than treating unknown state as empty;
+  soft-warn/reporting stay lenient. A failed `bind` discards the worktree before any RUNNING
+  record is written and releases the slot. Unbound placeholders age out after a short TTL so a
+  bind-time flock failure whose release cannot re-take the lock cannot poison the slot; Fleet
+  renews that TTL during `git worktree add` and `bind` verifies disk ownership (refuse if a
+  peer holds the key; re-acquire only when the key is free) so a slow-but-alive holder cannot
+  silently share the cap after reclaim. Soft-warn budgets stay lock-free.
 
 ## [0.2.0] - 2026-07-30
 
