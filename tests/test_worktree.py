@@ -195,6 +195,44 @@ def test_discard_refuses_base_dir_itself(repo: Path) -> None:
     assert (sibling / "marker").exists()
 
 
+def _ensure_deletable_main(repo: Path) -> None:
+    """Leave HEAD on a side branch so unguarded `git branch -D main` would actually delete it."""
+    subprocess.run(
+        ["git", "-C", str(repo), "branch", "-M", "main"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "checkout", "-b", "operator"],
+        check=True, capture_output=True, text=True,
+    )
+
+
+def _branch_list(repo: Path, name: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", name],
+        capture_output=True, text=True,
+    ).stdout
+
+
+def test_discard_refuses_branch_outside_prefix(repo: Path) -> None:
+    # Path is contained; branch must be too. A poisoned "main" must not be force-deleted.
+    _ensure_deletable_main(repo)
+    m = WorktreeManager(repo)
+    wt = m.create("poison-br")
+    with pytest.raises(WorktreeError, match="outside managed prefix"):
+        m.discard(wt.path, "main")
+    assert "main" in _branch_list(repo, "main")
+    assert not wt.path.exists()  # worktree still reclaimed; only -D is refused
+
+
+def test_discard_still_deletes_managed_branch(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("managed-ok")
+    m.discard(wt.path, "marshal/managed-ok")
+    assert not wt.path.exists()
+    assert "marshal/managed-ok" not in _branch_list(repo, "marshal/managed-ok")
+
+
 def test_remove_refuses_base_dir_itself(repo: Path) -> None:
     from marshal_engine.worktree import Worktree
 
