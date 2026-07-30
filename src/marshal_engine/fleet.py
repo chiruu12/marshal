@@ -1561,6 +1561,15 @@ class Fleet:
                     with contextlib.suppress(WorktreeError):
                         self.worktrees.discard(str(wt.path), wt.branch)
                     raise
+            # Bind before the RUNNING record so a reservation I/O failure is failure-atomic
+            # (same shape as provision: discard worktree/branch, then re-raise; outer release
+            # frees the slot). Recording first would strand a RUNNING zombie on bind failure.
+            try:
+                self._budget_gate.bind(budget_keys, run_id)
+            except Exception:
+                with contextlib.suppress(WorktreeError):
+                    self.worktrees.discard(str(wt.path), wt.branch)
+                raise
             _register_inflight_run(self.state.dir, run_id)
             self.state.add(
                 RunRecord(
@@ -1589,7 +1598,6 @@ class Fleet:
                     started_at=started,
                 )
             )
-            self._budget_gate.bind(budget_keys, run_id)
             return run_id, wt, started
         except Exception:
             self._budget_gate.release(budget_keys)

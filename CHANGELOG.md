@@ -64,7 +64,10 @@ versions may include breaking API changes until 1.0.
   admit past a documented hard cap. Reservations now live in `.marshal/budget_gate.json` under
   an `fcntl.flock` (same RMW idiom as run-record state); a dead holder's pid is reclaimed so a
   crash cannot lock out future spawns. Lock acquire times out after 5s and refuses the spawn
-  (fail-closed). Soft-warn budgets stay lock-free.
+  (fail-closed). A present but corrupt/unreadable reservation file also refuses (fail-closed)
+  rather than treating unknown state as empty; soft-warn/reporting stay lenient. A failed
+  `bind` discards the worktree before any RUNNING record is written and releases the slot.
+  Soft-warn budgets stay lock-free.
 
 ## [0.2.0] - 2026-07-30
 

@@ -1859,6 +1859,46 @@ def test_enforce_budget_blocks_concurrent_matching_spawn(repo: Path) -> None:
     assert follow.status == RunStatus.EXITED_CLEAN.value
 
 
+def test_bind_failure_leaves_no_running_record_or_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bind I/O failure must discard the worktree, leave no RUNNING record, and free the slot."""
+    from marshal_engine.budgets import BudgetExceeded
+
+    budgets = [BudgetSpec(backend="writer", window="week", limit_usd=100.0, enforce=True)]
+    fleet = Fleet(repo, {"writer": _Writer()}, budgets=budgets)
+
+    def boom_bind(keys: list[str], run_id: str) -> None:
+        raise BudgetExceeded(
+            "budget gate reservation bind failed (test); refusing spawn because enforce=true"
+        )
+
+    monkeypatch.setattr(fleet._budget_gate, "bind", boom_bind)
+    with pytest.raises(BudgetExceeded, match="bind failed"):
+        fleet.run(
+            "writer",
+            TaskSpec(id="bindfail", goal="x"),
+            permission=PermissionMode.SAFE_EDIT,
+        )
+    assert fleet.state.list() == [], "RUNNING record stranded after bind failure"
+    worktrees = repo / ".marshal" / "worktrees"
+    assert not worktrees.exists() or not list(worktrees.iterdir()), "orphan worktree left behind"
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/*bindfail*"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert branches.strip() == "", f"leaked branch(es): {branches!r}"
+
+    # Slot must be free: a subsequent matching spawn under the same cap succeeds.
+    follow = Fleet(repo, {"writer": _Writer()}, budgets=budgets).run(
+        "writer",
+        TaskSpec(id="bindok", goal="x"),
+        permission=PermissionMode.SAFE_EDIT,
+    )
+    assert follow.status == RunStatus.EXITED_CLEAN.value
+
+
 def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> None:
     # The remaining column floors at 0 (a cap that has been blown reads $0 remaining, not a
     # misleading negative). Spent comes from the windowed rollup; limit comes from the spec.
