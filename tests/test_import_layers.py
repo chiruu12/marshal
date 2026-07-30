@@ -84,8 +84,12 @@ def _resolve_from_import(mod: str, node: ast.ImportFrom) -> list[str]:
     base = parts[: len(parts) - climb]
     if node.module:
         return [".".join(base + node.module.split("."))]
-    # ``from . import X`` executes the package ``__init__`` (binds submodule or attribute).
-    return ["__init__"] if not base else [".".join(base)]
+    # ``from . import X`` executes the package ``__init__`` AND binds submodule ``X``. Attributing
+    # it only to ``__init__`` would let a forbidden edge hide behind this spelling, which is the
+    # one thing this test exists to prevent.
+    pkg_key = "__init__" if not base else ".".join(base)
+    subs = [".".join(base + [alias.name]) for alias in node.names]
+    return [pkg_key, *subs]
 
 
 def _edges_from_file(path: Path) -> set[tuple[str, str]]:
