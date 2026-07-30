@@ -7,6 +7,7 @@ safety boundary of the whole system - keep it boring and reliable.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -237,8 +238,25 @@ class WorktreeManager:
         path = self.base_dir / task_id
         _ensure_under_base(path, self.base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        # Fast-path probe: skip leaked-branch cleanup when the ref already existed. Not
+        # authoritative alone (TOCTOU: another process can create the same name between probe
+        # and add) — the add's own stderr is the source of truth below.
+        branch_existed = (
+            self._git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
+        )
         proc = self._git("worktree", "add", "-b", branch, str(path), base_branch or "HEAD")
         if proc.returncode != 0:
+            # NEVER delete a branch this add attempt did not create. Git's atomic decision at
+            # add time is authoritative: "already exists" means the branch is foreign (or left
+            # by an earlier attempt) — deleting it is the data-loss vector. The show-ref probe
+            # is only a fast-path for the pre-existing case.
+            add_out = f"{proc.stderr}\n{proc.stdout}"
+            already_exists = "already exists" in add_out
+            if not branch_existed and not already_exists:
+                # Best-effort only: never let cleanup mask the original add failure (e.g. a
+                # TimeoutExpired from `branch -D` surfacing as WorktreeError).
+                with contextlib.suppress(Exception):
+                    self._git("branch", "-D", branch)
             raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
         return Worktree(task_id=task_id, path=path, branch=branch)
 
@@ -278,6 +296,10 @@ class WorktreeManager:
                 reason = f"timed out after {self.setup_timeout_s}s"
             except FileNotFoundError:
                 reason = f"command not found: {self.setup_cmd[0]!r}"
+            except (OSError, subprocess.SubprocessError) as exc:
+                # Match verify(): a generic OSError (EACCES on the binary, etc.) must become a
+                # WorktreeError with teardown, not escape as a raw crash that strands the worktree.
+                reason = f"could not run {self.setup_cmd[0]!r}: {exc}"
         if reason:
             # Best-effort teardown so a failed setup doesn't strand an orphan worktree (and a retry
             # can reuse the task_id); never let teardown mask the original setup failure.
@@ -439,6 +461,12 @@ class WorktreeManager:
         those - they don't land from this run).
         """
         proc = self._git("diff", "--name-only", "-z", f"{target}...{branch}")
+        if proc.returncode != 0:
+            # Match merged_diff: a git failure must not silently report changed_files=[] for a
+            # merged run (integrate would then claim nothing landed).
+            raise WorktreeError(
+                f"could not list files for {target}...{branch}: {proc.stderr.strip()}"
+            )
         return [f for f in proc.stdout.split("\0") if f]
 
     def merged_diff(self, branch: str, target: str) -> str:

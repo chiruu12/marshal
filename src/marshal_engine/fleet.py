@@ -690,6 +690,11 @@ def _is_terminal(rec: RunRecord) -> bool:
 #: `Fleet.reconcile_orphans`), never skipped permanently.
 _REAP_GRACE_S = 180.0
 
+#: Age gate for reaping orphaned ``*.tmp`` files left by a crash between ``mkstemp`` and
+#: ``os.replace`` in state/logs writers. A concurrent ``clean`` must not unlink a LIVE temp
+#: mid-write (that loses terminal state/logs); only temps older than this are abandoned.
+_TMP_REAP_AGE_S = 300.0
+
 
 #: Stale non-terminal runs reaped at Fleet startup are stamped ``failed``: the supervising process
 #: vanished before Marshal recorded an outcome, so we cannot honestly claim success, cancellation,
@@ -1377,9 +1382,11 @@ class Fleet:
             try:
                 _require_context_files(wt, req.task.context_files)
                 _provision_read_paths(wt, self.repo_root, req.task.read_paths)
-            except ValueError:
+            except Exception:
                 # Tear down before propagating: the worktree exists by now, and a rejected spawn
                 # must not leave one behind (same contract `setup()` honours on a failed provision).
+                # Catch Exception (not just ValueError): an OSError mid-copy (disk full, EACCES)
+                # would otherwise skip discard and strand the worktree + branch with no run record.
                 with contextlib.suppress(WorktreeError):
                     self.worktrees.discard(str(wt.path), wt.branch)
                 raise
@@ -1559,7 +1566,20 @@ class Fleet:
                     print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
 
         if cleanup:
-            self.worktrees.remove(wt)
+            try:
+                self.worktrees.remove(wt)
+            except Exception as exc:  # noqa: BLE001 - terminal stamp already landed
+                # remove() raising AFTER the terminal stamp contradicts the record (and is
+                # silently swallowed in `_execute_bg`). Stamp a warning on the record instead;
+                # the run's outcome stands, the worktree simply remains for a later clean.
+                msg = f"cleanup warning: failed to remove worktree: {exc}"
+                existing = self.state.get(run_id)
+                if existing is not None and existing.error:
+                    msg = f"{existing.error}; {msg}"
+                self.state.update(run_id, error=msg)
+                refreshed = self.state.get(run_id)
+                if refreshed is not None:
+                    record = refreshed
         return record
 
     def with_liveness(self, rec: RunRecord) -> RunRecord:
@@ -1990,6 +2010,21 @@ class Fleet:
                     result.orphans_removed.append(rid)
                 except WorktreeError as exc:
                     result.errors.append({"run_id": rid, "error": str(exc)})
+        # Reap orphaned atomic-write temps (a crash between mkstemp and os.replace in state/logs
+        # leaves `*.tmp` nothing else collects). Age-gated so a concurrent clean cannot unlink a
+        # LIVE temp mid-write. Best-effort; never fails the clean.
+        if not dry_run:
+            now = time.time()
+            for tmp_dir in (self.state.dir, self.logs.dir):
+                if not tmp_dir.exists():
+                    continue
+                for tmp in tmp_dir.glob("*.tmp"):
+                    try:
+                        if now - tmp.stat().st_mtime < _TMP_REAP_AGE_S:
+                            continue
+                        tmp.unlink()
+                    except OSError:
+                        pass
         return result
 
     def cancel_run(self, run_id: str) -> RunRecord:
