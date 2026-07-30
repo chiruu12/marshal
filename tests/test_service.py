@@ -1397,6 +1397,10 @@ def test_list_models_survives_a_raising_probe(tmp_path: Path) -> None:
     """One broken backend must not take the whole listing down."""
     from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
 
+    class _Ok(_Echo):
+        def available_models(self) -> list[str]:
+            return ["good-model"]
+
     class _Boom(_Echo):
         def available_models(self) -> list[str]:
             raise RuntimeError("probe exploded")
@@ -1408,10 +1412,13 @@ def test_list_models_survives_a_raising_probe(tmp_path: Path) -> None:
         }
     )
     svc = MarshalService(
-        tmp_path, cfg, backends={"ok": _Echo(), "bad": _Boom()}
+        tmp_path, cfg, backends={"ok": _Ok(), "bad": _Boom()}
     )
     result = svc.list_models()
     assert result.backend_models["bad"] is None
+    # "Survives" means the good probe's answer is still present and correct — not that the
+    # whole map collapsed to None/empty alongside the failure.
+    assert result.backend_models["ok"] == ["good-model"]
 
 
 def test_run_agent_threads_output_schema_to_the_task(repo: Path) -> None:

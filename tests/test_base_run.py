@@ -121,11 +121,38 @@ def test_run_prepare_failure_is_a_failed_result(tmp_path: Path) -> None:
     assert "prepare failed" in (res.error or "") and "trust failed" in (res.error or "")
 
 
-def test_run_timeout_kills_process(tmp_path: Path) -> None:
+def test_run_timeout_kills_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import signal
+
+    from marshal_engine.backends import base as base_mod
+
+    killed: list[tuple[int, int]] = []
+    real_killpg = os.killpg
+
+    def _spy_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+        real_killpg(pgid, sig)
+
+    monkeypatch.setattr(base_mod.os, "killpg", _spy_killpg)
+
+    child_pid: list[int] = []
     b = _Dummy([sys.executable, "-c", "import time; time.sleep(30)"])
-    res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    res = b.run(
+        _task(),
+        RunOpts(cwd=tmp_path, timeout_s=1, on_pid=child_pid.append),
+    )
     assert res.status is RunStatus.TIMED_OUT
     assert "timed out" in (res.error or "")
+    # Core invariant: timeout must signal the process group, then reap the child.
+    assert child_pid, "on_pid never fired"
+    assert any(sig == signal.SIGTERM for _, sig in killed), f"group never SIGTERM'd: {killed}"
+    assert all(pgid == child_pid[0] for pgid, _ in killed)
+    # Child was reaped (not left as a live sleep after TIMED_OUT).
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid[0], 0)
 
 
 def test_run_stamps_duration_on_every_path(tmp_path: Path) -> None:
