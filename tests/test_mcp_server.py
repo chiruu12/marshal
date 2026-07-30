@@ -10,6 +10,7 @@ import pytest
 
 from marshal_engine.config import ConfigError
 from marshal_engine.mcp_server import build_service
+from marshal_engine.workflow import WorkflowRunner
 
 _CONFIG = """
 clients:
@@ -86,6 +87,44 @@ def test_run_workflow_missing_yaml_path_is_clear_error(
     # look for "<dir>/x.yaml.yaml" and raise a misleading "no workflow 'x.yaml'").
     with pytest.raises(ConfigError, match="no workflow file at"):
         svc.run_workflow("does-not-exist.yaml")
+
+
+@pytest.mark.parametrize("form", ["review.yaml", "workflows/review.yaml"])
+def test_run_workflow_accepts_both_documented_relative_forms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, form: str
+) -> None:
+    # A relative path may be written against the workflows dir OR the repo root; both are
+    # documented. Resolving only against the workflows dir doubles the prefix for the second form.
+    repo = _repo_with_config(tmp_path)
+    wf = repo / "workflows"
+    wf.mkdir(exist_ok=True)
+    (wf / "review.yaml").write_text(
+        "phases:\n  - run: fan_out\n    clients: [a]\n    goal: g\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    svc = build_service()
+    # Stub the runner so this test is purely about path resolution. Capture what it received:
+    # an exception-swallowing assertion would pass even when resolution is broken.
+    seen: list[object] = []
+    monkeypatch.setattr(
+        WorkflowRunner, "run",
+        lambda self, spec, inputs, max_concurrency=4: (seen.append(spec), "ran")[1],
+    )
+    assert svc.run_workflow(form) == "ran"
+    assert len(seen) == 1  # resolution reached the runner for both documented forms
+
+
+@pytest.mark.parametrize("bad", ["../../evil.yaml", "/tmp/evil.yaml"])
+def test_run_workflow_refuses_paths_outside_the_workflows_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    svc = build_service()
+    with pytest.raises(ConfigError, match="outside"):
+        svc.run_workflow(bad)
 
 
 def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
