@@ -193,14 +193,18 @@ def _parse_result(raw: str) -> dict[str, Any] | None:
 
 
 def _extract_usage(obj: dict[str, Any], backend_name: str) -> UsageRecord | None:
-    """Build a usage record from the result. NATIVE only when a real cost was reported.
+    """Build a usage record from the result. NATIVE only when a POSITIVE cost was reported.
 
     Claiming NATIVE without a reported cost would assert a $0 the backend never claimed, so an
-    absent `total_cost_usd` stays `unavailable` (tokens kept) - the engine's honesty rule.
+    absent `total_cost_usd` stays `unavailable` (tokens kept). A reported `$0` alongside
+    consumed tokens means unpriced, not free (OpenCode/Goose parity) — also `unavailable`.
     """
     raw_cost = obj.get("total_cost_usd")
     if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool):
-        cost_usd, has_cost = float(raw_cost), True
+        cost_usd = float(raw_cost)
+        # NATIVE only when the backend reported a POSITIVE cost. A reported $0 alongside
+        # consumed tokens means unpriced — NOT a free run — so it stays UNAVAILABLE.
+        has_cost = cost_usd > 0
     else:
         cost_usd, has_cost = 0.0, False
     usage = obj.get("usage")
@@ -215,6 +219,6 @@ def _extract_usage(obj: dict[str, Any], backend_name: str) -> UsageRecord | None
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read,
-        cost_usd=cost_usd,
+        cost_usd=cost_usd if has_cost else 0.0,
         source=UsageSource.NATIVE if has_cost else UsageSource.UNAVAILABLE,
     )

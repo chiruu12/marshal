@@ -106,29 +106,61 @@ def _parse_dt(value: object) -> datetime | None:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _parse_records(raw: str) -> list[_Rec]:
+def _parse_amount_usd(value: object) -> float | None:
+    """A usable numeric ``amount_usd``, or None when absent/null/unparseable.
+
+    Explicit ``0`` / ``0.0`` is a real reported charge (keep it). Missing or null must NOT
+    coerce to ``0.0`` — that would fabricate an ``admin-api`` $0 when the provider reported
+    no charge at all.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_records(raw: str) -> tuple[list[_Rec], int]:
+    """Usable records plus the RAW row count the page carried.
+
+    Pagination must terminate on the raw count, not on the usable ones: a full page whose rows
+    were all skipped (no usable ``amount_usd``) would otherwise read as empty/short and stop the
+    walk before reaching later pages that do hold charges.
+    """
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return []
+        return [], 0
     rows = data.get("data") if isinstance(data, dict) else data
     if not isinstance(rows, list):
-        return []
+        return [], 0
     out: list[_Rec] = []
     for r in rows:
         if not isinstance(r, dict):
             continue
+        # Row without a usable amount_usd is unusable for cost attribution — skip it so the
+        # run stays unavailable rather than claiming a fake admin-api $0.
+        if "amount_usd" not in r:
+            continue
+        amount = _parse_amount_usd(r.get("amount_usd"))
+        if amount is None:
+            continue
         out.append(
             _Rec(
                 model=str(r.get("model", "")),
-                amount=float(r.get("amount_usd", 0.0) or 0.0),
+                amount=amount,
                 prompt=int(r.get("prompt_tokens", 0) or 0),
                 completion=int(r.get("completion_tokens", 0) or 0),
                 reasoning=int(r.get("reasoning_tokens", 0) or 0),
                 created=_parse_dt(r.get("created_at")),
             )
         )
-    return out
+    return out, len(rows)
 
 
 def _rec_key(r: _Rec) -> tuple[str, str, float, int, int]:
@@ -160,16 +192,16 @@ def _collect_window_records(
         raw = getter(url, key, timeout_s)
         if raw is None:
             return None if page == 0 else out
-        recs = _parse_records(raw)
-        if not recs:
+        recs, raw_rows = _parse_records(raw)
+        if raw_rows == 0:
             break
         fresh = [r for r in recs if _rec_key(r) not in seen]
-        if not fresh:
+        if not fresh and recs:
             break  # the API returned no new records (e.g. ignored offset) - stop, never loop forever
         for r in fresh:
             seen.add(_rec_key(r))
             out.append(r)
-        if len(recs) < page_size:
+        if raw_rows < page_size:
             break  # a short page is the last page
         newest = max((r.created for r in recs if r.created is not None), default=None)
         if newest is not None and newest < lo:

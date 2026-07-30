@@ -525,7 +525,7 @@ mode. Budgets in the payload come from that workspace's `fleet.config.yaml` alon
 | `by_client` | dict | Per-client buckets. |
 | `by_model` | dict | Per-model buckets. |
 | `by_backend_model` | dict | Keys like `opencode/<model>`. |
-| `budgets` | list \| omitted | Present when that workspace's `fleet.config.yaml` declares `budgets:`: `[{ scope, window, spent_usd, limit_usd, remaining_usd, enforce }]`. Soft-warn by default; `enforce: true` refuses over-cap spawns on **that** workspace. |
+| `budgets` | list \| omitted | Present when that workspace's `fleet.config.yaml` declares `budgets:`: `[{ scope, window, spent_usd, limit_usd, remaining_usd, enforce, spent_known }]`. Soft-warn by default; `enforce: true` refuses over-cap spawns on **that** workspace. `spent_known` is `false` when spend could not be determined (lookup failure, or scope has runs but no priced cost source) — treat `spent_usd` / `remaining_usd` as unknown in that case. |
 | `workspace` | string | |
 
 Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost_estimated, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_per_run, cost_per_succeeded }`. `cost_estimated` is a zero tombstone (legacy ledger compatibility).

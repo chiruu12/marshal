@@ -43,6 +43,47 @@ def _getter(body: str | None) -> object:
     return get
 
 
+def test_missing_amount_usd_does_not_fabricate_admin_api_zero() -> None:
+    # Honesty: a row with no usable amount_usd must not become admin-api $0. Missing/null
+    # fields are skipped so token reconciliation fails and the run stays unattributed.
+    for row in (
+        {  # missing amount_usd entirely
+            "model": "z-ai/glm-5.1",
+            "prompt_tokens": 7000,
+            "completion_tokens": 150,
+            "reasoning_tokens": 0,
+            "created_at": "2026-06-28T12:00:05+00:00",
+        },
+        {  # explicit null
+            "model": "z-ai/glm-5.1",
+            "amount_usd": None,
+            "prompt_tokens": 7000,
+            "completion_tokens": 150,
+            "reasoning_tokens": 0,
+            "created_at": "2026-06-28T12:00:05+00:00",
+        },
+    ):
+        ext = fetch_run_cost(
+            model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+            input_tokens=7000, output_tokens=150,
+            api_key="sk-test", attempts=1, http=_getter(_usage(row)),  # type: ignore[arg-type]
+        )
+        assert ext is None, f"expected no attribution for row={row!r}"
+
+
+def test_explicit_zero_amount_usd_still_attributes() -> None:
+    # An explicitly reported 0.0 is a real free charge — keep admin-api attribution.
+    body = _usage(_rec("z-ai/glm-5.1", 0.0, 7000, 150, "2026-06-28T12:00:05+00:00"))
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=7000, output_tokens=150,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is not None
+    assert ext.cost_usd == 0.0
+    assert ext.source is UsageSource.ADMIN_API
+
+
 def test_happy_path_real_cost() -> None:
     body = _usage(
         _rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"),
@@ -162,6 +203,25 @@ def test_pagination_finds_records_beyond_the_first_page() -> None:
         api_key="sk-test", attempts=1, http=_paged_getter({0: page0, 2: page1}), page_size=2,  # type: ignore[arg-type]
     )
     assert ext is not None and ext.cost_usd == 0.005  # found despite being past the first page
+
+
+def test_pagination_does_not_stop_on_a_page_of_unusable_rows() -> None:
+    # A FULL page whose rows all lack a usable `amount_usd` is skipped for attribution, but it is
+    # not the last page: terminating on the usable count would read it as empty/short and never
+    # reach page 1, silently losing a real charge.
+    page0 = _usage(
+        {"model": "other/model", "prompt_tokens": 100, "completion_tokens": 10,
+         "created_at": "2026-06-28T12:00:01+00:00"},                      # no amount_usd
+        {"model": "other/model", "amount_usd": None, "prompt_tokens": 100,
+         "completion_tokens": 10, "created_at": "2026-06-28T12:00:02+00:00"},  # null amount_usd
+    )
+    page1 = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=7000, output_tokens=150,
+        api_key="sk-test", attempts=1, http=_paged_getter({0: page0, 2: page1}), page_size=2,  # type: ignore[arg-type]
+    )
+    assert ext is not None and ext.cost_usd == 0.005
 
 
 def test_pagination_terminates_when_offset_ignored() -> None:

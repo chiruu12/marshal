@@ -2048,7 +2048,9 @@ class Fleet:
             )
         except Exception:  # noqa: BLE001 - external cost lookup must never break a finished run
             return
-        if ext is not None:
+        # Only fill unavailable. Native (and any other already-priced source) is ground truth
+        # and must not be overwritten by a usage_api backfill.
+        if ext is not None and usage.source is UsageSource.UNAVAILABLE:
             usage.cost_usd = ext.cost_usd
             usage.source = ext.source
 

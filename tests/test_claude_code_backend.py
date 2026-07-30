@@ -109,6 +109,25 @@ def test_parse_output_tokens_without_cost_is_unavailable(backend: ClaudeCodeBack
     assert res.usage.cost_usd == 0.0
 
 
+def test_parse_output_zero_cost_with_tokens_is_unavailable(backend: ClaudeCodeBackend) -> None:
+    # OpenCode/Goose parity: reported $0 alongside consumed tokens means unpriced, not free.
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "is_error": False,
+            "result": "ok",
+            "total_cost_usd": 0,
+            "usage": {"input_tokens": 100, "output_tokens": 20},
+        }
+    )
+    res = backend.parse_output(stdout, "", 0)
+    assert res.usage is not None
+    assert res.usage.source is UsageSource.UNAVAILABLE
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.input_tokens == 100
+    assert res.usage.output_tokens == 20
+
+
 def test_parse_output_is_error_is_failure(backend: ClaudeCodeBackend) -> None:
     stdout = json.dumps(
         {"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "boom"}

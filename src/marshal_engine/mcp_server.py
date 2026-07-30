@@ -829,8 +829,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         breakdown and token totals) for one workspace. Time-windowed via `window`; default is the
         full ledger. `by_backend_model` is keyed like 'opencode/<model-a>'. When the target
         workspace's fleet config declares `budgets:`, a `budgets` list is included with per-budget
-        scope / window / windowed spend / limit / remaining / enforce (soft-warn by default;
-        `enforce: true` may refuse subsequent matching spawns on that workspace)."""
+        scope / window / windowed spend / limit / remaining / enforce / spent_known (soft-warn by
+        default; `enforce: true` may refuse subsequent matching spawns on that workspace).
+        `spent_known: false` means spend is unknown — do not treat spent/remaining as measured."""
         svc = await offload(registry.get, workspace)
         now = datetime.now(timezone.utc)
         since = usage_window_since(window, session_start=svc.session_start, now=now)
