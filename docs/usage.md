@@ -26,7 +26,7 @@ teams do so.
 | Term | What it is |
 |------|------------|
 | **driver** | The agent (e.g. Claude Code) that plans the work and calls Marshal. It keeps the expensive reasoning. |
-| **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, antigravity). Chosen per call, never global. |
+| **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, goose, antigravity). Chosen per call, never global. |
 | **client** | A named worker in `fleet.config.yaml` pinning a backend + model + permission. You route tasks to clients by name. |
 | **run** | One execution of a client on a task; ends `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`. |
 | **worktree** | The isolated git checkout **one run** works in (under `.marshal/worktrees/`). The safety boundary — main is untouched until you integrate. |
@@ -37,10 +37,13 @@ teams do so.
 ## Install
 
 ```bash
-uv tool install "MarshalFleet[mcp]"
+uv tool install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
 # or
-pipx install "MarshalFleet[mcp]"
+pipx install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
 ```
+
+> Not on PyPI yet. `uv tool install "MarshalFleet[mcp]"` is the intended command once it is
+> published; until then use the GitHub URL above, which installs the same package.
 
 For clone-from-source, backend CLI auth, and MCP wiring, see **[`../SETUP.md`](../SETUP.md)**.
 Marshal does **not** install the backend CLIs.
@@ -56,11 +59,14 @@ test/lint toolchain.
 
 ## Configure a fleet
 
-Copy the example and edit it:
+From your project repo, scaffold a starter config:
 
 ```bash
-cp fleet.config.example.yaml fleet.config.yaml
+marshal workspace add myproject   # path defaults to cwd; scaffolds fleet.config.yaml
 ```
+
+The scaffold ships every client commented out — uncomment at least one (or add your own). A
+filled-in config looks like:
 
 ```yaml
 defaults:
@@ -69,7 +75,7 @@ defaults:
 
 clients:
   implementer:
-    backend: opencode          # opencode | cursor | codex | command-code | claude-code | antigravity
+    backend: opencode          # opencode | cursor | codex | command-code | claude-code | goose | antigravity
     model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model here is rejected
     permission: safe-edit
     secret_ref: env:OPENCODE_API_KEY

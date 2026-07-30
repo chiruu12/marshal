@@ -26,20 +26,24 @@ backend you intend to use. Each one manages its *own* login; Marshal just shells
 | **antigravity** | install the Antigravity CLI (`agy`) | complete its OAuth login |
 | **claude-code** | install Claude Code (`claude`) | `claude` subscription or `ANTHROPIC_API_KEY` |
 | **command-code** | install the Command Code CLI (`command-code`) | `command-code login` (doctor probes `command-code status`) |
+| **goose** | install the Goose CLI (`goose`) | `goose configure` (Cursor-backed: also `cursor-agent login`) |
 
 You only need the backends your `fleet.config.yaml` references. One is enough to start.
 
 ## 1. Install Marshal
 
-**PyPI (recommended):**
+**From GitHub** (recommended — not on PyPI yet):
 
 ```bash
-uv tool install "MarshalFleet[mcp]"
+uv tool install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
 # or
-pipx install "MarshalFleet[mcp]"
+pipx install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
 ```
 
-**Clone from source** (for development or before PyPI publish):
+> Not on PyPI yet. `uv tool install "MarshalFleet[mcp]"` is the intended command once it is
+> published; until then use the GitHub URL above, which installs the same package.
+
+**Clone from source** (for development):
 
 ```bash
 git clone https://github.com/chiruu12/marshal.git && cd marshal
@@ -52,11 +56,15 @@ test/lint toolchain. A source checkout does not put `marshal` on your PATH unles
 
 ## 2. Configure a fleet
 
-A **client** is a named worker pinning a backend + model + permission. Copy the example and edit:
+A **client** is a named worker pinning a backend + model + permission. From your project repo,
+scaffold a starter config:
 
 ```bash
-cp fleet.config.example.yaml fleet.config.yaml
+marshal workspace add myproject   # path defaults to cwd; scaffolds fleet.config.yaml
 ```
+
+The scaffold ships every client commented out — uncomment at least one (or add your own) so the
+fleet has something to route to. A filled-in config looks like:
 
 ```yaml
 defaults:
@@ -228,7 +236,7 @@ until you `integrate`. State and usage live under `.marshal/`.
 | `doctor` says a backend's CLI is not available | the CLI isn't installed or isn't authenticated | install + log into that CLI (Prerequisites table) |
 | `doctor` says a backend's CLI is missing but it works in your terminal | Marshal was launched with a stripped PATH (MCP host, launchd, non-interactive SSH) | Marshal unions well-known user bin dirs (`~/.local/bin`, Homebrew, …) via `user_path()`; ensure the CLI is on your login-shell PATH, or set `MARSHAL_NO_PATH_FIX=1` only in hermetic CI |
 | a run ends `verify_failed` | the workspace's `verify:` gate rejected work that otherwise looked succeeded | read `verify_output` on the run record, `collect_run` the diff, fix or re-run; the worktree is kept for review |
-| `no fleet config at …` | no `fleet.config.yaml` | `cp fleet.config.example.yaml fleet.config.yaml` |
+| `no fleet config at …` | no `fleet.config.yaml` | `marshal workspace add <name>` (scaffolds a starter; edit clients) |
 | `marshal mcp` exits with an extra message | the `mcp` extra isn't installed | `uv sync --extra mcp` |
 | OpenCode model rejected at load | a `fireworks-ai/*` model bills Fireworks credits | use an `opencode-go/*` model |
 | a backend run shows cost `unavailable` | the backend reports no native cost and no `usage_api` backfill | configure `usage_api: eastrouter` for Codex via EastRouter, or use a native-cost backend |
