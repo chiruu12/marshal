@@ -352,3 +352,32 @@ def test_structured_field_round_trips_and_legacy_records_load_without_it(tmp_pat
     )
     loaded = FleetState(d).get("prefield")
     assert loaded is not None and loaded.structured is None
+
+
+def test_base_commit_sha_loads_and_branch_name_poison_is_stripped(tmp_path: Path) -> None:
+    """Valid sha base_commit round-trips; a pre-fix branch-name value loads as None (#173)."""
+    d = tmp_path / "runs"
+    st = FleetState(d)
+    sha = "90edd39921345d5a4262f9c848c304a6007eb890"
+    st.add(
+        RunRecord(
+            run_id="good",
+            task_id="t",
+            backend="cursor",
+            base_commit=sha,
+            branch="marshal/good",
+        )
+    )
+    got = st.get("good")
+    assert got is not None and got.base_commit == sha
+
+    raw_path = d / "poisoned.json"
+    raw_path.write_text(
+        '{"run_id":"poisoned","task_id":"t","backend":"cursor",'
+        '"status":"exited_clean","branch":"marshal/poisoned",'
+        '"base_commit":"marshal/poisoned"}',
+        encoding="utf-8",
+    )
+    poisoned = FleetState(d).get("poisoned")
+    assert poisoned is not None
+    assert poisoned.base_commit is None  # stripped, record still loads
