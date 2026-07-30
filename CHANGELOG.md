@@ -8,14 +8,20 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **`marshal init` scaffolds a starter `fleet.config.yaml`.** Repo-shape-aware stub via the
+  existing `scaffold_fleet_config` helper; does not touch the workspace registry. Refuses to
+  overwrite an existing config (exit 1). First-run docs and missing-config hints point here
+  instead of `marshal workspace add`.
+
 ### Fixed
 - **First-run docs and missing-config hints no longer dead-end.** SETUP/usage install
   commands match the working `git+https://` path (MarshalFleet is not on PyPI yet); README's
-  60-second path now scaffolds a config, says the scaffold ships its clients commented out, and
-  spawns a client that exists — the previous `--client composer` matched no shipped config; the
-  `doctor`/`spawn`/`status` samples match what the CLI actually prints; config errors point at
-  `marshal workspace add` (scaffolding is the default) instead of an unpackaged
-  `fleet.config.example.yaml` or a non-existent `--scaffold` flag; goose is listed with the other
+  60-second path now scaffolds a config via `marshal init`, says the scaffold ships its clients
+  commented out, and spawns a client that exists — the previous `--client composer` matched no
+  shipped config; the `doctor`/`spawn`/`status` samples match what the CLI actually prints;
+  config errors point at `marshal init` instead of an unpackaged `fleet.config.example.yaml`,
+  a non-existent `--scaffold` flag, or multi-repo `workspace add`; goose is listed with the other
   backend prerequisites.
 - **`marshal doctor` no longer reports "1 clients".** The config line pluralizes on count.
 - **Path-traversal `run_id`s are refused at the state/MCP boundary.** `run_id` was never

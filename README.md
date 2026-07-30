@@ -62,7 +62,7 @@ Backend CLI auth and MCP wiring: **[`SETUP.md`](SETUP.md)**.
 **1. Configure a fleet.** From your project repo, scaffold a starter `fleet.config.yaml`:
 
 ```bash
-marshal workspace add myproject   # path defaults to cwd; scaffolds fleet.config.yaml
+marshal init   # scaffolds fleet.config.yaml in the current repo
 ```
 
 The scaffold ships every client **commented out**, so uncomment at least one and save. Using the

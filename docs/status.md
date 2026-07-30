@@ -30,7 +30,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `teams.py` | Adversarial review teams - panels of independent read-only reviewers over one subject | done |
 | `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |
 | `service.py` | Testable core the MCP/CLI call into (single-repo) | done |
-| `cli.py` | `marshal doctor/backends/models/run/spawn/usage/status/logs/workflows/workflow/workspace/clean/mcp` | done |
+| `cli.py` | `marshal init/doctor/backends/models/run/spawn/usage/status/logs/workflows/workflow/workspace/clean/mcp` | done |
 | `mcp_server.py` | MCP surface over stdio ([`docs/mcp-tools.md`](mcp-tools.md)); each action/query tool takes an optional `workspace` | done |
 
 The experimental Cognee-backed Marshal Recall implementation is preserved on

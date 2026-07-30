@@ -549,6 +549,52 @@ def test_team_run_reports_a_config_error(tmp_path: Path, capsys: pytest.CaptureF
     assert "reviews target 'plan'" in capsys.readouterr()[1]
 
 
+# --- init (scaffold fleet.config.yaml without touching the registry) ------------------------
+
+
+def test_init_scaffolds_valid_zero_client_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`marshal init` writes a loadable zero-client stub and does not touch the registry."""
+    from marshal_engine.config import load_config
+    from marshal_engine.workspaces import workspaces_file_path
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    reg_file = tmp_path / "workspaces.yaml"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(reg_file))
+
+    assert cli.main(["init", "--repo", str(repo)]) == 0
+    out = capsys.readouterr()[0]
+    cfg_path = repo / "fleet.config.yaml"
+    assert cfg_path.exists()
+    assert str(cfg_path) in out
+    assert "marshal doctor" in out
+    assert load_config(cfg_path).clients == {}
+    assert not reg_file.exists()
+    assert not (home / ".marshal" / "workspaces.yaml").exists()
+    assert workspaces_file_path() == reg_file  # env pointed at our tmp registry path
+
+
+def test_init_refuses_to_overwrite_existing_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg_path = repo / "fleet.config.yaml"
+    original = b"clients: {}\n# keep me\n"
+    cfg_path.write_bytes(original)
+    monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(tmp_path / "workspaces.yaml"))
+
+    assert cli.main(["init", "--repo", str(repo)]) == 1
+    err = capsys.readouterr()[1]
+    assert "already exists" in err
+    assert cfg_path.read_bytes() == original
+
+
 # --- workspace registry subcommand ----------------------------------------------------------
 
 

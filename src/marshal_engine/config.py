@@ -214,8 +214,7 @@ def load_config(path: Path | str) -> FleetConfig:
     p = Path(path)
     if not p.exists():
         raise ConfigError(
-            f"no fleet config at {p}; scaffold one with "
-            "`marshal workspace add <name>` (scaffolding is the default), then edit it"
+            f"no fleet config at {p}; scaffold one with `marshal init`, then edit it"
         )
     raw_any: Any = yaml.safe_load(p.read_text(encoding="utf-8"))
     raw: dict[str, Any] = raw_any or {}

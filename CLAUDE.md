@@ -52,7 +52,7 @@ marshal/
 │   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
 │   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
 │   ├── mcp_server.py        # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
-│   └── cli.py               # `marshal` CLI (doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
+│   └── cli.py               # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus, marshal-adversarial-review
 ├── examples/                # runnable library_quickstart.py, a benchmark-output sample, workflows/ + teams/ starters
 ├── SETUP.md                 # clone-to-first-run setup guide
@@ -75,7 +75,7 @@ strict models there would reject on an unexpected upstream field. MCP server via
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` · `logs` · `workflows` · `workflow` · `workspace` · `clean` · `mcp`)
+- Run CLI: `uv run marshal` (`init` · `doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` · `logs` · `workflows` · `workflow` · `workspace` · `clean` · `mcp`)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)

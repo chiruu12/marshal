@@ -62,7 +62,7 @@ test/lint toolchain.
 From your project repo, scaffold a starter config:
 
 ```bash
-marshal workspace add myproject   # path defaults to cwd; scaffolds fleet.config.yaml
+marshal init   # scaffolds fleet.config.yaml in the current repo
 ```
 
 The scaffold ships every client commented out — uncomment at least one (or add your own). A
@@ -286,6 +286,7 @@ the default workspace.
 ## Use it as a CLI
 
 ```bash
+marshal init               # scaffold a starter fleet.config.yaml in the current repo
 marshal doctor             # preflight: toolchain, auth, and safe-edit permission_fidelity
 marshal backends           # list backends, availability, and permission_fidelity
 marshal models             # list the optional `models:` catalog from fleet.config.yaml

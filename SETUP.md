@@ -60,7 +60,7 @@ A **client** is a named worker pinning a backend + model + permission. From your
 scaffold a starter config:
 
 ```bash
-marshal workspace add myproject   # path defaults to cwd; scaffolds fleet.config.yaml
+marshal init   # scaffolds fleet.config.yaml in the current repo
 ```
 
 The scaffold ships every client commented out — uncomment at least one (or add your own) so the
@@ -236,7 +236,7 @@ until you `integrate`. State and usage live under `.marshal/`.
 | `doctor` says a backend's CLI is not available | the CLI isn't installed or isn't authenticated | install + log into that CLI (Prerequisites table) |
 | `doctor` says a backend's CLI is missing but it works in your terminal | Marshal was launched with a stripped PATH (MCP host, launchd, non-interactive SSH) | Marshal unions well-known user bin dirs (`~/.local/bin`, Homebrew, …) via `user_path()`; ensure the CLI is on your login-shell PATH, or set `MARSHAL_NO_PATH_FIX=1` only in hermetic CI |
 | a run ends `verify_failed` | the workspace's `verify:` gate rejected work that otherwise looked succeeded | read `verify_output` on the run record, `collect_run` the diff, fix or re-run; the worktree is kept for review |
-| `no fleet config at …` | no `fleet.config.yaml` | `marshal workspace add <name>` (scaffolds a starter; edit clients) |
+| `no fleet config at …` | no `fleet.config.yaml` | `marshal init` (scaffolds a starter; edit clients) |
 | `marshal mcp` exits with an extra message | the `mcp` extra isn't installed | `uv sync --extra mcp` |
 | OpenCode model rejected at load | a `fireworks-ai/*` model bills Fireworks credits | use an `opencode-go/*` model |
 | a backend run shows cost `unavailable` | the backend reports no native cost and no `usage_api` backfill | configure `usage_api: eastrouter` for Codex via EastRouter, or use a native-cost backend |

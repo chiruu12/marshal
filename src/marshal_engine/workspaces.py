@@ -365,13 +365,15 @@ def build_service_for(
         if missing_config == "legacy":
             _warn(
                 f"no fleet config at {wdef.config_path}; starting with zero clients. "
-                "Scaffold one with `marshal workspace add <name>` (scaffolding is the default), "
+                "Scaffold one with `marshal init`, "
                 "or set MARSHAL_CONFIG / pass --repo/--config, then retry. See SETUP.md."
             )
         elif missing_config == "workspace":
+            # Named registered workspace (not the default/current repo — that uses `marshal init`).
             _warn(
                 f"workspace {wdef.name!r}: no fleet config at {wdef.config_path}; starting with zero "
-                "clients. Add one with `marshal workspace add <name>` (scaffolding is the default), "
+                "clients. Add one with `marshal workspace add <name>` (scaffolds by default; "
+                "pass `--no-scaffold` to skip), "
                 "or set MARSHAL_CONFIG (default workspace). See SETUP.md."
             )
         return MarshalService(

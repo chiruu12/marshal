@@ -649,6 +649,18 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     return 1 if result.errors else 0
 
 
+def _cmd_init(args: argparse.Namespace) -> int:
+    """Scaffold a starter ``fleet.config.yaml`` into the repo. Does not touch the workspace registry."""
+    repo = _resolve_repo(args)
+    cfg_path = repo / "fleet.config.yaml"
+    if not scaffold_fleet_config(repo):
+        print(f"error: {cfg_path} already exists; not overwriting", file=sys.stderr)
+        return 1
+    print(f"wrote {cfg_path}")
+    print("Uncomment at least one client, then run `marshal doctor`.")
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
     cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
@@ -832,6 +844,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="only clean runs that ended at least this many hours ago")
     pc.add_argument("--dry-run", action="store_true", help="preview without removing anything")
     pc.add_argument("--json", action="store_true", help="output JSON")
+    pi = sub.add_parser("init", help="scaffold a starter fleet.config.yaml in the repo")
+    pi.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pd = sub.add_parser("doctor", help="preflight: check the setup is ready to run agents")
     pd.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pd.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
@@ -907,6 +921,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_logs(args)
     if args.cmd == "clean":
         return _cmd_clean(args)
+    if args.cmd == "init":
+        return _cmd_init(args)
     if args.cmd == "doctor":
         return _cmd_doctor(args)
     if args.cmd == "workflows":
