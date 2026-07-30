@@ -34,10 +34,12 @@ class _FakeBackend(CodingAgentBackend):
         account: dict[str, str] | None = None,
         verifies_auth: bool = False,
         permission_fidelity: PermissionFidelity = PermissionFidelity.BOUNDARY_ONLY,
+        credential_env_vars: tuple[str, ...] = (),
     ) -> None:
         self.name = name
         self.binary = name
         self.capabilities = Capabilities(permission_fidelity=permission_fidelity)
+        self.credential_env_vars = credential_env_vars
         self._available = available
         self._account = account
         self._verifies_auth = verifies_auth
@@ -314,8 +316,33 @@ def test_set_secret_is_ok(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCODE_API_KEY", "sk-test")
     repo = _git_repo(tmp_path / "repo")
     cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
-    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    # Match real OpenCode: OPENCODE_API_KEY is on the credential allowlist and is forwarded.
+    checks = run_checks(
+        repo,
+        cfg,
+        backends={
+            "opencode": _FakeBackend(
+                "opencode", available=True, credential_env_vars=("OPENCODE_API_KEY",)
+            )
+        },
+    )
     assert _by_name(checks, "secret:impl").status == OK
+    assert _by_name(checks, "child-env:opencode").status == OK
+    assert "OPENCODE_API_KEY=set→forwarded" in _by_name(checks, "child-env:opencode").detail
+    assert "child-env-secret:impl" not in _names(checks)
+
+
+def test_doctor_warns_when_secret_ref_var_is_not_forwarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-test-long")
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
+    # Fake with empty credential allowlist: secret_ref var is set but will not reach the child.
+    checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
+    warn = _by_name(checks, "child-env-secret:impl")
+    assert warn.status == WARN
+    assert "NOT on the opencode credential allowlist" in warn.detail
 
 
 def test_bad_config_fails_and_skips_backend_checks(tmp_path: Path) -> None:

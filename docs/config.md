@@ -28,8 +28,8 @@ Each entry under `clients:` is a named client. The YAML key is the client name (
 | `model` | string \| omitted | `null` | Model id passed to the backend. OpenCode with no model defaults to `opencode-go/glm-5.2` at resolve time. OpenCode `fireworks-ai/*` models are rejected at load. Goose rejects malformed `provider/` / `/model` strings before spawn. | `model: claude-sonnet-4-6` |
 | `permission` | `read-only` \| `safe-edit` \| `yolo` | from `defaults` | Overrides the fleet default for this client. | `permission: safe-edit` |
 | `timeout_s` | int | from `defaults` | Per-client hard timeout (seconds). | `timeout_s: 600` |
-| `env` | map of strings | `{}` | Literal environment variables merged into each agent child for this client only (provider routing, e.g. `CODEX_HOME`). A leading `~` in values is expanded. **Refused at load:** empty keys; `PATH` (Marshal merges the user's interactive PATH at engine entry — overriding it here would break that recovery); any key whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` (case-insensitive) — use `secret_ref` for credentials, not literal secrets in config. Does not undo Marshal's child-env hygiene (`VIRTUAL_ENV`, `MARSHAL_*` are stripped regardless). | `env: { CODEX_HOME: ~/.codex-eastrouter }` |
-| `secret_ref` | string \| omitted | `null` | **Advisory only.** When set to `env:VAR`, `marshal doctor` warns if `VAR` is unset. Marshal does **not** inject this into the backend process — each CLI authenticates via its own login. | `secret_ref: env:ANTHROPIC_API_KEY` |
+| `env` | map of strings | `{}` | Literal environment variables merged into each agent child for this client only. **This is the allowlist escape hatch:** agent children inherit only an operational base set plus that backend's credential vars (see below); use `env:` to pass an extra **non-secret** var the base set omits (provider routing, e.g. `CODEX_HOME`). A leading `~` in values is expanded. **Refused at load:** empty keys; `PATH` (Marshal merges the user's interactive PATH at engine entry — overriding it here would break that recovery); any key whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` (case-insensitive) — credentials are not configured here. Does not undo Marshal's hygiene (`VIRTUAL_ENV`, `MARSHAL_*` are never inherited; `extra_env` from backend `prepare()` can still set them). There is no blanket "inherit the driver environment" flag. | `env: { CODEX_HOME: ~/.codex-eastrouter }` |
+| `secret_ref` | string \| omitted | `null` | **Advisory only.** When set to `env:VAR`, `marshal doctor` warns if `VAR` is unset. Marshal does **not** inject `secret_ref` into the child. Each backend may forward a small fixed credential allowlist from the parent when present (e.g. `claude-code` → `ANTHROPIC_API_KEY`, `cursor` → `CURSOR_API_KEY`, `codex` → `OPENAI_API_KEY`/`CODEX_API_KEY`, `opencode` → `OPENCODE_API_KEY`, `command-code` → `COMMAND_CODE_API_KEY`, `antigravity` → `ANTIGRAVITY_API_KEY`, `goose` → `GOOSE_PROVIDER`/`GOOSE_MODEL`). Prefer CLI login; `marshal doctor` reports `child-env:<backend>` forwarding and warns when a set `secret_ref` var is not on that backend's allowlist. | `secret_ref: env:ANTHROPIC_API_KEY` |
 | `usage_api` | string \| omitted | `null` | Optional provider usage API to fetch **real** post-run cost (e.g. `eastrouter`). Unset = price from the local table or `unavailable`. | `usage_api: eastrouter` |
 
 ### `context`
@@ -162,6 +162,30 @@ Register workspaces with `marshal workspace add` (the recommended, operator-run 
 hot-reloaded for **additions** without reconnecting. The MCP `add_workspace` tool is an explicit
 server opt-in: it refuses unless the server was started with
 `MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1` (see below).
+
+## Child process environment (agents + worktree setup)
+
+Spawned agent processes do **not** inherit the driver's full `os.environ`. Marshal builds a
+child env from:
+
+1. **Operational base** — `PATH`, `HOME`/`USER`/`SHELL`, `TERM`, temp dirs, `LANG`/`LC_*`,
+   `TZ`, proxy vars, `SSL_CERT_*` / CA bundle vars, `XDG_*`, and on macOS `__CF*` / `__PYVENV*`
+   (plus a small set of Windows identity/path roots). Loader-hijack and credential-shaped
+   names are excluded.
+2. **That backend's credential vars only** — see `secret_ref` row above; a cursor run never
+   sees `ANTHROPIC_API_KEY`.
+3. **Per-client `env:` literals** — the escape hatch for an omitted non-secret var.
+4. **Backend `prepare()` / `extra_env`** — e.g. `GOOSE_MODE`, `OPENCODE_CONFIG_CONTENT`.
+
+`VIRTUAL_ENV`, `PYTHONHOME`, and every `MARSHAL_*` session var are always dropped from the
+parent (unless deliberately re-set via `extra_env`). Worktree `setup` / `verify` use the same
+operational base with **no** backend credentials.
+
+**Upgrade note:** if a backend suddenly fails to authenticate after upgrading, run
+`marshal doctor` and check `child-env:<backend>`. Env-based provider keys that are not on that
+backend's allowlist (e.g. using `ANTHROPIC_API_KEY` with OpenCode instead of
+`opencode auth login`) are no longer ambiently inherited — use the CLI login, or a credential
+var that backend forwards.
 
 ## Environment variables
 

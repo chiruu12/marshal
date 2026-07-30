@@ -56,6 +56,7 @@ _STATIC_MODELS: tuple[str, ...] = (
 class ClaudeCodeBackend(CodingAgentBackend):
     name = "claude-code"
     binary = "claude"
+    credential_env_vars = ("ANTHROPIC_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
         stream_json=True,

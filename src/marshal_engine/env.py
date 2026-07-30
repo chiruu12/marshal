@@ -1,11 +1,13 @@
 """Environment hygiene for subprocesses Marshal spawns (agents + worktree setup).
 
-The driver typically runs inside its own activated virtualenv, so ``os.environ`` carries
-``VIRTUAL_ENV`` (and sometimes ``PYTHONHOME``) pointing at the DRIVER's interpreter. Every agent
-runs in an isolated worktree with its own ``.venv``; if a child inherits the driver's
-``VIRTUAL_ENV``, tools like ``uv run`` / ``python`` resolve to the driver's environment instead of
-the worktree's - so an agent's ``uv run pytest`` silently tests the driver's installed code, not the
-worktree's edits. Stripping those vars makes each child resolve its own worktree environment.
+Children receive an **allowlist**, not a copy of the driver's ``os.environ``. The base set is
+operational (PATH, locale, certs, XDG, …). Each backend may also declare its own credential vars
+(``CodingAgentBackend.credential_env_vars``); only that backend's run sees them. Everything else
+is dropped — including ``LEAKY_VENV_VARS``, every ``MARSHAL_*`` session var, and unrelated secrets
+(``AWS_*``, ``GH_TOKEN``, another backend's API key, …).
+
+Per-client ``env:`` (fleet config) still layers non-secret literals after the allowlist — that is
+the escape hatch for an operational var the base set omits. There is no "inherit everything" flag.
 
 The driver can also launch Marshal with a stripped PATH (an MCP host spawned by a windowserver
 process inherits a tiny default PATH, not the user's zshrc PATH). User-installed CLIs
@@ -22,10 +24,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
-# Vars that pin a child to the driver's Python install; cleared so the worktree's own environment
-# (its `.venv`) wins. PATH is intentionally NOT touched by child_env - uv/git/the backend CLIs
+# Vars that pin a child to the driver's Python install; never inherited from the parent (``extra``
+# may still set them deliberately). PATH is intentionally allowlisted - uv/git/the backend CLIs
 # need it (and merge_user_path, called once at engine entry, sets it up before that).
 LEAKY_VENV_VARS = ("VIRTUAL_ENV", "PYTHONHOME")
 
@@ -33,10 +36,95 @@ LEAKY_VENV_VARS = ("VIRTUAL_ENV", "PYTHONHOME")
 # a worker's tests and `marshal` CLI resolve the worktree, not the driver's repo/config.
 _MARSHAL_PREFIX = "MARSHAL_"
 
+# Minimum length for a credential *value* to be redacted in logs / run text. Shorter values
+# (e.g. "1", "true") would over-redact ordinary output.
+_REDACT_MIN_VALUE_LEN = 8
+
+# Exact names every child genuinely needs. Err toward operational usefulness; exclude anything
+# credential-shaped or loader-hijack (LD_PRELOAD, PYTHONPATH, NODE_OPTIONS, GIT_SSH_COMMAND, …).
+_BASE_ENV_EXACT: frozenset[str] = frozenset(
+    {
+        # Process / user identity
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "USERNAME",  # Windows
+        "SHELL",
+        "TERM",
+        "TERMINFO",
+        "COLORTERM",
+        "NO_COLOR",
+        "FORCE_COLOR",
+        "COLUMNS",
+        "LINES",
+        "TZ",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        # Temp dirs (CLIs and subprocess tools)
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        # Locale (exact; LC_* also matched by prefix below)
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        # TLS / CA bundles (confusing failures without these)
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "CERT_PATH",
+        # HTTP(S) proxies (case variants — some tools only read one)
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        # Windows path roots (CLI config under USERPROFILE / APPDATA)
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+    }
+)
+
+# Prefixes for operational families. ``__CF`` / ``__PYVENV`` are macOS runtime glue (text encoding,
+# venv launcher); without them some Apple Python / GUI-adjacent lookups fail oddly.
+_BASE_ENV_PREFIXES: tuple[str, ...] = (
+    "LC_",
+    "XDG_",
+    "SSL_CERT_",
+    "__CF",
+    "__PYVENV",
+)
+
 
 def _is_marshal_env_var(name: str) -> bool:
     """True when ``name`` is a Marshal session variable (``MARSHAL_*``), not a similar prefix."""
     return name.startswith(_MARSHAL_PREFIX)
+
+
+def is_base_env_var(name: str) -> bool:
+    """True when ``name`` is on the operational allowlist (exact or prefix)."""
+    if name in _BASE_ENV_EXACT:
+        return True
+    return any(name.startswith(p) for p in _BASE_ENV_PREFIXES)
+
+
+def base_env_var_names() -> frozenset[str]:
+    """Exact operational names (prefixes are matched dynamically via ``is_base_env_var``)."""
+    return _BASE_ENV_EXACT
+
 
 # Shell candidates (in order) used to derive the user's interactive PATH. $SHELL first so the
 # answer matches what the user would see in a fresh terminal of THEIR shell, then common
@@ -82,23 +170,27 @@ def child_env(
     extra: dict[str, str] | None = None,
     *,
     client: dict[str, str] | None = None,
+    credentials: Sequence[str] = (),
 ) -> dict[str, str]:
-    """``os.environ`` minus driver leaks, with per-client ``client`` then ``extra`` layered on top.
+    """Allowlisted child environment, with per-client ``client`` then ``extra`` layered on top.
 
-    Strips ``LEAKY_VENV_VARS`` (the driver's activated venv pins) and every ``MARSHAL_*`` session
-    variable (``MARSHAL_CONFIG``, ``MARSHAL_REPO``, …). Without the latter, a worker running the
-    repo's test suite or invoking ``marshal`` inherits the driver's config path and silently targets
-    the driver's repo instead of its own worktree.
+    Starts from the operational base set (``is_base_env_var``) plus ``credentials`` (the running
+    backend's ``credential_env_vars``). Drops ``LEAKY_VENV_VARS``, every ``MARSHAL_*`` session
+    variable, and everything else in the parent — so a cursor agent never sees
+    ``ANTHROPIC_API_KEY`` / ``AWS_*`` / ``GH_TOKEN``.
 
-    Per-client ``client`` env is applied after the scrub; keys that would undo hygiene (venv pins,
-    ``MARSHAL_*``, ``PATH``) are ignored. ``extra`` wins last, so backend ``prepare()`` stamps
-    (``GOOSE_MODE``, …) and deliberate ``extra_env`` overrides still reach the child.
+    Per-client ``client`` env is applied after the allowlist; keys that would undo hygiene (venv
+    pins, ``MARSHAL_*``, ``PATH``) are ignored. ``extra`` wins last, so backend ``prepare()`` stamps
+    (``GOOSE_MODE``, ``OPENCODE_CONFIG_CONTENT``, …) and deliberate ``extra_env`` overrides still
+    reach the child even when not on the allowlist.
     """
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in LEAKY_VENV_VARS and not _is_marshal_env_var(k)
-    }
+    cred_set = frozenset(credentials)
+    env: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if k in LEAKY_VENV_VARS or _is_marshal_env_var(k):
+            continue
+        if is_base_env_var(k) or k in cred_set:
+            env[k] = v
     if client:
         for k, v in client.items():
             if k in LEAKY_VENV_VARS or _is_marshal_env_var(k) or k == "PATH":
@@ -107,6 +199,70 @@ def child_env(
     if extra:
         env.update(extra)
     return env
+
+
+def all_credential_env_vars(
+    backends: Mapping[str, object] | None = None,
+) -> frozenset[str]:
+    """Union of every backend's ``credential_env_vars`` (for log redaction / doctor).
+
+    ``backends`` defaults to ``default_backends()`` so redaction covers credentials even when the
+    run used a different adapter than the one that leaked the value into stdout.
+    """
+    if backends is None:
+        from .registry import default_backends
+
+        backends = default_backends()
+    names: set[str] = set()
+    for backend in backends.values():
+        for name in getattr(backend, "credential_env_vars", ()) or ():
+            names.add(str(name))
+    return frozenset(names)
+
+
+def credential_redactions(
+    environ: Mapping[str, str] | None = None,
+    *,
+    credential_names: Iterable[str] | None = None,
+    min_len: int = _REDACT_MIN_VALUE_LEN,
+) -> list[tuple[str, str]]:
+    """``(env_var_name, value)`` pairs to scrub from logs, longest values first.
+
+    Only values of length ``>= min_len`` are included so short tokens do not mangle ordinary text.
+    """
+    env = os.environ if environ is None else environ
+    names = (
+        frozenset(credential_names)
+        if credential_names is not None
+        else all_credential_env_vars()
+    )
+    pairs: list[tuple[str, str]] = []
+    for name in names:
+        value = env.get(name)
+        if value is not None and len(value) >= min_len:
+            pairs.append((name, value))
+    # Longest first so a value that is a prefix of another is not partially replaced.
+    pairs.sort(key=lambda item: len(item[1]), reverse=True)
+    return pairs
+
+
+def redact_secrets(
+    text: str,
+    environ: Mapping[str, str] | None = None,
+    *,
+    credential_names: Iterable[str] | None = None,
+    min_len: int = _REDACT_MIN_VALUE_LEN,
+) -> str:
+    """Replace known credential *values* in ``text`` with ``[redacted:VAR]`` markers."""
+    if not text:
+        return text
+    out = text
+    for name, value in credential_redactions(
+        environ, credential_names=credential_names, min_len=min_len
+    ):
+        if value in out:
+            out = out.replace(value, f"[redacted:{name}]")
+    return out
 
 
 def _existing_fallback_path(dirs: tuple[str, ...]) -> str:

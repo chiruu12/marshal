@@ -42,6 +42,19 @@ versions may include breaking API changes until 1.0.
 - **Codex stock model id is `gpt-5.6-luna`.** Scaffold stub, static `available_models()`,
   playbook, and docs now pin the ChatGPT-account Codex identifier verified with the live CLI
   (`gpt-5.6` alone is rejected).
+- **Agent children inherit an env allowlist, not the driver's full environment (#179).**
+  Previously `child_env()` copied all of `os.environ` (scrubbing only `VIRTUAL_ENV` /
+  `PYTHONHOME` / `MARSHAL_*`), so every spawned agent saw ambient credentials
+  (`ANTHROPIC_API_KEY`, `AWS_*`, `GH_TOKEN`, `EASTROUTER_API_KEY`, …). Children now receive
+  operational vars plus that backend's own credential allowlist only; unrelated secrets are
+  dropped. Per-client `env:` remains the escape hatch for omitted **non-secret** vars
+  (secret-shaped keys and `PATH` still refused). Run logs and the 16KB run-record `text`
+  redact known credential *values* before persistence. `marshal doctor` reports
+  `child-env` / `child-env:<backend>` forwarding and warns when a set `secret_ref` var is not
+  on that backend's allowlist. **Upgrade:** if a backend fails auth after upgrading, check
+  `marshal doctor` — env-based keys that are not on the backend allowlist are no longer
+  inherited; prefer CLI login (`opencode auth login`, etc.). See `docs/config.md` and
+  `SECURITY.md`.
 
 ## [0.2.0] - 2026-07-30
 

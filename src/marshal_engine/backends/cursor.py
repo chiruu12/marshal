@@ -81,6 +81,7 @@ _STATIC_MODELS: tuple[str, ...] = ("composer-2.5",)
 class CursorBackend(CodingAgentBackend):
     name = "cursor"
     binary = "cursor-agent"
+    credential_env_vars = ("CURSOR_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
         stream_json=True,

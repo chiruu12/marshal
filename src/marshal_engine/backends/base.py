@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from ..env import child_env
 from ..types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord
@@ -59,6 +59,9 @@ class CodingAgentBackend(ABC):
     capabilities: Capabilities
     #: normalized permission tier -> native argv flags; subclasses populate this table
     _PERMISSION: dict[PermissionMode, list[str]] = {}
+    #: Parent env vars this backend may need for CLI auth (API keys). Only this backend's
+    #: run forwards them; a cursor child never sees ``ANTHROPIC_API_KEY``. Empty by default.
+    credential_env_vars: ClassVar[tuple[str, ...]] = ()
 
     # --- hooks subclasses must implement -------------------------------------------------
 
@@ -221,9 +224,13 @@ class CodingAgentBackend(ABC):
             )
 
         argv = self.build_invocation(task, opts)
-        # Scrub the driver's VIRTUAL_ENV/PYTHONHOME so the agent's tooling (uv/python) resolves the
-        # worktree's own environment, not the driver's - otherwise `uv run pytest` tests stale code.
-        env = child_env(opts.extra_env, client=opts.client_env)
+        # Allowlisted child env: operational base + this backend's credentials only. Unrelated
+        # secrets (AWS_*, GH_TOKEN, another backend's API key) never reach the agent.
+        env = child_env(
+            opts.extra_env,
+            client=opts.client_env,
+            credentials=self.credential_env_vars,
+        )
 
         try:
             proc = subprocess.Popen(
@@ -292,6 +299,13 @@ class CodingAgentBackend(ABC):
             # parse_output found no reason (e.g. the backend errored outside its JSON stream).
             # Consult stderr first, then stdout — Goose and others bury provider failures on stdout.
             result.error = _failure_reason(self.name, proc.returncode, err, out)
+        elif (
+            result.status is RunStatus.FAILED
+            and result.error
+            and _looks_like_auth_failure(result.error)
+            and _AUTH_ALLOWLIST_HINT not in result.error
+        ):
+            result.error = f"{result.error} ({_AUTH_ALLOWLIST_HINT})"
         return result
 
     def _recover_partial_usage(self, stdout: str, stderr: str) -> UsageRecord | None:
@@ -361,15 +375,47 @@ def _as_text(value: object) -> str:
     return str(value)
 
 
+_AUTH_FAILURE_MARKERS = (
+    "auth",
+    "unauthoriz",
+    "unauthenticated",
+    "not logged in",
+    "please log in",
+    "invalid api key",
+    "invalid_api_key",
+    "api key",
+    "authentication",
+    "401",
+    "403",
+)
+
+
+def _looks_like_auth_failure(text: str) -> bool:
+    lower = text.lower()
+    return any(marker in lower for marker in _AUTH_FAILURE_MARKERS)
+
+
+_AUTH_ALLOWLIST_HINT = (
+    "if this backend authenticates via an env API key, confirm that key is on its "
+    "credential allowlist and present in the parent environment "
+    "(see `marshal doctor` / docs/config.md); CLI login may still be required"
+)
+
+
 def _failure_reason(name: str, exit_code: int, stderr: str, stdout: str = "") -> str:
     """Debuggable reason when parse_output left error empty: exit code + stderr/stdout tail.
 
     Prefer stderr; fall back to stdout (some CLIs, notably Goose, print provider/config failures
     only on stdout). Prefer lines that look like ``error:`` / ``Error `` when present.
+    Auth-shaped failures get an env-allowlist hint so a missing forwarded key is diagnosable.
     """
     tail = _failure_tail(stderr) or _failure_tail(stdout)
     reason = f"{name}: exited with code {exit_code}"
-    return f"{reason}: {tail}" if tail else reason
+    if tail:
+        reason = f"{reason}: {tail}"
+    if _looks_like_auth_failure(tail or reason):
+        reason = f"{reason} ({_AUTH_ALLOWLIST_HINT})"
+    return reason
 
 
 def _failure_tail(blob: str, limit: int = 500) -> str:

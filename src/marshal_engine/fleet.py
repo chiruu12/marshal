@@ -41,7 +41,7 @@ from .budgets import check_budget as check_budget
 from .budgets import compute_budget_status as compute_budget_status
 from .config import BudgetSpec
 from .eastrouter import CostResolver, default_cost_resolvers
-from .env import merge_user_path
+from .env import merge_user_path, redact_secrets
 from .layout import marshal_dir
 from .logs import RunLogStore
 from .retry import RetryPolicy, is_transient_failure
@@ -1799,7 +1799,8 @@ class Fleet:
                 output_tokens=event.output_tokens,
                 duration_ms=result.duration_ms,
                 source=event.source,
-                text=result.text[:16000],  # the agent's final message, so reply/analysis tasks are reviewable
+                # Final message for review; redact credential values (same pass as run logs).
+                text=redact_secrets(result.text[:16000]),
                 structured=result.structured,
                 ended_at=_now(),
                 error=result.error,

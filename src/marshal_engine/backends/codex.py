@@ -51,6 +51,7 @@ _STATIC_MODELS: tuple[str, ...] = ("gpt-5.6-luna",)
 class CodexBackend(CodingAgentBackend):
     name = "codex"
     binary = "codex"
+    credential_env_vars = ("OPENAI_API_KEY", "CODEX_API_KEY")
     capabilities = Capabilities(
         json_output=True,
         stream_json=True,

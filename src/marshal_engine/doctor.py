@@ -16,6 +16,7 @@ Severity:
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from .config import (
     resolve_secret,
     setup_command_refusal,
 )
+from .env import is_base_env_var
 from .layout import runs_dir
 from .registry import default_backends, make_backend
 from .state import FleetState, RunRecord
@@ -398,6 +400,11 @@ def run_checks(
             )
         )
 
+    # --- child env allowlist (what agent subprocesses actually inherit) ----------------------
+    # Agents no longer inherit the driver's full environment. Surface the policy so a sudden
+    # "backend cannot authenticate" is diagnosable without reading source.
+    checks.extend(_child_env_checks(config, probes))
+
     # --- trust-boundary / hygiene advisories (config present; never FAIL these) --------------
     if config.worktree_setup or config.verify:
         fields: list[str] = []
@@ -493,6 +500,88 @@ def run_checks(
             )
         )
 
+    return checks
+
+
+def _child_env_checks(
+    config: FleetConfig,
+    probes: Mapping[str, CodingAgentBackend],
+) -> list[Check]:
+    """Describe the child-env allowlist and which backend credentials will be forwarded."""
+    checks: list[Check] = []
+    # Count how many parent vars currently match the operational base (for a concrete signal).
+    base_present = sorted(k for k in os.environ if is_base_env_var(k))
+    checks.append(
+        Check(
+            "child-env",
+            OK,
+            (
+                f"agents inherit an allowlist only "
+                f"({len(base_present)} operational var(s) present in parent; "
+                f"unrelated secrets like AWS_*/GH_TOKEN are dropped)"
+            ),
+            "to pass an extra non-secret var, set it under the client's env: in fleet.config.yaml "
+            "(secret-shaped keys and PATH are refused); see docs/config.md",
+        )
+    )
+    for backend_name in sorted({c.backend for c in config.clients.values()}):
+        backend = probes.get(backend_name)
+        if backend is None:
+            try:
+                backend = make_backend(backend_name)
+            except ValueError:
+                continue
+        creds = tuple(backend.credential_env_vars)
+        if not creds:
+            checks.append(
+                Check(
+                    f"child-env:{backend_name}",
+                    OK,
+                    "no credential env vars forwarded (CLI login / config files only)",
+                )
+            )
+            continue
+        parts: list[str] = []
+        for var in creds:
+            parts.append(f"{var}={'set→forwarded' if var in os.environ else 'unset'}")
+        checks.append(
+            Check(
+                f"child-env:{backend_name}",
+                OK,
+                f"forwards {', '.join(parts)}",
+            )
+        )
+
+    # secret_ref naming a var that this backend will NOT forward — common upgrade footgun.
+    for c in config.clients.values():
+        if not (c.secret_ref and c.secret_ref.startswith("env:")):
+            continue
+        var = c.secret_ref[len("env:") :]
+        if var not in os.environ:
+            continue
+        backend = probes.get(c.backend)
+        if backend is None:
+            try:
+                backend = make_backend(c.backend)
+            except ValueError:
+                continue
+        if var in backend.credential_env_vars:
+            continue
+        checks.append(
+            Check(
+                f"child-env-secret:{c.name}",
+                WARN,
+                (
+                    f"{var} is set in the parent environment but is NOT on the "
+                    f"{c.backend} credential allowlist — the agent child will not receive it"
+                ),
+                (
+                    f"authenticate via the {c.backend} CLI login, or use a credential var that "
+                    f"backend forwards (see child-env:{c.backend}); "
+                    f"secret_ref is advisory only and never injects"
+                ),
+            )
+        )
     return checks
 
 

@@ -20,7 +20,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `registry.py` | Construct backends by name | done |
 | `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
 | `retry.py` | Transient-failure classifier + backoff for run retries | done |
-| `env.py` | Child env hygiene (`VIRTUAL_ENV` scrub) + user PATH recovery | done |
+| `env.py` | Child env allowlist (operational + per-backend credentials) + user PATH recovery + log redaction helpers | done |
 | `logs.py` | Durable per-run stdout/stderr under `.marshal/logs/` | done |
 | `layout.py` | Centralized `.marshal` directory layout helpers | done |
 | `scaffold.py` | Repo-shape-aware `fleet.config.yaml` scaffold | done |

@@ -1,12 +1,16 @@
-"""Durable per-run log storage - the full raw stdout/stderr of one run, persisted to disk.
+"""Durable per-run log storage - the full stdout/stderr of one run, persisted to disk.
 
 The driver (or MCP server) needs to inspect what an agent actually did after the fact. Today the
-engine stamps a 16KB-truncated `text` on the run record, but the *full* raw subprocess output (the
+engine stamps a 16KB-truncated `text` on the run record, but the *full* subprocess output (the
 whole stdout/stderr stream, not the parsed final message) lives only on the AgentResult and is
 discarded. This module keeps it: one file per run under `<base>/<run_id>.log` with a clear header
 (`=== run <run_id> ===`, `--- stdout ---` / content, `--- stderr ---` / content). Writes are atomic
 (unique temp + `os.replace`, same idiom as FleetState) so a torn read never sees partial content;
 the Fleet guards them defensively (a log write failure must never break a run).
+
+Before persistence, known credential *values* from the parent environment are replaced with
+``[redacted:VAR]`` markers (see ``env.redact_secrets``). Key-name-only filters miss ``env`` output
+and ``echo $VAR``; value-based redaction covers those.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from .env import redact_secrets
 from .worktree import validate_run_id
 
 
@@ -36,12 +41,15 @@ class RunLogStore:
         return self._path(run_id)
 
     def write(self, run_id: str, stdout: str, stderr: str) -> None:
-        """Persist the run's full raw stdout and stderr as a single, headed file (atomic).
+        """Persist the run's stdout and stderr as a single, headed file (atomic).
 
+        Credential values present in the parent environment are redacted before the write.
         Overwrites any prior log for the same run_id - the run has a new outcome to record.
         """
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._path(run_id)
+        safe_out = redact_secrets(stdout)
+        safe_err = redact_secrets(stderr)
         # A UNIQUE temp in the same dir, so two concurrent writes to the same run_id can't
         # remove each other's temp and crash the os.replace.
         fd, tmp = tempfile.mkstemp(dir=str(self.dir), prefix=f"{path.name}.", suffix=".tmp")
@@ -49,9 +57,9 @@ class RunLogStore:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(f"=== run {run_id} ===\n")
                 fh.write("--- stdout ---\n")
-                fh.write(stdout)
+                fh.write(safe_out)
                 fh.write("\n--- stderr ---\n")
-                fh.write(stderr)
+                fh.write(safe_err)
             os.replace(tmp, path)  # atomic: a reader sees either the old file or the whole new one
         except BaseException:
             with contextlib.suppress(OSError):

@@ -65,6 +65,8 @@ _STATIC_MODELS: tuple[str, ...] = ("cursor-agent/auto",)
 class GooseBackend(CodingAgentBackend):
     name = "goose"
     binary = "goose"
+    # GOOSE_MODE is stamped by prepare() via extra_env; provider/model may come from the parent.
+    credential_env_vars = ("GOOSE_PROVIDER", "GOOSE_MODEL")
     capabilities = Capabilities(
         json_output=True,
         stream_json=True,
