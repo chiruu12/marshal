@@ -323,6 +323,80 @@ def test_workflows_none_present(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert "no workflows" in capsys.readouterr()[0]
 
 
+def _repo_with_example_workflow(tmp_path: Path, body: str) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "examples" / "workflows").mkdir(parents=True)
+    (repo / "fleet.config.yaml").write_text(_FLEET)
+    (repo / "examples" / "workflows" / "review.yaml").write_text(body)
+    return repo
+
+
+def test_workflows_lists_example_recipes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_example_workflow(tmp_path, _VALID)
+    ret = cli.main(["workflows", "--repo", str(repo), "--json"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert [r["name"] for r in data] == ["review"]
+    assert data[0]["error"] is None
+
+
+def test_workflows_repo_shadows_example(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_example_workflow(tmp_path, _BAD_CLIENT)  # the shadowed copy's error stays hidden
+    (repo / "workflows").mkdir()
+    (repo / "workflows" / "review.yaml").write_text(_VALID)
+    ret = cli.main(["workflows", "--repo", str(repo), "--json"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert len(data) == 1
+    assert data[0]["error"] is None
+
+
+class _FakeRunner:
+    """Captures the resolved spec instead of executing phases (which would spawn agents)."""
+
+    captured: dict[str, object] = {}
+
+    def __init__(self, svc: object) -> None:
+        pass
+
+    def run(self, spec: object, inputs: dict[str, str], max_concurrency: int = 4) -> object:
+        _FakeRunner.captured = {"spec": spec, "inputs": inputs}
+
+        class _Result:
+            status = "completed"
+            phases: list[object] = []
+            next_actions: list[str] = []
+
+            def model_dump(self, mode: str = "json") -> dict[str, object]:
+                return {"status": self.status, "phases": [], "next_actions": []}
+
+        return _Result()
+
+
+def test_workflow_run_resolves_example_recipe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo_with_example_workflow(tmp_path, _VALID)
+    monkeypatch.setattr(cli, "WorkflowRunner", _FakeRunner)
+    ret = cli.main(["workflow", "run", "review", "--repo", str(repo), "--input", "target=x", "--json"])
+    assert ret == 0
+    spec = _FakeRunner.captured["spec"]
+    assert spec.name == "review"  # type: ignore[attr-defined]
+    assert _FakeRunner.captured["inputs"] == {"target": "x"}
+
+
+def test_workflow_run_prefers_repo_over_example(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo_with_example_workflow(tmp_path, _VALID.replace("name: review", "name: from-example"))
+    (repo / "workflows").mkdir()
+    (repo / "workflows" / "review.yaml").write_text(_VALID.replace("name: review", "name: from-repo"))
+    monkeypatch.setattr(cli, "WorkflowRunner", _FakeRunner)
+    ret = cli.main(["workflow", "run", "review", "--repo", str(repo), "--json"])
+    assert ret == 0
+    assert _FakeRunner.captured["spec"].name == "from-repo"  # type: ignore[attr-defined]
+
+
 # --- teams subcommand -------------------------------------------------------------------------
 
 
