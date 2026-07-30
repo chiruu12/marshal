@@ -362,9 +362,49 @@ def test_events_file_level_read_failure_still_propagates(tmp_path: Path) -> None
     """Fail-closed for REAL unreadable ledgers: only malformed *lines* are skipped (#142)."""
     usage = tmp_path / "usage"
     usage.mkdir()
-    # events.jsonl as a directory makes read_text raise IsADirectoryError (OSError).
+    # events.jsonl as a directory makes read_bytes raise IsADirectoryError (OSError).
     (usage / "events.jsonl").mkdir()
     with pytest.raises(OSError):
         UsageTracker(usage).events()
     with pytest.raises(OSError):
         UsageTracker(usage).summary()
+
+
+def test_events_strict_raises_on_torn_line(tmp_path: Path) -> None:
+    """Strict reader (enforce path) refuses when any line is unreadable."""
+    from marshal_engine.usage import UnreadableUsageLedgerError
+
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="ok", cost_usd=0.01))
+    with t.events_path.open("a", encoding="utf-8") as f:
+        f.write('{"ts":"2026-06-19T00:00:00Z","run_id":"torn","backend":"openco')
+
+    with pytest.raises(UnreadableUsageLedgerError, match="unreadable event") as ei:
+        t.events(strict=True)
+    assert ei.value.skipped == 1
+    assert "events.jsonl" in str(ei.value)
+    assert "repair or remove the torn line" in str(ei.value)
+
+    with pytest.raises(UnreadableUsageLedgerError):
+        t.summary(strict=True)
+
+
+def test_events_after_reads_only_appended_tail(tmp_path: Path) -> None:
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    t.record(_ev(run_id="b", cost_usd=0.02))
+    t.record(_ev(run_id="c", cost_usd=0.03))
+    tail = t.events_after(cursor)
+    assert [e.run_id for e in tail] == ["b", "c"]
+
+
+def test_events_after_truncated_raises(tmp_path: Path) -> None:
+    from marshal_engine.usage import UnreadableUsageLedgerError
+
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01))
+    _events, cursor = t.read_events()
+    t.events_path.write_bytes(b"")
+    with pytest.raises(UnreadableUsageLedgerError, match="truncated"):
+        t.events_after(cursor)
