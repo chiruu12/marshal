@@ -58,20 +58,30 @@ logger = logging.getLogger(__name__)
 _active_runs_guard = threading.Lock()
 _active_runs: dict[str, dict[str, "_RunHandle"]] = {}
 
+#: Test-only seam: called after cancel snapshots the handle and before it re-checks/signals.
+#: Production leaves this ``None``. Tests assign a callback to force the copy→reap window.
+_cancel_after_handle_snapshot: Callable[[], None] | None = None
+
+#: Sidecar written before ``worktrees.create`` and cleared after ``state.add`` so a concurrent
+#: ``clean`` in another process can see an in-progress creation (the create→add gap has no record).
+_CREATING_SUFFIX = ".creating"
+
 
 class _RunHandle:
     """Live state for a run started by THIS process, used to cancel it safely.
 
     A pid alone is not safe to signal: the OS recycles pids. A child's pid is held until its parent
     reaps it, so signalling is safe exactly while the run loop is between spawn and reap - which is
-    what ``exited`` tracks. ``cancel_requested`` covers the other end: a cancel that arrives before
-    the pid is known is applied as soon as it is.
+    what ``exited`` tracks. ``pid_start_time`` pairs with ``pid`` so a reaped-then-recycled number
+    is not signalled if ``exited`` has not been set yet. ``cancel_requested`` covers the other end:
+    a cancel that arrives before the pid is known is applied as soon as it is.
     """
 
-    __slots__ = ("pid", "exited", "cancel_requested")
+    __slots__ = ("pid", "pid_start_time", "exited", "cancel_requested")
 
     def __init__(self) -> None:
         self.pid: int | None = None
+        self.pid_start_time: str | None = None
         self.exited = False
         self.cancel_requested = False
 
@@ -103,9 +113,12 @@ def _publish_pid(handle: "_RunHandle", pid: int) -> bool:
 
     Clears ``exited``: a published pid means a LIVE child. The handle is reused across retries, so
     an exit recorded by a previous attempt would otherwise make cancel skip signalling the retry.
+    Stamps ``pid_start_time`` so cancel can refuse a recycled pid if reap races the signal.
     """
+    started = _pid_start_time(pid)
     with _active_runs_guard:
         handle.pid = pid
+        handle.pid_start_time = started
         handle.exited = False
         return handle.cancel_requested
 
@@ -118,6 +131,58 @@ def _inflight_handle(runs_dir: Path, run_id: str) -> "_RunHandle | None":
 
 def _inflight_in_this_process(runs_dir: Path, run_id: str) -> bool:
     return _inflight_handle(runs_dir, run_id) is not None
+
+
+def _creating_claim_path(runs_dir: Path, run_id: str) -> Path:
+    return runs_dir / f"{run_id}{_CREATING_SUFFIX}"
+
+
+def _write_creating_claim(runs_dir: Path, run_id: str) -> None:
+    """Durably mark ``run_id`` as mid-create so a cross-process orphan sweep will spare it."""
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    path = _creating_claim_path(runs_dir, run_id)
+    payload = json.dumps({"pid": os.getpid(), "pid_start_time": _pid_start_time(os.getpid())})
+    fd, tmp_str = tempfile.mkstemp(
+        dir=str(runs_dir), prefix=f"{run_id}.creating.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp_str, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_str)
+        raise
+
+
+def _clear_creating_claim(runs_dir: Path, run_id: str) -> None:
+    with contextlib.suppress(OSError):
+        _creating_claim_path(runs_dir, run_id).unlink()
+
+
+def _creating_claim_held(runs_dir: Path, run_id: str) -> bool:
+    """True when a live process holds a creating claim for ``run_id`` (cross-process).
+
+    Same pid + start-time identity as ``fleet.lock``. A dead/reused holder does not shield a
+    crash leftover; a corrupt claim is treated as absent so genuine orphans stay reclaimable.
+    """
+    path = _creating_claim_path(runs_dir, run_id)
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pid = int(data["pid"])
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, TypeError):
+        return False
+    if not _pid_alive(pid):
+        return False
+    recorded = data.get("pid_start_time")
+    if not isinstance(recorded, str) or not recorded:
+        return True  # older/unreadable stamp: assume held while the pid lives
+    now = _pid_start_time(pid)
+    if now is None:
+        return True  # cannot probe: spare rather than delete a possibly-live create
+    return now == recorded
 
 
 def _now() -> str:
@@ -1539,77 +1604,85 @@ class Fleet:
             # Globally unique: a retry or same-task fan-out must not collide on the branch, the worktree
             # dir, or the state record. task_id stays the grouping key on RunRecord.
             run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
-            # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
-            # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
-            # parallel instead of one-at-a-time behind the lock.
-            resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
-            # Renew the unbound placeholder while `git worktree add` runs so a slow-but-alive
-            # holder is not TTL-reclaimed mid-create; bind still verifies ownership on disk.
-            wt = None
+            # Claim BEFORE create: the create→add gap has a directory on disk but no run record, so
+            # a concurrent cross-process `clean` would otherwise treat it as an orphan (#181).
+            _write_creating_claim(self.state.dir, run_id)
             try:
-                with self._budget_gate.keep_alive(budget_keys):
-                    with self._create_lock:
-                        wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
-            except Exception:
-                if wt is not None:
-                    with contextlib.suppress(WorktreeError):
-                        self.worktrees.discard(str(wt.path), wt.branch)
-                raise
-            assert wt is not None  # create either returned or raised
-            # Pin the sha AFTER creation, from the new worktree's own branch tip. Resolving the ref
-            # beforehand was racy: if the base branch moved between the lookup and `worktree add`,
-            # the record claimed one commit while the worktree was cut from another, and reviews
-            # were then computed against a base the agent never had. The created branch's tip IS
-            # what it was cut from, so there is no window to lose.
-            resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
-            # Bind immediately after worktree create (before provision) so the durable
-            # reservation carries a real run_id for the long setup window. Bind before the
-            # RUNNING record so a reservation I/O / ownership failure is failure-atomic
-            # (discard worktree/branch, then re-raise; outer release frees the slot).
-            try:
-                self._budget_gate.bind(budget_keys, run_id)
-            except Exception:
-                with contextlib.suppress(WorktreeError):
-                    self.worktrees.discard(str(wt.path), wt.branch)
-                raise
-            if not defer_provisioning:
-                # Sync path (run_agent): provision before recording so a failure leaves no RUNNING
-                # zombie and no orphan worktree (M2). setup() tears down + raises on failure.
+                # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
+                # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
+                # parallel instead of one-at-a-time behind the lock.
+                resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
+                # Renew the unbound placeholder while `git worktree add` runs so a slow-but-alive
+                # holder is not TTL-reclaimed mid-create; bind still verifies ownership on disk.
+                wt = None
                 try:
-                    self._provision_worktree(wt, req)
+                    with self._budget_gate.keep_alive(budget_keys):
+                        with self._create_lock:
+                            wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
+                except Exception:
+                    if wt is not None:
+                        with contextlib.suppress(WorktreeError):
+                            self.worktrees.discard(str(wt.path), wt.branch)
+                    raise
+                assert wt is not None  # create either returned or raised
+                # Pin the sha AFTER creation, from the new worktree's own branch tip. Resolving the ref
+                # beforehand was racy: if the base branch moved between the lookup and `worktree add`,
+                # the record claimed one commit while the worktree was cut from another, and reviews
+                # were then computed against a base the agent never had. The created branch's tip IS
+                # what it was cut from, so there is no window to lose.
+                resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
+                # Bind immediately after worktree create (before provision) so the durable
+                # reservation carries a real run_id for the long setup window. Bind before the
+                # RUNNING record so a reservation I/O / ownership failure is failure-atomic
+                # (discard worktree/branch, then re-raise; outer release frees the slot).
+                try:
+                    self._budget_gate.bind(budget_keys, run_id)
                 except Exception:
                     with contextlib.suppress(WorktreeError):
                         self.worktrees.discard(str(wt.path), wt.branch)
                     raise
-            _register_inflight_run(self.state.dir, run_id)
-            self.state.add(
-                RunRecord(
-                    run_id=run_id,
-                    task_id=req.task.id,
-                    backend=req.backend_name,
-                    client=req.client,
-                    model=req.model,
-                    status=RunStatus.RUNNING.value,
-                    worktree=str(wt.path),
-                    branch=wt.branch,
-                    base_branch=resolved_base,
-                    base_commit=resolved_base_commit,
-                    # What this worktree's environment came from. `None` means it was provisioned
-                    # by nothing - a bare checkout - which is the sharpest form of the delta.
-                    # shlex.join, not " ".join: the scaffolded form is `sh -c "cd sub && uv sync"`,
-                    # and a plain join renders that as `sh -c cd sub && uv sync` - a DIFFERENT
-                    # command. Provenance that misdescribes what ran is worse than none, since the
-                    # whole point of this field is letting a driver trust where a number came from.
-                    # For deferred spawn this is the *configured* command (not yet run); on setup
-                    # failure the terminal error names the phase.
-                    worktree_setup=(
-                        shlex.join(self.worktrees.setup_cmd) if self.worktrees.setup_cmd else None
-                    ),
-                    read_paths=list(req.task.read_paths),
-                    started_at=started,
+                if not defer_provisioning:
+                    # Sync path (run_agent): provision before recording so a failure leaves no RUNNING
+                    # zombie and no orphan worktree (M2). setup() tears down + raises on failure.
+                    try:
+                        self._provision_worktree(wt, req)
+                    except Exception:
+                        with contextlib.suppress(WorktreeError):
+                            self.worktrees.discard(str(wt.path), wt.branch)
+                        raise
+                _register_inflight_run(self.state.dir, run_id)
+                self.state.add(
+                    RunRecord(
+                        run_id=run_id,
+                        task_id=req.task.id,
+                        backend=req.backend_name,
+                        client=req.client,
+                        model=req.model,
+                        status=RunStatus.RUNNING.value,
+                        worktree=str(wt.path),
+                        branch=wt.branch,
+                        base_branch=resolved_base,
+                        base_commit=resolved_base_commit,
+                        # What this worktree's environment came from. `None` means it was provisioned
+                        # by nothing - a bare checkout - which is the sharpest form of the delta.
+                        # shlex.join, not " ".join: the scaffolded form is `sh -c "cd sub && uv sync"`,
+                        # and a plain join renders that as `sh -c cd sub && uv sync` - a DIFFERENT
+                        # command. Provenance that misdescribes what ran is worse than none, since the
+                        # whole point of this field is letting a driver trust where a number came from.
+                        # For deferred spawn this is the *configured* command (not yet run); on setup
+                        # failure the terminal error names the phase.
+                        worktree_setup=(
+                            shlex.join(self.worktrees.setup_cmd) if self.worktrees.setup_cmd else None
+                        ),
+                        read_paths=list(req.task.read_paths),
+                        started_at=started,
+                    )
                 )
-            )
-            return run_id, wt, started
+                _clear_creating_claim(self.state.dir, run_id)
+                return run_id, wt, started
+            except Exception:
+                _clear_creating_claim(self.state.dir, run_id)
+                raise
         except Exception:
             self._budget_gate.release(budget_keys)
             raise
@@ -2306,9 +2379,11 @@ class Fleet:
         without touching anything.
 
         Scope-mode cleans also reconcile the worktree base dir against the ledger and reap
-        ORPHANS - dirs whose run record is missing or unreadable (hand-pruned, or torn; a live run
-        always has a readable record, so it is never touched). Reported under ``orphans_removed``;
-        ``older_than_hours`` does not apply (an orphan has no trustworthy end timestamp).
+        ORPHANS - dirs whose run record is missing or unreadable (hand-pruned, or torn). A live
+        create writes a ``.creating`` claim before the worktree exists and clears it after the
+        RUNNING record lands, so the create→add gap is not mistaken for an orphan (#181). Reported
+        under ``orphans_removed``; ``older_than_hours`` does not apply (an orphan has no trustworthy
+        end timestamp).
         """
         result = CleanResult(dry_run=dry_run)
         if run_ids is not None:
@@ -2376,9 +2451,9 @@ class Fleet:
             # Reconcile the worktree dir against the ledger: a dir whose run record is gone
             # (hand-pruned) or unreadable (torn/corrupt - state.list() silently skips those) is
             # invisible to every ledger-driven pass above and would leak forever. Scoped strictly
-            # to Marshal's own base_dir, so foreign worktrees are never touched. A genuinely
-            # running run always has a readable record (writes are atomic temp+replace) and is
-            # skipped here; an explicit run_ids clean targets exactly those runs, so no sweep.
+            # to Marshal's own base_dir, so foreign worktrees are never touched. The create→add
+            # gap has a directory but no record yet - a live ``.creating`` claim spares it (#181).
+            # An explicit run_ids clean targets exactly those runs, so no sweep.
             for child in sorted(self.worktrees.base_dir.iterdir()):
                 if not child.is_dir():
                     continue
@@ -2389,12 +2464,18 @@ class Fleet:
                     known = False  # unreadable record: unreachable via get_run/cancel - garbage
                 if known:
                     continue  # ledger-owned; the scope pass above already decided its fate
+                if _creating_claim_held(self.state.dir, rid):
+                    result.skipped.append(
+                        {"run_id": rid, "reason": "worktree creation in progress"}
+                    )
+                    continue
                 if dry_run:
                     result.orphans_removed.append(rid)
                     continue
                 try:
                     self.worktrees.discard(child, f"{self.worktrees.branch_prefix}/{rid}")
                     self.logs.remove(rid)
+                    _clear_creating_claim(self.state.dir, rid)  # stale claim from a dead holder
                     result.orphans_removed.append(rid)
                 except WorktreeError as exc:
                     result.errors.append({"run_id": rid, "error": str(exc)})
@@ -2472,16 +2553,27 @@ class Fleet:
         else:
             with _active_runs_guard:
                 handle.cancel_requested = True
-                pid, exited = handle.pid, handle.exited
-            if exited:
-                pass  # the agent already finished; the terminal stamp below is all that is left
-            elif pid is None:
-                # Cancel beat the pid: `_record_pid` applies it the moment the pid is known, so the
-                # agent is stopped rather than left running behind a terminal record.
-                pass
-            else:
-                with contextlib.suppress(ProcessLookupError, OSError):
-                    os.killpg(pid, signal.SIGTERM)
+            # Test seam: force the window between snapshot and re-check (production: None).
+            if _cancel_after_handle_snapshot is not None:
+                _cancel_after_handle_snapshot()
+            # Re-check under the lock immediately before signalling so a reap that landed after
+            # cancel_requested cannot let us killpg a recycled pid (#183). When we have a start
+            # time, also require the live process to still match - communicate() reaps before
+            # on_exit can set exited, so the flag alone is not enough in that window.
+            with _active_runs_guard:
+                if handle.exited or handle.pid is None:
+                    pass  # finished, or cancel beat the pid (applied when published)
+                else:
+                    pid = handle.pid
+                    started = handle.pid_start_time
+                    if (
+                        started is not None
+                        and _pid_start_time(pid) != started
+                    ):
+                        pass  # recycled (or gone): do not signal a stranger
+                    else:
+                        with contextlib.suppress(ProcessLookupError, OSError):
+                            os.killpg(pid, signal.SIGTERM)
         stamp: dict[str, object] = {"status": "cancelled", "ended_at": _now(), **cancel_extra}
         if cancel_error:
             stamp["error"] = cancel_error

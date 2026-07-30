@@ -1530,6 +1530,148 @@ def test_clean_reaps_plain_dir_under_base(repo: Path) -> None:
     assert not junk.exists()
 
 
+def test_clean_does_not_reap_worktree_in_create_add_gap_from_another_process(repo: Path) -> None:
+    """REGRESSION (#181): orphan sweep must not delete a live create→add window.
+
+    Process A has created the worktree but not yet written the run record. Process B's `clean`
+    must see the durable ``.creating`` claim and spare the directory. Gated on ``state.add`` —
+    no wall-clock sleep.
+    """
+    import json as _json
+
+    src = str(Path(__file__).resolve().parent.parent / "src")
+    fleet = Fleet(repo, {"writer": _Writer()})
+    parked = threading.Event()
+    release = threading.Event()
+    original_add = fleet.state.add
+    worktree_path: dict[str, Path | None] = {"p": None}
+
+    def gated_add(rec: RunRecord) -> None:
+        worktree_path["p"] = Path(rec.worktree) if rec.worktree else None
+        parked.set()
+        assert release.wait(timeout=30), "test never released the create→add hold"
+        return original_add(rec)
+
+    fleet.state.add = gated_add  # type: ignore[method-assign]
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            fleet.run("writer", TaskSpec(id="gap181", goal="x"))
+        except BaseException as exc:  # noqa: BLE001 - surface in parent
+            errors.append(exc)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    try:
+        assert parked.wait(timeout=30), "run never reached state.add"
+        wt = worktree_path["p"]
+        assert wt is not None and wt.exists(), "worktree must exist while parked in the gap"
+        # Real second process: in-process inflight cannot protect a CLI `marshal clean`.
+        script = (
+            "import json, sys\n"
+            "sys.path.insert(0, %r)\n"
+            "from pathlib import Path\n"
+            "from marshal_engine.fleet import Fleet\n"
+            "result = Fleet(Path(sys.argv[1]), {}).clean()\n"
+            "print(json.dumps({"
+            "'orphans': result.orphans_removed, "
+            "'skipped': result.skipped"
+            "}), flush=True)\n"
+        ) % src
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(repo)],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        payload = _json.loads(proc.stdout.strip().splitlines()[-1])
+        assert wt.name not in payload["orphans"], payload
+        assert any(
+            s.get("run_id") == wt.name and "creation in progress" in s.get("reason", "")
+            for s in payload["skipped"]
+        ), payload
+        assert wt.exists(), "cross-process clean deleted a live create→add worktree"
+    finally:
+        release.set()
+        t.join(timeout=30)
+    assert not errors, errors
+
+
+def test_clean_still_reaps_genuine_orphan_without_creating_claim(repo: Path) -> None:
+    """#181 must not disable orphan reclaim: no record and no live claim → still swept."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="orphan181", goal="x"))
+    (repo / ".marshal" / "runs" / f"{rec.run_id}.json").unlink()
+    claim = repo / ".marshal" / "runs" / f"{rec.run_id}.creating"
+    assert not claim.exists()
+    result = fleet.clean()
+    assert result.orphans_removed == [rec.run_id]
+    assert not Path(rec.worktree or "").exists()
+
+
+def test_cancel_does_not_signal_after_reap_that_lands_mid_cancel(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (#183): copy pid/exited, then reap, then signal — must not killpg.
+
+    Cancel reads the handle with exited=False; the execute thread reaps and sets exited=True
+    before cancel signals. Event-gated via ``_cancel_after_handle_snapshot`` — no sleep.
+    """
+    import os as _os
+
+    from marshal_engine.fleet import _publish_pid, _register_inflight_run
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "midcancel.writer.deadbeef"
+    handle = _register_inflight_run(fleet.state.dir, run_id)
+    _publish_pid(handle, 4242)
+    # Fake pid: publish leaves pid_start_time None, so the exited re-check is the gate under test.
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="midcancel", backend="writer", status="running", pid=4242)
+    )
+
+    def _reap_during_window() -> None:
+        with fleet_mod._active_runs_guard:
+            handle.exited = True
+
+    monkeypatch.setattr(fleet_mod, "_cancel_after_handle_snapshot", _reap_during_window)
+    try:
+        rec = fleet.cancel_run(run_id)
+    finally:
+        monkeypatch.setattr(fleet_mod, "_cancel_after_handle_snapshot", None)
+
+    assert killed == [], "signalled a pid after the child was reaped (recycle risk)"
+    assert rec.status == RunStatus.CANCELLED.value
+
+
+def test_cancel_of_live_run_still_signals(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#183 must not disable cancel: a live handle with exited=False is still SIGTERM'd."""
+    import os as _os
+    import signal as _signal
+
+    from marshal_engine.fleet import _publish_pid, _register_inflight_run
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        _os, "killpg", lambda pgid, sig: killed.append((pgid, sig))
+    )
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    run_id = "livecancel.writer.deadbeef"
+    handle = _register_inflight_run(fleet.state.dir, run_id)
+    _publish_pid(handle, 4242)
+    fleet.state.add(
+        RunRecord(run_id=run_id, task_id="livecancel", backend="writer", status="running", pid=4242)
+    )
+    rec = fleet.cancel_run(run_id)
+    assert killed == [(4242, _signal.SIGTERM)]
+    assert rec.status == RunStatus.CANCELLED.value
+
+
 # --- _executor: lazy-init + double-checked locking is safe under contention ------------------
 
 
