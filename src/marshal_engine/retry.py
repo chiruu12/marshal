@@ -42,12 +42,14 @@ TRANSIENT_MARKERS: tuple[str, ...] = (
 )
 
 # Status codes only with HTTP/provider framing, or a word-bounded code next to a reason phrase.
+# Framers use (?<![A-Za-z]) so "AssertionError: 429" / "encode: 429" / "teststatus 503" do not
+# match; a trailing \b on the code rejects digit-run FPs like "status 4294".
 _TRANSIENT_STATUS_RE = re.compile(
     r"(?:"
-    r"https?(?:/\d+\.\d)?\s*"              # HTTP 429 / HTTP/1.1 503
-    r"|status(?:\s*code)?\s*[:=]?\s*"     # status 503 / status code: 502
-    r"|error(?:\s*code)?\s*[:=]?\s*"      # error 429 / error code: 429
-    r"|code\s*[:=]\s*"                    # code: 429 (colon/equals required)
+    r"(?<![A-Za-z])https?(?:/\d+\.\d)?\s*"           # HTTP 429 / HTTP/1.1 503
+    r"|(?<![A-Za-z])status(?:\s*code)?\s*[:=]?\s*"  # status 503 / status code: 502
+    r"|(?<![A-Za-z])error(?:\s*code)?\s*[:=]?\s*"   # error 429 / error code: 429
+    r"|(?<![A-Za-z])code\s*[:=]\s*"                 # code: 429 (colon/equals required)
     r")"
     r"(?:429|502|503|504)\b"
     r"|"

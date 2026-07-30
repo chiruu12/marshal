@@ -53,10 +53,35 @@ def test_genuine_provider_failures_are_transient(error: str) -> None:
         "implement handlers for 429 and 504 in the client",
         "fixture response body includes code 502 for the mock server",
         "print('status codes: 200, 429, 500')",
+        # Framer must not match inside exception names / compound words / digit runs.
+        "AssertionError: 429 was returned",
+        "ValueError: 503 unexpected",
+        "TypeError: 502",
+        "status 4294",
+        "encode: 429",
+        "teststatus 503 ok",
+        "fixed the 502 bug",
+        "error code 4299",
     ],
 )
 def test_bare_status_code_mentions_are_not_transient(error: str) -> None:
     assert not is_transient_failure(_failed(error))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "HTTP 429",
+        "Error code: 429",
+        "429 Too Many Requests",
+        "502 Bad Gateway",
+        "cursor-agent: HTTP 429",
+        # HTTPError alone would not match the anchored error framer; phrase markers still do.
+        "HTTPError: 429 Client Error: Too Many Requests",
+    ],
+)
+def test_framed_status_codes_and_reason_phrases_are_transient(error: str) -> None:
+    assert is_transient_failure(_failed(error))
 
 
 def test_genuine_failure_is_not_transient() -> None:
