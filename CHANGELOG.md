@@ -74,6 +74,18 @@ versions may include breaking API changes until 1.0.
   publish itself is what remains.
 
 ### Added
+- **Schema-validated structured output on runs.** `TaskSpec.output_schema` (also on the MCP
+  `run_agent`/`run_many`/`spawn` tools) asks the agent for a final message that is one JSON object
+  conforming to a JSON Schema; the engine extracts and `jsonschema`-validates it and carries the
+  result as `structured` on `AgentResult` / `RunRecord` / `collect_run`. A schema-invalid result is
+  an honest `failed` run with a `structured_output:` error after retries - never silent prose
+  success, never a transient retry. Backends are untouched: the mechanism is prompt-level and
+  works with every adapter.
+- **Token usage for Cursor and Antigravity (cost stays `unavailable`).** Cursor stamps
+  `cacheReadTokens`/`cacheWriteTokens` alongside input/output from the CLI envelope; Antigravity
+  runs `--output-format json` and parses text + tokens (availability now requires agy >= 1.1.8,
+  surfaced by `doctor`). `cache_write_tokens` flows through `UsageEvent`/bucket rollups to the
+  `marshal usage` human and JSON surfaces. No cost is inferred from tokens.
 - Requirements stated up front in the README: Python 3.11+, git, and at least one authenticated
   backend CLI - Marshal drives agents, it does not ship one.
 
