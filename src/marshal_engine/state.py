@@ -23,6 +23,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError, field_validator
 
 from .types import canonical_status
+from .worktree import validate_run_id
 
 
 class RunRecord(BaseModel):
@@ -171,7 +172,10 @@ class FleetState:
         self._locks: dict[str, threading.Lock] = {}
 
     def _path(self, run_id: str) -> Path:
-        return self.dir / f"{run_id}.json"
+        # The single funnel through which a run_id becomes a filesystem path (get/update/
+        # update_if/add all compose here). Validated fail-closed: a traversal id must never
+        # resolve outside this dir, and it raises before any path is composed.
+        return self.dir / f"{validate_run_id(run_id)}.json"
 
     def _lock_for(self, run_id: str) -> threading.Lock:
         with self._locks_guard:

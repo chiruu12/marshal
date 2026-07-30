@@ -9,6 +9,13 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **Path-traversal `run_id`s are refused at the state/MCP boundary.** `run_id` was never
+  validated where it becomes a filesystem path: `FleetState` composed `runs/<run_id>.json`
+  directly, and the workspace registry's run-owner scan stat'ed it against every registered
+  repo's ledger — so `../../../<ws>/.marshal/runs/<id>` read one workspace's run record through
+  another's id (a cross-workspace tenant escape), and any host `*.json` became an existence
+  oracle. `FleetState`, `RunLogStore`, and the registry now fail closed on the same safe-charset
+  rules as `task_id`, before any path is composed.
 - **`claude plugin validate --strict` failed.** `marketplace.json` had no description, which the
   strict validator treats as an error and which blocks submission to the community plugin registry.
 - **The MCP server reported an empty version.** `serverInfo.version` was blank in every initialize

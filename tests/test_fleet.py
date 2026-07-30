@@ -1278,6 +1278,17 @@ def test_clean_skips_running_run(repo: Path) -> None:
     assert Path(rec.worktree).exists()  # a running run is never torn down
 
 
+def test_clean_reports_an_unsafe_explicit_run_id_as_skipped(repo: Path) -> None:
+    # clean's contract is per-id reporting, not a raised error: the ledger layer refuses the
+    # unsafe id and clean reports it alongside its "no such run" skips - never stat'ed as a path.
+    fleet = Fleet(repo, {"writer": _Writer()})
+    result = fleet.clean(run_ids=["../escape"])
+    assert result.removed == []
+    assert any(
+        s["run_id"] == "../escape" and "unsafe run_id" in s["reason"] for s in result.skipped
+    )
+
+
 def test_clean_dry_run_reports_without_removing(repo: Path) -> None:
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="cl6", goal="x"))

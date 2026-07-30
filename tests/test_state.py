@@ -51,6 +51,37 @@ def test_update_validates_and_does_not_corrupt(tmp_path: Path) -> None:
     assert len(st.list()) == 1
 
 
+@pytest.mark.parametrize(
+    "bad_id",
+    ["", ".", "..", "../x", "foo/bar", "a\\b", ".hidden", "-lead", "café", "a\x00b", "a" * 129],
+)
+def test_get_update_refuse_unsafe_run_id(tmp_path: Path, bad_id: str) -> None:
+    # The ledger filename is `<run_id>.json`: an unvalidated id is a path-traversal read/write
+    # outside the runs dir (and a cross-workspace escape once the id is stat'ed across repos).
+    # get/update/update_if all funnel through the one validated _path, which refuses fail-closed.
+    st = FleetState(tmp_path / "runs")
+    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode"))
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        st.get(bad_id)
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        st.update(bad_id, status="failed")
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        st.update_if(bad_id, lambda r: True, status="failed")
+    # nothing escaped the runs dir, and the real record is untouched
+    got = st.get("r1")
+    assert got is not None and got.status == "queued"
+    assert [p.name for p in tmp_path.rglob("*.json")] == ["r1.json"]
+
+
+def test_add_refuses_unsafe_run_id(tmp_path: Path) -> None:
+    # The write path funnels through the same validated _path, so a poisoned record can never
+    # land outside the ledger dir either.
+    st = FleetState(tmp_path / "runs")
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        st.add(RunRecord(run_id="../escape", task_id="t1", backend="opencode"))
+    assert not (tmp_path / "escape.json").exists()
+
+
 def test_persists_across_instances(tmp_path: Path) -> None:
     d = tmp_path / "runs"
     FleetState(d).add(RunRecord(run_id="r1", task_id="t1", backend="cursor"))

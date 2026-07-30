@@ -16,14 +16,16 @@ import os
 import tempfile
 from pathlib import Path
 
+from .worktree import validate_run_id
+
 
 class RunLogStore:
     """One file per run under a directory; atomic writes, plain read on demand.
 
     `write` is the only mutator: it overwrites the whole file in one atomic step. Reads return the
-    stored text or None if no log exists. The run_id is validated against path separators before
-    it's used as a filename (run ids in production are `task.backend.<uuid8>` and safe; the guard
-    is defense-in-depth, not a current need).
+    stored text or None if no log exists. The run_id goes through the shared ``validate_run_id``
+    before it's used as a filename (run ids in production are `task.backend.<uuid8>` and safe;
+    the store never trusts its caller).
     """
 
     def __init__(self, logs_dir: Path | str) -> None:
@@ -82,6 +84,4 @@ class RunLogStore:
             return False
 
     def _path(self, run_id: str) -> Path:
-        if not run_id or "/" in run_id or "\\" in run_id or run_id in (".", ".."):
-            raise ValueError(f"unsafe run_id: {run_id!r}")
-        return self.dir / f"{run_id}.log"
+        return self.dir / f"{validate_run_id(run_id)}.log"

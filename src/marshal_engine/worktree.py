@@ -38,6 +38,24 @@ MAX_TASK_ID_LEN = 64
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
+def _unsafe_id_reason(kind: str, value: str, *, max_len: int) -> str | None:
+    """The refusal reason if `value` is not a safe flat path segment, else ``None``.
+
+    ``kind`` is the id's role in the message ("worktree id" / "run_id") so each caller keeps
+    its own wording while the RULES live in exactly one place.
+    """
+    if not value:
+        return f"unsafe {kind}: empty"
+    if len(value) > max_len:
+        return f"unsafe {kind}: {value!r} exceeds max length {max_len}"
+    if value in (".", "..") or not _SAFE_ID_RE.fullmatch(value):
+        return (
+            f"unsafe {kind}: {value!r} "
+            f"(must match {_SAFE_ID_RE.pattern}, no leading '.' or '-')"
+        )
+    return None
+
+
 def validate_worktree_id(task_id: str, *, max_len: int = MAX_WORKTREE_ID_LEN) -> str:
     """Return `task_id` if it is a safe flat path segment; raise ``WorktreeError`` otherwise.
 
@@ -45,18 +63,27 @@ def validate_worktree_id(task_id: str, *, max_len: int = MAX_WORKTREE_ID_LEN) ->
     Rejects empty / ``.`` / ``..`` / leading ``.`` or ``-`` / slashes / spaces / unicode.
     Fail closed — never sanitize-rewrites the input.
     """
-    if not task_id:
-        raise WorktreeError("unsafe worktree id: empty")
-    if len(task_id) > max_len:
-        raise WorktreeError(
-            f"unsafe worktree id: {task_id!r} exceeds max length {max_len}"
-        )
-    if task_id in (".", "..") or not _SAFE_ID_RE.fullmatch(task_id):
-        raise WorktreeError(
-            f"unsafe worktree id: {task_id!r} "
-            f"(must match {_SAFE_ID_RE.pattern}, no leading '.' or '-')"
-        )
+    reason = _unsafe_id_reason("worktree id", task_id, max_len=max_len)
+    if reason is not None:
+        raise WorktreeError(reason)
     return task_id
+
+
+def validate_run_id(run_id: str) -> str:
+    """Return `run_id` if it is a safe flat path segment; raise ``ValueError`` otherwise.
+
+    A run_id becomes the ledger filename (``runs/<run_id>.json``) and the log filename
+    (``logs/<run_id>.log``), and the workspace registry stats it against every registered
+    repo's ledger to find its owner - so an unvalidated id is both a path-traversal read
+    and a cross-workspace tenant escape. Same fail-closed rules as ``validate_worktree_id``
+    (a production run_id is ``task.backend.<uuid8>``, which fits by construction), but
+    raises ``ValueError``: the input-validation error type of the state/MCP boundary,
+    matching how an invalid ``task_id`` surfaces there (see ``TaskSpec``).
+    """
+    reason = _unsafe_id_reason("run_id", run_id, max_len=MAX_WORKTREE_ID_LEN)
+    if reason is not None:
+        raise ValueError(reason)
+    return run_id
 
 
 def _ensure_under_base(path: Path, base_dir: Path) -> Path:

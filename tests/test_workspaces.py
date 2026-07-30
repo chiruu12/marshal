@@ -333,6 +333,43 @@ def test_owner_of_scans_ledgers_without_building(tmp_path: Path) -> None:
     assert reg.owner_of("r-b", hint="default") == "beta"  # wrong hint falls back to the scan
 
 
+@pytest.mark.parametrize(
+    "bad_id", ["", ".", "..", "../x", "a/b", "a\\b", ".hidden", "café", "a" * 129]
+)
+def test_owner_of_and_require_run_refuse_unsafe_run_id(tmp_path: Path, bad_id: str) -> None:
+    # The scan stats `<ws>/runs/<run_id>.json` per workspace: an unvalidated id is a path
+    # traversal (host `*.json` existence oracle) AND a cross-tenant read. Refused before any
+    # path is composed - the refusal must name the id, not masquerade as "no such run".
+    a = tmp_path / "a"
+    a.mkdir()
+    reg = WorkspaceRegistry([WorkspaceDef("default", a, a / "c.yaml")], builder=_explode)
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        reg.owner_of(bad_id)
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        reg.require_run(bad_id)
+
+
+def test_owner_of_cannot_be_traversed_into_another_workspace(tmp_path: Path) -> None:
+    # REGRESSION: run_id `../../../b/.marshal/runs/r-b` stat'ed through workspace A's ledger dir
+    # straight onto workspace B's run record, so a run-handle call tagged B's run as A's -
+    # the "never share run state across workspaces" invariant, broken by one relative path.
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _write_run(a, "r-a")  # A's ledger dir must exist for the `..` to resolve through it
+    _write_run(b, "r-b")
+    defs = [WorkspaceDef("default", a, a / "c.yaml"), WorkspaceDef("beta", b, b / "c.yaml")]
+    reg = WorkspaceRegistry(defs, builder=_explode)
+    # three `..`: runs -> .marshal -> repo root -> the sibling level where B lives
+    traversal = "../../../b/.marshal/runs/r-b"
+    # sanity: the pre-fix path really does resolve from A's runs dir onto B's record
+    assert (a / ".marshal" / "runs" / f"{traversal}.json").exists()
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        reg.owner_of(traversal)
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        reg.require_run(traversal)
+
+
 def test_ledger_runs_aggregates_and_scopes(tmp_path: Path) -> None:
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()

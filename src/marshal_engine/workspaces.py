@@ -48,6 +48,7 @@ from .scaffold import detect_project_markers, scaffold_fleet_config
 from .fleet import RunManyJobResult, with_liveness
 from .service import MarshalService
 from .state import FleetState, RunRecord
+from .worktree import validate_run_id
 
 __all__ = [
     "DEFAULT_MAX_CONCURRENT",
@@ -602,8 +603,11 @@ class WorkspaceRegistry:
         """The workspace that owns ``run_id``, or None. Cheap path stat; never builds a service.
 
         Tries ``hint`` first (a wrong hint just falls through to the scan), then every workspace in
-        declaration order.
+        declaration order. The id is validated before ANY ledger path is composed: stat'ing
+        ``<ws>/runs/<run_id>.json`` per workspace would otherwise resolve a ``../`` id into
+        another workspace's ledger (a cross-tenant read) or anywhere else on the host.
         """
+        validate_run_id(run_id)
         self._refresh()
         order: list[str] = []
         if hint and hint in self._defs:
