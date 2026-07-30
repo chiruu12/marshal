@@ -39,6 +39,8 @@ def test_build_invocation_basic(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--output-format",
+        "json",
         "--add-dir",
         "/tmp/wt",
         "-p",
@@ -54,6 +56,8 @@ def test_build_invocation_model(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--output-format",
+        "json",
         "--add-dir",
         "/tmp/wt",
         "-m",
@@ -71,6 +75,8 @@ def test_build_invocation_conversation(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--output-format",
+        "json",
         "--add-dir",
         "/tmp/wt",
         "--conversation",
@@ -88,6 +94,8 @@ def test_compose_prompt_includes_context(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--output-format",
+        "json",
         "--add-dir",
         "/tmp/wt",
         "-p",
@@ -95,7 +103,15 @@ def test_compose_prompt_includes_context(backend: AntigravityBackend) -> None:
     ]
 
 
+def test_capabilities_json_without_native_cost(backend: AntigravityBackend) -> None:
+    """Tokens via JSON; native_usage stays False — that flag means native COST."""
+    assert backend.capabilities.json_output is True
+    assert backend.capabilities.stream_json is True
+    assert backend.capabilities.native_usage is False
+
+
 def test_parse_output_success_text(backend: AntigravityBackend) -> None:
+    # Plain-text fallback when stdout is not a JSON envelope (pre-json / envelope drift).
     res = backend.parse_output("  pong  \n", "", 0)
     assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "pong"
@@ -106,6 +122,118 @@ def test_parse_output_success_usage_unavailable(backend: AntigravityBackend) -> 
     assert res.status is RunStatus.EXITED_CLEAN
     assert res.usage is not None
     assert res.usage.backend == "antigravity"
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
+# Real envelope captured 2026-07-30 from `agy` 1.1.8:
+#   agy --dangerously-skip-permissions --output-format json -p "Reply with exactly: ok"
+_AGY_JSON_ENVELOPE = {
+    "conversation_id": "db37ad4c-77d5-4635-b302-716c282ad6fc",
+    "status": "SUCCESS",
+    "response": "ok\n",
+    "duration_seconds": 2.9485989999999997,
+    "num_turns": 1,
+    "usage": {
+        "input_tokens": 11160,
+        "output_tokens": 23,
+        "thinking_tokens": 18,
+        "cache_read_tokens": 8144,
+        "total_tokens": 11183,
+    },
+}
+
+
+def test_parse_output_json_text_and_tokens(backend: AntigravityBackend) -> None:
+    res = backend.parse_output(json.dumps(_AGY_JSON_ENVELOPE), "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "ok"
+    assert res.session_id == "db37ad4c-77d5-4635-b302-716c282ad6fc"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 11160
+    assert res.usage.output_tokens == 23
+    assert res.usage.cache_read_tokens == 8144
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source is UsageSource.UNAVAILABLE  # tokens yes; no USD
+
+
+def test_parse_output_stream_json_terminal_result(backend: AntigravityBackend) -> None:
+    # Real stream-json shape (agy 1.1.8): intermediate step_update events + terminal event:result.
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "event": "init",
+                    "conversation_id": "f107bf29-958d-4cd7-9cc5-c9c7e8688dd3",
+                    "init": {"cwd": "/tmp/wt"},
+                }
+            ),
+            json.dumps(
+                {
+                    "event": "step_update",
+                    "step_update": {
+                        "step_type": "agent_response",
+                        "text_delta": "partial\n",
+                        "usage": {
+                            "input_tokens": 11063,
+                            "output_tokens": 24,
+                            "cache_read_tokens": 8144,
+                        },
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "event": "result",
+                    "result": {
+                        "conversation_id": "f107bf29-958d-4cd7-9cc5-c9c7e8688dd3",
+                        "status": "SUCCESS",
+                        "response": "ok\n",
+                        "usage": {
+                            "input_tokens": 11160,
+                            "output_tokens": 29,
+                            "thinking_tokens": 23,
+                            "cache_read_tokens": 8144,
+                            "total_tokens": 11189,
+                        },
+                    },
+                }
+            ),
+        ]
+    )
+    res = backend.parse_output(stream, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "ok"
+    assert res.session_id == "f107bf29-958d-4cd7-9cc5-c9c7e8688dd3"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 11160
+    assert res.usage.output_tokens == 29
+    assert res.usage.cache_read_tokens == 8144
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
+def test_parse_output_json_missing_usage_tolerated(backend: AntigravityBackend) -> None:
+    envelope = {
+        "conversation_id": "c-1",
+        "status": "SUCCESS",
+        "response": "hello\n",
+    }
+    res = backend.parse_output(json.dumps(envelope), "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "hello"
+    assert res.session_id == "c-1"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 0
+    assert res.usage.output_tokens == 0
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
+def test_parse_output_malformed_envelope_falls_back_to_text(
+    backend: AntigravityBackend,
+) -> None:
+    res = backend.parse_output("{not json\nbut still a reply", "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "{not json\nbut still a reply"
+    assert res.usage is not None
     assert res.usage.source is UsageSource.UNAVAILABLE
 
 
