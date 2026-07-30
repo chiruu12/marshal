@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -968,6 +968,22 @@ def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool
     return True, f"warning: run was based on {rec.base_branch!r}, merging into {target!r}"
 
 
+def _deferred_provision_error(exc: BaseException) -> str:
+    """Phase-named error for a spawn-path provision/setup failure (never a bare str(exc))."""
+    msg = str(exc)
+    if isinstance(exc, WorktreeError) and "worktree setup" in msg:
+        return f"fleet: setup: {exc}"
+    return f"fleet: provision: {exc}"
+
+
+def _worktree_gone_message(rec: RunRecord) -> str:
+    """Driver-facing reason when collect/integrate/commit hit a torn-down worktree."""
+    if rec.error:
+        return rec.error
+    path = rec.worktree or ""
+    return f"worktree for run {rec.run_id!r} no longer exists: {path}"
+
+
 def _in_clean_scope(rec: RunRecord, scope: str) -> bool:
     """Whether `clean(scope=...)` should reclaim this run (a running/queued run never is)."""
     if not _is_terminal(rec):
@@ -1299,17 +1315,24 @@ class Fleet:
     def spawn(self, request: RunRequest, *, ts: str | None = None) -> str:
         """Start a run in the background and return its run_id immediately (does NOT wait).
 
-        The run is recorded RUNNING synchronously (so `status()`/`get_run()` see it at once), then
-        the agent executes on a persistent pool that outlives this call - so background runs survive
-        the driver turn that started them. The driver polls for the terminal status.
+        The run is recorded RUNNING after ``git worktree add`` but BEFORE provisioning
+        (``read_paths`` / ``setup_cmd``, which can take up to ``setup_timeout_s``). Provisioning and
+        the agent then run on a persistent pool that outlives this call, so the driver can poll
+        ``get_run`` / ``status`` and ``cancel_run`` during setup. Cancel mid-setup SIGTERMs the
+        setup process group when its pid is known; otherwise it stamps ``cancelled`` and the
+        background task skips launching the agent after tearing down the half-made worktree.
         """
-        run_id, wt, started = self._start(request, ts)
+        run_id, wt, started = self._start(request, ts, defer_provisioning=True)
         try:
-            self._executor().submit(self._execute_bg, request, run_id, wt, started)
+            self._executor().submit(
+                self._execute_bg, request, run_id, wt, started, deferred_provisioning=True
+            )
         except RuntimeError as exc:
             # The pool was shut down between _start and submit; don't strand a RUNNING record
             # or an enforce-budget concurrency slot.
             self._budget_gate.release_run(run_id)
+            with contextlib.suppress(WorktreeError):
+                self.worktrees.discard(str(wt.path), wt.branch)
             self.state.update(
                 run_id, status=RunStatus.FAILED.value, ended_at=_now(),
                 error=f"spawn: executor unavailable: {exc}",
@@ -1333,8 +1356,17 @@ class Fleet:
                     )
         return self._bg
 
-    def _start(self, req: RunRequest, ts: str | None) -> tuple[str, Worktree, str]:
-        """Synchronous prefix: validate, create the worktree, record RUNNING -> (run_id, wt, ts)."""
+    def _start(
+        self, req: RunRequest, ts: str | None, *, defer_provisioning: bool = False
+    ) -> tuple[str, Worktree, str]:
+        """Synchronous prefix: validate, create the worktree, record RUNNING -> (run_id, wt, ts).
+
+        When ``defer_provisioning`` is False (``run`` / ``run_many``), context files, ``read_paths``,
+        and ``setup_cmd`` run here before the RUNNING record is written — a provision failure then
+        leaves no record (M2). When True (``spawn``), only ``git worktree add`` is synchronous; the
+        RUNNING record is written immediately so the driver can poll/cancel, and provisioning runs
+        inside the background ``_execute`` task (failures terminal-stamp the record there).
+        """
         # Budget gate FIRST - BEFORE the worktree is created. Advisory budgets soft-warn;
         # enforce=true budgets raise BudgetExceeded (ledger cap and/or concurrent in-flight slot).
         # Advisory lookup failures degrade silently; enforced lookup failures fail closed.
@@ -1368,8 +1400,7 @@ class Fleet:
             run_id = f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}"
             # Serialize only `git worktree add` (it races across threads but is milliseconds). Provision
             # the worktree (`setup`, e.g. `uv sync`) OUTSIDE the lock so a fan-out runs N setups in
-            # parallel instead of one-at-a-time behind the lock. setup() tears the worktree down + raises
-            # on failure, so a failed provision leaves no orphan and never records a RUNNING run.
+            # parallel instead of one-at-a-time behind the lock.
             resolved_base = self.worktrees.resolve_base_branch(req.task.base_branch)
             with self._create_lock:
                 wt = self.worktrees.create(run_id, base_branch=req.task.base_branch)
@@ -1379,18 +1410,15 @@ class Fleet:
             # were then computed against a base the agent never had. The created branch's tip IS
             # what it was cut from, so there is no window to lose.
             resolved_base_commit = self.worktrees.branch_tip(wt.branch) if wt.branch else None
-            try:
-                _require_context_files(wt, req.task.context_files)
-                _provision_read_paths(wt, self.repo_root, req.task.read_paths)
-            except Exception:
-                # Tear down before propagating: the worktree exists by now, and a rejected spawn
-                # must not leave one behind (same contract `setup()` honours on a failed provision).
-                # Catch Exception (not just ValueError): an OSError mid-copy (disk full, EACCES)
-                # would otherwise skip discard and strand the worktree + branch with no run record.
-                with contextlib.suppress(WorktreeError):
-                    self.worktrees.discard(str(wt.path), wt.branch)
-                raise
-            self.worktrees.setup(wt)
+            if not defer_provisioning:
+                # Sync path (run_agent): provision before recording so a failure leaves no RUNNING
+                # zombie and no orphan worktree (M2). setup() tears down + raises on failure.
+                try:
+                    self._provision_worktree(wt, req)
+                except Exception:
+                    with contextlib.suppress(WorktreeError):
+                        self.worktrees.discard(str(wt.path), wt.branch)
+                    raise
             _register_inflight_run(self.state.dir, run_id)
             self.state.add(
                 RunRecord(
@@ -1410,6 +1438,8 @@ class Fleet:
                     # and a plain join renders that as `sh -c cd sub && uv sync` - a DIFFERENT
                     # command. Provenance that misdescribes what ran is worse than none, since the
                     # whole point of this field is letting a driver trust where a number came from.
+                    # For deferred spawn this is the *configured* command (not yet run); on setup
+                    # failure the terminal error names the phase.
                     worktree_setup=(
                         shlex.join(self.worktrees.setup_cmd) if self.worktrees.setup_cmd else None
                     ),
@@ -1422,6 +1452,98 @@ class Fleet:
         except Exception:
             self._budget_gate.release(budget_keys)
             raise
+
+    def _provision_worktree(
+        self,
+        wt: Worktree,
+        req: RunRequest,
+        *,
+        run_id: str | None = None,
+    ) -> None:
+        """Context files + read_paths + setup_cmd. Caller handles discard on pre-setup failure.
+
+        When ``run_id`` is set (spawn's deferred path), ``setup`` publishes its pid on the in-flight
+        handle so ``cancel_run`` can SIGTERM the setup process group.
+        """
+        _require_context_files(wt, req.task.context_files)
+        _provision_read_paths(wt, self.repo_root, req.task.read_paths)
+        on_pid: Callable[[int], None] | None = None
+        on_exit: Callable[[], None] | None = None
+        if run_id is not None:
+            handle = _inflight_handle(self.state.dir, run_id)
+            if handle is not None:
+
+                def _on_pid(pid: int) -> None:
+                    self.state.update_if(
+                        run_id,
+                        lambda r: not _is_terminal(r),
+                        pid=pid,
+                        pid_start_time=_pid_start_time(pid),
+                    )
+                    if _publish_pid(handle, pid):
+                        with contextlib.suppress(ProcessLookupError, OSError):
+                            os.killpg(pid, signal.SIGTERM)
+
+                def _on_exit() -> None:
+                    with _active_runs_guard:
+                        handle.exited = True
+
+                on_pid = _on_pid
+                on_exit = _on_exit
+
+        # Only pass cancel hooks when wired — keeps `setup(wt)` call shape for spies/tests.
+        if on_pid is not None or on_exit is not None:
+            self.worktrees.setup(wt, on_pid=on_pid, on_exit=on_exit)
+        else:
+            self.worktrees.setup(wt)
+
+    def _run_deferred_provisioning(
+        self, req: RunRequest, run_id: str, wt: Worktree
+    ) -> RunRecord | None:
+        """Spawn-path provisioning. Returns a terminal record if the run ended; else None.
+
+        Guarantees: no zombie RUNNING — every failure/cancel path terminal-stamps (cancel wins via
+        ``update_if`` + ``_still_running``). Setup/provision failures discard the worktree.
+        Cancel-during-setup: if the setup pid is published, ``cancel_run`` killpg's it; if cancel
+        arrives before the pid exists, this method sees the terminal/cancel flag and discards
+        without launching the agent.
+        """
+        if self._cancel_requested(run_id):
+            with contextlib.suppress(WorktreeError):
+                self.worktrees.discard(str(wt.path), wt.branch)
+            return self.state.update_if(
+                run_id,
+                _still_running,
+                status=RunStatus.CANCELLED.value,
+                ended_at=_now(),
+                error="fleet: cancelled during setup",
+            )
+        try:
+            self._provision_worktree(wt, req, run_id=run_id)
+        except Exception as exc:  # noqa: BLE001 - stamp terminal; never leave RUNNING
+            with contextlib.suppress(WorktreeError):
+                if wt.path.exists():
+                    self.worktrees.discard(str(wt.path), wt.branch)
+            # Cancel that won the race (kill mid-setup) keeps `cancelled`; otherwise FAILED with
+            # a phase-named error so drivers can tell setup/provision from an agent failure.
+            err = _deferred_provision_error(exc)
+            return self.state.update_if(
+                run_id,
+                _still_running,
+                status=RunStatus.FAILED.value,
+                ended_at=_now(),
+                error=err,
+            )
+        if self._cancel_requested(run_id):
+            # Setup finished but cancel won before the agent — do not launch the backend.
+            return self.state.update_if(
+                run_id,
+                _still_running,
+                status=RunStatus.CANCELLED.value,
+                ended_at=_now(),
+                error="fleet: cancelled during setup",
+            )
+        return None
 
     @property
     def budget_gate(self) -> EnforceBudgetGate:
@@ -1442,13 +1564,24 @@ class Fleet:
         )
 
     def _execute(
-        self, req: RunRequest, run_id: str, wt: Worktree, ts: str, *, cleanup: bool = False
+        self,
+        req: RunRequest,
+        run_id: str,
+        wt: Worktree,
+        ts: str,
+        *,
+        cleanup: bool = False,
+        deferred_provisioning: bool = False,
     ) -> RunRecord:
         """Execute suffix: run the backend, price + classify, persist the terminal record."""
         backend = self.backends[req.backend_name]
         result: AgentResult | None = None
         record: RunRecord | None = None
         try:
+            if deferred_provisioning:
+                early = self._run_deferred_provisioning(req, run_id, wt)
+                if early is not None:
+                    return early
             handle = _inflight_handle(self.state.dir, run_id)
 
             def _record_pid(pid: int) -> None:
@@ -1638,10 +1771,20 @@ class Fleet:
                 return result, attempt
             attempt += 1
 
-    def _execute_bg(self, req: RunRequest, run_id: str, wt: Worktree, ts: str) -> None:
+    def _execute_bg(
+        self,
+        req: RunRequest,
+        run_id: str,
+        wt: Worktree,
+        ts: str,
+        *,
+        deferred_provisioning: bool = False,
+    ) -> None:
         """Background variant: the outcome (incl. failure) is already persisted; never propagate."""
         try:
-            self._execute(req, run_id, wt, ts)
+            self._execute(
+                req, run_id, wt, ts, deferred_provisioning=deferred_provisioning
+            )
         except Exception:  # noqa: BLE001 - _execute already terminal-stamped; the driver polls status()
             pass
 
@@ -1817,9 +1960,28 @@ class Fleet:
             return "HEAD"  # detached checkout: diff against the checked-out commit
 
     def collect_run(self, run_id: str) -> CollectResult:
-        """Surface a run's diff + changed files. Read-only - nothing is merged."""
-        wt = self._worktree_for(run_id)
+        """Surface a run's diff + changed files. Read-only - nothing is merged.
+
+        A setup-failed (or otherwise torn-down) run has no worktree: returns ``produced="nothing"``
+        with ``text`` set to the record's error so the driver sees why, not a crash.
+        """
         rec = self.state.get(run_id)
+        if rec is None:
+            raise ValueError(f"no such run: {run_id!r}")
+        try:
+            wt = self._worktree_for(run_id)
+        except ValueError:
+            # Setup failure / clean / discard left no tree — surface the record error, not a raise.
+            err = _worktree_gone_message(rec)
+            return CollectResult(
+                run_id=run_id,
+                branch=rec.branch or None,
+                worktree=rec.worktree or None,
+                changed_files=[],
+                diff="",
+                produced="nothing",
+                text=err,
+            )
         changed_files = self.worktrees.changed_files(wt)
         diff = self.worktrees.diff(wt)
         committed_changed_files: list[str] = []
@@ -1871,7 +2033,15 @@ class Fleet:
                 branch=rec.branch,
                 message="run is still in progress; wait for it to finish before committing",
             )
-        wt = self._worktree_for(run_id)
+        try:
+            wt = self._worktree_for(run_id)
+        except ValueError:
+            return CommitResult(
+                run_id=run_id,
+                status="error",
+                branch=rec.branch,
+                message=_worktree_gone_message(rec),
+            )
         if not wt.branch:
             raise ValueError(f"run {run_id!r} has no branch to commit")
         try:
@@ -2030,6 +2200,10 @@ class Fleet:
     def cancel_run(self, run_id: str) -> RunRecord:
         """Cancel a running run: SIGTERM its process group, then mark cancelled.
 
+        Covers the spawn provisioning window: when setup has published a pid, that process group
+        is signalled; when cancel arrives before any pid, the record is stamped ``cancelled`` and
+        the background task skips launching the agent after discarding the worktree.
+
         If the run is not running (or its pid is missing / already exited) this is a safe no-op
         that still returns the (updated) record. The run may finish concurrently between the status
         check and the kill - re-read the record before stamping to avoid overwriting a terminal
@@ -2121,13 +2295,26 @@ class Fleet:
         if rec is not None and rec.status == RunStatus.RUNNING.value:
             # Never commit a still-running agent's half-written files into the user's branch; the
             # run must reach a terminal state first. Recoverable -> "blocked" (wait, then retry).
+            # Includes the spawn provisioning window (RUNNING before setup finishes).
             return IntegrateResult(
                 run_id=run_id,
                 status="blocked",
                 branch=rec.branch,
                 message="run is still in progress; wait for it to finish before integrating",
             )
-        wt = self._worktree_for(run_id)
+        if rec is not None:
+            try:
+                wt = self._worktree_for(run_id)
+            except ValueError:
+                # Setup-failed / discarded worktree: structured refusal, not a crash.
+                return IntegrateResult(
+                    run_id=run_id,
+                    status="error",
+                    branch=rec.branch,
+                    message=_worktree_gone_message(rec),
+                )
+        else:
+            wt = self._worktree_for(run_id)
         if not wt.branch:
             raise ValueError(f"run {run_id!r} has no branch to integrate")
         try:

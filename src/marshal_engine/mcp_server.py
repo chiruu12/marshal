@@ -450,10 +450,13 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Start a worker agent in the background in `workspace`'s repo; returns its RUNNING record
-        immediately. Same delegation primitive as run_agent (product may be a diff or text).
-        Poll get_run/status, and cancel_run to stop it. `model`/`backend`/`duration`/`base_branch`
-        follow the same rules as run_agent (override the client's model, ad-hoc spawn by bare backend,
-        per-spawn timeout override, or chain off a prior run's branch)."""
+        immediately — before worktree provisioning (`setup_cmd` / read_paths) and before the agent
+        starts. Same delegation primitive as run_agent (product may be a diff or text).
+        Poll get_run/status during setup; cancel_run stops an in-flight setup process group when
+        its pid is known (otherwise stamps cancelled and skips the agent). `model`/`backend`/
+        `duration`/`base_branch` follow the same rules as run_agent (override the client's model,
+        ad-hoc spawn by bare backend, per-spawn timeout override, or chain off a prior run's
+        branch)."""
         return await ws_call(
             workspace,
             lambda svc: svc.spawn(

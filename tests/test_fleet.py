@@ -4178,3 +4178,206 @@ def test_clean_sweeps_orphaned_tmp_files(repo: Path) -> None:
     assert not stale_run.exists(), "old orphaned .tmp should be reaped"
     assert not stale_log.exists(), "old orphaned .tmp should be reaped"
     assert fresh.exists(), "fresh .tmp (live write) must survive concurrent clean"
+
+
+# --- spawn async provisioning (#146) -------------------------------------------------------------
+
+
+def test_spawn_returns_before_slow_setup_completes(repo: Path) -> None:
+    """spawn must return a run_id while setup is still running (not after)."""
+    import threading
+
+    setup_started = threading.Event()
+    release_setup = threading.Event()
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    # Hold setup in the background task so we can prove spawn returned while it was in flight.
+    def gated_setup(wt: object, **kwargs: object) -> None:
+        setup_started.set()
+        assert release_setup.wait(timeout=10), "test timed out waiting to release setup"
+
+    fleet.worktrees.setup = gated_setup  # type: ignore[method-assign]
+    try:
+        start = time.monotonic()
+        run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="slowsetup", goal="x")))
+        assert time.monotonic() - start < 1.0, "spawn blocked through setup"
+        assert setup_started.wait(timeout=5), "background setup never started"
+        rec = fleet.state.get(run_id)
+        assert rec is not None and rec.status == "running"
+        release_setup.set()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == "exited_clean"
+    finally:
+        release_setup.set()
+        fleet.shutdown()
+
+
+def test_spawn_setup_failure_terminal_stamps_with_phase_error(repo: Path) -> None:
+    """Setup failure on the spawn path must land FAILED with a clear setup-phase error — never RUNNING."""
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        worktree_setup=[sys.executable, "-c", "import sys; sys.exit(7)"],
+    )
+    try:
+        run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="setupboom", goal="x")))
+        deadline = time.monotonic() + 10
+        rec = fleet.state.get(run_id)
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None
+        assert rec.status == "failed"
+        assert rec.error and "fleet: setup:" in rec.error
+        assert not (Path(rec.worktree or "")).exists(), "setup failure must tear down the worktree"
+    finally:
+        fleet.shutdown()
+
+
+def test_cancel_during_setup_stops_setup_and_stamps_cancelled(repo: Path) -> None:
+    """cancel_run during setup must kill the setup process group and stamp cancelled (no zombie RUNNING)."""
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        worktree_setup=[
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+        ],
+    )
+    try:
+        run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="cancelsetup", goal="x")))
+        # Wait until setup has published a pid (or we give up and cancel anyway).
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.pid is not None:
+                break
+            time.sleep(0.02)
+        cancelled = fleet.cancel_run(run_id)
+        assert cancelled.status == "cancelled"
+        # Drain: background task must not leave RUNNING or launch the writer.
+        deadline = time.monotonic() + 10
+        rec = fleet.state.get(run_id)
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            assert rec is not None
+            if rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == "cancelled"
+        # Worktree should be gone (setup teardown on killed cmd, or deferred discard).
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not Path(rec.worktree or "").exists():
+                break
+            time.sleep(0.05)
+        assert not Path(rec.worktree or "").exists()
+    finally:
+        fleet.shutdown()
+
+
+def test_integrate_and_collect_on_setup_failed_run(repo: Path) -> None:
+    """Setup-failed runs: collect surfaces the record error; integrate returns structured error."""
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        worktree_setup=[sys.executable, "-c", "import sys; sys.exit(1)"],
+    )
+    try:
+        run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="setupfailops", goal="x")))
+        deadline = time.monotonic() + 10
+        rec = None
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == "failed"
+
+        collected = fleet.collect_run(run_id)
+        assert collected.produced == "nothing"
+        assert collected.changed_files == []
+        assert collected.diff == ""
+        assert rec.error and rec.error in collected.text
+
+        integrated = fleet.integrate(run_id)
+        assert integrated.status == "error"
+        assert rec.error and rec.error in integrated.message
+
+        # clean reaps setup-failed runs like other terminal non-success statuses
+        cleaned = fleet.clean(scope="finished")
+        assert run_id in cleaned.removed
+    finally:
+        fleet.shutdown()
+
+
+def test_spawn_setup_failure_releases_enforce_budget_slot(repo: Path) -> None:
+    """A setup failure on spawn must release the enforce-budget concurrency slot (#141 compose)."""
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        worktree_setup=[sys.executable, "-c", "import sys; sys.exit(1)"],
+        budgets=[BudgetSpec(backend="writer", window="week", limit_usd=100.0, enforce=True)],
+    )
+    try:
+        run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="budgsetup", goal="x")))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert fleet.state.get(run_id) is not None
+        assert fleet.state.get(run_id).status == "failed"  # type: ignore[union-attr]
+
+        # Slot released — a follow-up matching run must not see an in-flight hold.
+        # Clear the failing setup_cmd so the follow-up exercises the budget gate, not setup.
+        fleet.worktrees.setup_cmd = None
+        follow = fleet.run("writer", TaskSpec(id="budgfollow", goal="x"))
+        assert follow.status == "exited_clean"
+    finally:
+        fleet.shutdown()
+
+
+def test_spawn_provision_oserror_terminal_stamps_not_zombie(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spawn-path provision OSError must terminal-stamp FAILED (M2 compose with async setup)."""
+    outside = repo.parent / "spawn-prov-oserr.md"
+    outside.write_text("content")
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("injected disk full")
+
+    monkeypatch.setattr(fleet_mod, "_copy_read_path_tree", boom)
+    try:
+        run_id = fleet.spawn(
+            RunRequest(
+                backend_name="writer",
+                task=TaskSpec(id="spawnoserr", goal="x", read_paths=[str(outside)]),
+            )
+        )
+        deadline = time.monotonic() + 10
+        rec = fleet.state.get(run_id)
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None
+        assert rec.status == "failed"
+        assert rec.error and "fleet: provision:" in rec.error
+        assert "disk full" in rec.error
+        worktrees = repo / ".marshal" / "worktrees"
+        assert not worktrees.exists() or not list(worktrees.iterdir())
+    finally:
+        fleet.shutdown()
