@@ -37,16 +37,16 @@ teams do so.
 ## Install
 
 ```bash
-uv tool install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
+uv tool install "MarshalFleet[mcp]"
 # or
-pipx install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
+pipx install "MarshalFleet[mcp]"
 ```
 
-> Not on PyPI yet. `uv tool install "MarshalFleet[mcp]"` is the intended command once it is
-> published; until then use the GitHub URL above, which installs the same package.
+The `[mcp]` extra is what makes `marshal mcp` work. Without it the server exits before a host can
+connect.
 
-For clone-from-source, backend CLI auth, and MCP wiring, see **[`../SETUP.md`](../SETUP.md)**.
-Marshal does **not** install the backend CLIs.
+For clone-from-source, tracking unreleased work on `main`, backend CLI auth, and MCP wiring, see
+**[`../SETUP.md`](../SETUP.md)**. Marshal does **not** install the backend CLIs.
 
 Developing Marshal itself:
 

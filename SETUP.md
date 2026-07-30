@@ -32,16 +32,22 @@ You only need the backends your `fleet.config.yaml` references. One is enough to
 
 ## 1. Install Marshal
 
-**From GitHub** (recommended — not on PyPI yet):
+**From PyPI** (recommended):
 
 ```bash
-uv tool install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
+uv tool install "MarshalFleet[mcp]"
 # or
-pipx install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal@v0.1.0"
+pipx install "MarshalFleet[mcp]"
 ```
 
-> Not on PyPI yet. `uv tool install "MarshalFleet[mcp]"` is the intended command once it is
-> published; until then use the GitHub URL above, which installs the same package.
+The `[mcp]` extra is what makes `marshal mcp` work. Without it the server exits before a host can
+connect.
+
+**From GitHub** (to track unreleased work on `main`):
+
+```bash
+uv tool install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal"
+```
 
 **Clone from source** (for development):
 

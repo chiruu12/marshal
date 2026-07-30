@@ -35,6 +35,10 @@ versions may include breaking API changes until 1.0.
   `uv run sh -c`, and `make -f` are accepted without `allow_unsafe_commands`, which the docs
   previously denied. `docs/config.md`, `SECURITY.md`, `docs/usage.md`, `docs/design.md`, and the
   in-code comments now describe the real contract.
+- **Install docs point at PyPI.** README, SETUP, and `docs/usage.md` recommend
+  `uv tool install "MarshalFleet[mcp]"` / `pipx install "MarshalFleet[mcp]"` now that
+  MarshalFleet 0.2.0 is published; the `git+https://` path is documented only for tracking
+  unreleased work on `main`.
 
 ## [0.2.0] - 2026-07-30
 
