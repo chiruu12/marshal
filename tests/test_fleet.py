@@ -125,6 +125,9 @@ class _Sleeper(CodingAgentBackend):
         self.entered = threading.Event()  # set once a run reaches the backend
         self.gate = threading.Event()     # held open unless a test closes it
         self.gate.set()
+        # Optional rendezvous: every run parks until `parties` of them have arrived. Runs that
+        # cannot overlap never assemble, so the wait breaks instead of merely being slow.
+        self.barrier: threading.Barrier | None = None
 
     def check_available(self) -> bool:
         return True
@@ -149,7 +152,9 @@ class _Sleeper(CodingAgentBackend):
                 self.max_inflight = self._inflight
         self.entered.set()
         try:
-            self.gate.wait(timeout=30)  # unset gate is pre-set, so this returns at once
+            if self.barrier is not None:
+                self.barrier.wait(timeout=30)  # BrokenBarrierError => the runs never overlapped
+            self.gate.wait(timeout=30)  # an unset gate is pre-set, so this returns at once
             return super().run(task, opts)
         finally:
             with self._lock:
@@ -793,12 +798,13 @@ def test_run_many_runs_concurrently(repo: Path) -> None:
     sleeper = _Sleeper()  # each run sleeps ~0.5s; tracks peak in-flight count
     fleet = Fleet(repo, {"sleeper": sleeper})
     reqs = [RunManyJob(request=RunRequest(backend_name="sleeper", task=TaskSpec(id=f"s{i}", goal="x"))) for i in range(4)]
+    sleeper.barrier = threading.Barrier(4)  # all four must be in the backend at once to proceed
     results = fleet.run_many(reqs, max_concurrency=4, stagger_s=0)
+    # Concurrency is proven by the rendezvous, not by a clock: runs executed sequentially never
+    # assemble at the barrier, so each wait breaks and its run ends FAILED. A slow machine only
+    # makes the assembly slower, never impossible.
     assert all(r.primary.status == "exited_clean" for r in results)
-    # Overlap via peak in-flight count, not wall-clock: sequential execution peaks at 1, and the
-    # cap is never exceeded. Not `== 4` - that needs all four scheduled before any finishes, which
-    # is a scheduling race on a loaded machine, i.e. the flakiness this replaced.
-    assert 1 < sleeper.max_inflight <= 4
+    assert sleeper.max_inflight == 4  # deterministic: the barrier held all four simultaneously
 
 
 def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> None:
@@ -824,7 +830,8 @@ def test_spawn_returns_immediately_then_completes_in_background(repo: Path) -> N
             time.sleep(0.05)
         assert rec is not None and rec.status == "exited_clean"  # finished in the background
     finally:
-        fleet.shutdown()
+        sleeper.gate.set()  # before shutdown: a failed assertion above must not strand the
+        fleet.shutdown()    # backend on a closed gate, which would hang the drain for 30s
 
 
 def test_spawn_terminal_stamps_a_background_failure(repo: Path) -> None:
