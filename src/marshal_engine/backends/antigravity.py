@@ -45,6 +45,8 @@ Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-op
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -52,6 +54,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 from ..types import (
@@ -86,7 +89,8 @@ _STATIC_MODELS: tuple[str, ...] = (
 class AntigravityBackend(CodingAgentBackend):
     name = "antigravity"
     binary = "agy"
-    # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs).
+    # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs
+    # in-process via this lock, cross-process via ``_settings_file_lock`` on a sibling sidecar).
     _settings_lock = threading.Lock()
     #: resolved cwd -> ``[marshal_introduced, in_flight_run_count]``.
     #:
@@ -205,11 +209,13 @@ class AntigravityBackend(CodingAgentBackend):
         unreadable settings file (preserved byte-for-byte).
         """
         key = str(Path(opts.cwd).resolve())
-        # ONE critical section: mutate the settings file and record provenance under the same lock.
-        # Splitting them inverted provenance under concurrency - the run that merely *observed* a
-        # freshly added entry could register first and record it as user-owned, after which nobody
-        # would ever revoke Marshal's own grant.
-        with self._settings_lock:
+        # ONE critical section: mutate the settings file and record provenance under the same
+        # in-process lock + cross-process flock. Splitting them inverted provenance under
+        # concurrency - the run that merely *observed* a freshly added entry could register first
+        # and record it as user-owned, after which nobody would ever revoke Marshal's own grant.
+        # The flock also stops two Marshal processes from interleaving the trustedWorkspaces RMW
+        # and dropping each other's grant.
+        with self._settings_lock, _settings_file_lock(self.settings_path):
             added = _trust_workspace_locked(self.settings_path, Path(opts.cwd))
             state = self._trust_added.get(key)
             if state is None:
@@ -250,11 +256,12 @@ class AntigravityBackend(CodingAgentBackend):
             del mine[key]
         else:
             mine[key] -= 1
-        # Drop the claim AND remove the settings entry under ONE lock. Doing the bookkeeping,
-        # unlocking, then removing the entry left a handoff gap: a new run's prepare() could slot
-        # in, see the entry still present, record it as user-owned - and then this teardown deleted
-        # it, leaving that run with no trust at all and its agy edits redirected to the scratch dir.
-        with self._settings_lock:
+        # Drop the claim AND remove the settings entry under ONE in-process lock + cross-process
+        # flock. Doing the bookkeeping, unlocking, then removing the entry left a handoff gap: a
+        # new run's prepare() could slot in, see the entry still present, record it as user-owned -
+        # and then this teardown deleted it, leaving that run with no trust at all and its agy
+        # edits redirected to the scratch dir. The flock covers the same gap across processes.
+        with self._settings_lock, _settings_file_lock(self.settings_path):
             state = self._trust_added.get(key)
             # No bookkeeping at all means nothing we did introduced this entry, so it is the
             # user's and must stay. Defaulting the other way ("assume we added it") destroys user
@@ -290,6 +297,33 @@ class AntigravityBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+def _settings_lock_path(settings_path: Path) -> Path:
+    """Sidecar for the settings flock: ``settings.lock`` next to ``settings.json``.
+
+    Named without a ``settings.json*`` prefix so leftover-temp assertions that scan for that
+    prefix do not mistake the durable lock file for an orphaned write temp. flock auto-releases
+    on process death - no stale-lock reaper.
+    """
+    return settings_path.with_name(settings_path.stem + ".lock")
+
+
+@contextlib.contextmanager
+def _settings_file_lock(settings_path: Path) -> Iterator[None]:
+    """Exclusive ``flock`` for the host-global settings.json read-modify-write.
+
+    Scope is the RMW critical section only (prepare/release_trust / trust helpers) - never held
+    across a backend run. Pairs with ``AntigravityBackend._settings_lock`` (thread lock first,
+    then flock).
+    """
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(_settings_lock_path(settings_path), "a+", encoding="utf-8") as guard:
+        fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
 
 
 def _load_settings_object(settings_path: Path) -> dict[str, object]:
@@ -347,8 +381,8 @@ def _is_marshal_worktree(path: str) -> bool:
 
 
 def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> bool:
-    """Locking wrapper kept for callers that do not already hold ``lock``."""
-    with lock:
+    """Locking wrapper kept for callers that do not already hold ``lock`` / the file lock."""
+    with lock, _settings_file_lock(settings_path):
         return _trust_workspace_locked(settings_path, cwd)
 
 
@@ -358,8 +392,8 @@ def _trust_workspace_locked(settings_path: Path, cwd: Path) -> bool:
     Merge-preserving (other keys untouched), idempotent (no duplicate entry), and atomic (unique
     temp + replace, so a concurrent agy read never sees a torn file even if a writer dies
     between write + replace). Dead paths are pruned so the trust list stays bounded to live
-    worktrees. The lock serializes concurrent writers (parallel runs all share this one
-    global file). Fails closed on a malformed or unreadable existing file.
+    worktrees. Caller holds the in-process lock and the settings flock. Fails closed on a
+    malformed or unreadable existing file.
     """
     cwd_str = str(cwd.resolve())
     data = _load_settings_object(settings_path)
@@ -381,8 +415,8 @@ def _trust_workspace_locked(settings_path: Path, cwd: Path) -> bool:
 
 
 def _untrust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> None:
-    """Locking wrapper kept for callers that do not already hold ``lock``."""
-    with lock:
+    """Locking wrapper kept for callers that do not already hold ``lock`` / the file lock."""
+    with lock, _settings_file_lock(settings_path):
         _untrust_workspace_locked(settings_path, cwd)
 
 

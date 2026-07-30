@@ -3,19 +3,22 @@
 The driver (or MCP server) can spawn a run, disconnect, and later reconnect to see status and
 cost. No database: each run is its own ``runs/<run_id>.json``. Most runs have a single writer (the
 thread executing them), but ``cancel_run`` legitimately writes the *same* run concurrently from
-another thread - so per-run writes are serialized by a per-run lock, and each write goes through a
-*unique* temp file before an atomic ``os.replace`` (a fixed temp name would let two concurrent
-writers clobber each other's temp). Aggregates (``list``) glob the directory on read and skip a
-torn/foreign file rather than failing the whole listing.
+another thread - and a CLI + long-lived MCP server can race the same record across processes - so
+per-run writes are serialized by a per-run ``threading.Lock`` (in-process) plus an ``fcntl.flock``
+on a ``runs/<run_id>.json.lock`` sidecar (cross-process). Each write goes through a *unique* temp
+file before an atomic ``os.replace`` (a fixed temp name would let two concurrent writers clobber
+each other's temp). Aggregates (``list``) glob ``*.json`` on read - so ``.json.lock`` sidecars are
+never mistaken for records - and skip a torn/foreign file rather than failing the whole listing.
 """
 
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import tempfile
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -185,6 +188,28 @@ class FleetState:
                 self._locks[run_id] = lock
             return lock
 
+    def _lock_path(self, run_id: str) -> Path:
+        # Sidecar next to the record: ``list``/clean only glob ``*.json``, so this never looks like
+        # a run. flock auto-releases on process death - no stale-lock reaper needed.
+        return self.dir / f"{validate_run_id(run_id)}.json.lock"
+
+    @contextlib.contextmanager
+    def _run_file_lock(self, run_id: str) -> Iterator[None]:
+        """Exclusive ``flock`` for the run-record read-modify-write (cross-process).
+
+        Held only for the critical section in ``update``/``update_if`` - never across a backend
+        run. Pairs with ``_lock_for`` (thread lock first, then flock) so in-process callers still
+        serialize cheaply and two processes on one repo cannot interleave the RMW.
+        """
+        self.dir.mkdir(parents=True, exist_ok=True)
+        # Open+hold for the critical section; close releases the flock (incl. on crash).
+        with open(self._lock_path(run_id), "a+", encoding="utf-8") as guard:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
+
     def _write(self, record: RunRecord) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._path(record.run_id)
@@ -207,8 +232,8 @@ class FleetState:
         self._write(record)
 
     def update(self, run_id: str, **fields: Any) -> RunRecord:
-        """Merge fields into a run and persist it. Serialized per run_id."""
-        with self._lock_for(run_id):
+        """Merge fields into a run and persist it. Serialized per run_id (thread + flock)."""
+        with self._lock_for(run_id), self._run_file_lock(run_id):
             return self._update_locked(run_id, fields)
 
     def update_if(
@@ -216,10 +241,11 @@ class FleetState:
     ) -> RunRecord:
         """Merge fields only if ``predicate(current)`` holds; return the (possibly unchanged) record.
 
-        Read-check-write under the per-run lock, so a conditional transition (e.g. cancel: "set
-        cancelled only if still running") can't be raced by a concurrent terminal stamp.
+        Read-check-write under the per-run thread lock and cross-process flock, so a conditional
+        transition (e.g. cancel: "set cancelled only if still running") can't be raced by a
+        concurrent terminal stamp in this process or another.
         """
-        with self._lock_for(run_id):
+        with self._lock_for(run_id), self._run_file_lock(run_id):
             rec = self.get(run_id)
             if rec is None:
                 raise KeyError(run_id)
