@@ -4290,8 +4290,9 @@ def test_reaper_leaves_mid_provisioning_record_alone(
     """#146: a record whose deferred setup is still running must survive a foreign-process reaper.
 
     Spawn's record now exists BEFORE any pid is stamped. A reaper in another process (empty
-    in-flight registry there) must not reap it: the pid-less grace window (#84) covers the span
-    until setup publishes its pid, and the pid-identity probe covers the rest of setup.
+    in-flight registry there) must not reap it. This covers the pid-LESS span only - the grace
+    window (#84) that runs until setup publishes a pid; the pid-identity probe guarding the rest
+    of setup is exercised by the pid_start_time tests, not here.
     """
     import threading
 
