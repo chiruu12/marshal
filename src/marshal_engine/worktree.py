@@ -41,6 +41,15 @@ MAX_WORKTREE_ID_LEN = 128
 MAX_TASK_ID_LEN = 64
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+# Full or abbreviated git object id (sha-1 / sha-256 hex). Used to refuse a ref name that a
+# failed `git rev-parse` echoed back on stdout posing as a tip sha.
+_GIT_OBJECT_ID_RE = re.compile(r"^[0-9a-f]{7,64}$")
+
+
+def is_git_object_id(value: str) -> bool:
+    """True if `value` looks like a git object id (lowercase hex sha, full or abbreviated)."""
+    return bool(_GIT_OBJECT_ID_RE.fullmatch(value))
+
 
 def _unsafe_id_reason(kind: str, value: str, *, max_len: int) -> str | None:
     """The refusal reason if `value` is not a safe flat path segment, else ``None``.
@@ -536,8 +545,22 @@ class WorktreeManager:
         return self.unmerged_commit_count(branch, target) > 0
 
     def branch_tip(self, branch: str) -> str:
-        """The commit sha at the tip of `branch`."""
-        return self._git("rev-parse", branch).stdout.strip()
+        """The commit sha at the tip of `branch`.
+
+        Raises on a git error rather than returning the ref name: a failed ``rev-parse`` echoes
+        its argument on stdout (exit 128), which would poison ``base_commit`` and the then-chain
+        no-diff check (both sides equal the branch name → false "produced no diff").
+        """
+        proc = self._git("rev-parse", branch)
+        if proc.returncode != 0:
+            # Match merged_diff_files: a git failure must not masquerade as a successful tip.
+            raise WorktreeError(
+                f"could not resolve tip of {branch!r}: {proc.stderr.strip()}"
+            )
+        tip = proc.stdout.strip()
+        if not is_git_object_id(tip):
+            raise WorktreeError(f"tip of {branch!r} is not a commit sha: {tip!r}")
+        return tip
 
     def merged_diff_files(self, branch: str, target: str) -> list[str]:
         """Files `branch` brings into `target` - the three-dot (merge-base) delta.

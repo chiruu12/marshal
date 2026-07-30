@@ -27,7 +27,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError, field_validator
 
 from .types import canonical_status
-from .worktree import validate_run_id
+from .worktree import is_git_object_id, validate_run_id
 
 
 class RunRecord(BaseModel):
@@ -99,6 +99,21 @@ class RunRecord(BaseModel):
         back that way the next time the record is updated.
         """
         return canonical_status(value) if isinstance(value, str) else value
+
+    @field_validator("base_commit", mode="before")
+    @classmethod
+    def _require_sha_shaped_base_commit(cls, value: Any) -> Any:
+        """Keep ``base_commit`` sha-shaped; strip poison rather than reject the record.
+
+        A failed ``git rev-parse`` used to echo the ref name into this field. Rejecting the whole
+        record would break listing old ledgers; coercing to None matches the then-chain rule that
+        a missing base is not evidence of no diff.
+        """
+        if value is None or value == "":
+            return None
+        if isinstance(value, str) and is_git_object_id(value):
+            return value
+        return None
 
 
 #: Fields computed when a record is READ and deliberately kept out of the ledger. The ledger holds

@@ -8,6 +8,16 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **`branch_tip` no longer poisons `base_commit` with a ref name when `git rev-parse` fails.**
+  A failed rev-parse echoes its argument on stdout (exit 128); that value was stored as
+  `base_commit` and compared equal to the branch tip in the `then` chain, silently skipping
+  follow-up review stages with a false "primary produced no diff" while the primary had real
+  work. `collect_run` on those chained runs also failed with `ambiguous argument`. `branch_tip`
+  now raises `WorktreeError`, rejects non-sha tips, and the `then` chain prefers running the
+  follow-up when the tip cannot be resolved. Ledger load strips a non-sha `base_commit` to
+  `None` so old poisoned records still parse.
+
 ## [0.2.0] - 2026-07-30
 
 ### Added

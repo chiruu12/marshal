@@ -285,6 +285,58 @@ def test_then_skipped_when_primary_exits_clean_with_no_diff(repo: Path) -> None:
     assert counter.invocations == 0
 
 
+def test_then_not_silently_skipped_when_branch_tip_fails(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tip failure + poisoned base_commit must not masquerade as 'produced no diff' (#173)."""
+    from marshal_engine.state import RunRecord
+
+    counter = _CountingReader()
+    fleet = Fleet(repo, {"writer": _Writer(), "counter": counter})
+
+    # Recreate the pre-fix poison: base_commit stored as the branch name (bypass validators).
+    real_run = fleet._run_request
+
+    def poison_primary(req: RunRequest) -> RunRecord:
+        rec = real_run(req)
+        if req.task.id == "build" and rec.branch:
+            return RunRecord.model_construct(**{**rec.model_dump(), "base_commit": rec.branch})
+        return rec
+
+    monkeypatch.setattr(fleet, "_run_request", poison_primary)
+
+    real_tip = fleet.worktrees.branch_tip
+    calls = {"n": 0}
+
+    def flaky(branch: str) -> str:
+        calls["n"] += 1
+        # (1) primary base_commit, (2) commit_run tip, (3) then-chain no-diff check,
+        # (4+) then spawn. On the no-diff check, echo the ref name (old rev-parse failure).
+        if calls["n"] == 3:
+            return branch
+        return real_tip(branch)
+
+    monkeypatch.setattr(fleet.worktrees, "branch_tip", flaky)
+    results = fleet.run_many(
+        [
+            RunManyJob(
+                request=RunRequest(backend_name="writer", task=TaskSpec(id="build", goal="x")),
+                then=RunRequest(
+                    backend_name="counter",
+                    task=TaskSpec(id="build-then", goal="review"),
+                ),
+            )
+        ],
+        stagger_s=0,
+    )
+    assert results[0].primary.status == "exited_clean"
+    # Follow-up attempted — not a false "no diff" skip from tip == base_commit == branch name.
+    assert results[0].then is not None
+    assert results[0].then_skipped is None
+    assert "no diff" not in (results[0].then_skipped or "")
+    assert counter.invocations >= 1
+
+
 def test_then_runs_when_primary_self_committed(repo: Path) -> None:
     """Self-committed primary leaves a clean tree; follow-up must still run and see the work."""
 

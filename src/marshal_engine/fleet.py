@@ -48,7 +48,7 @@ from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
 from .types import AgentResult, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord, UsageSource
 from .usage import UsageEvent, UsageTracker
-from .worktree import Worktree, WorktreeError, WorktreeManager
+from .worktree import Worktree, WorktreeError, WorktreeManager, is_git_object_id
 
 logger = logging.getLogger(__name__)
 
@@ -1978,9 +1978,20 @@ class Fleet:
         # since `python -O` strips asserts and would leave branch_tip() taking None.
         if branch is None:
             return RunManyJobResult(primary=primary, then_skipped="primary run has no branch")
-        tip = self.worktrees.branch_tip(branch)
-        # Missing base_commit is not evidence of no diff — prefer running the follow-up.
-        if primary.base_commit is not None and tip == primary.base_commit:
+        try:
+            tip = self.worktrees.branch_tip(branch)
+        except WorktreeError:
+            # Cannot prove the branch is empty of new commits — prefer the follow-up (same
+            # rationale as missing base_commit). Never invent a "no diff" skip from a tip failure.
+            tip = None
+        # Missing / non-sha tip or base is not evidence of no diff — prefer the follow-up.
+        if (
+            primary.base_commit is not None
+            and tip is not None
+            and is_git_object_id(tip)
+            and is_git_object_id(primary.base_commit)
+            and tip == primary.base_commit
+        ):
             return RunManyJobResult(
                 primary=primary,
                 then_skipped=(

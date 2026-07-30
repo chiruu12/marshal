@@ -930,6 +930,58 @@ def test_merged_diff_files_raises_on_git_failure(
         m.merged_diff_files("marshal/missing", "main")
 
 
+def test_branch_tip_raises_on_unresolvable_ref(repo: Path) -> None:
+    """Failed rev-parse must raise — never return the ref name as if it were a sha (#173)."""
+    m = WorktreeManager(repo)
+    missing = "definitely/not/a/ref"
+    # Pre-fix: git echoed the argument on stdout and branch_tip returned it unchecked.
+    raw = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", missing],
+        capture_output=True,
+        text=True,
+    )
+    assert raw.returncode != 0
+    assert raw.stdout.strip() == missing
+    with pytest.raises(WorktreeError, match="could not resolve tip"):
+        tip = m.branch_tip(missing)
+        raise AssertionError(f"branch_tip must not return the ref name; got {tip!r}")
+
+
+def test_branch_tip_returns_sha_for_real_branch(repo: Path) -> None:
+    m = WorktreeManager(repo)
+    wt = m.create("tip_ok")
+    assert wt.branch is not None
+    tip = m.branch_tip(wt.branch)
+    assert len(tip) == 40
+    assert all(c in "0123456789abcdef" for c in tip)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", wt.branch],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert tip == head
+
+
+def test_branch_tip_rejects_non_sha_stdout(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even exit 0 must not accept a non-sha tip (future git quirk / mis-parse)."""
+    m = WorktreeManager(repo)
+    real_git = m._git
+
+    def weird(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ("rev-parse",):
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=0, stdout="marshal/not-a-sha\n", stderr=""
+            )
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", weird)
+    with pytest.raises(WorktreeError, match="not a commit sha"):
+        m.branch_tip("marshal/whatever")
+
+
 def test_setup_on_pid_publishes_and_on_exit_fires(repo: Path) -> None:
     """setup() process-group spawn publishes pid via on_pid and reaps via on_exit (#146 cancel hook)."""
     seen: dict[str, object] = {}
