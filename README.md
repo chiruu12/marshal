@@ -59,40 +59,47 @@ Backend CLI auth and MCP wiring: **[`SETUP.md`](SETUP.md)**.
 
 ## 60 seconds
 
-**1. Check the fleet is ready.** `doctor` verifies auth, not just that a CLI is on `$PATH` — a backend you cannot actually run fails here rather than 3 seconds into a job.
+**1. Configure a fleet.** From your project repo, scaffold a starter `fleet.config.yaml`:
+
+```bash
+marshal init   # scaffolds fleet.config.yaml in the current repo
+```
+
+The scaffold ships every client **commented out**, so uncomment at least one and save. Using the
+`codex` example:
+
+```yaml
+clients:
+  codex:
+    backend: codex
+    model: gpt-5.5
+```
+
+**2. Check the fleet is ready.** `doctor` verifies auth, not just that a CLI is on `$PATH` — a backend you cannot actually run fails here rather than 3 seconds into a job.
 
 ```console
 $ marshal doctor
 ✓ repo: /path/to/your-repo (branch main)
-✓ config: fleet.config.yaml (15 clients)
-✓ backend:cursor: available
-✓ plan:cursor: Ultra (model Composer 2.5 Fast)
-✓ backend:opencode: available
-✗ backend:codex: CLI not on PATH / not runnable
-    fix: install the Codex CLI, then `codex login` (ChatGPT) or set OPENAI_API_KEY
+✓ config: fleet.config.yaml (1 client)
+✓ backend:codex: available
+✓ plan:codex: logged-in
 ```
 
-**2. Dispatch a job.** It returns immediately with a run id — the agent works in its own git worktree on its own branch. Your checkout is never touched.
+**3. Dispatch a job.** It returns immediately with a run id — the agent works in its own git worktree on its own branch. Your checkout is never touched.
 
 ```console
-$ marshal spawn --client composer --goal "Add a docstring to hello()"
-run_id  hello-docstring.cursor.d56489fe
-status  running
-branch  marshal/hello-docstring.cursor.d56489fe
-worktree .marshal/worktrees/hello-docstring.cursor.d56489fe
+$ marshal spawn --client codex --goal "Add a docstring to hello()"
+hello-docstring.codex.d56489fe  codex/gpt-5.5  running  (poll: marshal status)
 ```
 
-**3. Watch the fleet.** Any number of agents, any mix of providers, each with its own cost line.
+**4. Watch the fleet.** Any number of agents, any mix of providers, each with its own cost line.
 
 ```console
-$ marshal status --limit 3
-showing 3 of 136 runs (raise --limit to see more)
-phase0-logo.claude-code.8413a86c    claude-code  exited_clean  $0.4695
-phase0-hygiene.cursor.79639a00      cursor       exited_clean  unavailable
-phase0-readme.cursor.d56489fe       cursor       exited_clean  unavailable
+$ marshal status
+hello-docstring.codex.d56489fe  codex        exited_clean  unavailable  .marshal/worktrees/hello-docstring.codex.d56489fe
 ```
 
-**4. Review, then merge.** From a driver agent over MCP: `collect_run("<run_id>")` returns the diff read-only, and `integrate("<run_id>", message="...")` merges it. `exited_clean` means the process exited cleanly — it does **not** mean the code is correct, so the diff review is not optional.
+**5. Review, then merge.** From a driver agent over MCP: `collect_run("<run_id>")` returns the diff read-only, and `integrate("<run_id>", message="...")` merges it. `exited_clean` means the process exited cleanly — it does **not** mean the code is correct, so the diff review is not optional.
 
 MCP tool reference: [`docs/mcp-tools.md`](docs/mcp-tools.md). Orientation for drivers: call `marshal_quickstart()` first.
 

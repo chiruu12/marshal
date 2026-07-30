@@ -423,7 +423,7 @@ class MarshalService:
             parts.append(
                 f"no fleet config at {self.config_path} "
                 "(pass --repo/--config, set MARSHAL_REPO/MARSHAL_CONFIG, or "
-                "cp fleet.config.example.yaml fleet.config.yaml)"
+                "`marshal init` to scaffold one)"
             )
         elif not self.config.clients:
             parts.append(f"config at {self.config_path} declares no clients")

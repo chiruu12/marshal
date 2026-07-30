@@ -277,7 +277,10 @@ def run_checks(
     config: FleetConfig | None = None
     try:
         config = load_config(config_path)
-        checks.append(Check("config", OK, f"{config_path} ({len(config.clients)} clients)"))
+        n = len(config.clients)
+        checks.append(
+            Check("config", OK, f"{config_path} ({n} client{'' if n == 1 else 's'})")
+        )
     except ConfigError as exc:
         checks.append(Check("config", FAIL, str(exc), "fix the config, then re-run `marshal doctor`"))
 
