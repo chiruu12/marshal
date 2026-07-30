@@ -779,6 +779,63 @@ def test_create_failure_deletes_leaked_branch(repo: Path, monkeypatch: pytest.Mo
     m.remove(wt)
 
 
+def test_create_failure_preserves_preexisting_branch(repo: Path) -> None:
+    """A failed add must NOT `branch -D` a pre-existing same-named branch (M7 data-loss)."""
+    m = WorktreeManager(repo)
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    # Unmerged work on the exact branch name create() would use.
+    git("checkout", "-b", "marshal/preexist")
+    (repo / "important.txt").write_text("keep me\n")
+    git("add", "important.txt")
+    git("commit", "-m", "unmerged work")
+    tip = git("rev-parse", "HEAD")
+    git("checkout", "-")  # back to the original branch
+
+    with pytest.raises(WorktreeError, match="worktree add failed"):
+        m.create("preexist")  # -b rejects: branch already exists
+
+    assert git("rev-parse", "marshal/preexist") == tip  # tip (and unmerged work) survived
+    listed = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/preexist"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "marshal/preexist" in listed
+    assert not (repo / "important.txt").exists()  # main checkout untouched
+
+
+def test_create_failure_cleanup_timeout_does_not_mask_add_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A TimeoutExpired / WorktreeError from best-effort `-D` must not replace the add error."""
+    m = WorktreeManager(repo)
+    real_git = m._git
+
+    def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("worktree", "add") and "-b" in args:
+            branch = args[args.index("-b") + 1]
+            real_git("branch", branch, cwd=cwd)
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=1, stdout="", stderr="simulated worktree add fail"
+            )
+        if args[:2] == ("branch", "-D"):
+            # What `_git` raises when the cleanup itself times out.
+            raise WorktreeError("git 'branch -D marshal/mask_me' timed out after 30s")
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", flaky)
+    with pytest.raises(WorktreeError, match="worktree add failed.*simulated worktree add fail"):
+        m.create("mask_me")
+
+
 def test_merged_diff_files_raises_on_git_failure(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

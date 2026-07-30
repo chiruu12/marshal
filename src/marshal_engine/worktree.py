@@ -7,6 +7,7 @@ safety boundary of the whole system - keep it boring and reliable.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -237,12 +238,18 @@ class WorktreeManager:
         path = self.base_dir / task_id
         _ensure_under_base(path, self.base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        # Remember whether the branch already existed: a failed `worktree add -b` can leak a
+        # branch IT created, but must never `branch -D` a pre-existing one (unmerged work).
+        branch_existed = (
+            self._git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
+        )
         proc = self._git("worktree", "add", "-b", branch, str(path), base_branch or "HEAD")
         if proc.returncode != 0:
-            # git may have created the branch before failing the worktree checkout (disk full,
-            # unwritable path, ...). Leave it and a retry on the same id dies with "branch already
-            # exists" - best-effort delete so the failure is atomic from the caller's perspective.
-            self._git("branch", "-D", branch)
+            if not branch_existed:
+                # Best-effort only: never let cleanup mask the original add failure (e.g. a
+                # TimeoutExpired from `branch -D` surfacing as WorktreeError).
+                with contextlib.suppress(Exception):
+                    self._git("branch", "-D", branch)
             raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
         return Worktree(task_id=task_id, path=path, branch=branch)
 

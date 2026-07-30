@@ -690,6 +690,11 @@ def _is_terminal(rec: RunRecord) -> bool:
 #: `Fleet.reconcile_orphans`), never skipped permanently.
 _REAP_GRACE_S = 180.0
 
+#: Age gate for reaping orphaned ``*.tmp`` files left by a crash between ``mkstemp`` and
+#: ``os.replace`` in state/logs writers. A concurrent ``clean`` must not unlink a LIVE temp
+#: mid-write (that loses terminal state/logs); only temps older than this are abandoned.
+_TMP_REAP_AGE_S = 300.0
+
 
 #: Stale non-terminal runs reaped at Fleet startup are stamped ``failed``: the supervising process
 #: vanished before Marshal recorded an outcome, so we cannot honestly claim success, cancellation,
@@ -2006,14 +2011,20 @@ class Fleet:
                 except WorktreeError as exc:
                     result.errors.append({"run_id": rid, "error": str(exc)})
         # Reap orphaned atomic-write temps (a crash between mkstemp and os.replace in state/logs
-        # leaves `*.tmp` nothing else collects). Best-effort; never fails the clean.
+        # leaves `*.tmp` nothing else collects). Age-gated so a concurrent clean cannot unlink a
+        # LIVE temp mid-write. Best-effort; never fails the clean.
         if not dry_run:
+            now = time.time()
             for tmp_dir in (self.state.dir, self.logs.dir):
                 if not tmp_dir.exists():
                     continue
                 for tmp in tmp_dir.glob("*.tmp"):
-                    with contextlib.suppress(OSError):
+                    try:
+                        if now - tmp.stat().st_mtime < _TMP_REAP_AGE_S:
+                            continue
                         tmp.unlink()
+                    except OSError:
+                        pass
         return result
 
     def cancel_run(self, run_id: str) -> RunRecord:

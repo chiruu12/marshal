@@ -4156,16 +4156,25 @@ def test_cleanup_remove_failure_stamps_warning_background(
 
 
 def test_clean_sweeps_orphaned_tmp_files(repo: Path) -> None:
-    """A crash between mkstemp and os.replace leaves `*.tmp`; clean must reap them (M12)."""
+    """Age-gated `*.tmp` sweep: old orphans reaped, fresh (live-write) temps kept (M12)."""
     fleet = Fleet(repo, {"writer": _Writer()})
     fleet.run("writer", TaskSpec(id="tmp1", goal="x"))  # ensure .marshal layout exists
-    stale_run = fleet.state.dir / "orphan-run.json.XXXX.tmp"
-    stale_log = fleet.logs.dir / "orphan-log.log.YYYY.tmp"
     fleet.state.dir.mkdir(parents=True, exist_ok=True)
     fleet.logs.dir.mkdir(parents=True, exist_ok=True)
+
+    stale_run = fleet.state.dir / "orphan-run.json.XXXX.tmp"
+    stale_log = fleet.logs.dir / "orphan-log.log.YYYY.tmp"
+    fresh = fleet.state.dir / "live-write.json.ZZZZ.tmp"
     stale_run.write_text("{partial")
     stale_log.write_text("partial log")
-    assert stale_run.exists() and stale_log.exists()
+    fresh.write_text("in-flight write")
+
+    # Stale = older than the reap threshold; fresh keeps its current mtime (now).
+    old = time.time() - (fleet_mod._TMP_REAP_AGE_S + 1)
+    os.utime(stale_run, (old, old))
+    os.utime(stale_log, (old, old))
+
     fleet.clean(scope="finished")
-    assert not stale_run.exists()
-    assert not stale_log.exists()
+    assert not stale_run.exists(), "old orphaned .tmp should be reaped"
+    assert not stale_log.exists(), "old orphaned .tmp should be reaped"
+    assert fresh.exists(), "fresh .tmp (live write) must survive concurrent clean"
