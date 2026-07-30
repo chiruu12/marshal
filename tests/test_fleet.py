@@ -4666,3 +4666,74 @@ def test_no_output_schema_leaves_structured_unset(repo: Path) -> None:
     assert rec.status == RunStatus.EXITED_CLEAN.value
     assert rec.structured is None
     assert fleet.collect_run(rec.run_id).structured is None
+
+
+def test_empty_output_schema_rejects_prose_not_silent_success(repo: Path) -> None:
+    """`{}` is a valid JSON Schema and must not truthiness-skip injection/validation (#166 review)."""
+    fleet = Fleet(repo, {"talker": _Talker("just prose, no json")})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-empty-prose", goal="rate it", output_schema={}),
+    )
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None
+    assert rec.error is not None and rec.error.startswith("structured_output:")
+
+
+def test_empty_output_schema_accepts_any_json_object(repo: Path) -> None:
+    """`output_schema={}` means any JSON object (extraction still requires an object)."""
+    fleet = Fleet(repo, {"talker": _Talker('{"anything": true, "nested": [1]}')})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-empty-ok", goal="emit object", output_schema={}),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.structured == {"anything": True, "nested": [1]}
+
+
+def test_dangling_ref_schema_fails_run_without_raising(repo: Path) -> None:
+    """A schema that passes check_schema but fails at validate (dangling $ref) must land as
+    failed + structured_output:, never escape _execute as a raw crash."""
+    schema = {"$ref": "#/nope"}
+    fleet = Fleet(repo, {"talker": _Talker('{"score": 1}')})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-dangle", goal="rate it", output_schema=schema),
+    )
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None
+    assert rec.error is not None and rec.error.startswith("structured_output:")
+    # Name the ref problem so a driver can tell why without digging logs.
+    assert "nope" in rec.error.lower() or "pointer" in rec.error.lower() or "ref" in rec.error.lower()
+
+
+def test_valid_ref_defs_schema_populates_structured(repo: Path) -> None:
+    schema = {
+        "$defs": {
+            "score": {
+                "type": "object",
+                "properties": {"score": {"type": "integer"}},
+                "required": ["score"],
+                "additionalProperties": False,
+            }
+        },
+        "$ref": "#/$defs/score",
+    }
+    fleet = Fleet(repo, {"talker": _Talker('{"score": 5}')})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-ref-ok", goal="rate it", output_schema=schema),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.structured == {"score": 5}
+
+
+def test_schema_instruction_injection_is_idempotent() -> None:
+    """Defense: a future second call site must not double-append the instruction."""
+    from marshal_engine.fleet import _STRUCTURED_OUTPUT_MARKER, _task_with_schema_instruction
+
+    task = TaskSpec(id="so-idem", goal="do it", output_schema=_SCORE_SCHEMA)
+    once = _task_with_schema_instruction(task)
+    twice = _task_with_schema_instruction(once)
+    assert once.goal == twice.goal
+    assert once.goal.count(_STRUCTURED_OUTPUT_MARKER) == 1

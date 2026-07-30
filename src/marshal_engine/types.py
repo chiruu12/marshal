@@ -123,9 +123,10 @@ class TaskSpec(BaseModel):
     # context_files these are deliberately outside the worktree checkout.
     read_paths: list[str] = []
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
-    # Optional JSON Schema for the agent's FINAL MESSAGE. When set, the fleet injects a prompt
-    # instruction and validates the reply as one JSON object; see Fleet._apply_structured_output.
-    # None (default) leaves behaviour identical to an unstructured run.
+    # Optional JSON Schema for the agent's FINAL MESSAGE. When set (including {}), the fleet
+    # injects a prompt instruction and validates the reply as one JSON object; see
+    # fleet._apply_structured_output. None (default) leaves behaviour identical to an unstructured
+    # run. Empty {} means "any JSON object" (extraction still requires an object).
     output_schema: dict[str, Any] | None = None
 
     @field_validator("id")

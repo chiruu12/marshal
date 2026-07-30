@@ -1027,8 +1027,11 @@ _JSON_FENCE_RE = re.compile(
 
 #: Prompt suffix when TaskSpec.output_schema is set. Backend-agnostic: appended to the goal so
 #: ``CodingAgentBackend._compose_prompt`` picks it up without any adapter changes.
+_STRUCTURED_OUTPUT_MARKER = (
+    "Your FINAL MESSAGE must be exactly one JSON object conforming to this JSON Schema"
+)
 _STRUCTURED_OUTPUT_INSTRUCTION = (
-    "\n\nYour FINAL MESSAGE must be exactly one JSON object conforming to this JSON Schema, "
+    f"\n\n{_STRUCTURED_OUTPUT_MARKER}, "
     "with no surrounding prose or markdown fences:\n{schema}"
 )
 
@@ -1038,8 +1041,14 @@ def _task_with_schema_instruction(task: TaskSpec) -> TaskSpec:
 
     Injection lives here (not on the backend base) so the backend contract stays untouched: every
     adapter already builds its prompt from ``task.goal`` via ``_compose_prompt``.
+
+    ``output_schema is None`` means unstructured (no injection). An empty dict ``{}`` is a valid
+    JSON Schema and *does* inject — see ``_apply_structured_output``. Idempotent: if the marker is
+    already present in the goal, the goal is returned unchanged (defense against double injection).
     """
-    if not task.output_schema:
+    if task.output_schema is None:
+        return task
+    if _STRUCTURED_OUTPUT_MARKER in task.goal:
         return task
     suffix = _STRUCTURED_OUTPUT_INSTRUCTION.format(schema=json.dumps(task.output_schema))
     return task.model_copy(update={"goal": task.goal + suffix})
@@ -1071,25 +1080,36 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 def _apply_structured_output(task: TaskSpec, result: AgentResult) -> AgentResult:
     """Validate the final message against ``task.output_schema`` when one was requested.
 
+    ``{}`` semantic: an empty schema is a valid JSON Schema (matches any JSON value), but Marshal's
+    extraction contract still requires a top-level JSON *object*. So ``output_schema={}`` means
+    "any JSON object" — equivalent in practice to asking for a parseable object with no further
+    shape constraints. Prose / arrays / scalars still fail. Use ``is None`` (not truthiness) so
+    ``{}`` never silently no-ops.
+
     Status semantics (RunStatus vocabulary unchanged):
-      * no schema → identity (``structured`` stays None).
+      * ``output_schema is None`` → identity (``structured`` stays None).
       * schema + clean exit + valid object → ``structured`` populated; status unchanged.
       * schema + clean exit + invalid/absent → ``FAILED`` with ``error`` prefixed
         ``structured_output:`` and ``structured=None``. Not a silent prose success.
       * schema + non-clean exit → left alone (the run's own failure stands; do not overwrite it).
 
     Applied AFTER the retry loop: a schema-invalid reply is a contract failure, never a transient
-    infra failure, so it must not trigger another attempt.
+    infra failure, so it must not trigger another attempt. Validation catches broadly (including
+    dangling ``$ref`` / referencing errors) so no schema failure escapes ``_execute`` as a crash.
     """
-    if not task.output_schema:
+    if task.output_schema is None:
         return result
     if result.status is not RunStatus.EXITED_CLEAN:
         return result
     try:
         obj = _extract_json_object(result.text)
         jsonschema.validate(instance=obj, schema=task.output_schema)
-    except (ValueError, jsonschema.ValidationError) as exc:
-        detail = exc.message if isinstance(exc, jsonschema.ValidationError) else str(exc)
+    except Exception as exc:  # noqa: BLE001 - schema/ref/parse failures must not crash the run
+        detail = (
+            exc.message
+            if isinstance(exc, jsonschema.ValidationError) and getattr(exc, "message", None)
+            else str(exc)
+        )
         return result.model_copy(
             update={
                 "status": RunStatus.FAILED,
