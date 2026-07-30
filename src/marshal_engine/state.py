@@ -50,6 +50,10 @@ class RunRecord(BaseModel):
     duration_ms: int = 0
     source: str | None = None  # cost provenance: native | admin-api | unavailable | ...
     text: str = ""             # the agent's final message (file edits live in the worktree diff)
+    # Schema-validated JSON object when the task requested output_schema and the final message
+    # conformed. Absent/None on records written before this field existed, and on runs that did
+    # not request a schema (or failed validation - see error).
+    structured: dict[str, Any] | None = None
     started_at: str | None = None
     ended_at: str | None = None
     error: str | None = None

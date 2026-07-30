@@ -1385,3 +1385,65 @@ def test_list_models_survives_a_raising_probe(tmp_path: Path) -> None:
     )
     result = svc.list_models()
     assert result.backend_models["bad"] is None
+
+
+def test_run_agent_threads_output_schema_to_the_task(repo: Path) -> None:
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    # Capture sees the post-injection goal; the schema itself must still be on the TaskSpec.
+    # Use a conforming reply so the run succeeds (Capture prints 'ok', which is not JSON —
+    # override parse via a talker-style backend instead when asserting structured).
+    svc.run_agent("worker", "do x", task_id="so1", output_schema=schema)
+    assert backend.tasks[-1].output_schema == schema
+    assert "FINAL MESSAGE" in backend.tasks[-1].goal
+
+
+def test_run_agent_rejects_invalid_output_schema_before_spawn(repo: Path) -> None:
+    """A bad schema dict fails cleanly at the service boundary (ValueError), not mid-run."""
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="invalid output_schema"):
+        svc.run_agent(
+            "worker",
+            "do x",
+            output_schema={"type": "object", "properties": "not-an-object"},
+        )
+
+
+def test_run_agent_structured_output_round_trip(repo: Path) -> None:
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+
+    class _JsonTalker(CodingAgentBackend):
+        name = "echo"
+        binary = "python"
+        capabilities = Capabilities()
+
+        def check_available(self) -> bool:
+            return True
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return [sys.executable, "-c", "pass"]
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text='{"ok": true}', exit_code=exit_code)
+
+    cfg = FleetConfig(
+        clients={"worker": ClientConfig(name="worker", backend="echo", permission=PermissionMode.SAFE_EDIT)}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _JsonTalker()})
+    rec = svc.run_agent("worker", "classify", output_schema=schema)
+    assert rec.status == "exited_clean"
+    assert rec.structured == {"ok": True}
+    assert svc.collect_run(rec.run_id).structured == {"ok": True}

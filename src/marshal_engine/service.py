@@ -307,6 +307,7 @@ class MarshalService:
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunRequest:
         # Harness-first model selection: pick the strategy by (client, [model], [backend]).
         #   - client only: today's path (lookup + resolve_model).
@@ -333,6 +334,7 @@ class MarshalService:
                 context_files=context_files or [],
                 read_paths=read_paths or [],
                 base_branch=base_branch,
+                output_schema=output_schema,
             )
         except ValidationError as exc:
             raise ValueError(str(exc)) from exc
@@ -497,11 +499,13 @@ class MarshalService:
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunRecord:
         req = self._request_for(
             client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
+            output_schema=output_schema,
         )
         return self.fleet.run_request(req)
 
@@ -509,9 +513,9 @@ class MarshalService:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
         Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, context_files?,
-        read_paths?, model?, backend?, duration?}``. Strips ``then`` and ``workspace``
-        (registry-only). Used by single-repo ``run_many`` and the registry's cross-workspace
-        fan-out so validation stays fail-fast before any worktree is created.
+        read_paths?, model?, backend?, duration?, output_schema?}``. Strips ``then`` and
+        ``workspace`` (registry-only). Used by single-repo ``run_many`` and the registry's
+        cross-workspace fan-out so validation stays fail-fast before any worktree is created.
         """
         body = {k: v for k, v in job.items() if k not in ("then", "workspace")}
         return self._request_for(
@@ -523,6 +527,7 @@ class MarshalService:
             model=body.get("model"),
             backend=body.get("backend"),
             duration=body.get("duration"),
+            output_schema=body.get("output_schema"),
         )
 
     def run_many_job(self, job: dict[str, Any]) -> RunManyJob:
@@ -564,6 +569,7 @@ class MarshalService:
         model: str | None = None,
         backend: str | None = None,
         duration: str | int | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunRecord:
         """Start a worker agent in the background; return its RUNNING record at once.
 
@@ -575,6 +581,7 @@ class MarshalService:
             client_name, goal, task_id, context_files, read_paths,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
+            output_schema=output_schema,
         )
         run_id = self.fleet.spawn(req)
         rec = self.fleet.state.get(run_id)

@@ -4507,3 +4507,162 @@ def test_collect_run_worktree_error_mid_op_is_structured(
     assert got.changed_files == []
     assert got.diff == ""
     assert "vanished mid-collect" in got.text
+
+
+# --- structured output (#148) -----------------------------------------------------------------
+
+
+_SCORE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {"score": {"type": "integer"}},
+    "required": ["score"],
+    "additionalProperties": False,
+}
+
+
+def test_structured_output_valid_json_populates_structured_end_to_end(repo: Path) -> None:
+    """Schema requested + a conforming JSON final message → structured on the record."""
+    fleet = Fleet(repo, {"talker": _Talker('{"score": 7}')})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-ok", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.structured == {"score": 7}
+    assert rec.error is None
+
+
+def test_structured_output_tolerates_a_single_json_fence(repo: Path) -> None:
+    """Extraction allows one whole-message ```json fence (common model habit)."""
+    fenced = '```json\n{"score": 3}\n```'
+    fleet = Fleet(repo, {"talker": _Talker(fenced)})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-fence", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.structured == {"score": 3}
+
+
+def test_structured_output_rejects_prose_as_distinct_validation_failure(repo: Path) -> None:
+    """Schema requested + free-form prose must NOT silently succeed as unstructured text."""
+    fleet = Fleet(repo, {"talker": _Talker("score is seven, trust me")})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-prose", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None
+    assert rec.error is not None and rec.error.startswith("structured_output:")
+    assert "not JSON" in rec.error
+
+
+def test_structured_output_rejects_trailing_prose_after_json(repo: Path) -> None:
+    fleet = Fleet(repo, {"talker": _Talker('{"score": 1}\nHope that helps!')})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-trail", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None
+    assert rec.error is not None and "trailing prose" in rec.error
+
+
+def test_structured_output_rejects_schema_mismatch(repo: Path) -> None:
+    fleet = Fleet(repo, {"talker": _Talker('{"score": "seven"}')})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-type", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None
+    assert rec.error is not None and rec.error.startswith("structured_output:")
+
+
+def test_structured_output_invalid_is_not_retried_as_transient(repo: Path) -> None:
+    """A schema-invalid reply is a contract failure — never a transient infra retry."""
+    from marshal_engine.retry import is_transient_failure
+
+    class _CountingTalker(_Talker):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            self.runs = 0
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            self.runs += 1
+            return super().run(task, opts)
+
+    talker = _CountingTalker("not json at all")
+    fleet = Fleet(
+        repo,
+        {"talker": talker},
+        retries=RetryPolicy(max_attempts=3, backoff_base_s=0.01),
+    )
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-retry", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.error is not None and rec.error.startswith("structured_output:")
+    assert talker.runs == 1
+    assert rec.attempts == 1
+    # Even the stamped failure shape must not look transient to the classifier.
+    assert not is_transient_failure(
+        AgentResult(status=RunStatus.FAILED, error=rec.error)
+    )
+
+
+def test_structured_output_injects_schema_into_the_prompt_goal(repo: Path) -> None:
+    """Injection is prompt-level only: the schema appears in the goal the backend sees."""
+    captured: list[str] = []
+
+    class _GoalCapture(CodingAgentBackend):
+        name = "gcap"
+        binary = "python"
+        capabilities = Capabilities()
+
+        def check_available(self) -> bool:
+            return True
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            captured.append(task.goal)
+            return [sys.executable, "-c", "print('{\"score\": 2}')"]
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(
+                status=RunStatus.EXITED_CLEAN, text=raw_stdout.strip(), exit_code=exit_code
+            )
+
+    fleet = Fleet(repo, {"gcap": _GoalCapture()})
+    rec = fleet.run(
+        "gcap",
+        TaskSpec(id="so-inj", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    assert rec.structured == {"score": 2}
+    # Preflight calls build_invocation once on the raw task; the real run sees the injection.
+    assert any("FINAL MESSAGE" in g for g in captured)
+    assert any('"score"' in g for g in captured)
+
+
+def test_collect_run_surfaces_structured_when_populated(repo: Path) -> None:
+    """collect_run gains `structured` as a field when the record has one (#125 field convention)."""
+    fleet = Fleet(repo, {"talker": _Talker('{"score": 9}')})
+    rec = fleet.run(
+        "talker",
+        TaskSpec(id="so-col", goal="rate it", output_schema=_SCORE_SCHEMA),
+    )
+    got = fleet.collect_run(rec.run_id)
+    assert got.produced == "text"
+    assert got.structured == {"score": 9}
+
+
+def test_no_output_schema_leaves_structured_unset(repo: Path) -> None:
+    """Zero regression: omitting output_schema keeps today's behaviour."""
+    fleet = Fleet(repo, {"talker": _Talker('{"score": 1}')})
+    rec = fleet.run("talker", TaskSpec(id="so-none", goal="say json anyway"))
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.structured is None
+    assert fleet.collect_run(rec.run_id).structured is None

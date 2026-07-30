@@ -92,6 +92,12 @@ _DESC_BASE_BRANCH = (
     "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
     "chain dependent work off a prior run's branch."
 )
+_DESC_OUTPUT_SCHEMA = (
+    "Optional JSON Schema (object) for the agent's FINAL MESSAGE. When set, the engine requires "
+    "exactly one conforming JSON object, surfaces it as `structured` on the run/collect result, "
+    "and fails the run (status failed, error prefixed `structured_output:`) if the reply is "
+    "missing or invalid. Omit for today's prose behaviour."
+)
 _DESC_RUN_ID = "A run id returned by run_agent / spawn / run_many."
 _DESC_WORKSPACE = "Target workspace name (from list_workspaces); defaults to the primary workspace."
 _DESC_WS_HINT = (
@@ -119,6 +125,9 @@ class Job(BaseModel):
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
+    output_schema: Annotated[
+        dict[str, Any] | None, Field(description=_DESC_OUTPUT_SCHEMA)
+    ] = None
     then: Annotated[
         "ThenJob | None",
         Field(
@@ -150,6 +159,9 @@ class ThenJob(BaseModel):
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
+    output_schema: Annotated[
+        dict[str, Any] | None, Field(description=_DESC_OUTPUT_SCHEMA)
+    ] = None
 
 
 Job.model_rebuild()
@@ -377,6 +389,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
         duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
+        output_schema: Annotated[
+            dict[str, Any] | None, Field(description=_DESC_OUTPUT_SCHEMA)
+        ] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Delegate a goal to a worker agent in an isolated git worktree (in `workspace`'s repo);
@@ -386,13 +401,14 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         `model` overrides the client's resolved model when `client` is set; for an ad-hoc spawn,
         pass `backend` (+ optional `model`) with no `client`. `duration` overrides the resolved
         timeout (a preset name or positive seconds). `base_branch` bases the worktree on a branch
-        other than HEAD (e.g. a prior run's branch after commit_run)."""
+        other than HEAD (e.g. a prior run's branch after commit_run). `output_schema` requests
+        schema-validated structured output on the final message."""
         return await ws_call(
             workspace,
             lambda svc: svc.run_agent(
                 client, goal, task_id=task_id, context_files=context_files,
                 read_paths=read_paths, base_branch=base_branch, model=model,
-                backend=backend, duration=duration,
+                backend=backend, duration=duration, output_schema=output_schema,
             ),
         )
 
@@ -447,6 +463,9 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         model: Annotated[str | None, Field(description=_DESC_MODEL)] = None,
         backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None,
         duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None,
+        output_schema: Annotated[
+            dict[str, Any] | None, Field(description=_DESC_OUTPUT_SCHEMA)
+        ] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """Start a worker agent in the background in `workspace`'s repo; returns its RUNNING record
@@ -454,15 +473,15 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         starts. Same delegation primitive as run_agent (product may be a diff or text).
         Poll get_run/status during setup; cancel_run stops an in-flight setup process group when
         its pid is known (otherwise stamps cancelled and skips the agent). `model`/`backend`/
-        `duration`/`base_branch` follow the same rules as run_agent (override the client's model,
-        ad-hoc spawn by bare backend, per-spawn timeout override, or chain off a prior run's
-        branch)."""
+        `duration`/`base_branch`/`output_schema` follow the same rules as run_agent (override the
+        client's model, ad-hoc spawn by bare backend, per-spawn timeout override, chain off a prior
+        run's branch, or request schema-validated structured output)."""
         return await ws_call(
             workspace,
             lambda svc: svc.spawn(
                 client, goal, task_id=task_id, context_files=context_files,
                 read_paths=read_paths, base_branch=base_branch, model=model,
-                backend=backend, duration=duration,
+                backend=backend, duration=duration, output_schema=output_schema,
             ),
         )
 

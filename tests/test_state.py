@@ -311,3 +311,26 @@ def test_list_skips_binary_file_and_warns(
 
     assert [r.run_id for r in st.list()] == ["good"]
     assert "skipping 1 unreadable run record" in capsys.readouterr().err
+
+
+def test_structured_field_round_trips_and_legacy_records_load_without_it(tmp_path: Path) -> None:
+    """Additive optional field: old ledgers without `structured` load; new values persist."""
+    d = tmp_path / "runs"
+    st = FleetState(d)
+    st.add(RunRecord(run_id="legacy", task_id="t", backend="cursor"))
+    got = st.get("legacy")
+    assert got is not None and got.structured is None
+
+    st.update("legacy", structured={"score": 4}, status="exited_clean")
+    reopened = FleetState(d).get("legacy")
+    assert reopened is not None
+    assert reopened.structured == {"score": 4}
+
+    # A pre-field on-disk record (no structured key) must still validate.
+    raw_path = d / "prefield.json"
+    raw_path.write_text(
+        '{"run_id":"prefield","task_id":"t","backend":"cursor","status":"exited_clean"}',
+        encoding="utf-8",
+    )
+    loaded = FleetState(d).get("prefield")
+    assert loaded is not None and loaded.structured is None
