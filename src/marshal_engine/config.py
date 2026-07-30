@@ -67,6 +67,20 @@ DURATION_PRESETS: dict[str, int] = {
     "long": 24000,   # 400 min - benchmark / cross-repo refactors
 }
 
+# Must match registry._FACTORIES keys. Kept here so validate() does not import registry
+# (config sits below runtime). test_known_backend_names_match_registry asserts equality.
+KNOWN_BACKEND_NAMES: frozenset[str] = frozenset(
+    {
+        "cursor",
+        "opencode",
+        "codex",
+        "command-code",
+        "antigravity",
+        "claude-code",
+        "goose",
+    }
+)
+
 
 class ConfigError(ValueError):
     """The fleet config is invalid."""
@@ -564,19 +578,13 @@ def validate(cfg: FleetConfig) -> list[str]:
             warnings.append(f"client {c.name!r}: secret {c.secret_ref!r} is not set in the environment")
     # An advisory budget scoped to a name nothing runs under would silently never fire - warn (the
     # same "a typo should never silently disable a budget" posture the parser takes for window/limit).
-    known_backends: set[str] | None = None
     for b in cfg.budgets:
         if b.client is not None and b.client not in cfg.clients:
             warnings.append(
                 f"budget scope client {b.client!r} is not a configured client; this cap never fires"
             )
-        if b.backend is not None:
-            if known_backends is None:
-                from .registry import backend_names  # lazy: avoid a module-level import cycle
-
-                known_backends = set(backend_names())
-            if b.backend not in known_backends:
-                warnings.append(
-                    f"budget scope backend {b.backend!r} is not a known backend; this cap never fires"
-                )
+        if b.backend is not None and b.backend not in KNOWN_BACKEND_NAMES:
+            warnings.append(
+                f"budget scope backend {b.backend!r} is not a known backend; this cap never fires"
+            )
     return warnings

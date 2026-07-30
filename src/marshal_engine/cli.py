@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import __version__
+from ._version import __version__
 from .budgets import BudgetExceeded
 from .config import BudgetSpec, ConfigError, DURATION_PRESETS, FleetConfig, load_config
 from .doctor import FAIL, OK, WARN, doctor_report, run_checks

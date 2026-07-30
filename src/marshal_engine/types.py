@@ -15,6 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from .ids import MAX_TASK_ID_LEN, validate_worktree_id
+
 
 class PermissionMode(str, Enum):
     """Normalized permission tiers, mapped to each backend's native flags by the adapter.
@@ -154,13 +156,7 @@ class TaskSpec(BaseModel):
     @field_validator("id")
     @classmethod
     def _id_must_be_safe_path_segment(cls, v: str) -> str:
-        # Lazy import: worktree → config → types; keep the charset helper in one place.
-        from .worktree import MAX_TASK_ID_LEN, WorktreeError, validate_worktree_id
-
-        try:
-            return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
-        except WorktreeError as exc:
-            raise ValueError(str(exc)) from exc
+        return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
 
     @field_validator("output_schema")
     @classmethod

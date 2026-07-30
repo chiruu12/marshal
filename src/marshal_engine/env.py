@@ -40,6 +40,23 @@ _MARSHAL_PREFIX = "MARSHAL_"
 # (e.g. "1", "true") would over-redact ordinary output.
 _REDACT_MIN_VALUE_LEN = 8
 
+# Union of every built-in backend's ``credential_env_vars``. Kept here so redaction does not
+# import registry (env sits below runtime). test_known_credential_env_vars_match_backends
+# asserts equality with the live ClassVars.
+KNOWN_CREDENTIAL_ENV_VARS: frozenset[str] = frozenset(
+    {
+        "CURSOR_API_KEY",
+        "OPENCODE_API_KEY",
+        "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "COMMAND_CODE_API_KEY",
+        "ANTIGRAVITY_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOSE_PROVIDER",
+        "GOOSE_MODEL",
+    }
+)
+
 # Exact names every child genuinely needs. Err toward operational usefulness; exclude anything
 # credential-shaped or loader-hijack (LD_PRELOAD, PYTHONPATH, NODE_OPTIONS, GIT_SSH_COMMAND, …).
 _BASE_ENV_EXACT: frozenset[str] = frozenset(
@@ -206,13 +223,12 @@ def all_credential_env_vars(
 ) -> frozenset[str]:
     """Union of every backend's ``credential_env_vars`` (for log redaction / doctor).
 
-    ``backends`` defaults to ``default_backends()`` so redaction covers credentials even when the
-    run used a different adapter than the one that leaked the value into stdout.
+    With no ``backends`` argument, returns ``KNOWN_CREDENTIAL_ENV_VARS`` so redaction covers
+    credentials even when the run used a different adapter than the one that leaked the value —
+    without importing the registry (which would cycle: env ← backends.base ← registry).
     """
     if backends is None:
-        from .registry import default_backends
-
-        backends = default_backends()
+        return KNOWN_CREDENTIAL_ENV_VARS
     names: set[str] = set()
     for backend in backends.values():
         for name in getattr(backend, "credential_env_vars", ()) or ():
