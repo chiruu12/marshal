@@ -8,6 +8,18 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Removed
+- **YAGNI cleanup of unused public / near-public surface.** Dropped unused helpers and fields with
+  no in-repo consumers: `AgentResult.ok`, `UsageRecord.duration_ms` (wall-clock remains on
+  `AgentResult` / `RunRecord` / ledger `UsageEvent`), `TaskSpec.role` (routing stays driver/config;
+  teams' `RoleReview.role` unchanged), `Capabilities.stream_json` / `sessions` / `server_mode`
+  (CLI/doctor still surface `json_output` / `native_usage`), `WorktreeManager.list`, module helper
+  `workflow.list_workflows` (use `discover_workflows(...).workflows`; MCP/CLI
+  `MarshalService.list_workflows` unchanged), `env.base_env_var_names` (survivor `is_base_env_var`),
+  unused `WorkspaceRegistry.run_gate` property (`_run_gate` storage kept), `fleet.BudgetExceeded`
+  re-export (import from `marshal_engine.budgets`), unused `fetch_run_cost(..., output_tokens=)`
+  parameter, and the never-selected `missing_config="silent"` arm.
+
 ## [0.2.1] - 2026-07-31
 
 ### Changed

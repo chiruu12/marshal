@@ -222,7 +222,6 @@ def fetch_run_cost(
     start_iso: str,
     end_iso: str,
     input_tokens: int,
-    output_tokens: int,
     api_key: str | None = None,
     base_url: str | None = None,
     timeout_s: float = 8.0,
@@ -281,7 +280,7 @@ def fetch_run_cost(
     return None
 
 
-#: (model, start_iso, end_iso, input_tokens, output_tokens) -> ExternalCost | None. Keyword-called.
+#: (model, start_iso, end_iso, input_tokens) -> ExternalCost | None. Keyword-called.
 CostResolver = Callable[..., "ExternalCost | None"]
 
 

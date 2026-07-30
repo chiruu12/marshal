@@ -85,7 +85,7 @@ The following belong **outside** `marshal_engine`:
 
 - **Task decomposition** — turning a goal into a task graph (`marshal-orchestrate` Skill).
 - **Routing / model choice** — which client, backend, or model for a given subtask (driver + config;
-  `TaskSpec.role` is a hint field, not an engine router).
+  the engine has no role→client router).
 - **Prompt authorship** — writing goals, rubrics, and review lenses (driver / Skill).
 - **Merge decisions** — whether a succeeded run is correct enough to integrate (`integrate` is
   explicit; workflows default `auto: false`).

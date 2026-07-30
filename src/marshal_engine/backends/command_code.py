@@ -63,9 +63,6 @@ class CommandCodeBackend(CodingAgentBackend):
     credential_env_vars = ("COMMAND_CODE_API_KEY",)
     capabilities = Capabilities(
         json_output=False,
-        stream_json=False,
-        sessions=False,  # -p prints plain text; no session id is surfaced to resume from
-        server_mode=False,
         native_usage=False,  # hosted account: no tokens/cost in CLI output -> reported unavailable
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}

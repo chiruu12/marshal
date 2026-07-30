@@ -84,9 +84,6 @@ class CursorBackend(CodingAgentBackend):
     credential_env_vars = ("CURSOR_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
-        stream_json=True,
-        sessions=True,
-        server_mode=False,
         native_usage=False,  # tokens yes; no USD in CLI output — Admin API cost path later
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}

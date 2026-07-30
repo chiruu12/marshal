@@ -34,7 +34,6 @@ import jsonschema
 from pydantic import BaseModel, ValidationError
 
 from .backends.base import CodingAgentBackend
-from .budgets import BudgetExceeded as BudgetExceeded
 from .budgets import BudgetStatus as BudgetStatus
 from .budgets import EnforceBudgetGate as EnforceBudgetGate
 from .budgets import check_budget as check_budget
@@ -2074,7 +2073,6 @@ class Fleet:
                 start_iso=start_iso,
                 end_iso=_now(),
                 input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
             )
         except Exception:  # noqa: BLE001 - external cost lookup must never break a finished run
             return

@@ -54,9 +54,6 @@ class CodexBackend(CodingAgentBackend):
     credential_env_vars = ("OPENAI_API_KEY", "CODEX_API_KEY")
     capabilities = Capabilities(
         json_output=True,
-        stream_json=True,
-        sessions=True,
-        server_mode=False,
         native_usage=True,  # token counts come from JSON events; cost stays unavailable until usage_api
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}

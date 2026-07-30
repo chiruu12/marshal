@@ -19,8 +19,8 @@ from marshal_engine.workflow import (
     PhaseSpec,
     WorkflowRunner,
     WorkflowSpec,
+    discover_workflows,
     find_workflow,
-    list_workflows,
     load_workflow,
     render_goal,
     resolve_source,
@@ -220,9 +220,11 @@ def test_find_and_list_workflows(tmp_path: Path) -> None:
     assert find_workflow("review", wdir).name == "review.yaml"
     with pytest.raises(ConfigError):
         find_workflow("missing", wdir)
-    # list skips the malformed file rather than raising
-    names = [w.name for w in list_workflows(wdir)]
+    # discover skips the malformed file (errors keyed by filename) rather than raising
+    listing = discover_workflows(wdir)
+    names = [w.name for w in listing.workflows]
     assert names == ["review"]
+    assert "broken.yaml" in listing.errors
 
 
 @pytest.mark.parametrize("name", ["../evil", "../../evil", "sub/../../evil"])

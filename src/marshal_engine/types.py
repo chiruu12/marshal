@@ -124,9 +124,6 @@ class Capabilities(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     json_output: bool = False
-    stream_json: bool = False
-    sessions: bool = False        # resume/continue support
-    server_mode: bool = False     # e.g. `opencode serve`
     native_usage: bool = False    # emits tokens/cost in its own output
     permission_modes: frozenset[PermissionMode] = frozenset()
     # Default boundary-only: unknown/third-party adapters fail honest rather than claiming
@@ -139,8 +136,6 @@ class TaskSpec(BaseModel):
 
     id: str
     goal: str                              # natural-language task for the agent
-    role: str | None = None                # routing role (planner/coder/writer/reviewer/...);
-                                           # policy maps role -> backend. Engine stays mechanism.
     context_files: list[str] = []          # minimal files the worker should see
     # Declared read-only escape hatch: absolute paths, or paths relative to the driver's repo root,
     # copied into the worktree under `.marshal-context/` (see Fleet provisioning). Unlike
@@ -202,7 +197,6 @@ class UsageRecord(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     cost_usd: float = 0.0
-    duration_ms: int = 0
     source: UsageSource = UsageSource.UNAVAILABLE
 
 
@@ -221,7 +215,3 @@ class AgentResult(BaseModel):
     # Schema-validated JSON object from the final message when TaskSpec.output_schema was set and
     # the reply conformed. None when no schema was requested, or when validation failed (see error).
     structured: dict[str, Any] | None = None
-
-    @property
-    def ok(self) -> bool:
-        return self.status is RunStatus.EXITED_CLEAN

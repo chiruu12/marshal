@@ -61,9 +61,6 @@ class CodingAgentBackend(ABC):
 
     class Capabilities:          # feature flags → orchestrator degrades gracefully
         json_output: bool
-        stream_json: bool
-        sessions: bool           # resume/continue
-        server_mode: bool        # e.g. opencode serve
         native_usage: bool       # emits tokens/cost in output
         permission_modes: set[str]   # {"read-only","safe-edit","yolo"}
         permission_fidelity: str     # "enforced-denies" | "boundary-only" | "unrestricted" (resolved)
@@ -127,7 +124,7 @@ or hang (bounded timeout + static fallback). Shared contract: `tests/test_backen
 | Final text | concat assistant ``message.content[].text``; prefer stream over shorter ``result.result`` | concat all `text` events' `part.text` | - | stdout (plain text, ANSI-stripped) | JSON ``response`` (plain-text fallback on envelope drift) | json field | concat assistant message text |
 | Tokens/cost in output | tokens from the `result` event's `usage{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}`; **no cost** — source stays `unavailable` (see §6) | `step_finish.cost` + `.tokens.{input,output,reasoning,cache.read,cache.write}` | - | none (hosted account → `unavailable`) | tokens from JSON ``usage{input_tokens,output_tokens,cache_read_tokens}``; **no cost** — source stays `unavailable`; `native_usage=False` | `total_cost_usd` + `usage{...}` | stream cost native only when positive |
 | File changes | `writeToolCall.result` events / diff worktree | inside `edit`/`write` tool outputs; or `GET /session/:id/diff` | - | diff worktree via git (`collect_run`); CLI emits none | diff worktree via git (`collect_run`); CLI emits none | - | diff worktree via git |
-| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but adapter sets `sessions=False` (not wired) | `--conversation <id>`; JSON ``conversation_id`` → ``session_id`` (`sessions=False`, resume not advertised) | `session_id` returned | `--no-session` (Marshal one-shot) |
+| Session resume | `--resume <id>` / `--continue` (persist `session_id` from JSON) | `-s <id>` / `-c` / `--fork` | - | `--resume`/`--continue` exist in the CLI but not wired in the adapter | `--conversation <id>`; JSON ``conversation_id`` → ``session_id`` (resume not advertised) | `session_id` returned | `--no-session` (Marshal one-shot) |
 | Model select | `--model` / `cursor-agent models` | `-m provider/model` / `opencode models` | `-m MODEL` (no headless list) | `-m MODEL` / `--list-models` | `-m MODEL` / `agy models` | `--model` (no headless list) | `--provider` + `--model` (`provider/model`) |
 | `available_models` | probe `models` → static `composer-2.5` | probe `models` → static `opencode-go/*` playbook rows | static `gpt-5.6-luna` | probe `--list-models` → static `zai-org/glm-5.2` | probe `models` → static playbook/docstring ids | static playbook Claude ids | static `cursor-agent/auto` |
 | Doctor auth | `status` → `isAuthenticated` | `auth list` | `login status` | `status --json` | **none** (`verifies_auth=False`) | `auth status` | `info -v --check` |
@@ -148,8 +145,9 @@ Auth via `OPENCODE_SERVER_PASSWORD`. Key endpoints: `POST /session`, `POST /sess
 (blocking) or `POST /session/:id/prompt_async`, `GET /session/:id/diff` (authoritative diff),
 `GET /event` (SSE). SDK: `@opencode-ai/sdk`.
 
-Model it as an optional `server_mode` capability: keep a **warm `serve` process** and attach to it
-for lower latency, with subprocess `opencode run` as fallback (cmuxlayer-style fast/slow path).
+A future warm-`serve` path could keep a long-lived process and attach for lower latency, with
+subprocess `opencode run` as today's fallback (cmuxlayer-style fast/slow path). Not modeled as a
+Capabilities flag until a consumer exists.
 
 ---
 
@@ -458,10 +456,10 @@ Positioning: **"the control plane for AI coding agents."** Thesis: keep the best
 route execution to cheaper/specialized workers; isolate context; **prove the savings**. Four things
 become first-class and must be designed in (even if full logic lands in V2):
 
-1. **Routing by ROLE, not provider.** `TaskSpec` carries a `role` (planner/coder/writer/reviewer/
-   researcher/bulk-processor/test-fixer/refactorer). Config maps role → client. The engine stays
-   *mechanism*; the routing decision is *policy* (config + Skills). Added `role` + `context_files`
-   to `TaskSpec`.
+1. **Routing by ROLE, not provider.** Drivers / Skills pick a client (planner/coder/writer/
+   reviewer/…). Config + Skills own the role→client map. The engine stays *mechanism*; the routing
+   decision is *policy*. `TaskSpec` carries `context_files` (and related work hints), not a role
+   field — role routing lives above the engine.
 2. **Benchmarking + cost intelligence (first-class).** Beyond `usage`: run the same task through N
    routing strategies and record cost/latency/completion/test-pass/merge/retries/quality. Adds MCP
    tools **`benchmark`** and **`report`**. Builds directly on the usage schema (§6) - each run
@@ -508,7 +506,7 @@ git write, ledger write the primitives did not already have)? Does it **decide o
 | Registry cross-workspace `run_many` | `workspaces.py` | **Mechanism (MCP layer)** | Shared thread pool + concurrency cap only; per-workspace config, worktrees, and ledgers stay isolated. |
 | Memory / recall injection | *(extracted)* | **Judgment (out of core)** | Context routing by recall belongs above the engine; preserved on `feature/marshal-recall-cognee`. |
 | Task decomposition | Skills (`marshal-orchestrate`) | **Judgment** | Driver plans subtasks; engine runs what it is told. |
-| Model / backend routing | Driver + config | **Judgment** | `TaskSpec.role` is metadata; no engine role→client router. |
+| Model / backend routing | Driver + config | **Judgment** | No engine role→client router; caller names `client` / `backend`. |
 | Review verdict / merge gate | Skills (`marshal-review-gate`) | **Judgment** | Truth table over parsed `REVIEW:` lines; engine never integrates on prose. |
 | Org-wide budgets / spend | — | **Chauffeur (future)** | Per-workspace ledgers by design (§6); no registry merge. |
 | Self-driving workflows | — | **Chauffeur (future)** | Engine executes human-authored YAML; generation is product policy. |
@@ -531,8 +529,8 @@ and contract tests:
 Antigravity caveats (young CLI): structured ``--output-format json`` works (agy ≥ 1.1.8; tokens
 parsed, no USD → `unavailable` / `native_usage=False`), OAuth-first auth with **no
 cheap dedicated auth/status probe** (doctor is path-only; `verifies_auth=False`), needs a PTY
-wrapper in the runner, ``conversation_id`` stamped from JSON but ``sessions=False`` (resume not
-advertised), no reliable read-only mode → only safe-edit/yolo exposed. Codex account is
+wrapper in the runner, ``conversation_id`` stamped from JSON (resume not advertised), no reliable
+read-only mode → only safe-edit/yolo exposed. Codex account is
 usage-limited until ~Jul 18 2026, so its success-path JSON parsing is verified for the failure
 path only (live success run pending).
 

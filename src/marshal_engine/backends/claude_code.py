@@ -59,9 +59,6 @@ class ClaudeCodeBackend(CodingAgentBackend):
     credential_env_vars = ("ANTHROPIC_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
-        stream_json=True,
-        sessions=True,
-        server_mode=False,
         native_usage=True,  # emits total_cost_usd + tokens in its JSON result
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
