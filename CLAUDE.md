@@ -24,6 +24,8 @@ Marshal clean and embeddable.
 marshal/
 ├── src/marshal_engine/      # the engine (import package; NOT "marshal" - shadows stdlib builtin)
 │   ├── types.py             # TaskSpec, RunOpts, AgentResult, UsageRecord, Capabilities, enums
+│   ├── ids.py               # fail-closed path-segment id rules (task/run/worktree ids) — shared by types + worktree
+│   ├── _version.py          # package version from installed metadata (shared by __init__ + User-Agent)
 │   ├── backends/            # one adapter per backend, all derive from base.CodingAgentBackend
 │   │   ├── base.py          # the base class (cornerstone) - owns the safe run() loop
 │   │   ├── cursor.py        # Cursor CLI (cursor-agent)
@@ -41,7 +43,7 @@ marshal/
 │   ├── registry.py          # construct backends by name
 │   ├── config.py            # fleet.config.yaml loader + Fireworks guard + duration presets
 │   ├── retry.py             # transient-failure classifier + backoff for run retries
-│   ├── env.py               # child env allowlist (operational + per-backend credentials) + user PATH recovery
+│   ├── env.py               # child env allowlist (operational + known credential names) + user PATH recovery
 │   ├── logs.py              # durable per-run stdout/stderr persistence
 │   ├── layout.py            # centralized .marshal directory layout helpers
 │   ├── scaffold.py          # repo-shape-aware fleet.config.yaml scaffold

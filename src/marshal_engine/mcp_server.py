@@ -36,8 +36,6 @@ blocking `run` never freezes the event loop: the driver can still poll `status`/
 
 from __future__ import annotations
 
-from . import __version__
-
 import os
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -46,6 +44,7 @@ from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
+from ._version import __version__
 from .env import merge_user_path
 from .scaffold import scaffold_fleet_config
 from .service import MarshalService

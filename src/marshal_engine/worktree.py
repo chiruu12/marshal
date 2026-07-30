@@ -21,6 +21,10 @@ from pydantic import BaseModel
 
 from .config import setup_command_refusal
 from .env import child_env, redact_secrets
+from .ids import MAX_TASK_ID_LEN as MAX_TASK_ID_LEN
+from .ids import MAX_WORKTREE_ID_LEN as MAX_WORKTREE_ID_LEN
+from .ids import validate_run_id as validate_run_id
+from .ids import validate_worktree_id as _validate_worktree_id
 from .layout import worktrees_dir
 
 
@@ -32,14 +36,8 @@ class WorktreeError(RuntimeError):
 # last). The full stdout/stderr of the agent itself is persisted separately by the run-log store.
 _VERIFY_OUTPUT_CAP = 4000
 
-# Fail-closed id rules for worktree directory names / run ids / driver task_ids.
-# Charset keeps workflow `hex.label` and backend-shaped segments (`command-code`) valid;
-# leading `.`/`-`, separators, unicode, and over-length ids are rejected (never rewritten).
-# task_id (grouping key) is capped tighter so composed run_id `task.backend.<uuid8>` fits
-# under MAX_WORKTREE_ID_LEN (backends today ≤ ~12 chars).
-MAX_WORKTREE_ID_LEN = 128
-MAX_TASK_ID_LEN = 64
-_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Id rules live in ``ids`` (one implementation). Constants / validate_run_id are re-exported;
+# validate_worktree_id wraps ValueError → WorktreeError for this module's callers.
 
 # Full or abbreviated git object id (sha-1 / sha-256 hex). Used to refuse a ref name that a
 # failed `git rev-parse` echoed back on stdout posing as a tip sha.
@@ -51,52 +49,12 @@ def is_git_object_id(value: str) -> bool:
     return bool(_GIT_OBJECT_ID_RE.fullmatch(value))
 
 
-def _unsafe_id_reason(kind: str, value: str, *, max_len: int) -> str | None:
-    """The refusal reason if `value` is not a safe flat path segment, else ``None``.
-
-    ``kind`` is the id's role in the message ("worktree id" / "run_id") so each caller keeps
-    its own wording while the RULES live in exactly one place.
-    """
-    if not value:
-        return f"unsafe {kind}: empty"
-    if len(value) > max_len:
-        return f"unsafe {kind}: {value!r} exceeds max length {max_len}"
-    if value in (".", "..") or not _SAFE_ID_RE.fullmatch(value):
-        return (
-            f"unsafe {kind}: {value!r} "
-            f"(must match {_SAFE_ID_RE.pattern}, no leading '.' or '-')"
-        )
-    return None
-
-
 def validate_worktree_id(task_id: str, *, max_len: int = MAX_WORKTREE_ID_LEN) -> str:
-    """Return `task_id` if it is a safe flat path segment; raise ``WorktreeError`` otherwise.
-
-    Allowed: ``[A-Za-z0-9._-]``, must start with alphanumeric, length 1..``max_len``.
-    Rejects empty / ``.`` / ``..`` / leading ``.`` or ``-`` / slashes / spaces / unicode.
-    Fail closed — never sanitize-rewrites the input.
-    """
-    reason = _unsafe_id_reason("worktree id", task_id, max_len=max_len)
-    if reason is not None:
-        raise WorktreeError(reason)
-    return task_id
-
-
-def validate_run_id(run_id: str) -> str:
-    """Return `run_id` if it is a safe flat path segment; raise ``ValueError`` otherwise.
-
-    A run_id becomes the ledger filename (``runs/<run_id>.json``) and the log filename
-    (``logs/<run_id>.log``), and the workspace registry stats it against every registered
-    repo's ledger to find its owner - so an unvalidated id is both a path-traversal read
-    and a cross-workspace tenant escape. Same fail-closed rules as ``validate_worktree_id``
-    (a production run_id is ``task.backend.<uuid8>``, which fits by construction), but
-    raises ``ValueError``: the input-validation error type of the state/MCP boundary,
-    matching how an invalid ``task_id`` surfaces there (see ``TaskSpec``).
-    """
-    reason = _unsafe_id_reason("run_id", run_id, max_len=MAX_WORKTREE_ID_LEN)
-    if reason is not None:
-        raise ValueError(reason)
-    return run_id
+    """Return `task_id` if safe; raise ``WorktreeError`` otherwise (wraps ``ids`` ValueError)."""
+    try:
+        return _validate_worktree_id(task_id, max_len=max_len)
+    except ValueError as exc:
+        raise WorktreeError(str(exc)) from exc
 
 
 def _ensure_under_base(path: Path, base_dir: Path) -> Path:
