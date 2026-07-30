@@ -252,24 +252,34 @@ class EnforceBudgetGate:
         budgets: list[BudgetSpec],
         req: BudgetRunScope,
     ) -> list[str]:
-        """Check ledger caps, then reserve concurrency slots for matching enforce budgets."""
+        """Check ledger caps, then reserve concurrency slots for matching enforce budgets.
+
+        All-or-nothing: if any matching budget's slot is already held, every slot this call
+        reserved is rolled back before the ``BudgetExceeded`` propagates - a refused spawn
+        holds nothing, so it cannot lock out the earlier budgets for the process lifetime.
+        """
         with self._lock:
             check_budget(tracker, session_start, budgets, req)
             keys: list[str] = []
-            for b in budgets:
-                if not b.enforce or not _budget_matches(b, req):
-                    continue
-                key = _enforce_budget_key(b)
-                holder = self._held.get(key)
-                if holder is not None:
-                    held_by = holder or "starting"
-                    raise BudgetExceeded(
-                        f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
-                        f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
-                        "prevent overshoot. Wait for it to finish, or set enforce: false."
-                    )
-                self._held[key] = ""
-                keys.append(key)
+            try:
+                for b in budgets:
+                    if not b.enforce or not _budget_matches(b, req):
+                        continue
+                    key = _enforce_budget_key(b)
+                    holder = self._held.get(key)
+                    if holder is not None:
+                        held_by = holder or "starting"
+                        raise BudgetExceeded(
+                            f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
+                            f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
+                            "prevent overshoot. Wait for it to finish, or set enforce: false."
+                        )
+                    self._held[key] = ""
+                    keys.append(key)
+            except Exception:
+                for key in keys:
+                    self._held.pop(key, None)
+                raise
             return keys
 
     def bind(self, keys: list[str], run_id: str) -> None:

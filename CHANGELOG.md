@@ -21,6 +21,10 @@ versions may include breaking API changes until 1.0.
 - **The MCP server reported an empty version.** `serverInfo.version` was blank in every initialize
   handshake, so a client could not answer "which Marshal am I talking to?" - the first question you
   ask when a tool misbehaves. It now reports the package version.
+- **`EnforceBudgetGate.begin()` rolls back its own reservations when a later budget refuses.** A
+  spawn matching 2+ `enforce: true` budgets that lost on budget B's held slot leaked budget A's
+  placeholder, so every later spawn matching A was refused for the MCP server's lifetime - with a
+  message pointing at a phantom holder.
 
 ### Fixed
 - **Install instructions now describe an install that works.** The README pointed at
