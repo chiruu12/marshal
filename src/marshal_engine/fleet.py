@@ -42,7 +42,7 @@ from .budgets import compute_budget_status as compute_budget_status
 from .config import BudgetSpec
 from .eastrouter import CostResolver, default_cost_resolvers
 from .env import merge_user_path
-from .layout import marshal_dir
+from .layout import budget_gate_path, marshal_dir
 from .logs import RunLogStore
 from .retry import RetryPolicy, is_transient_failure
 from .state import FleetState, RunRecord
@@ -1335,9 +1335,17 @@ class Fleet:
         # The gate is injectable (like run_gate) so a layer that REBUILDS Fleets over the same
         # ledger - the workspace registry on config hot-reload - can keep ONE gate per repo:
         # in-flight runs on the evicted Fleet still hold slots the replacement consults, and the
-        # old Fleet's terminal release frees them for the new one. Default: a private gate,
-        # exactly the prior single-Fleet behavior.
-        self._budget_gate = budget_gate if budget_gate is not None else EnforceBudgetGate()
+        # old Fleet's terminal release frees them for the new one. Default: a private gate on
+        # ``.marshal/budget_gate.json`` (cross-process flock; see layout.budget_gate_path).
+        if budget_gate is not None:
+            self._budget_gate = budget_gate
+        else:
+            gate_path = (
+                budget_gate_path(self.repo_root)
+                if base_dir is None
+                else Path(base) / "budget_gate.json"
+            )
+            self._budget_gate = EnforceBudgetGate(path=gate_path)
         # `git worktree add` is the one step that races across threads; serialize just that (it's
         # milliseconds - the long-running agent runs still proceed fully in parallel).
         self._create_lock = threading.Lock()

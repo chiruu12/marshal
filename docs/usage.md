@@ -139,8 +139,9 @@ clients:
   front so a typo fails fast before any worktree is created. See also [`config.md`](config.md).
 - **`budgets`** (optional, top-level): $ caps per scope (a backend, a client, or the whole fleet)
   and time window (`session` | `week` | `month`). Default is **soft-warn** (stderr when a scope's
-  windowed spend meets/exceeds the cap; the run proceeds). Set `enforce: true` to refuse matching
-  over-cap spawns (`BudgetExceeded`) and serialize matching in-flight spawns. Set at most one of
+  windowed spend meets/exceeds the cap; the run proceeds). Set `enforce: true` to hard-refuse matching
+  over-cap spawns (`BudgetExceeded`) and serialize matching in-flight spawns across processes
+  (CLI + MCP on one repo; `.marshal/budget_gate.json`). Set at most one of
   `backend` / `client` per entry (omit both for a global cap); `limit_usd` must be positive; the
   scope's `cost_usd` comes from the usage ledger, so subscription / unknown-cost backends (which
   report `$0` / `unavailable`) never trigger a $ cap and show `unavailable` spent when the scope

@@ -9,19 +9,31 @@ budgets so a soft-warn never breaks a run or the usage display. Enforced budgets
 without a per-run cost reservation, parallel admits against the same ledger snapshot can
 overshoot the cap by up to concurrency × per-run cost. The gate admits at most one
 in-flight matching spawn per enforce budget until that run finishes and records spend.
+Reservations are durable under ``.marshal/budget_gate.json`` (flock + pid liveness) so a
+CLI and MCP server on the same repo cannot both admit past a hard cap.
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import json
+import os
+import subprocess
 import sys
+import tempfile
 import threading
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
 from .config import BudgetSpec
+from .layout import budget_gate_path
 from .usage import (
     Bucket,
     LedgerCursor,
@@ -31,6 +43,11 @@ from .usage import (
     UsageTracker,
     _in_window,
 )
+
+#: Max wait for the cross-process reservation flock. Exceeding this refuses the spawn
+#: (fail-closed): an enforced cap must not silently degrade to advisory.
+_ENFORCE_GATE_LOCK_TIMEOUT_S = 5.0
+_ENFORCE_GATE_LOCK_POLL_S = 0.01
 
 
 class BudgetExceeded(RuntimeError):
@@ -380,19 +397,163 @@ def _recheck_enforce_from_tail(
         )
 
 
+def _pid_alive(pid: int) -> bool:
+    """True when ``pid`` still names a live process (signal 0 probe)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Permission denied or other ambiguity: assume alive so we never reclaim a live holder.
+        return True
+
+
+def _pid_start_time(pid: int) -> str | None:
+    """OS-reported start time of ``pid``, or None when unverifiable (same idiom as fleet.lock)."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    started = proc.stdout.strip()
+    return started or None
+
+
+def _reservation_holder_live(entry: dict[str, Any]) -> bool:
+    """Whether a disk reservation still has a live owner.
+
+    Staleness rule (mirrors ``fleet.lock`` / ``_pid_is_still_ours``): reclaim when the holder
+    pid is dead, or when a live pid's OS start time does not match the recorded
+    ``pid_start_time`` (pid reuse). Missing/unprobeable start time while the pid is alive
+    fails closed (assume held) so a hard cap never admits past a possibly-live holder.
+    """
+    try:
+        pid = int(entry["pid"])
+    except (KeyError, TypeError, ValueError):
+        return False  # corrupt entry → reclaim
+    if not _pid_alive(pid):
+        return False
+    recorded = entry.get("pid_start_time")
+    if not isinstance(recorded, str) or not recorded:
+        return True  # older/missing start time: assume held while pid alive
+    now = _pid_start_time(pid)
+    if now is None:
+        return True  # probe unavailable: assume held
+    return now == recorded
+
+
+def _lock_sidecar(path: Path) -> Path:
+    """``budget_gate.json.lock`` — flock target; auto-releases on process death."""
+    return path.with_name(path.name + ".lock")
+
+
+@contextlib.contextmanager
+def _flock_exclusive(lock_path: Path, *, timeout_s: float) -> Iterator[None]:
+    """Exclusive flock with a deadline; fail-closed via ``BudgetExceeded`` on trouble/timeout."""
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        guard = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115 - closed in finally
+    except OSError as exc:
+        raise BudgetExceeded(
+            f"budget gate lock unavailable ({lock_path}): {exc}; "
+            "refusing spawn because enforce=true"
+        ) from exc
+    try:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise BudgetExceeded(
+                        f"budget gate lock timed out after {timeout_s:.1f}s ({lock_path}); "
+                        "refusing spawn because enforce=true. Retry shortly, or check for a "
+                        "stuck marshal process holding the enforce-budget reservation lock."
+                    )
+                time.sleep(_ENFORCE_GATE_LOCK_POLL_S)
+            except OSError as exc:
+                raise BudgetExceeded(
+                    f"budget gate lock failed ({lock_path}): {exc}; "
+                    "refusing spawn because enforce=true"
+                ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
+    finally:
+        guard.close()
+
+
+def _load_reservations(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        held = data.get("held", {})
+        if not isinstance(held, dict):
+            return {}
+        return {str(k): v for k, v in held.items() if isinstance(v, dict)}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}  # corrupt → treat as empty; next write repairs
+
+
+def _write_reservations(path: Path, held: dict[str, dict[str, Any]]) -> None:
+    """Atomic replace (unique temp + ``os.replace``), same idiom as ``FleetState._write``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"held": held}, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _new_reservation_entry(run_id: str = "") -> dict[str, Any]:
+    pid = os.getpid()
+    return {
+        "run_id": run_id,
+        "pid": pid,
+        "pid_start_time": _pid_start_time(pid),
+    }
+
+
 class EnforceBudgetGate:
     """Admit at most one in-flight spawn per matching ``enforce: true`` budget.
 
     Ledger checks alone are TOCTOU under ``run_many`` / concurrent ``spawn``: every thread can
     read the same pre-run spend and pass before any usage is recorded. Holding a per-budget
     slot until the run finishes closes that race without inventing a per-run cost estimate.
-    Advisory budgets are unaffected.
+
+    In-process callers serialize on a ``threading.Lock``; cross-process callers (CLI + MCP on
+    one repo) serialize on an ``fcntl.flock`` over ``.marshal/budget_gate.json`` (see
+    ``layout.budget_gate_path``). Advisory budgets are unaffected and never take either lock.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, path: Path | str | None = None) -> None:
         self._lock = threading.Lock()
         # key -> run_id once bound; empty string while reserved between begin() and bind()
         self._held: dict[str, str] = {}
+        # Durable reservation file; None until begin() infers it from the usage tracker.
+        self._path: Path | None = Path(path) if path is not None else None
+
+    def _resolve_path(self, tracker: UsageTracker) -> Path:
+        if self._path is not None:
+            return self._path
+        # usage lives at <marshal>/usage; reservation sits next to it (layout.budget_gate_path).
+        inferred = tracker.dir.parent / budget_gate_path(Path("_")).name
+        self._path = inferred
+        return inferred
 
     def begin(
         self,
@@ -403,37 +564,65 @@ class EnforceBudgetGate:
     ) -> list[str]:
         """Check ledger caps, then reserve concurrency slots for matching enforce budgets.
 
-        Full ledger spend is computed *before* acquiring ``_lock`` so fleet-wide spawns do not
-        serialize behind O(ledger) scans. Under the lock we revalidate from only the appended
-        tail (O(new events), normally O(1)), then reserve slots. If reservation fails partway
+        Full ledger spend is computed *before* acquiring locks so fleet-wide spawns do not
+        serialize behind O(ledger) scans. Under the thread lock + cross-process flock we
+        reclaim stale disk reservations, revalidate from only the appended tail (O(new events),
+        normally O(1)), then reserve slots in memory and on disk. If reservation fails partway
         through a multi-budget match, every key reserved so far is released before re-raising.
+
+        Soft-warn (non-enforce) budgets return immediately with no locks.
         """
         # Optimistic check outside the lock (advisory soft-warn + enforce refuse + cursor).
         snap = check_budget(tracker, session_start, budgets, req)
+        matching = [b for b in budgets if b.enforce and _budget_matches(b, req)]
+        if not matching:
+            return []  # advisory-only: lock-free
+
+        path = self._resolve_path(tracker)
         with self._lock:
-            # Tail-only enforce re-check — never a full summary()/events() rescan under the lock.
-            _recheck_enforce_from_tail(tracker, snap, session_start, budgets, req)
-            keys: list[str] = []
-            try:
-                for b in budgets:
-                    if not b.enforce or not _budget_matches(b, req):
-                        continue
-                    key = _enforce_budget_key(b)
-                    holder = self._held.get(key)
-                    if holder is not None:
-                        held_by = holder or "starting"
+            with _flock_exclusive(
+                _lock_sidecar(path), timeout_s=_ENFORCE_GATE_LOCK_TIMEOUT_S
+            ):
+                # Tail-only enforce re-check — never a full summary()/events() rescan under the lock.
+                _recheck_enforce_from_tail(tracker, snap, session_start, budgets, req)
+                disk = _load_reservations(path)
+                # Drop reservations whose holder process is gone (or whose pid was reused).
+                disk = {k: e for k, e in disk.items() if _reservation_holder_live(e)}
+                keys: list[str] = []
+                try:
+                    for b in matching:
+                        key = _enforce_budget_key(b)
+                        holder = self._held.get(key)
+                        if holder is None and key in disk:
+                            entry = disk[key]
+                            holder = str(entry.get("run_id") or "") or "starting"
+                        if holder is not None:
+                            held_by = holder or "starting"
+                            raise BudgetExceeded(
+                                f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
+                                f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
+                                "prevent overshoot. Wait for it to finish, or set enforce: false."
+                            )
+                        entry = _new_reservation_entry("")
+                        self._held[key] = ""
+                        disk[key] = entry
+                        keys.append(key)
+                    try:
+                        _write_reservations(path, disk)
+                    except OSError as exc:
                         raise BudgetExceeded(
-                            f"budget {_budget_scope_label(b)} ({b.window}): another in-flight run "
-                            f"holds this enforce cap (run {held_by}); refusing concurrent spawn to "
-                            "prevent overshoot. Wait for it to finish, or set enforce: false."
-                        )
-                    self._held[key] = ""
-                    keys.append(key)
-                return keys
-            except Exception:
-                for key in keys:
-                    self._held.pop(key, None)
-                raise
+                            f"budget gate reservation write failed ({path}): {exc}; "
+                            "refusing spawn because enforce=true"
+                        ) from exc
+                    return keys
+                except Exception:
+                    for key in keys:
+                        self._held.pop(key, None)
+                        disk.pop(key, None)
+                    if keys:
+                        with contextlib.suppress(OSError):
+                            _write_reservations(path, disk)
+                    raise
 
     def bind(self, keys: list[str], run_id: str) -> None:
         """Attach reserved slots to the concrete run_id after worktree creation."""
@@ -443,6 +632,27 @@ class EnforceBudgetGate:
             for key in keys:
                 if key in self._held:
                     self._held[key] = run_id
+            path = self._path
+            if path is None:
+                return
+            try:
+                with _flock_exclusive(
+                    _lock_sidecar(path), timeout_s=_ENFORCE_GATE_LOCK_TIMEOUT_S
+                ):
+                    disk = _load_reservations(path)
+                    for key in keys:
+                        if key in disk:
+                            disk[key]["run_id"] = run_id
+                        elif key in self._held:
+                            disk[key] = _new_reservation_entry(run_id)
+                    _write_reservations(path, disk)
+            except BudgetExceeded:
+                raise
+            except OSError as exc:
+                raise BudgetExceeded(
+                    f"budget gate reservation bind failed ({path}): {exc}; "
+                    "refusing spawn because enforce=true"
+                ) from exc
 
     def release(self, keys: list[str]) -> None:
         """Drop slots reserved by ``begin`` when ``_start`` fails before bind."""
@@ -451,10 +661,38 @@ class EnforceBudgetGate:
         with self._lock:
             for key in keys:
                 self._held.pop(key, None)
+            self._disk_drop(keys=keys)
 
     def release_run(self, run_id: str) -> None:
         """Release every slot held by ``run_id`` (terminal path / spawn submit failure)."""
         with self._lock:
-            for key, held in list(self._held.items()):
-                if held == run_id:
-                    del self._held[key]
+            keys = [key for key, held in self._held.items() if held == run_id]
+            for key in keys:
+                del self._held[key]
+            self._disk_drop(keys=keys, run_id=run_id)
+
+    def _disk_drop(self, *, keys: list[str] | None = None, run_id: str | None = None) -> None:
+        """Best-effort clear of durable reservations; in-memory slots are already gone.
+
+        Flock failure leaves disk entries for pid-liveness reclaim (holder process exit).
+        """
+        path = self._path
+        if path is None:
+            return
+        try:
+            with _flock_exclusive(
+                _lock_sidecar(path), timeout_s=_ENFORCE_GATE_LOCK_TIMEOUT_S
+            ):
+                disk = _load_reservations(path)
+                if keys is not None:
+                    for key in keys:
+                        disk.pop(key, None)
+                if run_id is not None:
+                    for key, entry in list(disk.items()):
+                        if entry.get("run_id") == run_id:
+                            disk.pop(key, None)
+                _write_reservations(path, disk)
+        except BudgetExceeded:
+            return
+        except OSError:
+            return

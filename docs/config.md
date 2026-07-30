@@ -93,9 +93,13 @@ Checked at run start **before** worktree creation. Default is **soft-warn** (std
 triggers.
 
 `enforce: true` also admits **at most one in-flight matching spawn** per budget (scope + window +
-limit). Parallel `run_many` / concurrent `spawn` would otherwise all pass the same pre-run ledger
-snapshot and overshoot the cap before any usage is recorded. The next matching spawn is refused
-until the holder finishes (and records spend). Advisory budgets do not take a concurrency slot.
+limit), across processes (CLI + MCP on the same repo) as well as threads. Parallel `run_many` /
+concurrent `spawn` would otherwise all pass the same pre-run ledger snapshot and overshoot the
+cap before any usage is recorded. Reservations live in `.marshal/budget_gate.json` under an
+`fcntl.flock`; a dead holder's pid is reclaimed so a crash cannot lock out future spawns. Lock
+acquire times out after 5s and refuses the spawn (fail-closed). The next matching spawn is
+refused until the holder finishes (and records spend). Advisory budgets do not take a
+concurrency slot and stay lock-free.
 
 Editing `fleet.config.yaml` hot-reloads budget **specs** (limits, scopes, `enforce`) on the next
 call, but never forks budget **state**: the in-flight guard and the `session` window clock are kept

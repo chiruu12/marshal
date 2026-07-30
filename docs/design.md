@@ -222,8 +222,9 @@ statement of the run path, so the check runs before the worktree is provisioned.
 `[marshal] budget: client:implementer spent $5.40 >= cap $5.00 (week)` and the run proceeds;
 advisory lookup failures (corrupt ledger, IO error) degrade silently to "no warning". With
 `enforce: true`: raise `BudgetExceeded` before worktree create; enforced lookup failures fail
-closed; `EnforceBudgetGate` admits at most one in-flight matching spawn per enforce budget (see
-`budgets.py`; knob census in [`config.md`](config.md)).
+closed; `EnforceBudgetGate` admits at most one in-flight matching spawn per enforce budget,
+serialized across processes via `.marshal/budget_gate.json` + `fcntl.flock` (see `budgets.py`;
+knob census in [`config.md`](config.md)).
 **Per-workspace only (intentional non-goal).** Budgets and usage ledgers are scoped to one repo's
 `.marshal` + that workspace's `fleet.config.yaml`. A multi-workspace MCP server does **not** merge
 ledgers or evaluate a cap across workspaces. The shared control plane is concurrency only

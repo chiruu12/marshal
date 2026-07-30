@@ -551,3 +551,127 @@ def test_budget_status_spent_known_is_serialized() -> None:
     dumped = row.model_dump(mode="json")
     assert dumped["spent_known"] is False
     assert "spent_known" in row.model_dump_json()
+
+
+# --- cross-process enforce gate (issue #182) -------------------------------------------------
+
+
+def test_soft_warn_begin_is_lock_free(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advisory budgets must not open the reservation flock or write budget_gate.json."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=False)
+    gate = EnforceBudgetGate()
+    flock_calls: list[object] = []
+
+    def boom_flock(*_a: object, **_k: object) -> None:
+        flock_calls.append(True)
+        raise AssertionError("advisory begin must not flock")
+
+    monkeypatch.setattr(budgets_mod.fcntl, "flock", boom_flock)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys == []
+    assert flock_calls == []
+    assert not (tmp_path / "budget_gate.json").exists()
+
+
+def test_release_on_failure_path_frees_slot_for_peer(tmp_path: Path) -> None:
+    """release(keys) after a failed _start must free the disk slot, not only success/release_run."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    gate_a = EnforceBudgetGate()
+    keys = gate_a.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+    # Simulate _start failure before bind (separate gate instance = other "process" view).
+    gate_a.release(keys)
+    gate_b = EnforceBudgetGate(path=tmp_path / "budget_gate.json")
+    keys_b = gate_b.begin(tracker, SESSION, [budget], _scope())
+    assert keys_b
+    gate_b.release(keys_b)
+
+
+def test_dead_process_reservation_is_reclaimed(tmp_path: Path) -> None:
+    """A reservation whose holder pid is dead must not block forever."""
+    import json
+
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    path.write_text(
+        json.dumps(
+            {
+                "held": {
+                    key: {
+                        "run_id": "orphan-run",
+                        "pid": 2_000_000_000,  # not a live pid on any sane host
+                        "pid_start_time": "Thu Jan  1 00:00:00 1970",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys == [key]
+    gate.release(keys)
+
+
+def test_cross_process_enforce_admits_at_most_one(tmp_path: Path) -> None:
+    """Two OS processes racing the same enforce cap: total admitted must not exceed one.
+
+    Follows ``tests/test_state.py`` cross-process flock pattern (real subprocesses).
+    """
+    import subprocess
+    import sys
+
+    usage = tmp_path / "usage"
+    usage.mkdir()
+    gate_path = tmp_path / "budget_gate.json"
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+
+    worker = r"""
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from marshal_engine.budgets import BudgetExceeded, EnforceBudgetGate
+from marshal_engine.config import BudgetSpec
+from marshal_engine.usage import UsageTracker
+
+usage = Path(sys.argv[1])
+gate_path = Path(sys.argv[2])
+out = Path(sys.argv[3])
+# Stagger slightly so both processes contend on flock + reservation, not just startup.
+time.sleep(float(sys.argv[4]))
+tracker = UsageTracker(usage)
+budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+gate = EnforceBudgetGate(path=gate_path)
+session = datetime(2026, 7, 1, tzinfo=timezone.utc)
+req = SimpleNamespace(client="worker", backend_name="opencode")
+try:
+    keys = gate.begin(tracker, session, [budget], req)
+except BudgetExceeded:
+    out.write_text("refused", encoding="utf-8")
+    sys.exit(0)
+# Hold the slot long enough for the peer to observe it.
+time.sleep(0.8)
+gate.release(keys)
+out.write_text("admitted", encoding="utf-8")
+"""
+    outs = [result_dir / f"p{i}.txt" for i in range(2)]
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", worker, str(usage), str(gate_path), str(outs[i]), str(i * 0.05)],
+        )
+        for i in range(2)
+    ]
+    for proc in procs:
+        assert proc.wait(timeout=120) == 0
+
+    outcomes = [p.read_text(encoding="utf-8") for p in outs if p.exists()]
+    assert outcomes.count("admitted") == 1, outcomes
+    assert outcomes.count("refused") == 1, outcomes

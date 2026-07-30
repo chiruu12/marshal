@@ -8,6 +8,14 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **`enforce: true` budgets bind across processes.** `EnforceBudgetGate` was an in-memory
+  `threading.Lock` only, so a CLI `marshal run` and an MCP server on the same repo could both
+  admit past a documented hard cap. Reservations now live in `.marshal/budget_gate.json` under
+  an `fcntl.flock` (same RMW idiom as run-record state); a dead holder's pid is reclaimed so a
+  crash cannot lock out future spawns. Lock acquire times out after 5s and refuses the spawn
+  (fail-closed). Soft-warn budgets stay lock-free.
+
 ## [0.2.0] - 2026-07-30
 
 ### Added
