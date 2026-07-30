@@ -4284,6 +4284,53 @@ def test_cancel_during_setup_stops_setup_and_stamps_cancelled(repo: Path) -> Non
         fleet.shutdown()
 
 
+def test_reaper_leaves_mid_provisioning_record_alone(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#146: a record whose deferred setup is still running must survive a foreign-process reaper.
+
+    Spawn's record now exists BEFORE any pid is stamped. A reaper in another process (empty
+    in-flight registry there) must not reap it: the pid-less grace window (#84) covers the span
+    until setup publishes its pid, and the pid-identity probe covers the rest of setup.
+    """
+    import threading
+
+    setup_started = threading.Event()
+    release_setup = threading.Event()
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+
+    def gated_setup(wt: object, **kwargs: object) -> None:
+        setup_started.set()
+        assert release_setup.wait(timeout=10), "test timed out waiting to release setup"
+
+    fleet.worktrees.setup = gated_setup  # type: ignore[method-assign]
+    # Simulate the reaper running in ANOTHER process: its in-flight registry is empty, so the
+    # same-process protection does not apply and only the grace/pid-identity rules decide.
+    monkeypatch.setattr(fleet_mod, "_inflight_in_this_process", lambda *_a: False)
+    try:
+        run_id = fleet.spawn(
+            RunRequest(backend_name="writer", task=TaskSpec(id="reapgrace", goal="x"))
+        )
+        assert setup_started.wait(timeout=5), "background setup never started"
+        rec = fleet.state.get(run_id)
+        assert rec is not None and rec.status == "running" and rec.pid is None
+        fleet_mod._reap_orphaned_runs(fleet.state)
+        rec = fleet.state.get(run_id)
+        assert rec is not None and rec.status == "running", "reaper killed a mid-setup run"
+        release_setup.set()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == "exited_clean"
+    finally:
+        release_setup.set()
+        fleet.shutdown()
+
+
 def test_integrate_and_collect_on_setup_failed_run(repo: Path) -> None:
     """Setup-failed runs: collect surfaces the record error; integrate returns structured error."""
     fleet = Fleet(

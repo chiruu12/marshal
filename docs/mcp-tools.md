@@ -157,7 +157,15 @@ be a diff or text — both first-class (see `collect_run`).
 ### `spawn`
 
 Same parameters as `run_agent`. Same delegation primitive (product may be a diff or text). Returns
-immediately with a `RUNNING` record; poll `get_run` / `status`, cancel with `cancel_run`.
+immediately with a `RUNNING` record — right after `git worktree add`, **before** `read_paths` /
+`setup_cmd` provisioning (which can take up to `setup_timeout_s`) and before the agent starts — so
+the record is pollable and cancellable during setup. Poll `get_run` / `status`; cancel with
+`cancel_run`, which SIGTERMs the setup process group once its pid is published, or stamps
+`cancelled` and skips the agent when it arrives earlier (a cancel during pure-Python provisioning
+such as `read_paths` copies is cooperative — it lands at the next checkpoint). A setup/provisioning
+failure lands `failed` with a phase-named error (`fleet: setup:` / `fleet: provision:`) and the
+half-made worktree torn down; `collect_run` / `integrate` on such a run surface that error instead
+of a diff.
 
 ### `run_many`
 
@@ -405,6 +413,8 @@ pid unambiguously belongs to the agent.
 
 - A cancel arriving **before** the pid is known is applied the moment it is, so the agent is stopped
   rather than left running behind an already-terminal record.
+- During `spawn`'s provisioning window the same rules cover the `setup_cmd` process group: a cancel
+  SIGTERMs it once its pid is published, or stamps `cancelled` and the agent never launches.
 - A cancel **after** the child is reaped does not signal at all.
 - A run started by a **different (or dead) process** is stamped `cancelled` without a signal, with
   the reason on `error` and `pid` cleared. Guessing at a pid this process does not own risks
