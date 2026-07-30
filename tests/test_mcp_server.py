@@ -723,3 +723,48 @@ def test_spawn_tool_docstring_promises_return_before_provisioning() -> None:
     src = Path(mcp_mod.__file__).read_text(encoding="utf-8")
     assert "before worktree provisioning" in src
     assert "cancel_run stops an in-flight setup" in src
+
+
+def test_output_schema_param_is_wired_into_spawn_and_run_agent_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    assert "output_schema" in tools["spawn"].input_schema["properties"]
+    assert "output_schema" in tools["run_agent"].input_schema["properties"]
+    job_props = tools["run_many"].input_schema["$defs"]["Job"]["properties"]
+    assert "output_schema" in job_props
+
+
+def test_run_agent_rejects_invalid_output_schema_via_mcp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bad schema dict → clean tool error (invalid output_schema), not a traceback."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    with pytest.raises(Exception, match="invalid output_schema"):
+        asyncio.run(
+            app.call_tool(
+                "run_agent",
+                {
+                    "goal": "x",
+                    "backend": "opencode",
+                    "output_schema": {"type": "object", "properties": "not-an-object"},
+                },
+            )
+        )

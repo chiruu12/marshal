@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -122,6 +123,11 @@ class TaskSpec(BaseModel):
     # context_files these are deliberately outside the worktree checkout.
     read_paths: list[str] = []
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
+    # Optional JSON Schema for the agent's FINAL MESSAGE. When set (including {}), the fleet
+    # injects a prompt instruction and validates the reply as one JSON object; see
+    # fleet._apply_structured_output. None (default) leaves behaviour identical to an unstructured
+    # run. Empty {} means "any JSON object" (extraction still requires an object).
+    output_schema: dict[str, Any] | None = None
 
     @field_validator("id")
     @classmethod
@@ -133,6 +139,23 @@ class TaskSpec(BaseModel):
             return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
         except WorktreeError as exc:
             raise ValueError(str(exc)) from exc
+
+    @field_validator("output_schema")
+    @classmethod
+    def _output_schema_must_be_valid_json_schema(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if v is None:
+            return None
+        # Lazy import: keep the core types importable without pulling jsonschema until needed.
+        from jsonschema.exceptions import SchemaError
+        from jsonschema.validators import validator_for
+
+        try:
+            validator_for(v).check_schema(v)
+        except SchemaError as exc:
+            raise ValueError(f"invalid output_schema: {exc.message}") from exc
+        return v
 
 
 class RunOpts(BaseModel):
@@ -176,6 +199,9 @@ class AgentResult(BaseModel):
     error: str | None = None
     raw_stdout: str = ""
     raw_stderr: str = ""
+    # Schema-validated JSON object from the final message when TaskSpec.output_schema was set and
+    # the reply conformed. None when no schema was requested, or when validation failed (see error).
+    structured: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
