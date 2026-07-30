@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -560,3 +563,613 @@ def test_budget_status_spent_known_is_serialized() -> None:
     dumped = row.model_dump(mode="json")
     assert dumped["spent_known"] is False
     assert "spent_known" in row.model_dump_json()
+
+
+# --- cross-process enforce gate (issue #182) -------------------------------------------------
+
+
+def test_soft_warn_begin_is_lock_free(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advisory budgets must not open the reservation flock or write budget_gate.json."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=False)
+    gate = EnforceBudgetGate()
+    flock_calls: list[object] = []
+
+    def boom_flock(*_a: object, **_k: object) -> None:
+        flock_calls.append(True)
+        raise AssertionError("advisory begin must not flock")
+
+    monkeypatch.setattr(budgets_mod.fcntl, "flock", boom_flock)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys == []
+    assert flock_calls == []
+    assert not (tmp_path / "budget_gate.json").exists()
+
+
+def test_release_on_failure_path_frees_slot_for_peer(tmp_path: Path) -> None:
+    """release(keys) after a failed _start must free the disk slot, not only success/release_run."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    gate_a = EnforceBudgetGate()
+    keys = gate_a.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+    # Simulate _start failure before bind (separate gate instance = other "process" view).
+    gate_a.release(keys)
+    gate_b = EnforceBudgetGate(path=tmp_path / "budget_gate.json")
+    keys_b = gate_b.begin(tracker, SESSION, [budget], _scope())
+    assert keys_b
+    gate_b.release(keys_b)
+
+
+def test_dead_process_reservation_is_reclaimed(tmp_path: Path) -> None:
+    """A reservation whose holder pid is dead must not block forever."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    path.write_text(
+        json.dumps(
+            {
+                "held": {
+                    key: {
+                        "run_id": "orphan-run",
+                        "pid": 2_000_000_000,  # not a live pid on any sane host
+                        "pid_start_time": "Thu Jan  1 00:00:00 1970",
+                        "token": "orphan-token",
+                        "reserved_at": time.time(),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys == [key]
+    gate.release(keys)
+
+
+def test_bind_failure_with_stuck_release_lock_does_not_poison_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bind fails and release cannot take the flock → later matching spawn still admits.
+
+    Reproduces the self-inflicted lockout: durable unbound placeholder stays on disk with a
+    live holder pid after best-effort cleanup gives up; a later begin must reclaim it via the
+    unbound TTL (not depend on the failing process finishing cleanup).
+    """
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+
+    real_flock = budgets_mod._flock_exclusive
+
+    @contextlib.contextmanager
+    def flock_fail(*_a: object, **_k: object):  # noqa: ANN001
+        raise BudgetExceeded(
+            "budget gate lock timed out after 5.0s (test); refusing spawn because enforce=true"
+        )
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(budgets_mod, "_flock_exclusive", flock_fail)
+    with pytest.raises(BudgetExceeded, match="lock timed out"):
+        gate.bind(keys, "run-poison")
+    # release clears in-memory slots; disk drop also needs the flock and silently gives up.
+    gate.release(keys)
+    monkeypatch.setattr(budgets_mod, "_flock_exclusive", real_flock)
+
+    # Poison on disk: empty run_id, this process's live pid (release could not clear it).
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    entry = disk["held"][keys[0]]
+    assert entry.get("run_id") in ("", None)
+    assert entry["pid"] == os.getpid()
+    # Age the placeholder past the unbound TTL so reclaim does not wait on wall clock.
+    entry["reserved_at"] = time.time() - budgets_mod._UNBOUND_RESERVATION_TTL_S - 1.0
+    path.write_text(json.dumps(disk), encoding="utf-8")
+
+    gate2 = EnforceBudgetGate(path=path)
+    keys2 = gate2.begin(tracker, SESSION, [budget], _scope())
+    assert keys2 == keys
+    gate2.release(keys2)
+
+
+def test_fresh_unbound_reservation_still_blocks_peer(tmp_path: Path) -> None:
+    """Genuinely in-flight unbound (within TTL, live pid) must still refuse — no fail-open."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    path.write_text(
+        json.dumps(
+            {
+                "held": {
+                    key: {
+                        "run_id": "",
+                        "pid": os.getpid(),
+                        "pid_start_time": budgets_mod._pid_start_time(os.getpid()),
+                        "reserved_at": time.time(),
+                        "token": "fresh-unbound-token",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        gate.begin(tracker, SESSION, [budget], _scope())
+    assert gate._held == {}
+
+
+def test_bound_reservation_ignores_unbound_ttl(tmp_path: Path) -> None:
+    """A bound in-flight run stays held even when reserved_at is ancient (no fail-open)."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    path.write_text(
+        json.dumps(
+            {
+                "held": {
+                    key: {
+                        "run_id": "still-running",
+                        "pid": os.getpid(),
+                        "pid_start_time": budgets_mod._pid_start_time(os.getpid()),
+                        "reserved_at": time.time() - 10_000.0,
+                        "token": "bound-token",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        gate.begin(tracker, SESSION, [budget], _scope())
+    assert gate._held == {}
+
+
+def test_slow_unbound_holder_does_not_double_admit_after_ttl(
+    tmp_path: Path,
+) -> None:
+    """Live holder past unbound TTL: peer reclaim + bind ownership → at most one admit.
+
+    Drives timing via ``reserved_at`` (no sleep). Gate A keeps an in-memory unbound slot
+    while disk ages out; gate B reclaims; A's bind must refuse rather than steal B's entry.
+    """
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate_a = EnforceBudgetGate(path=path)
+    keys_a = gate_a.begin(tracker, SESSION, [budget], _scope())
+    assert keys_a
+
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    disk["held"][keys_a[0]]["reserved_at"] = (
+        time.time() - budgets_mod._UNBOUND_RESERVATION_TTL_S - 1.0
+    )
+    path.write_text(json.dumps(disk), encoding="utf-8")
+
+    gate_b = EnforceBudgetGate(path=path)
+    keys_b = gate_b.begin(tracker, SESSION, [budget], _scope())
+    assert keys_b == keys_a
+
+    with pytest.raises(BudgetExceeded, match="reclaimed before bind"):
+        gate_a.bind(keys_a, "run-a-slow")
+    assert keys_a[0] not in gate_a._held
+
+    gate_b.bind(keys_b, "run-b")
+    disk_after = json.loads(path.read_text(encoding="utf-8"))
+    assert disk_after["held"][keys_b[0]]["run_id"] == "run-b"
+    assert disk_after["held"][keys_b[0]]["pid"] == os.getpid()
+    # Cap of one: only B's bound entry remains.
+    assert list(disk_after["held"]) == keys_b
+    gate_b.release_run("run-b")
+
+
+def test_bind_refuses_when_slot_held_by_peer(tmp_path: Path) -> None:
+    """bind detects a disk entry owned by another holder and refuses (no steal / re-create)."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys == [key]
+
+    # Peer replaced our unbound placeholder while we still believe we hold it in memory.
+    path.write_text(
+        json.dumps(
+            {
+                "held": {
+                    key: {
+                        "run_id": "peer-run",
+                        "pid": 2_000_000_000,
+                        "pid_start_time": "Thu Jan  1 00:00:00 1970",
+                        "reserved_at": time.time(),
+                        "token": "peer-token",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(BudgetExceeded, match="reclaimed before bind") as ei:
+        gate.bind(keys, "run-late")
+    assert "peer-run" in str(ei.value)
+    assert key not in gate._held
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][key]["run_id"] == "peer-run"
+
+
+def _live_peer_entry(run_id: str, token: str) -> dict[str, object]:
+    pid = os.getpid()
+    return {
+        "run_id": run_id,
+        "pid": pid,
+        "pid_start_time": budgets_mod._pid_start_time(pid),
+        "reserved_at": time.time(),
+        "token": token,
+    }
+
+
+def test_bind_loss_release_does_not_delete_peer_reservation(tmp_path: Path) -> None:
+    """Fleet's release after bind loses the slot must not reopen a peer's cap.
+
+    Mirror of the lockout bug: cleanup must not remove a disk entry it no longer owns.
+    Cap stays closed — a third admit is refused while the peer holds.
+    """
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate_a = EnforceBudgetGate(path=path)
+    keys_a = gate_a.begin(tracker, SESSION, [budget], _scope())
+    assert keys_a
+
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    disk["held"][key]["reserved_at"] = (
+        time.time() - budgets_mod._UNBOUND_RESERVATION_TTL_S - 1.0
+    )
+    path.write_text(json.dumps(disk), encoding="utf-8")
+
+    gate_b = EnforceBudgetGate(path=path)
+    keys_b = gate_b.begin(tracker, SESSION, [budget], _scope())
+    assert keys_b == keys_a
+    gate_b.bind(keys_b, "run-b")
+    peer_token = json.loads(path.read_text(encoding="utf-8"))["held"][key]["token"]
+
+    with pytest.raises(BudgetExceeded, match="reclaimed before bind"):
+        gate_a.bind(keys_a, "run-a")
+    # Same failure path as Fleet._start: release after bind ownership loss.
+    gate_a.release(keys_a)
+
+    disk_after = json.loads(path.read_text(encoding="utf-8"))
+    assert disk_after["held"][key]["run_id"] == "run-b"
+    assert disk_after["held"][key]["token"] == peer_token
+
+    gate_c = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        gate_c.begin(tracker, SESSION, [budget], _scope())
+    gate_b.release_run("run-b")
+
+
+def test_release_stale_token_does_not_delete_peer_reservation(tmp_path: Path) -> None:
+    """release with a stale local token must leave a peer's disk entry intact."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+    assert key in gate._tokens
+
+    path.write_text(
+        json.dumps({"held": {key: _live_peer_entry("peer-run", "peer-token")}}),
+        encoding="utf-8",
+    )
+    gate.release(keys)
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][key]["token"] == "peer-token"
+    assert disk["held"][key]["run_id"] == "peer-run"
+    assert gate._held == {}
+
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        EnforceBudgetGate(path=path).begin(tracker, SESSION, [budget], _scope())
+
+
+def test_release_still_frees_own_disk_slot(tmp_path: Path) -> None:
+    """Ownership check must not over-tighten — a holder can still free its own slot."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+    token = gate._tokens[keys[0]]
+    disk_before = json.loads(path.read_text(encoding="utf-8"))
+    assert disk_before["held"][keys[0]]["token"] == token
+
+    gate.release(keys)
+    disk_after = json.loads(path.read_text(encoding="utf-8"))
+    assert keys[0] not in disk_after.get("held", {})
+    assert gate._held == {}
+
+    # Slot is free for a peer.
+    gate_b = EnforceBudgetGate(path=path)
+    keys_b = gate_b.begin(tracker, SESSION, [budget], _scope())
+    assert keys_b == keys
+    gate_b.release(keys_b)
+
+
+def test_release_run_does_not_delete_peer_reservation(tmp_path: Path) -> None:
+    """release_run must only remove disk entries whose token still matches ours."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    gate.bind(keys, "run-a")
+
+    path.write_text(
+        json.dumps({"held": {key: _live_peer_entry("peer-run", "peer-token")}}),
+        encoding="utf-8",
+    )
+    gate.release_run("run-a")
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][key]["token"] == "peer-token"
+    assert disk["held"][key]["run_id"] == "peer-run"
+    assert gate._held == {}
+
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        EnforceBudgetGate(path=path).begin(tracker, SESSION, [budget], _scope())
+
+
+def test_begin_rollback_does_not_delete_peer_owned_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Partial-failure rollback drops only entries still carrying our begin token."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate = EnforceBudgetGate(path=path)
+    real_write = budgets_mod._write_reservations
+    calls = {"n": 0}
+
+    def write_swap_peer_then_fail_once(
+        p: Path, held: dict[str, dict[str, object]]
+    ) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Simulate the in-memory slot being taken over before the write lands.
+            held[key] = _live_peer_entry("peer-run", "peer-token")
+            raise OSError("simulated reservation write failure")
+        real_write(p, held)
+
+    monkeypatch.setattr(budgets_mod, "_write_reservations", write_swap_peer_then_fail_once)
+    with pytest.raises(BudgetExceeded, match="reservation write failed"):
+        gate.begin(tracker, SESSION, [budget], _scope())
+    assert gate._held == {}
+    # Rollback write (2nd call) persisted the peer entry — we must not have popped it.
+    assert calls["n"] == 2
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][key]["token"] == "peer-token"
+
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        EnforceBudgetGate(path=path).begin(tracker, SESSION, [budget], _scope())
+
+
+def test_renew_keeps_unbound_slot_past_wall_ttl(tmp_path: Path) -> None:
+    """renew bumps reserved_at so a live unbound holder is not treated as abandoned."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    disk["held"][keys[0]]["reserved_at"] = (
+        time.time() - budgets_mod._UNBOUND_RESERVATION_TTL_S - 1.0
+    )
+    path.write_text(json.dumps(disk), encoding="utf-8")
+
+    gate.renew(keys)
+    disk_after = json.loads(path.read_text(encoding="utf-8"))
+    assert (
+        time.time() - float(disk_after["held"][keys[0]]["reserved_at"])
+        < budgets_mod._UNBOUND_RESERVATION_TTL_S
+    )
+
+    peer = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        peer.begin(tracker, SESSION, [budget], _scope())
+    gate.release(keys)
+
+
+def test_malformed_held_entry_enforce_refuses(tmp_path: Path) -> None:
+    """Present but unparseable held entry → enforce refuses (same as unreadable file)."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    path.write_text(
+        json.dumps({"held": {key: "not-an-object"}}),
+        encoding="utf-8",
+    )
+    gate = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="reservation file unreadable") as ei:
+        gate.begin(tracker, SESSION, [budget], _scope())
+    msg = str(ei.value)
+    assert str(path) in msg
+    assert "Delete the file" in msg
+    assert gate._held == {}
+
+
+def test_malformed_held_entry_missing_pid_enforce_refuses(tmp_path: Path) -> None:
+    """Truncated held object (no pid) is unknown state under enforce — not silent reclaim."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    path.write_text(
+        json.dumps({"held": {key: {"run_id": "", "reserved_at": time.time()}}}),
+        encoding="utf-8",
+    )
+    gate = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="reservation file unreadable"):
+        gate.begin(tracker, SESSION, [budget], _scope())
+    assert gate._held == {}
+
+
+def test_malformed_held_entry_reporting_stays_lenient(tmp_path: Path) -> None:
+    """Advisory begin + compute_budget_status ignore a malformed held entry (never load it)."""
+    tracker = _tracker(tmp_path)
+    path = tmp_path / "budget_gate.json"
+    path.write_text(
+        json.dumps({"held": {"global|week|100.0": "not-an-object"}}),
+        encoding="utf-8",
+    )
+    advisory = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=False)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [advisory], _scope())
+    assert keys == []
+    rows = compute_budget_status(tracker, SESSION, [advisory], datetime.now(timezone.utc))
+    assert len(rows) == 1
+    assert rows[0].spent_known is True
+
+
+def test_corrupt_reservation_file_enforce_refuses(tmp_path: Path) -> None:
+    """Present-but-garbage budget_gate.json must fail closed under enforce (not admit)."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    path.write_text("{this is not valid json@@@@", encoding="utf-8")
+    gate = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="reservation file unreadable") as ei:
+        gate.begin(tracker, SESSION, [budget], _scope())
+    msg = str(ei.value)
+    assert str(path) in msg
+    assert "Delete the file" in msg
+    assert gate._held == {}
+
+
+def test_absent_reservation_file_still_admits(tmp_path: Path) -> None:
+    """No reservation file means nobody holds a slot — admit as before."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    assert not path.exists()
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys == [_enforce_budget_key(budget)]
+    gate.release(keys)
+
+
+def test_corrupt_reservation_file_soft_warn_and_reporting_stay_lenient(
+    tmp_path: Path,
+) -> None:
+    """Advisory begin + compute_budget_status must not raise on a corrupt gate file."""
+    tracker = _tracker(tmp_path)
+    path = tmp_path / "budget_gate.json"
+    path.write_text("{this is not valid json@@@@", encoding="utf-8")
+    advisory = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=False)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [advisory], _scope())
+    assert keys == []
+    rows = compute_budget_status(tracker, SESSION, [advisory], datetime.now(timezone.utc))
+    assert len(rows) == 1
+    assert rows[0].spent_known is True
+
+
+def test_cross_process_enforce_admits_at_most_one(tmp_path: Path) -> None:
+    """Two OS processes racing the same enforce cap: total admitted must not exceed one.
+
+    Follows ``tests/test_state.py`` cross-process flock pattern (real subprocesses).
+    """
+    import subprocess
+    import sys
+
+    usage = tmp_path / "usage"
+    usage.mkdir()
+    gate_path = tmp_path / "budget_gate.json"
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+
+    # Filesystem rendezvous, not sleeps: the holder announces its slot and waits to be told to
+    # release, so the peer's attempt provably happens WHILE the slot is held. Sleep-based staggering
+    # is a race - interpreter startup under load easily exceeds any stagger, and then neither
+    # process contends and the assertion means nothing.
+    worker = r"""
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from marshal_engine.budgets import BudgetExceeded, EnforceBudgetGate
+from marshal_engine.config import BudgetSpec
+from marshal_engine.usage import UsageTracker
+
+usage = Path(sys.argv[1])
+gate_path = Path(sys.argv[2])
+out = Path(sys.argv[3])
+role = sys.argv[4]                 # "holder" | "peer"
+held = gate_path.parent / "held"   # holder announces here
+go = gate_path.parent / "go"       # test releases the holder here
+
+def wait_for(path, timeout=60.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.01)
+    return False
+
+tracker = UsageTracker(usage)
+budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+gate = EnforceBudgetGate(path=gate_path)
+session = datetime(2026, 7, 1, tzinfo=timezone.utc)
+req = SimpleNamespace(client="worker", backend_name="opencode")
+
+if role == "peer" and not wait_for(held):
+    out.write_text("holder-never-started", encoding="utf-8")
+    sys.exit(0)
+
+try:
+    keys = gate.begin(tracker, session, [budget], req)
+except BudgetExceeded:
+    out.write_text("refused", encoding="utf-8")
+    sys.exit(0)
+
+if role == "holder":
+    held.write_text("1", encoding="utf-8")
+    wait_for(go)                   # hold until the peer has had its turn
+gate.release(keys)
+out.write_text("admitted", encoding="utf-8")
+"""
+    outs = [result_dir / f"p{i}.txt" for i in range(2)]
+    roles = ["holder", "peer"]
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", worker, str(usage), str(gate_path), str(outs[i]), roles[i]],
+        )
+        for i in range(2)
+    ]
+    # Let the peer finish contending, then release the holder.
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and not outs[1].exists():
+        time.sleep(0.01)
+    (tmp_path / "go").write_text("1", encoding="utf-8")
+    for proc in procs:
+        assert proc.wait(timeout=120) == 0
+
+    outcomes = [p.read_text(encoding="utf-8") for p in outs if p.exists()]
+    assert outcomes.count("admitted") == 1, outcomes
+    assert outcomes.count("refused") == 1, outcomes

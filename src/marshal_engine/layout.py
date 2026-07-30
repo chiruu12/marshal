@@ -39,3 +39,8 @@ def logs_dir(repo: Path | str) -> Path:
 def reports_dir(repo: Path | str) -> Path:
     """Return ``<repo>/.marshal/reports`` — durable markdown twins of team review reports."""
     return marshal_dir(repo) / "reports"
+
+
+def budget_gate_path(repo: Path | str) -> Path:
+    """Return ``<repo>/.marshal/budget_gate.json`` — cross-process enforce-budget reservations."""
+    return marshal_dir(repo) / "budget_gate.json"
