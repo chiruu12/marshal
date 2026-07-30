@@ -700,10 +700,15 @@ class EnforceBudgetGate:
                         ) from exc
                     return keys
                 except Exception:
+                    # Only drop disk entries we still own — a peer may have taken the key.
                     for key in keys:
-                        self._held.pop(key, None)
-                        self._tokens.pop(key, None)
-                        disk.pop(key, None)
+                        token = self._tokens.pop(key, "")
+                        self._held.pop(key, "")
+                        disk_entry = disk.get(key)
+                        if not token or disk_entry is None:
+                            continue
+                        if _entry_owned_by(disk_entry, token):
+                            disk.pop(key, None)
                     if keys:
                         with contextlib.suppress(OSError):
                             _write_reservations(path, disk)
@@ -840,29 +845,40 @@ class EnforceBudgetGate:
                 ) from exc
 
     def release(self, keys: list[str]) -> None:
-        """Drop slots reserved by ``begin`` when ``_start`` fails before bind."""
+        """Drop slots reserved by ``begin`` when ``_start`` fails before / after bind.
+
+        Captures begin-issued tokens before clearing local ownership, then deletes only
+        disk entries that still carry those tokens. Key-only deletion would free a peer's
+        slot after ``bind`` lost ownership (Fleet's failure-path ``release``).
+        """
         if not keys:
             return
         with self._lock:
+            owned = {k: self._tokens[k] for k in keys if k in self._tokens}
             for key in keys:
                 self._held.pop(key, None)
                 self._tokens.pop(key, None)
-            self._disk_drop(keys=keys)
+            self._disk_drop(owned=owned)
 
     def release_run(self, run_id: str) -> None:
         """Release every slot held by ``run_id`` (terminal path / spawn submit failure)."""
         with self._lock:
             keys = [key for key, held in self._held.items() if held == run_id]
+            owned = {k: self._tokens[k] for k in keys if k in self._tokens}
             for key in keys:
                 del self._held[key]
                 self._tokens.pop(key, None)
-            self._disk_drop(keys=keys, run_id=run_id)
+            self._disk_drop(owned=owned)
 
-    def _disk_drop(self, *, keys: list[str] | None = None, run_id: str | None = None) -> None:
-        """Best-effort clear of durable reservations; in-memory slots are already gone.
+    def _disk_drop(self, *, owned: dict[str, str]) -> None:
+        """Best-effort clear of durable reservations we still own (token match).
 
-        Flock failure leaves disk entries for later reclaim (dead holder pid, or unbound TTL).
+        Local ``_held`` / ``_tokens`` are already cleared. A disk entry whose token does not
+        match is left intact — a peer may hold the key. Flock failure leaves entries for
+        later reclaim (dead holder pid, or unbound TTL).
         """
+        if not owned:
+            return
         path = self._path
         if path is None:
             return
@@ -871,14 +887,14 @@ class EnforceBudgetGate:
                 _lock_sidecar(path), timeout_s=_ENFORCE_GATE_LOCK_TIMEOUT_S
             ):
                 disk = _load_reservations(path)
-                if keys is not None:
-                    for key in keys:
+                changed = False
+                for key, token in owned.items():
+                    entry = disk.get(key)
+                    if entry is not None and _entry_owned_by(entry, token):
                         disk.pop(key, None)
-                if run_id is not None:
-                    for key, entry in list(disk.items()):
-                        if entry.get("run_id") == run_id:
-                            disk.pop(key, None)
-                _write_reservations(path, disk)
+                        changed = True
+                if changed:
+                    _write_reservations(path, disk)
         except BudgetExceeded:
             return
         except OSError:

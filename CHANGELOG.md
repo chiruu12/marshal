@@ -71,7 +71,10 @@ versions may include breaking API changes until 1.0.
   bind-time flock failure whose release cannot re-take the lock cannot poison the slot; Fleet
   renews that TTL during `git worktree add` and `bind` verifies disk ownership (refuse if a
   peer holds the key; re-acquire only when the key is free) so a slow-but-alive holder cannot
-  silently share the cap after reclaim. Soft-warn budgets stay lock-free.
+  silently share the cap after reclaim. Release paths (`release`, `release_run`, and `begin`
+  partial-failure rollback) delete a disk entry only when its reservation token still matches
+  the releaser's — key-only cleanup after a lost bind must not free a peer's slot and reopen
+  the enforced cap. Soft-warn budgets stay lock-free.
 
 ## [0.2.0] - 2026-07-30
 

@@ -805,6 +805,166 @@ def test_bind_refuses_when_slot_held_by_peer(tmp_path: Path) -> None:
     assert disk["held"][key]["run_id"] == "peer-run"
 
 
+def _live_peer_entry(run_id: str, token: str) -> dict[str, object]:
+    pid = os.getpid()
+    return {
+        "run_id": run_id,
+        "pid": pid,
+        "pid_start_time": budgets_mod._pid_start_time(pid),
+        "reserved_at": time.time(),
+        "token": token,
+    }
+
+
+def test_bind_loss_release_does_not_delete_peer_reservation(tmp_path: Path) -> None:
+    """Fleet's release after bind loses the slot must not reopen a peer's cap.
+
+    Mirror of the lockout bug: cleanup must not remove a disk entry it no longer owns.
+    Cap stays closed — a third admit is refused while the peer holds.
+    """
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate_a = EnforceBudgetGate(path=path)
+    keys_a = gate_a.begin(tracker, SESSION, [budget], _scope())
+    assert keys_a
+
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    disk["held"][key]["reserved_at"] = (
+        time.time() - budgets_mod._UNBOUND_RESERVATION_TTL_S - 1.0
+    )
+    path.write_text(json.dumps(disk), encoding="utf-8")
+
+    gate_b = EnforceBudgetGate(path=path)
+    keys_b = gate_b.begin(tracker, SESSION, [budget], _scope())
+    assert keys_b == keys_a
+    gate_b.bind(keys_b, "run-b")
+    peer_token = json.loads(path.read_text(encoding="utf-8"))["held"][key]["token"]
+
+    with pytest.raises(BudgetExceeded, match="reclaimed before bind"):
+        gate_a.bind(keys_a, "run-a")
+    # Same failure path as Fleet._start: release after bind ownership loss.
+    gate_a.release(keys_a)
+
+    disk_after = json.loads(path.read_text(encoding="utf-8"))
+    assert disk_after["held"][key]["run_id"] == "run-b"
+    assert disk_after["held"][key]["token"] == peer_token
+
+    gate_c = EnforceBudgetGate(path=path)
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        gate_c.begin(tracker, SESSION, [budget], _scope())
+    gate_b.release_run("run-b")
+
+
+def test_release_stale_token_does_not_delete_peer_reservation(tmp_path: Path) -> None:
+    """release with a stale local token must leave a peer's disk entry intact."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+    assert key in gate._tokens
+
+    path.write_text(
+        json.dumps({"held": {key: _live_peer_entry("peer-run", "peer-token")}}),
+        encoding="utf-8",
+    )
+    gate.release(keys)
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][key]["token"] == "peer-token"
+    assert disk["held"][key]["run_id"] == "peer-run"
+    assert gate._held == {}
+
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        EnforceBudgetGate(path=path).begin(tracker, SESSION, [budget], _scope())
+
+
+def test_release_still_frees_own_disk_slot(tmp_path: Path) -> None:
+    """Ownership check must not over-tighten — a holder can still free its own slot."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+    token = gate._tokens[keys[0]]
+    disk_before = json.loads(path.read_text(encoding="utf-8"))
+    assert disk_before["held"][keys[0]]["token"] == token
+
+    gate.release(keys)
+    disk_after = json.loads(path.read_text(encoding="utf-8"))
+    assert keys[0] not in disk_after.get("held", {})
+    assert gate._held == {}
+
+    # Slot is free for a peer.
+    gate_b = EnforceBudgetGate(path=path)
+    keys_b = gate_b.begin(tracker, SESSION, [budget], _scope())
+    assert keys_b == keys
+    gate_b.release(keys_b)
+
+
+def test_release_run_does_not_delete_peer_reservation(tmp_path: Path) -> None:
+    """release_run must only remove disk entries whose token still matches ours."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    gate.bind(keys, "run-a")
+
+    path.write_text(
+        json.dumps({"held": {key: _live_peer_entry("peer-run", "peer-token")}}),
+        encoding="utf-8",
+    )
+    gate.release_run("run-a")
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][key]["token"] == "peer-token"
+    assert disk["held"][key]["run_id"] == "peer-run"
+    assert gate._held == {}
+
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        EnforceBudgetGate(path=path).begin(tracker, SESSION, [budget], _scope())
+
+
+def test_begin_rollback_does_not_delete_peer_owned_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Partial-failure rollback drops only entries still carrying our begin token."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    key = _enforce_budget_key(budget)
+    gate = EnforceBudgetGate(path=path)
+    real_write = budgets_mod._write_reservations
+    calls = {"n": 0}
+
+    def write_swap_peer_then_fail_once(
+        p: Path, held: dict[str, dict[str, object]]
+    ) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Simulate the in-memory slot being taken over before the write lands.
+            held[key] = _live_peer_entry("peer-run", "peer-token")
+            raise OSError("simulated reservation write failure")
+        real_write(p, held)
+
+    monkeypatch.setattr(budgets_mod, "_write_reservations", write_swap_peer_then_fail_once)
+    with pytest.raises(BudgetExceeded, match="reservation write failed"):
+        gate.begin(tracker, SESSION, [budget], _scope())
+    assert gate._held == {}
+    # Rollback write (2nd call) persisted the peer entry — we must not have popped it.
+    assert calls["n"] == 2
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][key]["token"] == "peer-token"
+
+    with pytest.raises(BudgetExceeded, match="in-flight"):
+        EnforceBudgetGate(path=path).begin(tracker, SESSION, [budget], _scope())
+
+
 def test_renew_keeps_unbound_slot_past_wall_ttl(tmp_path: Path) -> None:
     """renew bumps reserved_at so a live unbound holder is not treated as abandoned."""
     tracker = _tracker(tmp_path)
