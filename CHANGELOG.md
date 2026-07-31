@@ -31,7 +31,8 @@ versions may include breaking API changes until 1.0.
   `workflow.list_workflows` (use `discover_workflows(...).workflows`; MCP/CLI
   `MarshalService.list_workflows` unchanged), `env.base_env_var_names` (survivor `is_base_env_var`),
   unused `WorkspaceRegistry.run_gate` property (`_run_gate` storage kept), `fleet.BudgetExceeded`
-  re-export (import from `marshal_engine.budgets`), unused `fetch_run_cost(..., output_tokens=)`
+  re-export (import from `marshal_engine.accounting.budgets`), unused
+  `fetch_run_cost(..., output_tokens=)`
   parameter, and the never-selected `missing_config="silent"` arm.
 ### Fixed
 - **`clean`'s orphan sweep no longer deletes a worktree mid-create (#181).** Between
