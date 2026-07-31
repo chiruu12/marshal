@@ -593,35 +593,79 @@ def test_non_transient_failure_is_not_retried(repo: Path) -> None:
     assert backend.calls == 1
 
 
-def test_a_cancel_during_the_backoff_sleep_stops_the_retry(repo: Path) -> None:
+def test_a_cancel_during_the_backoff_sleep_stops_the_retry(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The backoff is the widest window in the loop, so a cancel is most likely to land exactly
     there. Checking only before the sleep let the loop wake and spawn a fresh agent - writing to
-    the worktree and billing for it - with the record already reading `cancelled`."""
-    import marshal_engine.fleet as fleet_mod
+    the worktree and billing for it - after cancel was already requested.
 
-    fleet = Fleet(repo, {"flaky": _Flaky(["opencode: database is locked"] * 4)},
+    Forces the unconfirmed-cancel path (alive pid, identity probe None): record stays ``running``,
+    no signal. Retry must still stop on cancel *intent*. Cancel only on backoff sleeps
+    (``seconds == 0.0``): Linux ``subprocess`` timeout polling also calls ``time.sleep`` (from
+    ``_pid_start_time`` during creating-claim and ``on_pid``), and a one-shot on those would
+    either no-op or stamp ``cancelled`` via the pid-is-None path — never exercising intent-without-
+    confirmation.
+    """
+    import os as _os
+
+    class _FlakyLivePid(_Flaky):
+        """Transient failures, but publishes a live pid and leaves ``exited`` clear."""
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+            self.calls += 1
+            if opts.on_pid is not None:
+                opts.on_pid(_os.getpid())
+            return AgentResult(status=RunStatus.FAILED, error="opencode: database is locked")
+
+    killed: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    real_start = fleet_mod._pid_start_time
+    unconfirm = {"active": False}
+
+    def probe(pid: int) -> str | None:
+        if unconfirm["active"]:
+            return None
+        return real_start(pid)
+
+    monkeypatch.setattr(fleet_mod, "_pid_start_time", probe)
+    monkeypatch.setattr(fleet_mod, "_pid_alive", lambda pid: True)
+
+    fleet = Fleet(repo, {"flaky": _FlakyLivePid(["opencode: database is locked"] * 4)},
                   retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
     backend = fleet.backends["flaky"]
 
-    # Cancel arrives DURING the sleep: nothing has requested it before the loop starts waiting.
     real_sleep = fleet_mod.time.sleep
-    cancelled: dict[str, bool] = {"done": False}
+    cancelled: dict[str, object] = {"done": False, "status": None, "error": None}
 
     def sleeping_cancel(seconds: float) -> None:
         real_sleep(seconds)
-        if not cancelled["done"]:
-            cancelled["done"] = True
-            for rec in fleet.state.list():
-                if rec.status == RunStatus.RUNNING.value:
-                    fleet.cancel_run(rec.run_id)
+        if cancelled["done"]:
+            return
+        # Only the retry backoff uses delay 0.0 here. Linux subprocess timeout polling also
+        # calls time.sleep (0.001, …) — including from _pid_start_time inside on_pid, when the
+        # handle has no pid yet; cancelling then takes the pid-is-None path and stamps cancelled,
+        # which is not the unconfirmed-intent path this test guards.
+        if seconds != 0.0:
+            return
+        running = [r for r in fleet.state.list() if r.status == RunStatus.RUNNING.value]
+        if not running:
+            return
+        cancelled["done"] = True
+        unconfirm["active"] = True
+        for rec in running:
+            out = fleet.cancel_run(rec.run_id)
+            cancelled["status"] = out.status
+            cancelled["error"] = out.error
 
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod.time, "sleep", sleeping_cancel)
-    try:
-        fleet.run("flaky", TaskSpec(id="t", goal="x"))
-    finally:
-        monkey.undo()
+    monkeypatch.setattr(fleet_mod.time, "sleep", sleeping_cancel)
+    fleet.run("flaky", TaskSpec(id="t", goal="x"))
 
+    assert cancelled["done"] is True, "cancel never landed on a backoff sleep"
+    assert cancelled["status"] == RunStatus.RUNNING.value, "expected unconfirmed cancel path"
+    assert isinstance(cancelled["error"], str) and "cancel not confirmed" in cancelled["error"]
+    assert killed == [], "unconfirmed cancel must not signal"
     assert backend.calls == 1, "a cancel during the backoff still spawned another attempt"
 
 

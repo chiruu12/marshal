@@ -1988,11 +1988,13 @@ class Fleet:
         return with_liveness(rec)
 
     def _cancel_requested(self, run_id: str) -> bool:
-        """Whether a cancel has been asked for - via the in-process handle or a terminal record.
+        """Whether a cancel has been asked for - intent, not confirmation.
 
-        Both are checked: the handle covers a cancel this process received, and the record covers
-        one another process stamped (which cannot signal us, but still means nobody wants more
-        work done for this run).
+        The in-process handle's ``cancel_requested`` flag is set as soon as ``cancel_run`` accepts
+        the request, including when identity could not be confirmed (record stays ``running``; no
+        signal). The terminal record covers a cancel another process stamped. Either form of intent
+        must stop further work (retries, setup) - confirmation (``status=cancelled``) is a separate
+        fact about whether Marshal could honestly claim the agent stopped.
         """
         handle = _inflight_handle(self.state.dir, run_id)
         if handle is not None:
@@ -2012,10 +2014,11 @@ class Fleet:
         startup/transport time, before an agent writes anything, so there is nothing to reset. A
         genuine task failure or a timeout is returned as-is - never retried.
 
-        A requested cancel ends the loop. SIGTERM can surface as a transport-shaped error, so
-        without this check a cancelled run would sleep and spawn a WHOLE new attempt - backend
-        setup and all - which the pending cancel then kills on arrival. That put a second writer in
-        the worktree after the record already read `cancelled`.
+        Cancel *intent* ends the loop - including an unconfirmed cancel that left the record
+        `running`. SIGTERM can surface as a transport-shaped error, so without this check a
+        cancelled run would sleep and spawn a WHOLE new attempt - backend setup and all - which
+        the pending cancel then kills on arrival. That put a second writer in the worktree after
+        cancel was already requested.
         """
         attempt = 1
         while True:
@@ -2034,7 +2037,7 @@ class Fleet:
             # Re-check AFTER the sleep too. The backoff is the widest window in the whole loop, so
             # a cancel is most likely to arrive exactly here; checking only before the sleep would
             # let the loop wake up and spawn a fresh agent into the worktree - and bill for it -
-            # with the record already reading `cancelled`.
+            # after cancel intent was already recorded (possibly without a `cancelled` stamp).
             if self._cancel_requested(run_id):
                 return result, attempt
             attempt += 1
