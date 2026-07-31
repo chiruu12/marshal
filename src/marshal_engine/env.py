@@ -138,11 +138,6 @@ def is_base_env_var(name: str) -> bool:
     return any(name.startswith(p) for p in _BASE_ENV_PREFIXES)
 
 
-def base_env_var_names() -> frozenset[str]:
-    """Exact operational names (prefixes are matched dynamically via ``is_base_env_var``)."""
-    return _BASE_ENV_EXACT
-
-
 # Shell candidates (in order) used to derive the user's interactive PATH. $SHELL first so the
 # answer matches what the user would see in a fresh terminal of THEIR shell, then common
 # fallbacks for environments where $SHELL is unset or the binary is missing. Each must support

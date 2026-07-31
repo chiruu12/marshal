@@ -70,9 +70,6 @@ class GooseBackend(CodingAgentBackend):
     credential_env_vars = ("GOOSE_PROVIDER", "GOOSE_MODEL")
     capabilities = Capabilities(
         json_output=True,
-        stream_json=True,
-        sessions=False,  # Marshal runs are one-shot with --no-session
-        server_mode=False,
         native_usage=True,  # positive cost when the provider reports it; tokens alone stay unavailable
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}

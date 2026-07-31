@@ -575,15 +575,6 @@ def test_job_request_threads_read_paths(repo: Path) -> None:
     assert req.task.read_paths == ["/tmp/x.md"]
 
 
-def test_run_agent_does_not_stamp_client_name_into_role(repo: Path) -> None:
-    # `role` is a semantic routing role, not the client name; the client is tracked separately.
-    backend = _Capture()
-    svc = _capture_svc(repo, backend)
-    rec = svc.run_agent("worker", "do x", task_id="t1")
-    assert backend.tasks[-1].role is None
-    assert rec.client == "worker"  # client identity is still recorded, just not as a "role"
-
-
 def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     svc = _svc(repo)
     rec = svc.run_agent("worker", "do something", task_id="t1")

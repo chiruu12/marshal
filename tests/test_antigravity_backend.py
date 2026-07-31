@@ -112,7 +112,6 @@ def test_compose_prompt_includes_context(backend: AntigravityBackend) -> None:
 def test_capabilities_json_without_native_cost(backend: AntigravityBackend) -> None:
     """Tokens via JSON; native_usage stays False — that flag means native COST."""
     assert backend.capabilities.json_output is True
-    assert backend.capabilities.stream_json is True
     assert backend.capabilities.native_usage is False
 
 

@@ -602,23 +602,6 @@ class WorktreeManager:
         proc = self._git("diff", "--name-only", "--diff-filter=U", "-z")
         return [f for f in proc.stdout.split("\0") if f]
 
-    def list(self) -> list[Worktree]:
-        """All worktrees known to the repo (includes the main checkout)."""
-        proc = self._git("worktree", "list", "--porcelain")
-        worktrees: list[Worktree] = []
-        current: dict[str, str] = {}
-        for line in proc.stdout.splitlines():
-            if not line.strip():
-                if current.get("worktree"):
-                    worktrees.append(_from_porcelain(current))
-                current = {}
-                continue
-            key, _, val = line.partition(" ")
-            current[key] = val
-        if current.get("worktree"):
-            worktrees.append(_from_porcelain(current))
-        return worktrees
-
     def _delete_managed_branch(self, branch: str) -> None:
         """Force-delete a Marshal-managed branch; refuse anything outside ``branch_prefix``."""
         _ensure_managed_branch(branch, self.branch_prefix)
@@ -686,9 +669,3 @@ def _setup_reason(exit_code: int, stderr: str, stdout: str) -> str:
     tail = " ".join((stderr or stdout).strip().splitlines()[-3:])
     base = f"exited with code {exit_code}"
     return f"{base}: {tail}" if tail else base
-
-
-def _from_porcelain(entry: dict[str, str]) -> Worktree:
-    path = Path(entry["worktree"])
-    branch = entry.get("branch", "").removeprefix("refs/heads/")
-    return Worktree(task_id=path.name, path=path, branch=branch)

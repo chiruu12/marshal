@@ -65,7 +65,7 @@ def test_missing_amount_usd_does_not_fabricate_admin_api_zero() -> None:
     ):
         ext = fetch_run_cost(
             model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-            input_tokens=7000, output_tokens=150,
+            input_tokens=7000,
             api_key="sk-test", attempts=1, http=_getter(_usage(row)),  # type: ignore[arg-type]
         )
         assert ext is None, f"expected no attribution for row={row!r}"
@@ -76,7 +76,7 @@ def test_explicit_zero_amount_usd_still_attributes() -> None:
     body = _usage(_rec("z-ai/glm-5.1", 0.0, 7000, 150, "2026-06-28T12:00:05+00:00"))
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is not None
@@ -91,7 +91,7 @@ def test_happy_path_real_cost() -> None:
     )
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is not None
@@ -109,7 +109,7 @@ def test_multi_record_sums_cost_and_tokens() -> None:
     )
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=180,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is not None
@@ -122,7 +122,7 @@ def test_wrong_model_is_no_match() -> None:
     body = _usage(_rec("moonshotai/kimi-k2.7-code", 0.01, 7000, 40, "2026-06-28T12:00:05+00:00"))
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=40,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is None
@@ -132,7 +132,7 @@ def test_out_of_window_is_no_match() -> None:
     body = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:05:00+00:00"))
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is None
@@ -144,7 +144,7 @@ def test_token_mismatch_declines_cost() -> None:
     body = _usage(_rec("z-ai/glm-5.1", 0.02, 30000, 150, "2026-06-28T12:00:05+00:00"))
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is None
@@ -154,7 +154,7 @@ def test_missing_key_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EASTROUTER_API_KEY", raising=False)
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         attempts=1, http=_getter(_usage()),  # type: ignore[arg-type]
     )
     assert ext is None
@@ -163,7 +163,7 @@ def test_missing_key_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_transport_failure_is_none() -> None:
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(None),  # type: ignore[arg-type]
     )
     assert ext is None
@@ -174,7 +174,7 @@ def test_opencode_provider_prefixed_model_matches() -> None:
     body = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))
     ext = fetch_run_cost(
         model="eastrouter/z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is not None
@@ -199,7 +199,7 @@ def test_pagination_finds_records_beyond_the_first_page() -> None:
     page1 = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_paged_getter({0: page0, 2: page1}), page_size=2,  # type: ignore[arg-type]
     )
     assert ext is not None and ext.cost_usd == 0.005  # found despite being past the first page
@@ -218,7 +218,7 @@ def test_pagination_does_not_stop_on_a_page_of_unusable_rows() -> None:
     page1 = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_paged_getter({0: page0, 2: page1}), page_size=2,  # type: ignore[arg-type]
     )
     assert ext is not None and ext.cost_usd == 0.005
@@ -237,7 +237,7 @@ def test_pagination_terminates_when_offset_ignored() -> None:
 
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=180,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=get, page_size=2,  # type: ignore[arg-type]
     )
     assert ext is not None and ext.cost_usd == 0.007
@@ -249,7 +249,7 @@ def test_naive_created_at_is_treated_as_utc() -> None:
     body = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05"))  # naive, no +00:00
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
     )
     assert ext is not None and ext.cost_usd == 0.005
@@ -266,7 +266,7 @@ def test_retry_picks_up_late_record(monkeypatch: pytest.MonkeyPatch) -> None:
 
     ext = fetch_run_cost(
         model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
-        input_tokens=7000, output_tokens=150,
+        input_tokens=7000,
         api_key="sk-test", attempts=2, http=get,  # type: ignore[arg-type]
     )
     assert ext is not None and ext.cost_usd == 0.005

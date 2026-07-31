@@ -324,9 +324,6 @@ class MarshalService:
         #     registry and the Fireworks guard.
         #   - client + backend: client wins; backend is ignored.
         #   - neither: fail loud.
-        # `role` is a semantic routing role (planner/coder/reviewer) that a future policy layer maps
-        # to a backend - NOT the client name (the client is carried on RunRequest/RunRecord already).
-        # Leave it unset until that policy exists, so the field never claims a role nothing assigned.
         # `duration` is a per-spawn timeout override: a preset name (short/medium/large/long) or a
         # positive int of seconds. When set, it OVERRIDES the resolved timeout_s on the RunRequest.
         # Validated up front so a typo fails fast before any worktree is created.

@@ -265,11 +265,6 @@ def discover_workflows(directory: Path | str) -> WorkflowListing:
     return WorkflowListing(workflows=specs, errors=errors)
 
 
-def list_workflows(directory: Path | str) -> list[WorkflowSpec]:
-    """All parseable workflows in a directory (malformed files are skipped, not raised)."""
-    return discover_workflows(directory).workflows
-
-
 # --- runner -------------------------------------------------------------------------------
 
 

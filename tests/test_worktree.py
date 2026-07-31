@@ -528,13 +528,6 @@ def test_diff_includes_tracked_and_untracked(repo: Path) -> None:
     assert "brand new" in diff
 
 
-def test_list_includes_created_worktree(repo: Path) -> None:
-    m = WorktreeManager(repo)
-    wt = m.create("task3")
-    paths = {w.path.resolve() for w in m.list()}
-    assert wt.path.resolve() in paths
-
-
 def test_remove_deletes_worktree_and_branch(repo: Path) -> None:
     m = WorktreeManager(repo)
     wt = m.create("task4")

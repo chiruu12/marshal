@@ -24,9 +24,8 @@ Honest gaps from research (these shape what we expose):
   * `agy` checks for a TTY; without one, stdout can be swallowed while exit code stays 0. A PTY
     wrapper (e.g. `script -q /dev/null`) belongs in the runner layer - TODO. Until then treat an
     empty success as suspect.
-  * JSON envelopes carry ``conversation_id`` (stamped onto ``session_id``); ``sessions`` stays
-    False until resume is a first-class advertised capability. ``--conversation`` is still
-    passed through when the caller already has an id.
+  * JSON envelopes carry ``conversation_id`` (stamped onto ``session_id``). ``--conversation``
+    is still passed through when the caller already has an id; resume is not first-class yet.
   * Only `safe-edit` and `yolo` are reliably non-prompting headless. There is no confirmed
     one-shot read-only flag (the read-only presets prompt), so READ_ONLY is unsupported here.
   * WORKSPACE TRUST (fixed 2026-06-27): headless `agy` cannot establish workspace trust without a
@@ -124,9 +123,6 @@ class AntigravityBackend(CodingAgentBackend):
     settings_path = DEFAULT_SETTINGS_PATH
     capabilities = Capabilities(
         json_output=True,  # --output-format json (agy ≥ 1.1.8)
-        stream_json=True,  # terminal event:"result" nests the same envelope
-        sessions=False,  # conversation_id is stamped; resume not advertised yet
-        server_mode=False,
         native_usage=False,  # tokens yes; no USD in CLI output — stay honest
         permission_modes=frozenset({PermissionMode.SAFE_EDIT, PermissionMode.YOLO}),
         permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,

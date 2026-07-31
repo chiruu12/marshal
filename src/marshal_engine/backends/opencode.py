@@ -29,8 +29,8 @@ Known live-stream gaps (mitigated by the export-reconciliation step below):
     `verifies_auth`.
 
 Other notes:
-  * `opencode serve` (HTTP, 127.0.0.1:4096) is a faster warm-server path - added later
-    (capabilities.server_mode = True).
+  * `opencode serve` (HTTP, 127.0.0.1:4096) is a faster warm-server path - not wired yet;
+    today's path is subprocess `opencode run`.
   * serve+attach hangs if any permission is `ask`; for `run` headless we keep stdin closed
     (shared runner) so a stray prompt fails fast instead of deadlocking. ``prepare()`` stamps
     an engine-managed permission snippet via ``OPENCODE_CONFIG_CONTENT`` (``question: deny``
@@ -157,9 +157,6 @@ class OpenCodeBackend(CodingAgentBackend):
     credential_env_vars = ("OPENCODE_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
-        stream_json=True,
-        sessions=True,
-        server_mode=True,  # `opencode serve` - warm-server fast path wired in a later phase
         native_usage=True,
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}

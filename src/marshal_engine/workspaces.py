@@ -331,7 +331,7 @@ def resolve_run_gate(
     return None
 
 
-_MissingConfigWarn = Literal["workspace", "legacy", "silent"]
+_MissingConfigWarn = Literal["workspace", "legacy"]
 _ConfigWarnStyle = Literal["workspace", "plain"]
 
 
@@ -350,10 +350,8 @@ def build_service_for(
     A malformed config still raises here - same as the single-repo path has always done.
 
     ``missing_config`` / ``config_warnings`` select STDERR phrasing for the MCP legacy entry point,
-    the workspace registry, and the CLI. Prefer ``"legacy"`` (or ``"workspace"``) over ``"silent"``
-    whenever a human might see the process - a missing file with zero clients and no warning is how
-    ``known: (none configured)`` becomes mysterious. ``"silent"`` remains for hermetic callers that
-    deliberately tolerate an absent file.
+    the workspace registry, and the CLI. ``"legacy"`` is for the single-repo / CLI entry points;
+    ``"workspace"`` names the registered workspace in the advisory.
 
     ``runtime`` (like ``run_gate``) is an optional injectable: the registry passes the workspace's
     durable ``WorkspaceRuntime`` so a hot-reload rebuild keeps the same enforce-budget gate and
@@ -368,7 +366,7 @@ def build_service_for(
                 "Scaffold one with `marshal init`, "
                 "or set MARSHAL_CONFIG / pass --repo/--config, then retry. See SETUP.md."
             )
-        elif missing_config == "workspace":
+        else:
             # Named registered workspace (not the default/current repo — that uses `marshal init`).
             _warn(
                 f"workspace {wdef.name!r}: no fleet config at {wdef.config_path}; starting with zero "
@@ -479,10 +477,6 @@ class WorkspaceRegistry:
         """Wrap a single prebuilt service as a one-workspace registry (the single-repo / test path)."""
         wdef = WorkspaceDef(name, Path(service.repo_root).resolve(), Path(service.config_path))
         return cls([wdef], prebuilt={name: service})
-
-    @property
-    def run_gate(self) -> threading.Semaphore | None:
-        return self._run_gate
 
     def runtime_for(self, wdef: WorkspaceDef) -> WorkspaceRuntime:
         """The workspace's durable runtime capsule, created on first touch (path-keyed).
