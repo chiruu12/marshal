@@ -17,7 +17,7 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ValidationError, field_validator, Field
 
-from .types import AgentResult, RunStatus, UsageRecord, UsageSource, canonical_status
+from ..core.types import AgentResult, RunStatus, UsageRecord, UsageSource, canonical_status
 
 # Truncated sha256 hex prefix stored on usage events. Long enough to group repeat attempts at the
 # same goal; short enough for the ledger. Never store the goal text itself (secrets / proprietary).

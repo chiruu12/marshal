@@ -11,8 +11,8 @@ import pytest
 
 from marshal_engine import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, FleetConfig, load_config
-from marshal_engine.service import MarshalService
+from marshal_engine.core.config import ClientConfig, FleetConfig, load_config
+from marshal_engine.interfaces.service import MarshalService
 
 
 class _EnvProbe(CodingAgentBackend):

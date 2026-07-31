@@ -30,7 +30,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from ..types import (
+from ..core.types import (
     AgentResult,
     Capabilities,
     PermissionFidelity,

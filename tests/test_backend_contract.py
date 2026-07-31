@@ -14,8 +14,8 @@ import pytest
 
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.goose import GooseBackend
-from marshal_engine.registry import backend_names, make_backend
-from marshal_engine.types import PermissionMode, RunOpts, TaskSpec, UsageSource
+from marshal_engine.orchestration.registry import backend_names, make_backend
+from marshal_engine.core.types import PermissionMode, RunOpts, TaskSpec, UsageSource
 
 _BACKEND_NAMES = backend_names()
 

@@ -8,6 +8,20 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+- **`marshal_engine` is now organised into layer packages** instead of 23 flat modules:
+  `core` (value types, pure logic), `runtime` (processes, git, disk), `accounting` (usage, cost,
+  budgets), `backends`, `orchestration` (the fleet loop), and `interfaces` (service, CLI, MCP,
+  workspaces, doctor). Imports point strictly downward, with `runtime` and `accounting` as siblings
+  that may not import each other; `tests/test_import_layers.py` enforces the direction over the AST
+  import graph and replaces the old hand-maintained deny-list of forbidden edges.
+- **Published import paths keep working.** `marshal_engine.config`, `.service`, `.teams`, `.state`,
+  `.workspaces`, and `.cli` remain importable as re-export shims that bind the same objects, so the
+  documented library API and an already-installed `marshal` console script are unaffected. New code
+  should import from the layer path (e.g. `marshal_engine.interfaces.service`); the shims are
+  scheduled for removal in a later release. Modules that were never part of the documented API moved
+  without a shim.
+
 ### Removed
 - **YAGNI cleanup of unused public / near-public surface.** Dropped unused helpers and fields with
   no in-repo consumers: `AgentResult.ok`, `UsageRecord.duration_ms` (wall-clock remains on
@@ -17,7 +31,8 @@ versions may include breaking API changes until 1.0.
   `workflow.list_workflows` (use `discover_workflows(...).workflows`; MCP/CLI
   `MarshalService.list_workflows` unchanged), `env.base_env_var_names` (survivor `is_base_env_var`),
   unused `WorkspaceRegistry.run_gate` property (`_run_gate` storage kept), `fleet.BudgetExceeded`
-  re-export (import from `marshal_engine.budgets`), unused `fetch_run_cost(..., output_tokens=)`
+  re-export (import from `marshal_engine.accounting.budgets`), unused
+  `fetch_run_cost(..., output_tokens=)`
   parameter, and the never-selected `missing_config="silent"` arm.
 ### Fixed
 - **`clean`'s orphan sweep no longer deletes a worktree mid-create (#181).** Between

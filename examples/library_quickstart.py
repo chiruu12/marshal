@@ -10,8 +10,8 @@ Run from the repo root:  uv run python examples/library_quickstart.py
 
 from pathlib import Path
 
-from marshal_engine.config import load_config
-from marshal_engine.service import MarshalService
+from marshal_engine.core.config import load_config
+from marshal_engine.interfaces.service import MarshalService
 
 # `implementer` is the OpenCode client in fleet.config.example.yaml. Change it to a client
 # name from your own fleet.config.yaml.

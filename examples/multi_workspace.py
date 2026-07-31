@@ -20,9 +20,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from marshal_engine.config import load_config
-from marshal_engine.state import FleetState
-from marshal_engine.workspaces import WorkspaceDef, WorkspaceRegistry
+from marshal_engine.core.config import load_config
+from marshal_engine.runtime.state import FleetState
+from marshal_engine.interfaces.workspaces import WorkspaceDef, WorkspaceRegistry
 
 def _first_client(config_path: Path) -> str:
     """Use whatever client the config actually declares.

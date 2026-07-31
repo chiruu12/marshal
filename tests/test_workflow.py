@@ -12,10 +12,10 @@ from typing import Any
 
 import pytest
 
-from marshal_engine.config import ClientConfig, ConfigError, FleetConfig
-from marshal_engine.fleet import CollectResult, IntegrateResult, RunManyJobResult
-from marshal_engine.state import RunRecord
-from marshal_engine.workflow import (
+from marshal_engine.core.config import ClientConfig, ConfigError, FleetConfig
+from marshal_engine.orchestration.fleet import CollectResult, IntegrateResult, RunManyJobResult
+from marshal_engine.runtime.state import RunRecord
+from marshal_engine.orchestration.workflow import (
     PhaseSpec,
     WorkflowRunner,
     WorkflowSpec,

@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import cli
-from marshal_engine.budgets import BudgetExceeded
-from marshal_engine.usage import Bucket
-from marshal_engine.worktree import WorktreeError
+from marshal_engine.interfaces import cli
+from marshal_engine.accounting.budgets import BudgetExceeded
+from marshal_engine.accounting.usage import Bucket
+from marshal_engine.runtime.worktree import WorktreeError
 
 
 def test_backends_json(capsys: pytest.CaptureFixture[str]) -> None:
@@ -76,8 +76,8 @@ def test_usage_defaults_resolve_against_repo_not_cwd(
     # Without --repo (or MARSHAL_REPO), cwd-relative defaults would miss the ledger.
     from datetime import datetime, timezone
 
-    from marshal_engine.layout import usage_dir
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.core.layout import usage_dir
+    from marshal_engine.accounting.usage import UsageEvent
 
     repo = tmp_path / "repo"
     subdir = repo / "src" / "pkg"
@@ -105,7 +105,7 @@ def test_usage_json_includes_breakdowns_and_window(tmp_path: Path, capsys: pytes
     # the four legacy keys; this one extends, doesn't break).
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -135,7 +135,7 @@ def test_usage_human_surfaces_by_model_and_tokens(
     # the fix: the by_model section appears, and an in/out token count is visible in the header.
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -168,7 +168,7 @@ def test_usage_window_flag_is_wired(tmp_path: Path, capsys: pytest.CaptureFixtur
     # JSON response with the resolved since populated.
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -198,7 +198,7 @@ def test_usage_session_window_states_cli_caveat(
     # "since this CLI invocation" (typically empty) — not silently return a misleading $0.
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -240,7 +240,7 @@ def test_status_human_no_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]
 
 
 def test_logs_prints_stored_log(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    from marshal_engine.logs import RunLogStore
+    from marshal_engine.runtime.logs import RunLogStore
 
     log_dir = tmp_path / "logs"
     RunLogStore(log_dir).write("r1", "out-line\n", "err-line\n")
@@ -464,7 +464,7 @@ def test_teams_json_has_no_decision_field(tmp_path: Path, capsys: pytest.Capture
 
 
 def _stub_team_result(incomplete: list[str]) -> object:
-    from marshal_engine.teams import RoleReview, TeamReview, TeamSubject
+    from marshal_engine.orchestration.teams import RoleReview, TeamReview, TeamSubject
 
     return TeamReview(
         name="gate",
@@ -488,7 +488,7 @@ def test_team_run_exit_code_reports_whether_the_panel_ran(
     Without this, `return 1 if result.incomplete_roles else 0` could be reverted to `return 0` with
     a green suite, and `marshal team run ... && deploy` would proceed on a partial panel.
     """
-    from marshal_engine.service import MarshalService
+    from marshal_engine.interfaces.service import MarshalService
 
     repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
     monkeypatch.setattr(
@@ -502,7 +502,7 @@ def test_team_run_exit_code_reports_whether_the_panel_ran(
 def test_team_run_reads_a_plan_from_a_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from marshal_engine.service import MarshalService
+    from marshal_engine.interfaces.service import MarshalService
 
     repo = _repo_with_team(tmp_path, _TEAM.format(a="ro-a"))
     plan = tmp_path / "plan.md"
@@ -561,8 +561,8 @@ def test_init_scaffolds_valid_zero_client_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`marshal init` writes a loadable zero-client stub and does not touch the registry."""
-    from marshal_engine.config import load_config
-    from marshal_engine.workspaces import workspaces_file_path
+    from marshal_engine.core.config import load_config
+    from marshal_engine.interfaces.workspaces import workspaces_file_path
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -674,7 +674,7 @@ def test_format_cost_display_missing_source() -> None:
 def test_status_human_unavailable_cost(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from marshal_engine.state import FleetState, RunRecord
+    from marshal_engine.runtime.state import FleetState, RunRecord
 
     runs = tmp_path / "runs"
     state = FleetState(runs)
@@ -692,7 +692,7 @@ def test_status_human_unavailable_cost(
 def test_status_human_native_zero_cost(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from marshal_engine.state import FleetState, RunRecord
+    from marshal_engine.runtime.state import FleetState, RunRecord
 
     runs = tmp_path / "runs"
     state = FleetState(runs)
@@ -711,7 +711,7 @@ def test_status_human_native_zero_cost(
 def test_status_human_native_real_cost(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from marshal_engine.state import FleetState, RunRecord
+    from marshal_engine.runtime.state import FleetState, RunRecord
 
     runs = tmp_path / "runs"
     state = FleetState(runs)
@@ -729,7 +729,7 @@ def test_usage_human_unavailable_backend_bucket(
 ) -> None:
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -753,7 +753,7 @@ def test_usage_human_native_zero_totals(
 ) -> None:
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -776,7 +776,7 @@ def test_usage_human_budget_unavailable_spent(
 ) -> None:
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -814,7 +814,7 @@ def test_usage_json_includes_budgets_when_configured(
     # is additive: tests that don't set --config still see the legacy four-key shape.
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -1063,7 +1063,7 @@ def test_status_since_hours_filters(tmp_path: Path, capsys: pytest.CaptureFixtur
     """`--since-hours` is its own branch and shipped briefly with a NameError in it - the suite
     stayed green because no test exercised the filter. An unexercised branch is an untested one
     however many tests pass around it."""
-    from marshal_engine.state import FleetState, RunRecord
+    from marshal_engine.runtime.state import FleetState, RunRecord
 
     runs = tmp_path / "runs"
     state = FleetState(runs)

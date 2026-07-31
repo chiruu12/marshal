@@ -26,6 +26,13 @@ stdout is parsed as plain dicts on purpose. See the package layout in the README
 - **Packaging:** Python package (`uv`), distribute via `uvx`. Private first → public when polished.
 - **Naming:** product/repo/CLI/MCP id = `marshal`. The Python **import package must NOT be `marshal`** (it shadows the stdlib `marshal` builtin and won't import) → import package `marshal_engine`, CLI entry point `marshal`. PyPI distribution `marshal` if free, else `marshal-orchestrator`.
 - **Two tiers:** Marshal = infra (this repo). Chauffeur = future end-user product built on Marshal. Keep Marshal a clean, embeddable library/engine so Chauffeur (and others) can build on it.
+- **Layered package:** `marshal_engine` is organised as layers that import strictly downward -
+  `interfaces → orchestration → backends → {runtime, accounting} → core`. `runtime` (processes,
+  git, disk) and `accounting` (usage, cost, budgets) are siblings and must not import each other.
+  The direction is enforced by `tests/test_import_layers.py`, which walks the AST import graph, so
+  lazy and `TYPE_CHECKING` imports cannot dodge it. A handful of top-level modules remain as
+  **re-export shims only** (`config`, `service`, `teams`, `state`, `workspaces`, `cli`) because
+  published docs, examples, and the installed console script use those paths.
 
 ---
 

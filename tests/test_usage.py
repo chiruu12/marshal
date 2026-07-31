@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from marshal_engine import AgentResult, RunStatus, UsageRecord, UsageSource
-from marshal_engine.usage import (
+from marshal_engine.accounting.usage import (
     USAGE_WINDOWS,
     UsageEvent,
     UsageTracker,
@@ -232,8 +232,8 @@ def test_usage_windows_match_across_surfaces(
     import asyncio
     import re
 
-    from marshal_engine import cli
-    from marshal_engine.mcp_server import build_app, build_service
+    from marshal_engine.interfaces import cli
+    from marshal_engine.interfaces.mcp_server import build_app, build_service
 
     expected = set(USAGE_WINDOWS)
     assert expected == {"session", "day", "week", "month", "all"}
@@ -363,7 +363,7 @@ def test_pre_rename_ledger_events_still_count_as_successes(tmp_path: Path) -> No
     still carries the old word. A reader that only knew the new spelling would silently stop
     counting those runs — quietly changing every historical cost-per-succeeded figure. The whole
     point of the ledger is that recorded facts do not move under you."""
-    from marshal_engine.usage import UsageTracker
+    from marshal_engine.accounting.usage import UsageTracker
 
     u = tmp_path / "usage"
     u.mkdir()
@@ -433,7 +433,7 @@ def test_events_file_level_read_failure_still_propagates(tmp_path: Path) -> None
 
 def test_events_strict_raises_on_torn_line(tmp_path: Path) -> None:
     """Strict reader (enforce path) refuses when any line is unreadable."""
-    from marshal_engine.usage import UnreadableUsageLedgerError
+    from marshal_engine.accounting.usage import UnreadableUsageLedgerError
 
     t = UsageTracker(tmp_path / "usage")
     t.record(_ev(run_id="ok", cost_usd=0.01))
@@ -461,7 +461,7 @@ def test_events_after_reads_only_appended_tail(tmp_path: Path) -> None:
 
 
 def test_events_after_truncated_raises(tmp_path: Path) -> None:
-    from marshal_engine.usage import UnreadableUsageLedgerError
+    from marshal_engine.accounting.usage import UnreadableUsageLedgerError
 
     t = UsageTracker(tmp_path / "usage")
     t.record(_ev(run_id="a", cost_usd=0.01))
@@ -475,7 +475,7 @@ def test_events_after_same_size_mtime_rewrite_raises(tmp_path: Path) -> None:
     """Same inode + same byte size + different mtime is an in-place rewrite, not a no-op."""
     import os
 
-    from marshal_engine.usage import UnreadableUsageLedgerError
+    from marshal_engine.accounting.usage import UnreadableUsageLedgerError
 
     t = UsageTracker(tmp_path / "usage")
     t.record(_ev(run_id="a", cost_usd=0.01))
@@ -501,7 +501,7 @@ def test_events_after_same_size_same_mtime_is_noop(tmp_path: Path) -> None:
 
 def test_routing_facts_round_trip_through_ledger_and_summary(tmp_path: Path) -> None:
     """New fields survive UsageEvent → events.jsonl → summary; cost rollup unchanged."""
-    from marshal_engine.usage import goal_digest
+    from marshal_engine.accounting.usage import goal_digest
 
     digest = goal_digest("refactor the auth module")
     t = UsageTracker(tmp_path / "usage")
@@ -567,7 +567,7 @@ def test_legacy_and_phase1_lines_mix_in_summary(tmp_path: Path) -> None:
 
 def test_goal_digest_stable_distinct_and_raw_goal_absent_from_ledger(tmp_path: Path) -> None:
     """Digest is stable for identical goals, differs across goals, and raw text never hits the file."""
-    from marshal_engine.usage import GOAL_DIGEST_PREFIX_LEN, goal_digest
+    from marshal_engine.accounting.usage import GOAL_DIGEST_PREFIX_LEN, goal_digest
 
     secret_goal = "ROTATE_SECRET_KEY=super-secret-value-do-not-leak"
     other = "unrelated goal text"

@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .backends.antigravity import AntigravityBackend
-from .backends.base import CodingAgentBackend
-from .backends.claude_code import ClaudeCodeBackend
-from .backends.codex import CodexBackend
-from .backends.command_code import CommandCodeBackend
-from .backends.cursor import CursorBackend
-from .backends.goose import GooseBackend
-from .backends.opencode import OpenCodeBackend
+from ..backends.antigravity import AntigravityBackend
+from ..backends.base import CodingAgentBackend
+from ..backends.claude_code import ClaudeCodeBackend
+from ..backends.codex import CodexBackend
+from ..backends.command_code import CommandCodeBackend
+from ..backends.cursor import CursorBackend
+from ..backends.goose import GooseBackend
+from ..backends.opencode import OpenCodeBackend
 
 _FACTORIES: dict[str, Callable[[], CodingAgentBackend]] = {
     "cursor": CursorBackend,

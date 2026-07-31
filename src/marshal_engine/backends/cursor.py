@@ -43,7 +43,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from ..types import (
+from ..core.types import (
     AgentResult,
     Capabilities,
     PermissionFidelity,

@@ -13,7 +13,7 @@ import re
 import pytest
 
 from marshal_engine import UsageSource
-from marshal_engine.eastrouter import fetch_run_cost
+from marshal_engine.accounting.eastrouter import fetch_run_cost
 
 _START = "2026-06-28T12:00:00+00:00"
 _END = "2026-06-28T12:00:10+00:00"
@@ -256,7 +256,7 @@ def test_naive_created_at_is_treated_as_utc() -> None:
 
 
 def test_retry_picks_up_late_record(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("marshal_engine.eastrouter.time.sleep", lambda _s: None)
+    monkeypatch.setattr("marshal_engine.accounting.eastrouter.time.sleep", lambda _s: None)
     body = _usage(_rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"))
     calls = {"n": 0}
 

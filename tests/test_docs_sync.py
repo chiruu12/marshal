@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 import marshal_engine
-from marshal_engine.config import FleetConfig
+from marshal_engine.core.config import FleetConfig
 
 _REPO_ROOT = Path(marshal_engine.__file__).resolve().parents[2]
 _USAGE_MD = _REPO_ROOT / "docs" / "usage.md"
@@ -38,7 +38,7 @@ def _repo_with_config(tmp_path: Path) -> Path:
 
 def _mcp_tool_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> set[str]:
     pytest.importorskip("mcp")
-    from marshal_engine.mcp_server import build_app, build_service
+    from marshal_engine.interfaces.mcp_server import build_app, build_service
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -49,7 +49,7 @@ def _mcp_tool_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> set[str]
 
 def _marshal_root_parser() -> argparse.ArgumentParser:
     """Return the root ``ArgumentParser`` that ``cli.main`` constructs (no subprocess)."""
-    from marshal_engine import cli as cli_module
+    from marshal_engine.interfaces import cli as cli_module
 
     captured: list[argparse.ArgumentParser] = []
     real_init = cli_module.argparse.ArgumentParser.__init__

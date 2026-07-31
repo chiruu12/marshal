@@ -23,9 +23,13 @@ Marshal clean and embeddable.
 ```
 marshal/
 ├── src/marshal_engine/      # the engine (import package; NOT "marshal" - shadows stdlib builtin)
-│   ├── types.py             # TaskSpec, RunOpts, AgentResult, UsageRecord, Capabilities, enums
-│   ├── ids.py               # fail-closed path-segment id rules (task/run/worktree ids) — shared by types + worktree
-│   ├── _version.py          # package version from installed metadata (shared by __init__ + User-Agent)
+│   ├── core/                # value types and pure logic - no subprocess, no git, no network
+│   │   ├── types.py         # TaskSpec, RunOpts, AgentResult, UsageRecord, Capabilities, enums
+│   │   ├── ids.py           # fail-closed path-segment id rules (task/run/worktree ids)
+│   │   ├── config.py        # fleet.config.yaml loader + Fireworks guard + duration presets
+│   │   ├── retry.py         # transient-failure classifier + backoff for run retries
+│   │   ├── layout.py        # centralized .marshal directory layout helpers
+│   │   └── _version.py      # package version from installed metadata
 │   ├── backends/            # one adapter per backend, all derive from base.CodingAgentBackend
 │   │   ├── base.py          # the base class (cornerstone) - owns the safe run() loop
 │   │   ├── cursor.py        # Cursor CLI (cursor-agent)
@@ -35,26 +39,29 @@ marshal/
 │   │   ├── command_code.py  # Command Code CLI - safe-edit maps to --yolo (headless auto-accept blocks writes)
 │   │   ├── claude_code.py   # Claude Code (claude -p) - native cost
 │   │   └── goose.py         # Goose (goose run) - safe-edit/yolo → GOOSE_MODE=auto (worktree boundary)
-│   ├── worktree.py          # git worktree lifecycle (the isolation boundary)
-│   ├── usage.py             # per-provider usage: events.jsonl + summary.json
-│   ├── eastrouter.py        # read real per-run cost from EastRouter /v1/usage (the ADMIN_API path)
-│   ├── state.py             # persistent fleet state (one runs/<run_id>.json per run)
-│   ├── fleet.py             # orchestrator: worktree → run backend → record usage → persist
-│   ├── registry.py          # construct backends by name
-│   ├── config.py            # fleet.config.yaml loader + Fireworks guard + duration presets
-│   ├── retry.py             # transient-failure classifier + backoff for run retries
-│   ├── env.py               # child env allowlist (operational + known credential names) + user PATH recovery
-│   ├── logs.py              # durable per-run stdout/stderr persistence
-│   ├── layout.py            # centralized .marshal directory layout helpers
-│   ├── scaffold.py          # repo-shape-aware fleet.config.yaml scaffold
-│   ├── budgets.py           # budget caps (soft-warn default; optional enforce: true)
-│   ├── workflow.py          # declarative YAML workflows: spec + validation + runner over the service primitives
-│   ├── teams.py             # adversarial review teams: panels of independent READ-ONLY reviewers over one subject (run diff / range / plan / audit) → structured report; never integrates
-│   ├── workspaces.py        # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
-│   ├── service.py           # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
-│   ├── doctor.py            # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
-│   ├── mcp_server.py        # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
-│   └── cli.py               # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
+│   ├── runtime/             # the execution boundary - processes, git, disk
+│   │   ├── worktree.py      # git worktree lifecycle (the isolation boundary)
+│   │   ├── env.py           # child env allowlist (operational + known credential names) + user PATH recovery
+│   │   ├── logs.py          # durable per-run stdout/stderr persistence
+│   │   └── state.py         # persistent fleet state (one runs/<run_id>.json per run)
+│   ├── accounting/          # usage facts and cost
+│   │   ├── usage.py         # per-provider usage: events.jsonl + summary.json
+│   │   ├── eastrouter.py    # read real per-run cost from EastRouter /v1/usage (the ADMIN_API path)
+│   │   └── budgets.py       # budget caps (soft-warn default; optional enforce: true)
+│   ├── orchestration/       # the fleet loop and everything sequenced on top of it
+│   │   ├── fleet.py         # orchestrator: worktree → run backend → record usage → persist
+│   │   ├── registry.py      # construct backends by name
+│   │   ├── workflow.py      # declarative YAML workflows: spec + validation + runner over the service primitives
+│   │   └── teams.py         # adversarial review teams: panels of independent READ-ONLY reviewers over one subject (run diff / range / plan / audit) → structured report; never integrates
+│   ├── interfaces/          # what the outside world touches
+│   │   ├── service.py       # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
+│   │   ├── workspaces.py    # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
+│   │   ├── doctor.py        # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
+│   │   ├── scaffold.py      # repo-shape-aware fleet.config.yaml scaffold
+│   │   ├── mcp_server.py    # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
+│   │   └── cli.py           # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
+│   ├── config.py service.py teams.py state.py workspaces.py cli.py
+│   │                        # re-export shims ONLY - published import paths kept working; no logic
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus, marshal-adversarial-review
 ├── examples/                # runnable library_quickstart.py, a benchmark-output sample, workflows/ + teams/ starters
 ├── SETUP.md                 # clone-to-first-run setup guide
@@ -117,6 +124,10 @@ Linux (py3.11-3.13) + macOS (py3.12, for the POSIX process-group paths). Check c
 - **Worktree isolation** is the safety boundary. Main branch is untouched until explicit integrate.
 - The **engine is mechanism**; planning/routing/merge judgment lives in **Skills** (and later
   Chauffeur). Don't put decomposition logic in the engine.
+- **Imports point downward through the layers**: `interfaces → orchestration → backends →
+  {runtime, accounting} → core`. `runtime` and `accounting` are siblings and must not import each
+  other. Enforced by `tests/test_import_layers.py` over the AST import graph, so lazy and
+  `TYPE_CHECKING` imports count too. New top-level modules belong in a layer, not the package root.
 - **Tenancy (multi-workspace) lives in the MCP layer** (`workspaces.py`), not the engine.
   `MarshalService`/`Fleet` stay single-repo; the registry builds one per repo and keys it on the
   resolved path. Each workspace keeps its own config, worktrees, and ledger - never share run state

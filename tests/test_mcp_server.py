@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from marshal_engine.config import ConfigError
-from marshal_engine.mcp_server import build_service
-from marshal_engine.workflow import WorkflowRunner
+from marshal_engine.core.config import ConfigError
+from marshal_engine.interfaces.mcp_server import build_service
+from marshal_engine.orchestration.workflow import WorkflowRunner
 
 _CONFIG = """
 clients:
@@ -58,7 +58,7 @@ def test_list_workflows_surfaces_malformed_recipe(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     wdir = repo / "workflows"
@@ -77,7 +77,7 @@ def test_list_workflows_surfaces_malformed_recipe(
 def test_run_workflow_missing_yaml_path_is_clear_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from marshal_engine.config import ConfigError
+    from marshal_engine.core.config import ConfigError
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -131,7 +131,7 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -152,7 +152,7 @@ def test_list_teams_surfaces_malformed_team(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     tdir = repo / "teams"
@@ -174,7 +174,7 @@ def test_run_team_maps_its_flat_params_onto_the_subject(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -234,7 +234,7 @@ def test_tools_are_async_and_round_trip_via_call_tool(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -263,7 +263,7 @@ def test_list_models_round_trips_via_call_tool(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -283,8 +283,8 @@ def test_status_is_compact_and_reports_what_it_left_out(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
-    from marshal_engine.state import FleetState, RunRecord
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.state import FleetState, RunRecord
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -331,7 +331,7 @@ def test_duration_param_is_wired_into_spawn_schema(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -348,7 +348,7 @@ def test_base_branch_param_is_wired_into_spawn_and_run_agent_schema(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -369,10 +369,10 @@ def test_spawn_base_branch_reaches_task_spec_via_mcp(
     import time
 
     from marshal_engine.backends.base import CodingAgentBackend
-    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
-    from marshal_engine.mcp_server import build_app
-    from marshal_engine.service import MarshalService
-    from marshal_engine.types import AgentResult, Capabilities, RunOpts, RunStatus, TaskSpec
+    from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.interfaces.service import MarshalService
+    from marshal_engine.core.types import AgentResult, Capabilities, RunOpts, RunStatus, TaskSpec
 
     class _Capture(CodingAgentBackend):
         name = "capture"
@@ -444,7 +444,7 @@ def test_tool_params_carry_schema_descriptions(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -469,7 +469,7 @@ def test_run_handle_tools_refuse_a_traversal_run_id(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -501,8 +501,8 @@ def test_get_run_log_round_trips_via_call_tool(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.logs import RunLogStore
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.runtime.logs import RunLogStore
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -514,7 +514,7 @@ def test_get_run_log_round_trips_via_call_tool(
     RunLogStore(logs_dir).write("synthetic.run", "the-stdout\n", "the-stderr\n")
     # And: the run must exist in state too, so resolve_run() can find it (otherwise the tool
     # short-circuits to log=null without ever consulting RunLogStore).
-    from marshal_engine.state import RunRecord
+    from marshal_engine.runtime.state import RunRecord
     svc.fleet.state.add(
         RunRecord(run_id="synthetic.run", task_id="synthetic", backend="cursor", status="exited_clean")
     )
@@ -542,8 +542,8 @@ def test_usage_window_param_is_in_schema(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
-    from marshal_engine.usage import USAGE_WINDOWS
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.accounting.usage import USAGE_WINDOWS
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -564,10 +564,10 @@ def test_usage_window_param_mapping(
     import asyncio
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent, UsageTracker
+    from marshal_engine.accounting.usage import UsageEvent, UsageTracker
 
     pytest.importorskip("mcp")
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -647,7 +647,7 @@ def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -691,7 +691,7 @@ def test_no_marshal_surface_claims_a_text_run_ends_empty() -> None:
     """The wrong claim was fixed in the quickstart but survived in the module docstring - a partial
     correction is how a false statement outlives its own retraction. `_authoritative_status` returns
     SUCCEEDED on text alone, so nothing may say otherwise anywhere a driver or user reads."""
-    import marshal_engine.mcp_server as srv
+    import marshal_engine.interfaces.mcp_server as srv
 
     # EVERY surface, not a sample. Scoping this to three files is how the claim survived a second
     # round: it was corrected in the quickstart, then the module docstring, and was still sitting in
@@ -720,7 +720,7 @@ def test_quickstart_claims_are_true_of_the_actual_tool_surface(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -751,9 +751,9 @@ def test_server_reports_its_version_in_the_handshake(tmp_path: Path) -> None:
     That is the first question you ask when a tool misbehaves, so the handshake must answer it.
     """
     import marshal_engine
-    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
-    from marshal_engine.mcp_server import build_app
-    from marshal_engine.service import MarshalService
+    from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.interfaces.service import MarshalService
 
     cfg = FleetConfig(
         clients={"c": ClientConfig(name="c", backend="cursor", permission=PermissionMode.SAFE_EDIT)}
@@ -765,7 +765,7 @@ def test_server_reports_its_version_in_the_handshake(tmp_path: Path) -> None:
 
 def test_spawn_tool_docstring_promises_return_before_provisioning() -> None:
     """#146: spawn's MCP docstring must not overclaim — return is before setup_cmd/provisioning."""
-    import marshal_engine.mcp_server as mcp_mod
+    import marshal_engine.interfaces.mcp_server as mcp_mod
 
     src = Path(mcp_mod.__file__).read_text(encoding="utf-8")
     assert "before worktree provisioning" in src
@@ -778,7 +778,7 @@ def test_output_schema_param_is_wired_into_spawn_and_run_agent_schema(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -798,7 +798,7 @@ def test_run_agent_rejects_invalid_output_schema_via_mcp(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))

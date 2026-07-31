@@ -6,9 +6,9 @@ used as a top-level package). The installed CLI command is `marshal`.
 
 from __future__ import annotations
 
-from ._version import __version__
+from .core._version import __version__
 from .backends.base import CodingAgentBackend
-from .types import (
+from .core.types import (
     AgentResult,
     Capabilities,
     PermissionFidelity,

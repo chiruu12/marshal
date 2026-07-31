@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pytest
 
-import marshal_engine.env as env_mod
+import marshal_engine.runtime.env as env_mod
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.claude_code import ClaudeCodeBackend
 from marshal_engine.backends.cursor import CursorBackend
-from marshal_engine.env import child_env, merge_user_path, redact_secrets, user_path
-from marshal_engine.logs import RunLogStore
-from marshal_engine.types import (
+from marshal_engine.runtime.env import child_env, merge_user_path, redact_secrets, user_path
+from marshal_engine.runtime.logs import RunLogStore
+from marshal_engine.core.types import (
     AgentResult,
     Capabilities,
     PermissionMode,
@@ -492,8 +492,8 @@ def test_merged_path_propagates_through_service_init(
     # MarshalService.__init__ calls merge_user_path itself (defense-in-depth for library
     # users who construct a service without going through mcp_server.main or cli.main). Even
     # if both entry points are bypassed, the service picks up the user PATH.
-    from marshal_engine.config import ClientConfig, FleetConfig
-    from marshal_engine.service import MarshalService
+    from marshal_engine.core.config import ClientConfig, FleetConfig
+    from marshal_engine.interfaces.service import MarshalService
 
     # A no-op empty config is enough to exercise __init__'s path recovery.
     cfg = FleetConfig(clients={"x": ClientConfig(name="x", backend="opencode")})

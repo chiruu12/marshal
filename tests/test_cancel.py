@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine.fleet import (
+from marshal_engine.orchestration.fleet import (
     Fleet,
     _publish_pid,
     _register_inflight_run,
     _unregister_inflight_run,
 )
-from marshal_engine.state import RunRecord
+from marshal_engine.runtime.state import RunRecord
 
 
 def test_cancel_unknown_run_raises(tmp_path: Path) -> None:
@@ -186,7 +186,7 @@ def test_build_app_registers_cancel_run_tool(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app, build_service
+    from marshal_engine.interfaces.mcp_server import build_app, build_service
 
     repo = tmp_path / "repo"
     repo.mkdir()

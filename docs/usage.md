@@ -414,8 +414,8 @@ spawn. For every config key see [`config.md`](config.md).
 
 ```python
 from pathlib import Path
-from marshal_engine.config import load_config
-from marshal_engine.service import MarshalService
+from marshal_engine.core.config import load_config
+from marshal_engine.interfaces.service import MarshalService
 
 service = MarshalService(Path("."), load_config("fleet.config.yaml"))
 record = service.run_agent("implementer", "Add a docstring to hello()")
