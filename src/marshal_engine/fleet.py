@@ -2484,6 +2484,19 @@ class Fleet:
                         {"run_id": rid, "reason": "worktree creation in progress"}
                     )
                     continue
+                # Re-read the record: the two checks above are separate reads, and create clears
+                # its claim right AFTER publishing the record. A sweep that read "no record" just
+                # before the publish and "no claim" just after it would span the whole handoff and
+                # discard a LIVE worktree. Re-checking closes that window - by here the record is
+                # published or the run is genuinely absent.
+                try:
+                    if self.state.get(rid) is not None:
+                        result.skipped.append(
+                            {"run_id": rid, "reason": "worktree creation in progress"}
+                        )
+                        continue
+                except (ValidationError, OSError, ValueError):
+                    pass  # still unreadable: garbage, as decided above
                 if dry_run:
                     result.orphans_removed.append(rid)
                     continue

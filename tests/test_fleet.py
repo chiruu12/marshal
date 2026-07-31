@@ -1716,6 +1716,41 @@ def test_cancel_of_live_run_still_signals(
     assert rec.status == RunStatus.CANCELLED.value
 
 
+def test_clean_rechecks_the_record_when_the_claim_check_misses(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (#181): the sweep's record read and claim read are separate reads.
+
+    The handoff test above parks WITH the claim still held, so the claim check saves the dir.
+    This covers the other interleaving: the sweep reads "no record" just before the publish and
+    "no claim" just after the clear, spanning the entire handoff. Without the re-read it discards
+    a live worktree. Mutation: drop the second `state.get` and this fails.
+    """
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="reread181", goal="x"))
+    wt = Path(rec.worktree)
+    assert wt.exists()
+
+    real_get = fleet.state.get
+    first: dict[str, bool] = {"done": False}
+
+    def get_stale_once(run_id: str) -> RunRecord | None:
+        # The sweep's FIRST read lands pre-publish; every later read sees the published record.
+        if run_id == rec.run_id and not first["done"]:
+            first["done"] = True
+            return None
+        return real_get(run_id)
+
+    monkeypatch.setattr(fleet.state, "get", get_stale_once)
+    # ...and the claim read lands post-clear, so it cannot spare the dir either.
+    monkeypatch.setattr(fleet_mod, "_creating_claim_held", lambda runs_dir, rid: False)
+
+    result = fleet.clean()
+
+    assert rec.run_id not in result.orphans_removed, result.orphans_removed
+    assert wt.exists(), "sweep spanning the publish→clear handoff deleted a live worktree"
+
+
 def test_clean_does_not_reap_across_claim_to_record_handoff(repo: Path) -> None:
     """REGRESSION (#181 handoff): sweep between record publish and claim clear must spare.
 
