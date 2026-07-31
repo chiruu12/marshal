@@ -49,7 +49,7 @@ def _mcp_tool_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> set[str]
 
 def _marshal_root_parser() -> argparse.ArgumentParser:
     """Return the root ``ArgumentParser`` that ``cli.main`` constructs (no subprocess)."""
-    from marshal_engine.interfaces import cli as cli_module
+    from marshal_engine.interfaces.cli import parser as cli_module
 
     captured: list[argparse.ArgumentParser] = []
     real_init = cli_module.argparse.ArgumentParser.__init__

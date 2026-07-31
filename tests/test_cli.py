@@ -10,6 +10,9 @@ from pathlib import Path
 import pytest
 
 from marshal_engine.interfaces import cli
+from marshal_engine.interfaces.cli import formatting as cli_fmt
+from marshal_engine.interfaces.cli import recipes as cli_recipes
+from marshal_engine.interfaces.cli import runs as cli_runs
 from marshal_engine.accounting.budgets import BudgetExceeded
 from marshal_engine.accounting.usage import Bucket
 from marshal_engine.runtime.worktree import WorktreeError
@@ -382,7 +385,7 @@ def test_workflow_run_resolves_example_recipe(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = _repo_with_example_workflow(tmp_path, _VALID)
-    monkeypatch.setattr(cli, "WorkflowRunner", _FakeRunner)
+    monkeypatch.setattr(cli_recipes, "WorkflowRunner", _FakeRunner)
     ret = cli.main(["workflow", "run", "review", "--repo", str(repo), "--input", "target=x", "--json"])
     assert ret == 0
     spec = _FakeRunner.captured["spec"]
@@ -396,7 +399,7 @@ def test_workflow_run_prefers_repo_over_example(
     repo = _repo_with_example_workflow(tmp_path, _VALID.replace("name: review", "name: from-example"))
     (repo / "workflows").mkdir()
     (repo / "workflows" / "review.yaml").write_text(_VALID.replace("name: review", "name: from-repo"))
-    monkeypatch.setattr(cli, "WorkflowRunner", _FakeRunner)
+    monkeypatch.setattr(cli_recipes, "WorkflowRunner", _FakeRunner)
     ret = cli.main(["workflow", "run", "review", "--repo", str(repo), "--json"])
     assert ret == 0
     assert _FakeRunner.captured["spec"].name == "from-repo"  # type: ignore[attr-defined]
@@ -655,20 +658,20 @@ def test_workspace_bare_lists(
 
 
 def test_format_cost_display_unavailable() -> None:
-    assert cli._format_cost_display(0.0, "unavailable") == "unavailable"
-    assert "$0.0000" not in cli._format_cost_display(0.0, "unavailable")
+    assert cli_fmt._format_cost_display(0.0, "unavailable") == "unavailable"
+    assert "$0.0000" not in cli_fmt._format_cost_display(0.0, "unavailable")
 
 
 def test_format_cost_display_native_zero() -> None:
-    assert cli._format_cost_display(0.0, "native") == "$0.0000"
+    assert cli_fmt._format_cost_display(0.0, "native") == "$0.0000"
 
 
 def test_format_cost_display_native_amount() -> None:
-    assert cli._format_cost_display(0.4695, "native") == "$0.4695"
+    assert cli_fmt._format_cost_display(0.4695, "native") == "$0.4695"
 
 
 def test_format_cost_display_missing_source() -> None:
-    assert cli._format_cost_display(0.0, None) == "unavailable"
+    assert cli_fmt._format_cost_display(0.0, None) == "unavailable"
 
 
 def test_status_human_unavailable_cost(
@@ -1007,8 +1010,8 @@ def test_run_and_spawn_catch_budget_exceeded(
         def spawn(self, *_a: object, **_k: object) -> object:
             raise BudgetExceeded("refusing new spawn (enforce=true)")
 
-    monkeypatch.setattr(cli, "_require_git_work_tree", lambda _repo: None)
-    monkeypatch.setattr(cli, "_build_cli_service", lambda _args: _FakeSvc())
+    monkeypatch.setattr(cli_runs, "_require_git_work_tree", lambda _repo: None)
+    monkeypatch.setattr(cli_runs, "_build_cli_service", lambda _args: _FakeSvc())
     args = argparse.Namespace(
         client=None,
         goal="x",
@@ -1021,9 +1024,9 @@ def test_run_and_spawn_catch_budget_exceeded(
         config=None,
         json=False,
     )
-    assert cli._cmd_run_like(args, spawn=False) == 1
+    assert cli_runs._cmd_run_like(args, spawn=False) == 1
     assert "enforce=true" in capsys.readouterr().err
-    assert cli._cmd_run_like(args, spawn=True) == 1
+    assert cli_runs._cmd_run_like(args, spawn=True) == 1
     assert "enforce=true" in capsys.readouterr().err
 
 
@@ -1039,8 +1042,8 @@ def test_run_and_spawn_catch_worktree_error(
         def spawn(self, *_a: object, **_k: object) -> object:
             raise WorktreeError("worktree add failed: fatal: not a git repository")
 
-    monkeypatch.setattr(cli, "_require_git_work_tree", lambda _repo: None)
-    monkeypatch.setattr(cli, "_build_cli_service", lambda _args: _FakeSvc())
+    monkeypatch.setattr(cli_runs, "_require_git_work_tree", lambda _repo: None)
+    monkeypatch.setattr(cli_runs, "_build_cli_service", lambda _args: _FakeSvc())
     args = argparse.Namespace(
         client=None,
         goal="x",
@@ -1053,9 +1056,9 @@ def test_run_and_spawn_catch_worktree_error(
         config=None,
         json=False,
     )
-    assert cli._cmd_run_like(args, spawn=False) == 1
+    assert cli_runs._cmd_run_like(args, spawn=False) == 1
     assert "not a git repository" in capsys.readouterr().err
-    assert cli._cmd_run_like(args, spawn=True) == 1
+    assert cli_runs._cmd_run_like(args, spawn=True) == 1
     assert "not a git repository" in capsys.readouterr().err
 
 
@@ -1099,28 +1102,28 @@ def test_status_rejects_a_nonfinite_lookback(tmp_path: Path) -> None:
 def test_bucket_rate_annotates_a_partially_priced_bucket() -> None:
     """A rate over a mixed bucket divides known spend by ALL runs, so say what it covers."""
     b = Bucket(runs=10, priced_runs=1, cost_usd=0.5, cost_per_run=0.05)
-    out = cli._format_bucket_rate(b.cost_per_run, b)
+    out = cli_fmt._format_bucket_rate(b.cost_per_run, b)
     assert out == "$0.0500 (1/10 priced)"
 
 
 def test_bucket_rate_unannotated_when_every_run_is_priced() -> None:
     b = Bucket(runs=4, priced_runs=4, cost_usd=0.4, cost_per_run=0.1)
-    assert cli._format_bucket_rate(b.cost_per_run, b) == "$0.1000"
+    assert cli_fmt._format_bucket_rate(b.cost_per_run, b) == "$0.1000"
 
 
 def test_bucket_rate_unavailable_when_nothing_is_priced() -> None:
     b = Bucket(runs=3, priced_runs=0, cost_usd=0.0, cost_per_run=0.0)
-    assert cli._format_bucket_rate(b.cost_per_run, b) == "unavailable"
+    assert cli_fmt._format_bucket_rate(b.cost_per_run, b) == "unavailable"
 
 
 def test_cost_split_accounts_for_legacy_estimated_spend() -> None:
     """The split must sum to the total beside it, including legacy ledger spend."""
     b = Bucket(runs=2, priced_runs=2, cost_usd=0.75, cost_native=0.50, cost_estimated=0.25)
-    out = cli._format_cost_split(b)
+    out = cli_fmt._format_cost_split(b)
     assert "native $0.5000" in out
     assert "estimated (legacy) $0.2500" in out
 
 
 def test_cost_split_omits_estimated_when_absent() -> None:
     b = Bucket(runs=1, priced_runs=1, cost_usd=0.5, cost_native=0.5)
-    assert cli._format_cost_split(b) == "native $0.5000"
+    assert cli_fmt._format_cost_split(b) == "native $0.5000"

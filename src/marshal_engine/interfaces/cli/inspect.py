@@ -1,0 +1,209 @@
+"""The `marshal` CLI - inspect backends, usage, and fleet state."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from ...core.config import BudgetSpec, ConfigError, FleetConfig, load_config
+from ...orchestration.fleet import compute_budget_status
+from ...core.layout import logs_dir, runs_dir, usage_dir
+from ...runtime.logs import RunLogStore
+from ...orchestration.registry import backend_names, default_backends
+from ...runtime.state import FleetState, compact_run, filter_runs
+from ...accounting.usage import UsageTracker, usage_window_since
+from .common import _resolve_repo
+from .formatting import (
+    _format_bucket_cost,
+    _format_bucket_rate,
+    _format_cost_display,
+    _format_cost_split,
+    _print_bucket_table,
+    _print_budget_table,
+)
+
+def _cmd_backends(args: argparse.Namespace) -> int:
+    backends = default_backends()
+    if args.json:
+        data = []
+        for name in backend_names():
+            b = backends[name]
+            c = b.capabilities
+            data.append(
+                {
+                    "name": name,
+                    "available": b.check_available(),
+                    "json_output": c.json_output,
+                    "native_usage": c.native_usage,
+                    "permission_modes": sorted(m.value for m in c.permission_modes),
+                    "permission_fidelity": c.permission_fidelity.value,
+                }
+            )
+        print(json.dumps(data, indent=2))
+        return 0
+    for name in backend_names():
+        b = backends[name]
+        c = b.capabilities
+        modes = sorted(m.value for m in c.permission_modes)
+        print(
+            f"{name:13} available={str(b.check_available()):5} "
+            f"json={str(c.json_output):5} usage={str(c.native_usage):5} "
+            f"modes={modes} fidelity={c.permission_fidelity.value}"
+        )
+    return 0
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    """Print the optional `models:` catalog from the fleet config (the driver's "sheet")."""
+    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
+    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
+    config = FleetConfig()  # empty default - same posture as a repo with no config file
+    if cfg_path.exists():
+        try:
+            config = load_config(cfg_path)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if args.json:
+        payload = {
+            "models": [m.model_dump() for m in config.models],
+            "driver_context": config.context.driver,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    if not config.models:
+        print(
+            f"no `models:` catalog in {cfg_path} (add a top-level `models:` list to expose one)"
+        )
+        return 0
+    for m in config.models:
+        backends = ",".join(m.backends)
+        cost = m.cost or "-"
+        quota = m.quota_type or "-"
+        print(f"{m.id:40} backends={backends:30} cost={cost:12} quota={quota:14} {m.notes}")
+    if config.context.driver:
+        print(f"\ndriver context: {config.context.driver}")
+    return 0
+
+
+def _cmd_usage(args: argparse.Namespace) -> int:
+    # The CLI has no long-lived Fleet, so `session` = since this invocation (typically empty).
+    # Pass `now` as session_start — honest, not a silent fake of MCP's process-lifetime clock.
+    now = datetime.now(timezone.utc)
+    since = usage_window_since(args.window, session_start=now, now=now)
+    repo = _resolve_repo(args)
+    usage_path = Path(args.dir) if args.dir is not None else usage_dir(repo)
+    tracker = UsageTracker(usage_path)
+    s = tracker.summary(since=since)
+    # Optional: load the fleet config to surface any advisory `budgets:` alongside the ledger.
+    # Absent / unreadable / empty -> `[]` (the "no behavior change" contract for users who don't opt in).
+    budgets: list[BudgetSpec] = []
+    if args.config:
+        try:
+            budgets = load_config(args.config).budgets
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    # Same honesty for budget status: a `session` budget window reads as $0 (process just started).
+    budget_rows = compute_budget_status(tracker, now, budgets, now)
+    if args.json:
+        payload = {
+            "totals": s.totals.model_dump(mode="json"),
+            "by_backend": {k: v.model_dump(mode="json") for k, v in s.by_backend.items()},
+            "by_client": {k: v.model_dump(mode="json") for k, v in s.by_client.items()},
+            "by_model": {k: v.model_dump(mode="json") for k, v in s.by_model.items()},
+            "by_backend_model": {
+                k: v.model_dump(mode="json") for k, v in s.by_backend_model.items()
+            },
+            "window": args.window,
+            "since": since.isoformat() if since is not None else None,
+        }
+        if budget_rows:
+            payload["budgets"] = [b.model_dump(mode="json") for b in budget_rows]
+        print(json.dumps(payload, indent=2))
+        return 0
+    t = s.totals
+    cps_str = _format_bucket_rate(
+        t.cost_per_succeeded or 0.0, t, no_successes=t.cost_per_succeeded is None
+    )
+    if args.window == "session":
+        # CLI has no long-lived Fleet — say so plainly rather than silently returning ~$0.
+        window_label = (
+            "  window=session (since this CLI invocation — typically empty; "
+            "no long-lived Fleet; use day/week/month for rolling spend)"
+        )
+    elif args.window != "all":
+        window_label = f"  window={args.window}"
+    else:
+        window_label = ""
+    print(
+        f"runs={t.runs}  succeeded={t.succeeded}  cost={_format_bucket_cost(t)} "
+        f"({_format_cost_split(t)})"
+        f"{window_label}"
+    )
+    print(
+        f"  $/run={_format_bucket_rate(t.cost_per_run, t)}  $/succeeded={cps_str}  "
+        f"in={t.input_tokens}  out={t.output_tokens}  "
+        f"cache_read={t.cache_read_tokens}  cache_write={t.cache_write_tokens}"
+    )
+    _print_bucket_table("by_backend", s.by_backend)
+    _print_bucket_table("by_client", s.by_client)
+    _print_bucket_table("by_model", s.by_model)
+    _print_bucket_table("by_backend_model", s.by_backend_model)
+    _print_budget_table(budget_rows)
+    return 0
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    repo = _resolve_repo(args)
+    state_dir = Path(args.state) if args.state is not None else runs_dir(repo)
+    since = (
+        datetime.now(timezone.utc) - timedelta(hours=args.since_hours)
+        if args.since_hours is not None else None
+    )
+    matched = filter_runs(
+        FleetState(state_dir).list(), status=args.status, task_id=args.task_id, since=since
+    )
+    runs = matched if args.limit is None else matched[: args.limit]
+    if args.json:
+        # Same compact-by-default shape as the MCP tool, and the same refusal to cap silently.
+        print(json.dumps({
+            "runs": [r.model_dump(mode="json") if args.full else compact_run(r) for r in runs],
+            "returned": len(runs),
+            "matched": len(matched),
+            "truncated": len(matched) > len(runs),
+            "compact": not args.full,
+        }, indent=2))
+        return 0
+    if len(matched) > len(runs):
+        print(f"showing {len(runs)} of {len(matched)} runs (raise --limit to see more)")
+    if not runs:
+        print(f"no runs recorded under {state_dir.resolve()}")
+        return 0
+    cost_w = max((len(_format_cost_display(r.cost_usd, r.source)) for r in runs), default=11)
+    for r in runs:
+        cost = _format_cost_display(r.cost_usd, r.source)
+        print(f"{r.run_id:24} {r.backend:12} {r.status:10} {cost:<{cost_w}}  {r.worktree or ''}")
+    return 0
+
+
+def _cmd_logs(args: argparse.Namespace) -> int:
+    """Print the persisted stdout/stderr for one run. Non-zero when no log exists for the id."""
+    repo = _resolve_repo(args)
+    log_dir = Path(args.dir) if args.dir is not None else logs_dir(repo)
+    try:
+        text = RunLogStore(log_dir).read(args.run_id)
+    except ValueError as exc:  # unsafe run_id (path separators) - fail clean, not a traceback
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if text is None:
+        print(f"no log for run {args.run_id!r} under {log_dir.resolve()}", file=sys.stderr)
+        return 1
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
