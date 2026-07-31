@@ -159,15 +159,11 @@ class TaskSpec(BaseModel):
     @field_validator("task_kind")
     @classmethod
     def _task_kind_must_be_safe_token(cls, v: str | None) -> str | None:
-        # Same fail-closed token rules as task id (reuse validate_worktree_id; no second charset).
+        # Same fail-closed token rules as task id. Sourced from `ids` (not `worktree`) so this
+        # stays a leaf import — `types -> worktree` is a forbidden edge (see test_import_layers).
         if v is None:
             return None
-        from .worktree import MAX_TASK_ID_LEN, WorktreeError, validate_worktree_id
-
-        try:
-            return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
-        except WorktreeError as exc:
-            raise ValueError(str(exc)) from exc
+        return validate_worktree_id(v, max_len=MAX_TASK_ID_LEN)
 
     @field_validator("output_schema")
     @classmethod

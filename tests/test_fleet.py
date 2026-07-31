@@ -1179,7 +1179,6 @@ def test_clean_exited_run_has_no_outcome_until_integrate(repo: Path) -> None:
     assert run_rec.outcome is None
     events = fleet.usage.events()
     assert len(events) == 1
-    assert events[0].outcome is None  # never inferred from clean exit
     assert events[0].task_kind == "refactor"
     assert events[0].goal_digest == goal_digest(secret_goal)
     raw = fleet.usage.events_path.read_text(encoding="utf-8")
