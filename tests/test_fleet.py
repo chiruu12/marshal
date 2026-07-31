@@ -1160,6 +1160,30 @@ def test_integrate_merges_run_into_current_branch(repo: Path) -> None:
     assert (repo / "out.txt").read_text() == "hi"  # work landed on the main checkout
     rec = fleet.state.get(run_rec.run_id)
     assert rec is not None and rec.merged_into == result.merged_into
+    # Late judgment on the run record (not a rewritten / second usage event).
+    assert rec.outcome == "integrated"
+
+
+def test_clean_exited_run_has_no_outcome_until_integrate(repo: Path) -> None:
+    """status=exited_clean is process truth; outcome stays None until explicit integrate."""
+    from marshal_engine.usage import goal_digest
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    secret_goal = "LEAKME_proprietary_refactor_plan"
+    run_rec = fleet.run(
+        "writer",
+        TaskSpec(id="no-out", goal=secret_goal, task_kind="refactor"),
+        ts="2026-06-19T00:00:00Z",
+    )
+    assert run_rec.status == "exited_clean"
+    assert run_rec.outcome is None
+    events = fleet.usage.events()
+    assert len(events) == 1
+    assert events[0].task_kind == "refactor"
+    assert events[0].goal_digest == goal_digest(secret_goal)
+    raw = fleet.usage.events_path.read_text(encoding="utf-8")
+    assert secret_goal not in raw
+    assert "LEAKME_proprietary" not in raw
 
 
 def test_integrate_reports_conflict_and_aborts(repo: Path) -> None:

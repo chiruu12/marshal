@@ -423,6 +423,38 @@ def test_task_spec_accepts_workflow_and_backend_shaped_ids() -> None:
         assert TaskSpec(id=tid, goal="g").id == tid
 
 
+@pytest.mark.parametrize(
+    "bad_kind",
+    ["", "../x", "foo/bar", ".hidden", "a" * 65, "café", "a\x00b", "multi\nline", "has space"],
+)
+def test_task_kind_rejects_unsafe_or_multiline_values(bad_kind: str) -> None:
+    with pytest.raises(Exception, match="unsafe"):
+        TaskSpec(id="ok", goal="g", task_kind=bad_kind)
+
+
+def test_task_kind_accepts_safe_tokens() -> None:
+    for kind in ("refactor", "bugfix", "docs", "test-writing", "review"):
+        assert TaskSpec(id="ok", goal="g", task_kind=kind).task_kind == kind
+
+
+def test_run_agent_rejects_unsafe_task_kind(repo: Path) -> None:
+    svc = _svc(repo)
+    with pytest.raises(ValueError, match="unsafe"):
+        svc.run_agent("worker", "x", task_kind="bad\nkind")
+    assert not any((svc.fleet.worktrees.base_dir).glob("*")) if svc.fleet.worktrees.base_dir.exists() else True
+
+
+def test_run_agent_threads_task_kind_to_usage_event(repo: Path) -> None:
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "do the thing", task_kind="refactor")
+    events = svc.fleet.usage.events()
+    assert len(events) == 1
+    assert events[0].task_kind == "refactor"
+    assert events[0].run_id == rec.run_id
+    assert events[0].goal_digest is not None
+    assert "do the thing" not in svc.fleet.usage.events_path.read_text(encoding="utf-8")
+
+
 def test_session_start_is_a_utc_datetime(repo: Path) -> None:
     # session_start is the long-lived MCP server's "wake" timestamp; a "since session" window maps
     # to this instant. Stable for the life of the service, UTC, and accessible on the service.

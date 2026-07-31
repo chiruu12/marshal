@@ -494,3 +494,121 @@ def test_events_after_same_size_same_mtime_is_noop(tmp_path: Path) -> None:
     t.record(_ev(run_id="a", cost_usd=0.01))
     _events, cursor = t.read_events()
     assert t.events_after(cursor) == []
+
+
+# --- Phase 1 routing facts (task_kind / goal_digest) ---------------------------------
+
+
+def test_routing_facts_round_trip_through_ledger_and_summary(tmp_path: Path) -> None:
+    """New fields survive UsageEvent → events.jsonl → summary; cost rollup unchanged."""
+    from marshal_engine.usage import goal_digest
+
+    digest = goal_digest("refactor the auth module")
+    t = UsageTracker(tmp_path / "usage")
+    t.record(
+        _ev(
+            run_id="r1",
+            cost_usd=0.02,
+            status="exited_clean",
+            source="native",
+            input_tokens=100,
+            output_tokens=10,
+            task_kind="refactor",
+            goal_digest=digest,
+        )
+    )
+    events = t.events()
+    assert len(events) == 1
+    assert events[0].task_kind == "refactor"
+    assert events[0].goal_digest == digest
+    # File contents carry the fields (not just in-memory defaults).
+    raw = t.events_path.read_text(encoding="utf-8")
+    assert '"task_kind":"refactor"' in raw
+    assert f'"goal_digest":"{digest}"' in raw
+
+    tot = t.summary().totals
+    assert tot.runs == 1
+    assert tot.succeeded == 1
+    assert abs(tot.cost_usd - 0.02) < 1e-9
+
+
+def test_legacy_and_phase1_lines_mix_in_summary(tmp_path: Path) -> None:
+    """Pre-Phase-1 lines lack the new fields; mixed rollup must match pre-Phase-1 math."""
+    events = tmp_path / "usage" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    # Legacy line: no task_kind / goal_digest (and no cache_write_tokens).
+    legacy = (
+        '{"ts":"2026-01-01T00:00:00Z","run_id":"old1","backend":"cursor",'
+        '"input_tokens":10,"output_tokens":2,"cache_read_tokens":5,'
+        '"cost_usd":0.01,"status":"exited_clean","source":"native"}\n'
+    )
+    new = (
+        '{"ts":"2026-07-30T00:00:00Z","run_id":"new1","backend":"opencode",'
+        '"input_tokens":20,"output_tokens":4,"cache_read_tokens":0,'
+        '"cache_write_tokens":0,"cost_usd":0.02,"status":"exited_clean",'
+        '"source":"native","task_kind":"bugfix","goal_digest":"abcd1234abcd1234"}\n'
+    )
+    events.write_text(legacy + new, encoding="utf-8")
+
+    loaded = UsageTracker(tmp_path / "usage").events()
+    assert len(loaded) == 2
+    assert loaded[0].task_kind is None
+    assert loaded[0].goal_digest is None
+    assert loaded[1].task_kind == "bugfix"
+    assert loaded[1].goal_digest == "abcd1234abcd1234"
+
+    tot = UsageTracker(tmp_path / "usage").summary().totals
+    assert tot.runs == 2
+    assert tot.succeeded == 2
+    assert abs(tot.cost_usd - 0.03) < 1e-9
+    assert tot.input_tokens == 30
+    assert tot.output_tokens == 6
+
+
+def test_goal_digest_stable_distinct_and_raw_goal_absent_from_ledger(tmp_path: Path) -> None:
+    """Digest is stable for identical goals, differs across goals, and raw text never hits the file."""
+    from marshal_engine.usage import GOAL_DIGEST_PREFIX_LEN, goal_digest
+
+    secret_goal = "ROTATE_SECRET_KEY=super-secret-value-do-not-leak"
+    other = "unrelated goal text"
+    d1 = goal_digest(secret_goal)
+    d2 = goal_digest(secret_goal)
+    d3 = goal_digest(other)
+    assert d1 == d2
+    assert d1 != d3
+    assert len(d1) == GOAL_DIGEST_PREFIX_LEN
+    assert secret_goal not in d1
+
+    res = AgentResult(status=RunStatus.EXITED_CLEAN)
+    ev = UsageEvent.from_result(
+        res,
+        run_id="g1",
+        backend="opencode",
+        ts="2026-07-30T00:00:00Z",
+        task_kind="refactor",
+        goal_digest=goal_digest(secret_goal),
+    )
+    t = UsageTracker(tmp_path / "usage")
+    t.record(ev)
+    raw = t.events_path.read_text(encoding="utf-8")
+    assert secret_goal not in raw
+    assert "super-secret-value-do-not-leak" not in raw
+    assert f'"goal_digest":"{d1}"' in raw
+    assert "ROTATE_SECRET_KEY" not in raw
+
+
+def test_from_result_carries_routing_facts() -> None:
+    res = AgentResult(
+        status=RunStatus.EXITED_CLEAN,
+        usage=UsageRecord(backend="opencode", cost_usd=0.01, source=UsageSource.NATIVE),
+    )
+    ev = UsageEvent.from_result(
+        res,
+        run_id="r1",
+        backend="opencode",
+        ts="2026-07-30T00:00:00Z",
+        task_kind="docs",
+        goal_digest="deadbeefdeadbeef",
+    )
+    assert ev.task_kind == "docs"
+    assert ev.goal_digest == "deadbeefdeadbeef"

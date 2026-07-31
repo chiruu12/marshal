@@ -79,6 +79,11 @@ _DESC_TASK_ID = (
     "Optional grouping id; runs sharing a task_id can be compared head-to-head by report(). "
     "Must be a safe path segment ([A-Za-z0-9._-], no leading '.'/'-'); see SECURITY.md."
 )
+_DESC_TASK_KIND = (
+    "Optional free-text tag for the kind of work (e.g. refactor, bugfix, docs, review). "
+    "Caller taxonomy — not a closed enum. Same safe-token rules as task_id; stamped on the "
+    "usage event for a future routing layer."
+)
 _DESC_CONTEXT = "Optional repo-relative paths to point the worker at (injected into its prompt). Each must be TRACKED in git: the worktree holds tracked files only, so a gitignored/untracked path fails the spawn instead of silently reaching the agent as an unopenable path."
 _DESC_READ_PATHS = (
     "Optional read-only escape hatch: absolute paths, or paths relative to the driver's repo root, "
@@ -119,6 +124,7 @@ class Job(BaseModel):
     client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
     goal: Annotated[str, Field(description=_DESC_GOAL)]
     task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None
+    task_kind: Annotated[str | None, Field(description=_DESC_TASK_KIND)] = None
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
     read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
@@ -154,6 +160,7 @@ class ThenJob(BaseModel):
     client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
     goal: Annotated[str, Field(description=_DESC_GOAL)]
     task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None
+    task_kind: Annotated[str | None, Field(description=_DESC_TASK_KIND)] = None
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
@@ -383,6 +390,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         goal: Annotated[str, Field(description=_DESC_GOAL)],
         client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
+        task_kind: Annotated[str | None, Field(description=_DESC_TASK_KIND)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
         read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None,
         base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
@@ -402,13 +410,15 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         pass `backend` (+ optional `model`) with no `client`. `duration` overrides the resolved
         timeout (a preset name or positive seconds). `base_branch` bases the worktree on a branch
         other than HEAD (e.g. a prior run's branch after commit_run). `output_schema` requests
-        schema-validated structured output on the final message."""
+        schema-validated structured output on the final message. `task_kind` tags the kind of
+        work for the usage ledger (routing facts)."""
         return await ws_call(
             workspace,
             lambda svc: svc.run_agent(
                 client, goal, task_id=task_id, context_files=context_files,
                 read_paths=read_paths, base_branch=base_branch, model=model,
                 backend=backend, duration=duration, output_schema=output_schema,
+                task_kind=task_kind,
             ),
         )
 
@@ -457,6 +467,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         goal: Annotated[str, Field(description=_DESC_GOAL)],
         client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit for an ad-hoc (backend, model) spawn.")] = None,
         task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None,
+        task_kind: Annotated[str | None, Field(description=_DESC_TASK_KIND)] = None,
         context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None,
         read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None,
         base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None,
@@ -473,15 +484,17 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         starts. Same delegation primitive as run_agent (product may be a diff or text).
         Poll get_run/status during setup; cancel_run stops an in-flight setup process group when
         its pid is known (otherwise stamps cancelled and skips the agent). `model`/`backend`/
-        `duration`/`base_branch`/`output_schema` follow the same rules as run_agent (override the
-        client's model, ad-hoc spawn by bare backend, per-spawn timeout override, chain off a prior
-        run's branch, or request schema-validated structured output)."""
+        `duration`/`base_branch`/`output_schema`/`task_kind` follow the same rules as run_agent
+        (override the client's model, ad-hoc spawn by bare backend, per-spawn timeout override,
+        chain off a prior run's branch, request schema-validated structured output, or tag the
+        kind of work for the usage ledger)."""
         return await ws_call(
             workspace,
             lambda svc: svc.spawn(
                 client, goal, task_id=task_id, context_files=context_files,
                 read_paths=read_paths, base_branch=base_branch, model=model,
                 backend=backend, duration=duration, output_schema=output_schema,
+                task_kind=task_kind,
             ),
         )
 

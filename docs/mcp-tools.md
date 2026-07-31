@@ -144,6 +144,7 @@ be a diff or text — both first-class (see `collect_run`).
 | `goal` | string | *(required)* | Natural-language task. |
 | `client` | string \| null | `null` | Configured client name. Omit for ad-hoc spawn (set `backend`). |
 | `task_id` | string \| null | `null` | Grouping id for `report()`. Must be a safe path segment (`[A-Za-z0-9._-]`, no leading `.`/`-`; see `SECURITY.md`); hostile values fail closed before any worktree is created. |
+| `task_kind` | string \| null | `null` | Free-text tag for the kind of work (`refactor`, `bugfix`, `docs`, …). Caller taxonomy — not a closed enum. Same safe-token rules as `task_id`. Stamped on the usage event (`task_kind`) for a future routing layer; never invents a ranking. |
 | `context_files` | list[string] \| null | `null` | Repo-relative paths injected into the prompt. Each must be **relative to the repo root** and exist **in the worktree**, which holds tracked files only. Absolute paths and `..` are refused (the worktree is the isolation boundary); a gitignored or untracked path fails the spawn rather than handing the agent a file it cannot open. |
 | `read_paths` | list[string] \| null | `null` | Read-only escape hatch for material **outside** the worktree. Absolute paths, or paths relative to the **driver's** repo root, are copied into `<worktree>/.marshal-context/<basename>` (files 0o444, directories 0o555) and git-excluded so they never appear in the run's diff. The worker prompt is told reference material is under `.marshal-context/`. Secret-shaped names (`.env*`, `*.pem`, `id_rsa*`, `id_ed25519*`) and anything under a `.ssh` directory are refused on the declared path **and every descendant** that would be copied. Symlinks **inside** a declared tree are refused (a link either smuggles host content when dereferenced or escapes when preserved); a symlinked declared root is resolved first, then validated/copied from the real path. Only regular files and directories are accepted (FIFOs/sockets/devices are refused so provisioning cannot hang before a run timeout exists). Policy is enforced during the fd-relative copy walk (validation at point of use): every `scandir` entry is re-checked, and each file/directory's `(st_dev, st_ino)` from the classifying `lstat` must match `fstat` of the opened fd, refusing a swap to a different file or directory (identity is a secondary check — a delete-then-recreate can reuse an inode, so the per-entry checks are what contain a swapped tree). Destination `.marshal-context` must be absent or a plain directory (a tracked symlink or non-dir is refused; never `resolve()` through it); per-entry destinations never follow symlinks. The up-front scan only names offenders early — it is not the security boundary. Copies also open fail-closed (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` + `fstat` + identity for files; `O_NOFOLLOW|O_DIRECTORY` + identity for directory descent). A missing or refused path fails the spawn. Surfaced on the run record so a reviewer can see the run saw more than its worktree. |
 | `base_branch` | string \| null | `null` | Branch to base the worktree on (default: current HEAD). Use after `commit_run` to chain work. |
@@ -172,7 +173,7 @@ session clocks are also **per-workspace**; concurrency is the only shared limite
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, context_files?, read_paths?, model?, backend?, duration?, workspace?, then? }`. Omit `client` and set `backend` for ad-hoc spawns. Per-job `workspace` overrides the call-level default. `then` uses the same field set (no nested `then` or `workspace`). |
+| `jobs` | list[Job] | *(required)* | Each job: `{ client?, goal, task_id?, task_kind?, context_files?, read_paths?, model?, backend?, duration?, workspace?, then? }`. Omit `client` and set `backend` for ad-hoc spawns. Per-job `workspace` overrides the call-level default. `then` uses the same field set (no nested `then` or `workspace`). |
 | `max_concurrency` | int | `4` | Max **workers** (chains) running at once across the whole batch (all workspaces). Each worker runs one job's primary, then its optional `then` back-to-back, so at most `max_concurrency` agent processes run concurrently. |
 | `workspace` | string \| null | `null` | Default workspace for jobs that omit per-job `workspace`. |
 
@@ -530,6 +531,14 @@ mode. Budgets in the payload come from that workspace's `fleet.config.yaml` alon
 
 Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost_estimated, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_per_run, cost_per_succeeded }`. `cost_estimated` is a zero tombstone (legacy ledger compatibility).
 
+**Usage event** (one append-only line in that workspace's `usage/events.jsonl` per run): process
+facts (`run_id`, `backend`, `client`, `model`, tokens, `cost_usd`, `duration_ms`, `status`,
+`source`) plus optional routing facts — `task_kind` (caller tag) and `goal_digest` (truncated
+sha256 of the goal text; **never the goal itself**). Both are optional so older lines still parse.
+Judgment about the work is not on this line: it arrives later, so successful `integrate` stamps
+`outcome: integrated` on the **run record** rather than rewriting the usage line — see
+[Run record](#run-record).
+
 ## Run record
 
 `RunRecord` fields returned by `run_agent`, `spawn`, `get_run`, `status`, and `cancel_run`:
@@ -556,6 +565,7 @@ Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost
 | `ended_at` | string \| null | ISO-8601. |
 | `error` | string \| null | Failure detail. |
 | `merged_into` | string \| null | Branch after integrate. |
+| `outcome` | string \| null | Judgment about the work, **distinct from** process `status`: `integrated` / `rejected` / `abandoned`. Successful `integrate` stamps `integrated` here (late judgment — the usage event is not rewritten). Absence means no judgment yet; never infer `rejected` from a clean-but-unintegrated run. |
 | `commit` | string \| null | Branch tip after `commit_run`. |
 | `pid` | int \| null | Agent subprocess pid (while running). |
 | `pid_start_time` | string \| null | OS-reported start time of `pid`. A pid alone is not an identity — the OS reuses pids — so startup reconciliation verifies the pair before deciding a recorded run is still alive. |
