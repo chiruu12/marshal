@@ -115,9 +115,10 @@ the diff lands in the agent's own worktree. The waiting is cut; nothing else is.
   <img src="assets/demo.gif" alt="Marshal: marshal doctor, marshal spawn, marshal status, and the resulting diff in an isolated git worktree" width="900">
 </p>
 
-This one ran on `command-code`, which reports no per-run cost — so Marshal prints `unavailable`
-rather than inventing a number. On a backend that does report it, that column carries the real
-figure. Recorded with [VHS](https://github.com/charmbracelet/vhs) from
+This one ran on OpenCode's free `deepseek-v4-flash-free`, which bills nothing and so reports no
+per-run cost — Marshal prints `unavailable` rather than inventing a number, while still recording
+the tokens. On a paid backend that reports cost, that column carries the real figure; see
+[Proof](#proof). Recorded with [VHS](https://github.com/charmbracelet/vhs) from
 [`assets/demo.tape`](assets/demo.tape).
 
 ## Why Marshal

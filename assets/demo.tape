@@ -4,11 +4,11 @@
 #
 #   mkdir -p /tmp/marshal-demo && cd /tmp/marshal-demo && git init -q -b main
 #   printf 'def hello(name):\n    return f"Hello, {name}!"\n' > hello.py
-#   printf 'clients:\n  ling:\n    backend: command-code\n    model: inclusionai/ling-3.0-flash-free\n' > fleet.config.yaml
+#   printf 'clients:\n  deepseek:\n    backend: opencode\n    model: opencode/deepseek-v4-flash-free\n' > fleet.config.yaml
 #   git add -A && git commit -qm hello
 #
 # It is a LIVE run: it spends whatever the client costs and takes as long as the agent takes.
-# Any other configured client works - swap `--client ling` and the config above. Reset between
+# Any other configured client works - swap `--client deepseek` and the config above. Reset between
 # takes with `rm -rf /tmp/marshal-demo/.marshal && git -C /tmp/marshal-demo checkout -- hello.py`.
 
 Output "demo.gif"
@@ -42,7 +42,7 @@ Sleep 1s
 Show
 
 # 2. Dispatch. Returns immediately; the agent works in its own worktree.
-Type "marshal spawn --client ling --task-id hello-docstring --goal 'Add a docstring to hello()'"
+Type "marshal spawn --client deepseek --task-id hello-docstring --goal 'Add a docstring to hello()'"
 Enter
 Sleep 4s
 
