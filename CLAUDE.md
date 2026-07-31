@@ -61,7 +61,12 @@ marshal/
 │   │   ├── workspaces.py    # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
 │   │   ├── doctor.py        # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
 │   │   ├── scaffold.py      # repo-shape-aware fleet.config.yaml scaffold
-│   │   ├── mcp_server.py    # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
+│   │   ├── mcp_server/      # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
+│   │   │   ├── server.py    # build_service + build_app: constructs the app, the ToolContext, and registers each group
+│   │   │   ├── context.py   # ToolContext - what the tool groups share (registry, offload, ws_call, run_call)
+│   │   │   ├── schema.py    # parameter descriptions + the shared Job/ThenJob input models
+│   │   │   └── tools_*.py   # one module per tool group: inspect, runs, integrate, recipes, workspaces
+
 │   │   └── cli/             # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
 │   │       ├── parser.py    # argparse wiring + dispatch; `main` is re-exported from __init__
 │   │       ├── inspect.py   # read-only views: backends, models, usage, status, logs

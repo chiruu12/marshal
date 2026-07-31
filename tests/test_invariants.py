@@ -53,6 +53,14 @@ def _decorated_tool_names(path: Path) -> list[str]:
     return names
 
 
+def _decorated_tool_names_in(pkg: Path) -> list[str]:
+    """Same, across every module of a tool package (handlers are split by group)."""
+    names: list[str] = []
+    for path in sorted(pkg.glob("*.py")):
+        names.extend(_decorated_tool_names(path))
+    return names
+
+
 def _subcommand_names(path: Path) -> list[str]:
     """Literal names passed to ``add_parser("...")`` in the CLI."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -196,7 +204,7 @@ def test_backend_name_is_never_encoded_in_a_public_surface_name() -> None:
     # Invariant: "backend is a per-call parameter, never encoded in tool/skill names." Holds
     # across the MCP tool surface, the CLI subcommands, and the published Skills.
     backends = backend_names()
-    tools = _decorated_tool_names(_PKG / "interfaces" / "mcp_server.py")
+    tools = _decorated_tool_names_in(_PKG / "interfaces" / "mcp_server")
     subcommands = _subcommand_names(_PKG / "interfaces" / "cli" / "parser.py")
     skills = [p.name for p in (_REPO_ROOT / "skills").iterdir() if p.is_dir() and p.name[0] != "."]
     # Guard against a vacuous pass if the source shape ever changes under the AST walk.

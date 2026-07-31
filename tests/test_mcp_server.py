@@ -765,9 +765,9 @@ def test_server_reports_its_version_in_the_handshake(tmp_path: Path) -> None:
 
 def test_spawn_tool_docstring_promises_return_before_provisioning() -> None:
     """#146: spawn's MCP docstring must not overclaim — return is before setup_cmd/provisioning."""
-    import marshal_engine.interfaces.mcp_server as mcp_mod
+    from marshal_engine.interfaces.mcp_server import tools_runs
 
-    src = Path(mcp_mod.__file__).read_text(encoding="utf-8")
+    src = Path(tools_runs.__file__).read_text(encoding="utf-8")
     assert "before worktree provisioning" in src
     assert "cancel_run stops an in-flight setup" in src
 
