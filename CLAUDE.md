@@ -62,7 +62,14 @@ marshal/
 │   │   ├── doctor.py        # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
 │   │   ├── scaffold.py      # repo-shape-aware fleet.config.yaml scaffold
 │   │   ├── mcp_server.py    # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
-│   │   └── cli.py           # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
+│   │   └── cli/             # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
+│   │       ├── parser.py    # argparse wiring + dispatch; `main` is re-exported from __init__
+│   │       ├── inspect.py   # read-only views: backends, models, usage, status, logs
+│   │       ├── runs.py      # dispatch work: run, spawn
+│   │       ├── recipes.py   # workflows and teams
+│   │       ├── admin.py     # init, doctor, workspace, clean
+│   │       ├── formatting.py # shared display layer: tables, cost/rate rendering
+│   │       └── common.py    # shared arg types, repo resolution, service construction
 │   ├── config.py service.py teams.py state.py workspaces.py cli.py
 │   │                        # re-export shims ONLY - published import paths kept working; no logic
 ├── skills/                  # public driver Skills: marshal-orchestrate, marshal-benchmark, marshal-workflow, marshal-review-gate, marshal-plan-consensus, marshal-adversarial-review

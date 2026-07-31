@@ -9,6 +9,11 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Changed
+- **`cli.py` split into an `interfaces/cli/` package** (968 lines → 8 modules, largest 209).
+  `parser` owns argument wiring and dispatch; handlers group into `inspect` (read-only views),
+  `runs`, `recipes` (workflows/teams), and `admin` (init/doctor/workspace/clean), over a shared
+  `formatting` display layer and `common` helpers. `main` is re-exported from the package, so
+  `marshal_engine.interfaces.cli:main` and the `marshal` command are unchanged.
 - **`fleet.py` split into focused modules** (2773 → 2006 lines). `orchestration/provisioning.py`
   owns fail-closed `context_files` / `read_paths` copying, `orchestration/structured.py` owns the
   `output_schema` prompt/parse/validate/redact path, and `orchestration/results.py` owns the

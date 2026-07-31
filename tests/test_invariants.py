@@ -197,7 +197,7 @@ def test_backend_name_is_never_encoded_in_a_public_surface_name() -> None:
     # across the MCP tool surface, the CLI subcommands, and the published Skills.
     backends = backend_names()
     tools = _decorated_tool_names(_PKG / "interfaces" / "mcp_server.py")
-    subcommands = _subcommand_names(_PKG / "interfaces" / "cli.py")
+    subcommands = _subcommand_names(_PKG / "interfaces" / "cli" / "parser.py")
     skills = [p.name for p in (_REPO_ROOT / "skills").iterdir() if p.is_dir() and p.name[0] != "."]
     # Guard against a vacuous pass if the source shape ever changes under the AST walk.
     assert len(tools) >= 10, tools
