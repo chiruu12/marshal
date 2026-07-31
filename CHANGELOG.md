@@ -19,6 +19,22 @@ versions may include breaking API changes until 1.0.
   unused `WorkspaceRegistry.run_gate` property (`_run_gate` storage kept), `fleet.BudgetExceeded`
   re-export (import from `marshal_engine.budgets`), unused `fetch_run_cost(..., output_tokens=)`
   parameter, and the never-selected `missing_config="silent"` arm.
+### Fixed
+- **`clean`'s orphan sweep no longer deletes a worktree mid-create (#181).** Between
+  `worktrees.create` and the RUNNING record landing, a concurrent `marshal clean` (CLI beside an
+  MCP server) saw a directory with no ledger entry and discarded it. `_start` now writes a durable
+  `.creating` claim (pid + start time) before create and clears it only after the record's
+  `os.replace` publishes (in a `finally`, so a mid-handoff failure cannot leave a stuck claim);
+  publish-then-clear leaves no gap where a sweep sees neither shield. The sweep skips a dir whose
+  claim holder is still alive (reported under `skipped`) and still reaps genuine orphans when the
+  claim is absent or the holder is dead.
+- **`cancel_run` no longer `killpg`s a recycled pid after a mid-cancel reap (#183).** Cancel used to
+  copy `pid`/`exited` under the lock, release, then signal — so the execute thread could reap and
+  the OS reuse the pid before `killpg`. Cancel now re-checks `exited` under the lock immediately
+  before signalling and, when the handle carries a start time, refuses a pid whose live identity
+  no longer matches. A failed identity probe on a still-alive pid neither signals nor stamps
+  `cancelled` — the record stays `running` with an `error` stating the cancel could not be
+  confirmed (claiming `cancelled` would leave a live agent behind a lie).
 
 ### Added
 - **Usage ledger routing facts (Phase 1).** Each `UsageEvent` may carry `task_kind` (caller

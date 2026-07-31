@@ -408,15 +408,22 @@ pid unambiguously belongs to the agent.
   rather than left running behind an already-terminal record.
 - A cancel **after** the child is reaped does not signal at all.
 - A run started by a **different (or dead) process** is stamped `cancelled` without a signal, with
-  the reason on `error` and `pid` cleared. Guessing at a pid this process does not own risks
-  SIGTERM to an unrelated process group. Such an orphaned agent must be ended by hand.
+  the reason on `error`. The `pid` is kept when something is still alive at that number (so `clean`
+  spares the worktree) and cleared only when the process is gone. Guessing at a pid this process
+  does not own risks SIGTERM to an unrelated process group. Such an orphaned agent must be ended by
+  hand.
+- When this process owns the run but **cannot verify** the child's identity (start-time probe fails
+  while the pid is still alive), cancel neither signals nor stamps `cancelled`: the record stays
+  `running` with an `error` stating the cancel could not be confirmed. Signalling blindly risks
+  `killpg` on a recycled pid; claiming `cancelled` would leave a live agent behind a lie.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `run_id` | string | *(required)* | Run id. |
 | `workspace` | string \| null | `null` | Workspace hint. |
 
-**Returns:** updated `RunRecord` + `workspace`.
+**Returns:** updated `RunRecord` + `workspace`. On the unconfirmed-identity path above, `status`
+remains `running` and `error` carries the uncertainty.
 
 ## Integrate
 
