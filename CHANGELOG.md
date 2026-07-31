@@ -16,8 +16,8 @@ versions may include breaking API changes until 1.0.
   variables (`registry`, `offload`, `ws_call`, `run_call`) are now an explicit `ToolContext`, so a
   tool group states what it needs instead of inheriting a nested scope. `build_app`, `build_service`,
   and `main` are re-exported, so `marshal_engine.interfaces.mcp_server` is unchanged for callers.
-  The tool surface is byte-identical: all 25 tools' names, descriptions, and JSON input schemas were
-  diffed before and after.
+  The tool surface is byte-identical: every tool's name, description, and JSON input schema was
+  diffed before and after (the tool list itself lives in `docs/mcp-tools.md`).
 - **`cli.py` split into an `interfaces/cli/` package** (968 lines → 8 modules, largest 209).
   `parser` owns argument wiring and dispatch; handlers group into `inspect` (read-only views),
   `runs`, `recipes` (workflows/teams), and `admin` (init/doctor/workspace/clean), over a shared
