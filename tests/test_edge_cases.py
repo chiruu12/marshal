@@ -28,9 +28,9 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.fleet import Fleet, RunRequest
-from marshal_engine.state import FleetState, RunRecord
-from marshal_engine.worktree import WorktreeError, WorktreeManager
+from marshal_engine.orchestration.fleet import Fleet, RunRequest
+from marshal_engine.runtime.state import FleetState, RunRecord
+from marshal_engine.runtime.worktree import WorktreeError, WorktreeManager
 
 
 # --- fakes -----------------------------------------------------------------------------------
@@ -310,7 +310,7 @@ def test_spawn_after_pool_shutdown_stamps_failed(repo: Path) -> None:
 
 
 def test_run_many_mixed_batch_survives_a_failure(repo: Path) -> None:
-    from marshal_engine.fleet import RunManyJob
+    from marshal_engine.orchestration.fleet import RunManyJob
 
     fleet = Fleet(repo, {"writer": _PerTaskWriter(), "boom": _Exploder()})
     recs = fleet.run_many(
@@ -326,7 +326,7 @@ def test_run_many_mixed_batch_survives_a_failure(repo: Path) -> None:
 
 
 def test_run_many_respects_max_concurrency(repo: Path) -> None:
-    from marshal_engine.fleet import RunManyJob
+    from marshal_engine.orchestration.fleet import RunManyJob
 
     backend = _PeakCounter()
     fleet = Fleet(repo, {"pk": backend})

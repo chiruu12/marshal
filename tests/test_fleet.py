@@ -27,13 +27,13 @@ from marshal_engine import (
 )
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
-from marshal_engine.config import BudgetSpec
-from marshal_engine.eastrouter import ExternalCost
-from marshal_engine import fleet as fleet_mod
-from marshal_engine.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
-from marshal_engine.retry import RetryPolicy
-from marshal_engine.state import FleetState, RunRecord
-from marshal_engine.worktree import WorktreeError
+from marshal_engine.core.config import BudgetSpec
+from marshal_engine.accounting.eastrouter import ExternalCost
+from marshal_engine.orchestration import fleet as fleet_mod
+from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
+from marshal_engine.core.retry import RetryPolicy
+from marshal_engine.runtime.state import FleetState, RunRecord
+from marshal_engine.runtime.worktree import WorktreeError
 
 
 class _Talker(CodingAgentBackend):
@@ -1210,7 +1210,7 @@ def test_integrate_merges_run_into_current_branch(repo: Path) -> None:
 
 def test_clean_exited_run_has_no_outcome_until_integrate(repo: Path) -> None:
     """status=exited_clean is process truth; outcome stays None until explicit integrate."""
-    from marshal_engine.usage import goal_digest
+    from marshal_engine.accounting.usage import goal_digest
 
     fleet = Fleet(repo, {"writer": _Writer()})
     secret_goal = "LEAKME_proprietary_refactor_plan"
@@ -1640,7 +1640,7 @@ def test_clean_does_not_reap_worktree_in_create_add_gap_from_another_process(rep
             "import json, sys\n"
             "sys.path.insert(0, %r)\n"
             "from pathlib import Path\n"
-            "from marshal_engine.fleet import Fleet\n"
+            "from marshal_engine.orchestration.fleet import Fleet\n"
             "result = Fleet(Path(sys.argv[1]), {}).clean()\n"
             "print(json.dumps({"
             "'orphans': result.orphans_removed, "
@@ -1686,7 +1686,7 @@ def test_cancel_does_not_signal_after_reap_that_lands_mid_cancel(
     """
     import os as _os
 
-    from marshal_engine.fleet import _publish_pid, _register_inflight_run
+    from marshal_engine.orchestration.fleet import _publish_pid, _register_inflight_run
 
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
@@ -1721,7 +1721,7 @@ def test_cancel_of_live_run_still_signals(
     import os as _os
     import signal as _signal
 
-    from marshal_engine.fleet import _publish_pid, _register_inflight_run
+    from marshal_engine.orchestration.fleet import _publish_pid, _register_inflight_run
 
     killed: list[tuple[int, int]] = []
     monkeypatch.setattr(
@@ -1831,7 +1831,7 @@ def test_clean_does_not_reap_across_claim_to_record_handoff(repo: Path) -> None:
             "import json, sys\n"
             "sys.path.insert(0, %r)\n"
             "from pathlib import Path\n"
-            "from marshal_engine.fleet import Fleet\n"
+            "from marshal_engine.orchestration.fleet import Fleet\n"
             "result = Fleet(Path(sys.argv[1]), {}).clean()\n"
             "print(json.dumps({"
             "'orphans': result.orphans_removed, "
@@ -1888,7 +1888,7 @@ def test_cancel_unconfirmed_when_identity_probe_fails(
     """
     import os as _os
 
-    from marshal_engine.fleet import _publish_pid, _register_inflight_run
+    from marshal_engine.orchestration.fleet import _publish_pid, _register_inflight_run
 
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
@@ -1925,7 +1925,7 @@ def test_cancel_of_verified_live_run_still_signals_and_stamps_cancelled(
     import os as _os
     import signal as _signal
 
-    from marshal_engine.fleet import _publish_pid, _register_inflight_run
+    from marshal_engine.orchestration.fleet import _publish_pid, _register_inflight_run
 
     killed: list[tuple[int, int]] = []
     monkeypatch.setattr(
@@ -1963,7 +1963,7 @@ def test_executor_lazy_init_under_concurrent_first_touch(repo: Path) -> None:
     # build would leak a ThreadPoolExecutor (one of the two would never be shutdown(),
     # holding its workers forever). Locks the safety property Fleet.spawn relies on.
     import threading
-    from marshal_engine.fleet import Fleet as _Fleet  # local alias for clarity
+    from marshal_engine.orchestration.fleet import Fleet as _Fleet  # local alias for clarity
 
     fleet = _Fleet(repo, {"writer": _Writer()})
     assert fleet._bg is None  # precondition: not yet built
@@ -2051,7 +2051,7 @@ def _seed_run_event(
     """Append a single UsageEvent to the ledger so the next budget check has spend to read."""
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     fleet.usage.record(
         UsageEvent(
@@ -2162,7 +2162,7 @@ def test_check_budget_runs_before_worktree(
     # loud warning doesn't cost a worktree provision. Pin the order with a shared call list.
     from unittest.mock import MagicMock
 
-    from marshal_engine import budgets as budgets_mod
+    from marshal_engine.accounting import budgets as budgets_mod
 
     fleet = Fleet(
         repo,
@@ -2196,7 +2196,7 @@ def test_check_budget_runs_before_worktree(
 def test_check_budget_enforce_raises_and_skips_worktree(repo: Path) -> None:
     from unittest.mock import MagicMock
 
-    from marshal_engine.budgets import BudgetExceeded
+    from marshal_engine.accounting.budgets import BudgetExceeded
 
     fleet = Fleet(
         repo,
@@ -2217,7 +2217,7 @@ def test_check_budget_enforce_raises_and_skips_worktree(repo: Path) -> None:
 
 
 def test_check_budget_enforce_raises_on_ledger_failure(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from marshal_engine.budgets import BudgetExceeded
+    from marshal_engine.accounting.budgets import BudgetExceeded
 
     fleet = Fleet(
         repo,
@@ -2239,7 +2239,7 @@ def test_enforce_budget_blocks_concurrent_matching_spawn(repo: Path) -> None:
     """enforce=true admits one in-flight matching spawn; a peer is refused before worktree create."""
     import threading
 
-    from marshal_engine.budgets import BudgetExceeded
+    from marshal_engine.accounting.budgets import BudgetExceeded
 
     fleet = Fleet(
         repo,
@@ -2287,7 +2287,7 @@ def test_bind_failure_leaves_no_running_record_or_worktree(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """bind I/O failure must discard the worktree, leave no RUNNING record, and free the slot."""
-    from marshal_engine.budgets import BudgetExceeded
+    from marshal_engine.accounting.budgets import BudgetExceeded
 
     budgets = [BudgetSpec(backend="writer", window="week", limit_usd=100.0, enforce=True)]
     fleet = Fleet(repo, {"writer": _Writer()}, budgets=budgets)
@@ -2735,7 +2735,7 @@ def test_a_live_holders_lock_is_never_claimed(repo: Path) -> None:
     """
     import json as _json
 
-    from marshal_engine.fleet import _claim_fleet_lock
+    from marshal_engine.orchestration.fleet import _claim_fleet_lock
 
     lock = repo / ".marshal" / "fleet.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -2765,7 +2765,7 @@ def test_only_one_of_two_racing_processes_claims_the_lock(repo: Path) -> None:
         "import sys, time\n"
         "sys.path.insert(0, %r)\n"
         "from pathlib import Path\n"
-        "from marshal_engine.fleet import _claim_fleet_lock\n"
+        "from marshal_engine.orchestration.fleet import _claim_fleet_lock\n"
         "start = float(sys.argv[2])\n"
         "time.sleep(max(0.0, start - time.time()))\n"
         "won = _claim_fleet_lock(Path(sys.argv[1]))\n"
@@ -2797,7 +2797,7 @@ def test_a_dead_holders_lock_is_taken_over(repo: Path) -> None:
     import json as _json
     import os
 
-    from marshal_engine.fleet import _claim_fleet_lock
+    from marshal_engine.orchestration.fleet import _claim_fleet_lock
 
     lock = repo / ".marshal" / "fleet.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -2903,7 +2903,7 @@ def test_cancel_signals_a_verified_live_run(
     import os
     import signal
 
-    from marshal_engine.fleet import _pid_start_time
+    from marshal_engine.orchestration.fleet import _pid_start_time
 
     killed: list[tuple[int, int]] = []
 
@@ -2990,7 +2990,7 @@ def test_a_live_run_with_matching_identity_is_never_reaped(repo: Path) -> None:
     `_pid_is_still_ours` always return False would have stayed green - and that mutation reaps
     LIVE runs: status forced to failed, pid cleared (uncancellable), real outcome never recorded.
     """
-    from marshal_engine.fleet import _pid_start_time
+    from marshal_engine.orchestration.fleet import _pid_start_time
 
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -3092,7 +3092,7 @@ def test_cancel_before_the_pid_is_known_still_stops_the_agent(
     its worktree behind an already-terminal record."""
     import os as _os
 
-    from marshal_engine.fleet import _inflight_handle
+    from marshal_engine.orchestration.fleet import _inflight_handle
 
     killed: list[int] = []
     killed_event = threading.Event()
@@ -3169,7 +3169,7 @@ def test_cancel_does_not_signal_after_the_child_is_reaped(
     stranger."""
     import os as _os
 
-    from marshal_engine.fleet import _register_inflight_run
+    from marshal_engine.orchestration.fleet import _register_inflight_run
 
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
@@ -3196,7 +3196,7 @@ def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
     the agent kept running behind a cancelled record."""
     import os as _os
 
-    from marshal_engine.fleet import _active_runs_guard, _register_inflight_run
+    from marshal_engine.orchestration.fleet import _active_runs_guard, _register_inflight_run
 
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
@@ -3208,7 +3208,7 @@ def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
         RunRecord(run_id=run_id, task_id="retry", backend="writer", status="running")
     )
 
-    from marshal_engine.fleet import _publish_pid
+    from marshal_engine.orchestration.fleet import _publish_pid
 
     # Attempt 1 spawns and exits (a retryable failure).
     _publish_pid(handle, 1111)
@@ -3331,7 +3331,7 @@ def test_a_deferred_orphan_is_reconciled_on_a_later_read(repo: Path) -> None:
     young at startup stayed RUNNING for the whole life of a long-running server."""
     from datetime import datetime, timedelta, timezone
 
-    from marshal_engine.fleet import _REAP_GRACE_S
+    from marshal_engine.orchestration.fleet import _REAP_GRACE_S
 
     _write_run_record(
         repo,
@@ -3357,7 +3357,7 @@ def test_an_orphan_whose_agent_dies_later_is_still_reaped(repo: Path) -> None:
     """REGRESSION: a record skipped because its agent was still alive was not put on the re-check
     list, so when that agent later exited nothing noticed - the run read RUNNING for the whole life
     of the server. 'Alive right now' is a snapshot, not a verdict."""
-    import marshal_engine.fleet as fleet_mod
+    import marshal_engine.orchestration.fleet as fleet_mod
 
     alive = {"yes": True}
     monkey = pytest.MonkeyPatch()
@@ -3388,7 +3388,7 @@ def test_a_fleet_denied_the_lock_at_startup_can_still_reconcile_later(repo: Path
     """REGRESSION: losing the claim once disabled reconciliation for the whole life of the Fleet.
     The claim can fail merely because a short-lived CLI held the guard at that instant, so a
     long-running server could end up never reconciling again. It retries instead."""
-    import marshal_engine.fleet as fleet_mod
+    import marshal_engine.orchestration.fleet as fleet_mod
 
     _write_run_record(
         repo,
@@ -3426,7 +3426,7 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
     'still non-terminal'. A pid stamped in that gap - the record's own process finally reporting -
     was overwritten anyway, which is the original production bug at a narrower window. The commit
     now re-runs the full reap decision under the run's lock."""
-    import marshal_engine.fleet as fleet_mod
+    import marshal_engine.orchestration.fleet as fleet_mod
 
     run_id = "toctou.writer.x"
     _write_run_record(
@@ -3468,7 +3468,7 @@ def test_cancelling_a_live_orphan_keeps_the_pid_and_says_it_is_still_running(rep
     """Marshal cannot signal an agent it did not start, so cancel only flips the ledger. Clearing
     the pid there would delete the operator's only handle on a process that is still writing, while
     the record claimed the run was over. Keep it, and say so."""
-    import marshal_engine.fleet as fleet_mod
+    import marshal_engine.orchestration.fleet as fleet_mod
 
     fleet = Fleet(repo, {"writer": _Writer()})
     fleet.state.add(
@@ -3500,7 +3500,7 @@ def test_a_recycled_lock_pid_does_not_block_reaping_forever(repo: Path) -> None:
     RUNNING until that unrelated process happened to exit."""
     import json as _json
 
-    from marshal_engine.fleet import _another_fleet_active
+    from marshal_engine.orchestration.fleet import _another_fleet_active
 
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -3536,7 +3536,7 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
     unprobeable pid read as *verified*, so cancel would hand an operator a `kill` command for what
     might be a recycled process group. Verification must mean a real comparison, not the absence of
     a contradiction."""
-    import marshal_engine.fleet as fleet_mod
+    import marshal_engine.orchestration.fleet as fleet_mod
 
     rec = RunRecord(
         run_id="probe.writer.x",
@@ -3611,7 +3611,7 @@ def test_clean_spares_a_worktree_whose_agent_is_alive_but_unverifiable(repo: Pat
 def test_clean_refuses_a_worktree_whose_agent_is_still_running(repo: Path) -> None:
     """A terminal record does not always mean a finished process: a no-signal cancel leaves a live
     writer behind a `cancelled` record. Removing that worktree would destroy work in progress."""
-    import marshal_engine.fleet as fleet_mod
+    import marshal_engine.orchestration.fleet as fleet_mod
 
     fleet = Fleet(repo, {"writer": _Writer()})
     fleet.state.add(
@@ -5062,7 +5062,7 @@ def test_cancel_requested_wins_over_setup_failure_stamp(repo: Path) -> None:
     """
     import signal
 
-    from marshal_engine.fleet import _active_runs_guard, _inflight_handle
+    from marshal_engine.orchestration.fleet import _active_runs_guard, _inflight_handle
 
     fleet = Fleet(
         repo,
@@ -5252,7 +5252,7 @@ def test_structured_output_rejects_schema_mismatch(repo: Path) -> None:
 
 def test_structured_output_invalid_is_not_retried_as_transient(repo: Path) -> None:
     """A schema-invalid reply is a contract failure — never a transient infra retry."""
-    from marshal_engine.retry import is_transient_failure
+    from marshal_engine.core.retry import is_transient_failure
 
     class _CountingTalker(_Talker):
         def __init__(self, message: str) -> None:
@@ -5401,7 +5401,7 @@ def test_valid_ref_defs_schema_populates_structured(repo: Path) -> None:
 
 def test_schema_instruction_injection_is_idempotent() -> None:
     """Defense: a future second call site must not double-append the instruction."""
-    from marshal_engine.fleet import _STRUCTURED_OUTPUT_MARKER, _task_with_schema_instruction
+    from marshal_engine.orchestration.fleet import _STRUCTURED_OUTPUT_MARKER, _task_with_schema_instruction
 
     task = TaskSpec(id="so-idem", goal="do it", output_schema=_SCORE_SCHEMA)
     once = _task_with_schema_instruction(task)

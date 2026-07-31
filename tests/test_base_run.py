@@ -396,7 +396,7 @@ def test_failure_tail_redacts_secret_before_length_cut(
 ) -> None:
     """Error tails truncate; redact must run first or a straddling credential leaks a prefix."""
     from marshal_engine.backends.base import _failure_tail
-    from marshal_engine.env import redact_secrets
+    from marshal_engine.runtime.env import redact_secrets
 
     secret = "sk-ant-err-tail-secret-x"
     monkeypatch.setenv("ANTHROPIC_API_KEY", secret)

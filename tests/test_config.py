@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine.config import (
+from marshal_engine.core.config import (
     DEFAULT_OPENCODE_MODEL,
     DURATION_PRESETS,
     BudgetSpec,
@@ -20,7 +20,7 @@ from marshal_engine.config import (
     resolve_model,
     validate,
 )
-from marshal_engine.types import PermissionMode
+from marshal_engine.core.types import PermissionMode
 
 _YAML = """
 defaults:
@@ -178,7 +178,7 @@ def test_integrate_run_hooks_wrong_type_raises(tmp_path: Path) -> None:
 
 
 def test_setup_command_refusal_allowlist_and_opt_in() -> None:
-    from marshal_engine.config import is_safe_setup_binary, setup_command_refusal
+    from marshal_engine.core.config import is_safe_setup_binary, setup_command_refusal
 
     assert is_safe_setup_binary("uv")
     assert is_safe_setup_binary("/usr/local/bin/npm")
@@ -193,7 +193,7 @@ def test_setup_command_refusal_allowlist_and_opt_in() -> None:
 
 def test_allowlist_accepts_interpreter_arbitrary_code_without_opt_in() -> None:
     """Contract (#177): basename allowlist is not an arg sandbox — these pass without opt-in."""
-    from marshal_engine.config import setup_command_refusal
+    from marshal_engine.core.config import setup_command_refusal
 
     cases = [
         ["python", "-c", "print(1)"],
@@ -208,7 +208,7 @@ def test_allowlist_accepts_interpreter_arbitrary_code_without_opt_in() -> None:
 
 def test_allowlist_refuses_relative_path_argv0_without_opt_in() -> None:
     """Relative argv[0] resolves in the worktree and may be agent-rewritten (#177)."""
-    from marshal_engine.config import is_relative_setup_argv0, setup_command_refusal
+    from marshal_engine.core.config import is_relative_setup_argv0, setup_command_refusal
 
     assert is_relative_setup_argv0(".venv/bin/python")
     assert is_relative_setup_argv0("./bin/pytest")

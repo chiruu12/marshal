@@ -14,9 +14,9 @@ Run from the repo root:  uv run python examples/adversarial_review.py
 
 from pathlib import Path
 
-from marshal_engine.config import load_config
-from marshal_engine.service import MarshalService
-from marshal_engine.teams import TeamSubject
+from marshal_engine.core.config import load_config
+from marshal_engine.interfaces.service import MarshalService
+from marshal_engine.orchestration.teams import TeamSubject
 
 IMPLEMENTER = "implementer"
 REVIEWER = "reviewer"

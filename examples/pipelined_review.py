@@ -18,8 +18,8 @@ Run from the repo root:  uv run python examples/pipelined_review.py
 
 from pathlib import Path
 
-from marshal_engine.config import load_config
-from marshal_engine.service import MarshalService
+from marshal_engine.core.config import load_config
+from marshal_engine.interfaces.service import MarshalService
 
 IMPLEMENTER = "implementer"
 REVIEWER = "reviewer"

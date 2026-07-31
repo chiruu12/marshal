@@ -1,14 +1,19 @@
-"""Import-graph layer guard — acyclic graph + a small deny-list of forbidden edges.
+"""Import-graph layer guard — acyclic graph + a layer matrix.
 
-Invariant: layers import downward only. Lazy / function-local imports are still edges
-(they were used to dodge cycles); TYPE_CHECKING-guarded imports count too. This test
-parses the package with AST so those cannot hide.
+Invariant: layers import strictly downward. Lazy / function-local imports are still edges
+(they were used to dodge cycles); TYPE_CHECKING-guarded imports count too. This test parses
+the package with AST so those cannot hide.
 
-Forbidden edges (regressions of the SOLID audit fixes):
-  types → worktree, config → registry, eastrouter → __init__
+    core         value types and pure logic
+    runtime      processes, git, disk        } siblings: neither may import the other
+    accounting   usage, cost, budgets        }
+    backends     one adapter per coding CLI
+    orchestration the fleet loop and what sequences it
+    interfaces   service, CLI, MCP, workspaces, doctor
 
-Known soft edges (allowed, documented — not pretended away):
-  worktree → config, doctor → teams, and ``__init__`` re-exports of public types.
+A module may import its own package, or any package of strictly lower rank. This replaces the
+old hand-maintained deny-list (``types → worktree``, ``config → registry``, ``env → registry``)
+— every one of those is now a rank violation, caught by rule rather than by enumeration.
 """
 
 from __future__ import annotations
@@ -18,30 +23,29 @@ from collections import defaultdict
 from pathlib import Path
 
 import marshal_engine
-from marshal_engine.config import KNOWN_BACKEND_NAMES
-from marshal_engine.env import KNOWN_CREDENTIAL_ENV_VARS
-from marshal_engine.registry import backend_names, default_backends
+from marshal_engine.core.config import KNOWN_BACKEND_NAMES
+from marshal_engine.runtime.env import KNOWN_CREDENTIAL_ENV_VARS
+from marshal_engine.orchestration.registry import backend_names, default_backends
 
 _PKG = Path(marshal_engine.__file__).resolve().parent
 _PKG_NAME = "marshal_engine"
 
-# Edges that must never reappear (lazy or module-level).
-_FORBIDDEN: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("types", "worktree"),
-        ("config", "registry"),
-        ("eastrouter", "__init__"),
-        ("env", "registry"),  # latent cycle with backends.base → env
-    }
-)
+# Layer ranks. A module may import its own layer, or any layer of strictly lower rank.
+# `runtime` and `accounting` share a rank deliberately: they are siblings, so neither may
+# import the other, and the equal rank is what forbids it.
+_RANK: dict[str, int] = {
+    "core": 0,
+    "runtime": 1,
+    "accounting": 1,
+    "backends": 2,
+    "orchestration": 3,
+    "interfaces": 4,
+}
 
-# Soft edges that exist today; listed so a future layer matrix does not treat them as bugs.
-# ``__init__`` may import public symbols (re-exports); nothing else should import ``__init__``.
-_KNOWN_SOFT: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("worktree", "config"),
-        ("doctor", "teams"),
-    }
+# Top-level modules kept as re-export shims for published import paths. They deliberately
+# reach into a layer, so they are not ranked - `test_shims_only_reexport` covers them instead.
+_SHIMS: frozenset[str] = frozenset(
+    {"config", "service", "teams", "state", "workspaces", "cli"}
 )
 
 
@@ -174,18 +178,47 @@ def test_known_credential_env_vars_match_backends() -> None:
     assert KNOWN_CREDENTIAL_ENV_VARS == frozenset(live)
 
 
-def test_known_soft_edges_still_present() -> None:
-    # Documented soft edges should still exist — if one disappears, drop it from the allow-list.
-    edges = _all_edges()
-    missing = sorted(_KNOWN_SOFT - edges)
-    assert not missing, f"known soft edges gone (update _KNOWN_SOFT): {missing}"
+def _layer_of(mod: str) -> str | None:
+    """The layer package a module lives in, or None for shims / ``__init__``."""
+    head = mod.split(".")[0]
+    return head if head in _RANK else None
 
 
-def test_forbidden_layer_edges_absent() -> None:
-    # Invariant: the three SOLID-audit violations must not return (lazy imports count).
-    edges = _all_edges()
-    found = sorted(_FORBIDDEN & edges)
-    assert not found, f"forbidden import edges reintroduced: {found}"
+def test_every_module_lives_in_a_layer() -> None:
+    # A new top-level module must be placed in a layer, not dropped in the package root.
+    stray = sorted(
+        _module_key(p)
+        for p in _PKG.glob("*.py")
+        if p.name != "__init__.py" and p.stem not in _SHIMS
+    )
+    assert not stray, f"top-level modules must live in a layer package (or be a shim): {stray}"
+
+
+def test_imports_point_downward() -> None:
+    # Invariant: a layer may import its own layer or a strictly lower one. This subsumes the
+    # old deny-list: types→worktree is core→runtime, config→registry is core→orchestration.
+    violations = []
+    for src, dst in sorted(_all_edges()):
+        a, b = _layer_of(src), _layer_of(dst)
+        if a is None or b is None or a == b:
+            continue
+        if _RANK[b] >= _RANK[a]:
+            violations.append(f"{src} -> {dst}  ({a}[{_RANK[a]}] -> {b}[{_RANK[b]}])")
+    assert not violations, "imports must point downward:\n  " + "\n  ".join(violations)
+
+
+def test_shims_only_reexport() -> None:
+    # A shim exists to preserve a published import path - it must never grow logic, or the
+    # module would have two homes with different behaviour.
+    for name in sorted(_SHIMS):
+        path = _PKG / f"{name}.py"
+        assert path.exists(), f"missing shim for published path marshal_engine.{name}"
+        body = [
+            n
+            for n in ast.parse(path.read_text(encoding="utf-8")).body
+            if not isinstance(n, (ast.Import, ast.ImportFrom, ast.Expr))
+        ]
+        assert not body, f"shim {name}.py must only re-export, found: {body}"
 
 
 def test_import_graph_is_acyclic() -> None:

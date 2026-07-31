@@ -37,8 +37,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from .config import BudgetSpec
-from .layout import budget_gate_path
+from ..core.config import BudgetSpec
+from ..core.layout import budget_gate_path
 from .usage import (
     Bucket,
     LedgerCursor,

@@ -28,7 +28,7 @@ import re
 import shutil
 import subprocess
 
-from ..types import (
+from ..core.types import (
     AgentResult,
     Capabilities,
     PermissionFidelity,

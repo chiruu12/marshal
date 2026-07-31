@@ -51,7 +51,7 @@ dev = [
 ]
 
 [project.scripts]
-marshal = "marshal_engine.cli:main"
+marshal = "marshal_engine.interfaces.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/chiruu12/marshal"

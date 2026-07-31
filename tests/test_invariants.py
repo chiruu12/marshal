@@ -19,9 +19,9 @@ import pytest
 
 import marshal_engine
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig
-from marshal_engine.registry import backend_names, default_backends
-from marshal_engine.types import (
+from marshal_engine.core.config import ClientConfig
+from marshal_engine.orchestration.registry import backend_names, default_backends
+from marshal_engine.core.types import (
     Capabilities,
     PermissionFidelity,
     PermissionMode,
@@ -196,8 +196,8 @@ def test_backend_name_is_never_encoded_in_a_public_surface_name() -> None:
     # Invariant: "backend is a per-call parameter, never encoded in tool/skill names." Holds
     # across the MCP tool surface, the CLI subcommands, and the published Skills.
     backends = backend_names()
-    tools = _decorated_tool_names(_PKG / "mcp_server.py")
-    subcommands = _subcommand_names(_PKG / "cli.py")
+    tools = _decorated_tool_names(_PKG / "interfaces" / "mcp_server.py")
+    subcommands = _subcommand_names(_PKG / "interfaces" / "cli.py")
     skills = [p.name for p in (_REPO_ROOT / "skills").iterdir() if p.is_dir() and p.name[0] != "."]
     # Guard against a vacuous pass if the source shape ever changes under the AST walk.
     assert len(tools) >= 10, tools
@@ -247,7 +247,7 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
 
 
 _RUNSTATUS_LITERALS: frozenset[str] = frozenset(
-    {s.value for s in __import__("marshal_engine.types", fromlist=["RunStatus"]).RunStatus}
+    {s.value for s in __import__("marshal_engine.core.types", fromlist=["RunStatus"]).RunStatus}
 )
 
 # A status string literal (e.g. `== "running"`) is the smell: it bypasses the enum's single
@@ -341,7 +341,7 @@ def test_plugin_manifests_list_every_backend() -> None:
     import json
     from pathlib import Path
 
-    from marshal_engine.registry import backend_names
+    from marshal_engine.orchestration.registry import backend_names
 
     root = Path(__file__).resolve().parent.parent
 

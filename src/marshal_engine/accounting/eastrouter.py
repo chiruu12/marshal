@@ -31,8 +31,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from ._version import __version__
-from .types import UsageSource
+from ..core._version import __version__
+from ..core.types import UsageSource
 
 DEFAULT_BASE_URL = "https://api.eastrouter.com/v1"
 

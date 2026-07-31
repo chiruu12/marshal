@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from marshal_engine.logs import RunLogStore
+from marshal_engine.runtime.logs import RunLogStore
 
 
 def test_write_then_read_round_trips_full_content(tmp_path) -> None:

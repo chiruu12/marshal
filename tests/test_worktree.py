@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine.worktree import WorktreeError, WorktreeManager
+from marshal_engine.runtime.worktree import WorktreeError, WorktreeManager
 
 
 def _init_repo(root: Path) -> None:
@@ -155,7 +155,7 @@ def test_create_accepts_normal_ids_after_a_traversal_attempt(repo: Path) -> None
 
 
 def test_remove_refuses_path_outside_base_dir(repo: Path) -> None:
-    from marshal_engine.worktree import Worktree
+    from marshal_engine.runtime.worktree import Worktree
 
     m = WorktreeManager(repo)
     outside = repo / "not_a_worktree"
@@ -234,7 +234,7 @@ def test_discard_still_deletes_managed_branch(repo: Path) -> None:
 
 
 def test_remove_refuses_base_dir_itself(repo: Path) -> None:
-    from marshal_engine.worktree import Worktree
+    from marshal_engine.runtime.worktree import Worktree
 
     m = WorktreeManager(repo)
     m.base_dir.mkdir(parents=True)
@@ -244,7 +244,7 @@ def test_remove_refuses_base_dir_itself(repo: Path) -> None:
 
 
 def test_validate_worktree_id_happy_and_task_cap() -> None:
-    from marshal_engine.worktree import MAX_TASK_ID_LEN, validate_worktree_id
+    from marshal_engine.runtime.worktree import MAX_TASK_ID_LEN, validate_worktree_id
 
     assert validate_worktree_id("a.b-c_d") == "a.b-c_d"
     with pytest.raises(WorktreeError, match="max length"):
@@ -261,7 +261,7 @@ def test_validate_worktree_id_happy_and_task_cap() -> None:
     ],
 )
 def test_validate_run_id_accepts_production_shapes(good_id: str) -> None:
-    from marshal_engine.worktree import validate_run_id
+    from marshal_engine.runtime.worktree import validate_run_id
 
     assert validate_run_id(good_id) == good_id
 
@@ -271,7 +271,7 @@ def test_validate_run_id_accepts_production_shapes(good_id: str) -> None:
     ["", ".", "..", "../x", "foo/bar", "a\\b", ".hidden", "-lead", "café", "a\x00b", "a" * 129],
 )
 def test_validate_run_id_refuses_unsafe_ids(bad_id: str) -> None:
-    from marshal_engine.worktree import validate_run_id
+    from marshal_engine.runtime.worktree import validate_run_id
 
     # ValueError, not WorktreeError: the state/MCP boundary's input-validation error type,
     # matching how an invalid task_id surfaces there (TaskSpec wraps WorktreeError -> ValueError).
@@ -473,8 +473,8 @@ def test_verify_output_redacts_secret_straddling_tail_cap(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Redact before the verify tail cut so a straddling credential leaves no fragment."""
-    from marshal_engine.env import redact_secrets
-    from marshal_engine.worktree import _VERIFY_OUTPUT_CAP
+    from marshal_engine.runtime.env import redact_secrets
+    from marshal_engine.runtime.worktree import _VERIFY_OUTPUT_CAP
 
     secret = "sk-ant-verify-straddle-x"
     monkeypatch.setenv("ANTHROPIC_API_KEY", secret)

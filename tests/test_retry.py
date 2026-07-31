@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from marshal_engine.retry import RetryPolicy, is_transient_failure
-from marshal_engine.types import AgentResult, RunStatus
+from marshal_engine.core.retry import RetryPolicy, is_transient_failure
+from marshal_engine.core.types import AgentResult, RunStatus
 
 
 def _failed(error: str | None) -> AgentResult:

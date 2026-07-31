@@ -14,11 +14,11 @@ from pathlib import Path
 import pytest
 
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, ConfigError, FleetConfig
-from marshal_engine.layout import reports_dir
-from marshal_engine.service import MarshalService
-from marshal_engine.teams import TeamSubject
-from marshal_engine.types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine.core.config import ClientConfig, ConfigError, FleetConfig
+from marshal_engine.core.layout import reports_dir
+from marshal_engine.interfaces.service import MarshalService
+from marshal_engine.orchestration.teams import TeamSubject
+from marshal_engine.core.types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec
 
 
 class _Reviewer(CodingAgentBackend):
@@ -313,7 +313,7 @@ def test_diff_range_surfaces_a_hung_git_as_a_config_error(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A git timeout must arrive as the documented error type, not a raw WorktreeError."""
-    from marshal_engine.worktree import WorktreeError
+    from marshal_engine.runtime.worktree import WorktreeError
 
     svc = _svc(repo)
     real = svc.fleet.worktrees.git_read

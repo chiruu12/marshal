@@ -15,8 +15,8 @@ Run from the repo root:  uv run python examples/read_paths.py
 import tempfile
 from pathlib import Path
 
-from marshal_engine.config import load_config
-from marshal_engine.service import MarshalService
+from marshal_engine.core.config import load_config
+from marshal_engine.interfaces.service import MarshalService
 
 CLIENT = "implementer"
 

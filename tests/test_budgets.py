@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import marshal_engine.budgets as budgets_mod
-from marshal_engine.budgets import (
+import marshal_engine.accounting.budgets as budgets_mod
+from marshal_engine.accounting.budgets import (
     BudgetExceeded,
     BudgetStatus,
     EnforceBudgetGate,
@@ -24,8 +24,8 @@ from marshal_engine.budgets import (
     check_budget,
     compute_budget_status,
 )
-from marshal_engine.config import BudgetSpec
-from marshal_engine.usage import UsageEvent, UsageTracker
+from marshal_engine.core.config import BudgetSpec
+from marshal_engine.accounting.usage import UsageEvent, UsageTracker
 
 
 def _scope(*, client: str | None = None, backend_name: str = "opencode") -> SimpleNamespace:
@@ -1113,9 +1113,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from marshal_engine.budgets import BudgetExceeded, EnforceBudgetGate
-from marshal_engine.config import BudgetSpec
-from marshal_engine.usage import UsageTracker
+from marshal_engine.accounting.budgets import BudgetExceeded, EnforceBudgetGate
+from marshal_engine.core.config import BudgetSpec
+from marshal_engine.accounting.usage import UsageTracker
 
 usage = Path(sys.argv[1])
 gate_path = Path(sys.argv[2])

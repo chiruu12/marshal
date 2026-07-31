@@ -22,7 +22,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import (
+from marshal_engine.core.config import (
     DEFAULT_OPENCODE_MODEL,
     BudgetSpec,
     ClientConfig,
@@ -31,9 +31,9 @@ from marshal_engine.config import (
     FleetContext,
     load_config,
 )
-from marshal_engine.service import MarshalService
-from marshal_engine.state import RunRecord
-from marshal_engine.service import ModelList, ModelSpec
+from marshal_engine.interfaces.service import MarshalService
+from marshal_engine.runtime.state import RunRecord
+from marshal_engine.interfaces.service import ModelList, ModelSpec
 
 
 class _Echo(CodingAgentBackend):
@@ -182,7 +182,7 @@ def test_get_run_reports_whether_the_agent_is_actually_alive(repo: Path) -> None
     import subprocess as _sp
     import sys as _sys
 
-    from marshal_engine.fleet import _pid_start_time
+    from marshal_engine.orchestration.fleet import _pid_start_time
 
     svc = _svc(repo)
     holder = _sp.Popen([_sys.executable, "-c", "import time; time.sleep(60)"])
@@ -472,7 +472,7 @@ def test_service_usage_since_filters_events(repo: Path) -> None:
     # ledger with an old event shows the filter in action.
     from datetime import datetime, timezone
 
-    from marshal_engine.usage import UsageEvent
+    from marshal_engine.accounting.usage import UsageEvent
 
     svc = _svc(repo)
     ledger = svc.fleet.usage
@@ -673,7 +673,7 @@ def test_benchmark_cheapest_excludes_unknown_cost(repo: Path) -> None:
 def test_report_admin_api_cost_competes_for_cheapest(repo: Path) -> None:
     # Regression: a real EastRouter (admin-api) cost is a KNOWN cost and must be comparable for
     # `cheapest` - it was previously excluded (only native/estimated were), so a real cheaper run lost.
-    from marshal_engine.state import RunRecord
+    from marshal_engine.runtime.state import RunRecord
 
     svc = _svc(repo)
     svc.fleet.state.add(
@@ -957,7 +957,7 @@ def test_request_for_unknown_backend_raises_with_valid_names(repo: Path) -> None
     assert "nonexistent" in msg
     assert "known" in msg
     # Each registered backend name appears in the error so the driver can fix the typo.
-    from marshal_engine.registry import backend_names
+    from marshal_engine.orchestration.registry import backend_names
 
     for name in backend_names():
         assert name in msg
@@ -1462,7 +1462,7 @@ def test_list_models_probes_backends_concurrently(tmp_path: Path) -> None:
     client's deadline. Four 0.4s probes must finish in well under 1.6s."""
     import time
 
-    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
+    from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
 
     class _SlowProbe(_Echo):
         def available_models(self) -> list[str]:
@@ -1488,7 +1488,7 @@ def test_list_models_probes_backends_concurrently(tmp_path: Path) -> None:
 
 def test_list_models_survives_a_raising_probe(tmp_path: Path) -> None:
     """One broken backend must not take the whole listing down."""
-    from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
+    from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
 
     class _Ok(_Echo):
         def available_models(self) -> list[str]:

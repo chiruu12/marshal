@@ -10,9 +10,9 @@ import pytest
 
 from marshal_engine import AgentResult, Capabilities, RunOpts, RunStatus, TaskSpec
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.config import ClientConfig, FleetConfig, PermissionMode
-from marshal_engine.fleet import Fleet, RunManyJob, RunRequest
-from marshal_engine.service import MarshalService
+from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
+from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest
+from marshal_engine.interfaces.service import MarshalService
 
 
 class _Writer(CodingAgentBackend):
@@ -289,7 +289,7 @@ def test_then_not_silently_skipped_when_branch_tip_fails(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Tip failure + poisoned base_commit must not masquerade as 'produced no diff' (#173)."""
-    from marshal_engine.state import RunRecord
+    from marshal_engine.runtime.state import RunRecord
 
     counter = _CountingReader()
     fleet = Fleet(repo, {"writer": _Writer(), "counter": counter})

@@ -24,12 +24,12 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.budgets import BudgetExceeded, EnforceBudgetGate
-from marshal_engine.config import ClientConfig, FleetConfig
-from marshal_engine.service import MarshalService
-from marshal_engine.state import FleetState, RunRecord
-from marshal_engine.usage import UsageEvent
-from marshal_engine.workspaces import (
+from marshal_engine.accounting.budgets import BudgetExceeded, EnforceBudgetGate
+from marshal_engine.core.config import ClientConfig, FleetConfig
+from marshal_engine.interfaces.service import MarshalService
+from marshal_engine.runtime.state import FleetState, RunRecord
+from marshal_engine.accounting.usage import UsageEvent
+from marshal_engine.interfaces.workspaces import (
     DEFAULT_MAX_CONCURRENT,
     WorkspaceDef,
     WorkspaceRegistry,
@@ -423,7 +423,7 @@ def test_a_deferred_orphan_reaches_failed_through_a_real_ledger_read(tmp_path: P
     """End-to-end companion to the stubbed hook test: a REAL Fleet defers a young orphan, and a
     later real `ledger_runs()` (what MCP status calls) is what finally stamps it `failed`. The stub
     test proves the hook fires; this proves the hook does something."""
-    from marshal_engine.fleet import _REAP_GRACE_S
+    from marshal_engine.orchestration.fleet import _REAP_GRACE_S
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -551,7 +551,7 @@ def test_build_app_registers_workspace_tools_and_params(tmp_path: Path) -> None:
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -567,7 +567,7 @@ def test_mcp_workspace_param_routes_via_call_tool(tmp_path: Path) -> None:
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo_a, repo_b = tmp_path / "a", tmp_path / "b"
     for r in (repo_a, repo_b):
@@ -698,7 +698,7 @@ def test_register_rejects_bad_name_and_path(tmp_path: Path) -> None:
 
 
 def test_scaffold_fleet_config(tmp_path: Path) -> None:
-    from marshal_engine.config import load_config
+    from marshal_engine.core.config import load_config
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -714,7 +714,7 @@ def test_scaffold_suggests_read_only_reviewers(tmp_path: Path) -> None:
     They stay commented (the stub must load as a valid zero-client config), but uncommenting one is
     the whole setup step - the alternative is discovering the requirement from a validation error.
     """
-    from marshal_engine.config import load_config
+    from marshal_engine.core.config import load_config
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -729,7 +729,7 @@ def test_scaffold_suggests_read_only_reviewers(tmp_path: Path) -> None:
 
 def test_scaffold_includes_stock_openai_codex_example(tmp_path: Path) -> None:
     """New users with a stock Codex CLI should see a copy-paste OpenAI client, not a router-only path."""
-    from marshal_engine.config import load_config
+    from marshal_engine.core.config import load_config
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -744,7 +744,7 @@ def test_scaffold_includes_stock_openai_codex_example(tmp_path: Path) -> None:
 
 
 def test_detect_project_markers_root_wins(tmp_path: Path) -> None:
-    from marshal_engine.workspaces import detect_project_markers
+    from marshal_engine.interfaces.workspaces import detect_project_markers
 
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     (tmp_path / "sdk").mkdir()
@@ -753,7 +753,7 @@ def test_detect_project_markers_root_wins(tmp_path: Path) -> None:
 
 
 def test_detect_project_markers_nested_depth_1_and_2(tmp_path: Path) -> None:
-    from marshal_engine.workspaces import detect_project_markers
+    from marshal_engine.interfaces.workspaces import detect_project_markers
 
     (tmp_path / "sdk").mkdir()
     (tmp_path / "sdk" / "pyproject.toml").write_text("[project]\n")
@@ -766,7 +766,7 @@ def test_detect_project_markers_nested_depth_1_and_2(tmp_path: Path) -> None:
 
 
 def test_detect_project_markers_skips_vendored_and_dot_dirs(tmp_path: Path) -> None:
-    from marshal_engine.workspaces import detect_project_markers
+    from marshal_engine.interfaces.workspaces import detect_project_markers
 
     for skip in (".venv", "node_modules", ".git", ".hidden"):
         (tmp_path / skip).mkdir()
@@ -775,7 +775,7 @@ def test_detect_project_markers_skips_vendored_and_dot_dirs(tmp_path: Path) -> N
 
 
 def test_detect_project_markers_caps_results(tmp_path: Path) -> None:
-    from marshal_engine.workspaces import detect_project_markers
+    from marshal_engine.interfaces.workspaces import detect_project_markers
 
     for name in ("a", "b", "c", "d", "e"):
         (tmp_path / name).mkdir()
@@ -784,7 +784,7 @@ def test_detect_project_markers_caps_results(tmp_path: Path) -> None:
 
 
 def test_scaffold_templates_nested_project_hint(tmp_path: Path) -> None:
-    from marshal_engine.config import load_config
+    from marshal_engine.core.config import load_config
 
     repo = tmp_path / "r"
     (repo / "sdk").mkdir(parents=True)
@@ -799,7 +799,7 @@ def test_scaffold_templates_nested_project_hint(tmp_path: Path) -> None:
 
 
 def test_scaffold_templates_root_project_hint(tmp_path: Path) -> None:
-    from marshal_engine.config import load_config
+    from marshal_engine.core.config import load_config
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -832,7 +832,7 @@ def test_registry_hot_reloads_new_workspace(tmp_path: Path) -> None:
 def _config_aware_builder() -> Callable[[WorkspaceDef], MarshalService]:
     """A hermetic stand-in for build_service_for: reads the workspace's config file live but
     injects the fake echo backend so no real agent CLI is ever probed."""
-    from marshal_engine.config import load_config
+    from marshal_engine.core.config import load_config
 
     def build(wdef: WorkspaceDef) -> MarshalService:
         cfg = load_config(wdef.config_path) if wdef.config_path.exists() else FleetConfig()
@@ -934,7 +934,7 @@ def test_registry_rebuild_failure_keeps_retrying(tmp_path: Path) -> None:
     reg = WorkspaceRegistry([wdef], builder=strict)
     first = reg.get()
 
-    from marshal_engine.config import ConfigError
+    from marshal_engine.core.config import ConfigError
 
     cfg.write_text("clients:\n  worker: {}\n")  # malformed: a client needs a backend
     with pytest.raises(ConfigError, match="missing required 'backend'"):
@@ -956,7 +956,7 @@ def test_registry_rebuild_preserves_inflight_run(tmp_path: Path) -> None:
     wdef = WorkspaceDef("default", repo.resolve(), cfg)
 
     def build(d: WorkspaceDef) -> MarshalService:
-        from marshal_engine.config import load_config
+        from marshal_engine.core.config import load_config
 
         return MarshalService(
             d.path, load_config(d.config_path), backends={"slow": _Slow()}, config_path=d.config_path
@@ -994,7 +994,7 @@ def _durable_registry(
 ) -> WorkspaceRegistry:
     """A registry whose builder injects fake backends but opts into the registry's durable
     runtime via ``runtime_for`` - the same wiring the default build_service_for builder uses."""
-    from marshal_engine.config import load_config
+    from marshal_engine.core.config import load_config
 
     holder: list[WorkspaceRegistry] = []
 
@@ -1162,7 +1162,7 @@ def _registry_app(
     Returns (app, registry, reg_file, repo_b). The opt-in env var must be set/unset by the caller
     BEFORE this runs - build_app captures it at construction time.
     """
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo_a, repo_b = tmp_path / "a", tmp_path / "b"
     for r in (repo_a, repo_b):
@@ -1277,7 +1277,7 @@ def test_mcp_list_clients_reflects_config_edit(tmp_path: Path) -> None:
     """The end-to-end shape of the field bug: list_clients over MCP must see a config that was
     added after the workspace was registered, without reconnecting the server."""
     pytest.importorskip("mcp")
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -1299,7 +1299,7 @@ def test_cli_workspace_add_and_list(
 ) -> None:
     import json as _json
 
-    from marshal_engine.cli import main
+    from marshal_engine.interfaces.cli import main
 
     repo = tmp_path / "r"
     repo.mkdir()
@@ -1319,7 +1319,7 @@ def test_cli_workspace_add_and_list(
 
 def _two_ws_app(tmp_path: Path) -> tuple[object, WorkspaceRegistry, Path, Path]:
     """Build the MCP app over a real, echo-backed 2-workspace registry (default=a, beta=b)."""
-    from marshal_engine.mcp_server import build_app
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo_a, repo_b = tmp_path / "a", tmp_path / "b"
     for r in (repo_a, repo_b):
@@ -1523,7 +1523,7 @@ def test_mcp_run_many_unknown_workspace_errors(tmp_path: Path) -> None:
 def test_cli_workspace_add_bad_path_errors_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from marshal_engine.cli import main
+    from marshal_engine.interfaces.cli import main
 
     reg_file = tmp_path / "w.yaml"
     monkeypatch.setenv("MARSHAL_REPO", str(tmp_path))
@@ -1575,7 +1575,7 @@ def test_ledger_runs_reports_liveness_without_a_built_service(tmp_path: Path) ->
     touched this session - reported `null` for a verifiably LIVE agent. Probing a pid needs only
     the record, so it must not depend on whether a service happens to be built. (Reconciliation is
     different: it mutates the ledger and is rightly gated on owning the fleet lock.)"""
-    from marshal_engine.fleet import _pid_start_time
+    from marshal_engine.orchestration.fleet import _pid_start_time
 
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:

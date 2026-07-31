@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.doctor import FAIL, OK, WARN, run_checks, summarize
-from marshal_engine.layout import runs_dir
-from marshal_engine.state import FleetState, RunRecord
-from marshal_engine.types import (
+from marshal_engine.interfaces.doctor import FAIL, OK, WARN, run_checks, summarize
+from marshal_engine.core.layout import runs_dir
+from marshal_engine.runtime.state import FleetState, RunRecord
+from marshal_engine.core.types import (
     AgentResult,
     Capabilities,
     PermissionFidelity,
@@ -288,7 +288,7 @@ def test_probe_missing_from_snapshot_constructs_fresh_backend(tmp_path: Path, mo
     # A service built before this backend was configured hands doctor a snapshot without it.
     # Doctor must probe a freshly constructed backend (the same path a spawn takes), not FAIL on
     # the stale snapshot.
-    import marshal_engine.doctor as doctor_mod
+    import marshal_engine.interfaces.doctor as doctor_mod
 
     repo = _git_repo(tmp_path / "repo")
     cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
