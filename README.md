@@ -106,6 +106,20 @@ hello-docstring.codex.d56489fe  codex        exited_clean  unavailable  .marshal
 
 MCP tool reference: [`docs/mcp-tools.md`](docs/mcp-tools.md). Orientation for drivers: call `marshal_quickstart()` first.
 
+## Demo
+
+A real run, start to finish: `doctor` verifies the fleet, `spawn` dispatches, `status` reports, and
+the diff lands in the agent's own worktree. The waiting is cut; nothing else is.
+
+<p align="center">
+  <img src="assets/demo.gif" alt="Marshal: marshal doctor, marshal spawn, marshal status, and the resulting diff in an isolated git worktree" width="900">
+</p>
+
+This one ran on `command-code`, which reports no per-run cost — so Marshal prints `unavailable`
+rather than inventing a number. On a backend that does report it, that column carries the real
+figure. Recorded with [VHS](https://github.com/charmbracelet/vhs) from
+[`assets/demo.tape`](assets/demo.tape).
+
 ## Why Marshal
 
 - **One base class, many backends.** Backend choice is a per-call parameter, never global.
