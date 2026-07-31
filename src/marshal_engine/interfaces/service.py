@@ -30,14 +30,12 @@ from ..core.config import (
 )
 from .doctor import DoctorReport, doctor_report, run_checks
 from ..runtime.env import merge_user_path
-from ..orchestration.fleet import (
+from ..orchestration.fleet import BudgetStatus, EnforceBudgetGate, Fleet
+from ..orchestration.results import (
     BenchmarkResult,
-    BudgetStatus,
     CleanResult,
     CollectResult,
     CommitResult,
-    EnforceBudgetGate,
-    Fleet,
     IntegrateResult,
     RunManyJob,
     RunManyJobResult,

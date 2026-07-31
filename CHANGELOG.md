@@ -9,6 +9,12 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Changed
+- **`fleet.py` split into focused modules** (2773 → 2006 lines). `orchestration/provisioning.py`
+  owns fail-closed `context_files` / `read_paths` copying, `orchestration/structured.py` owns the
+  `output_schema` prompt/parse/validate/redact path, and `orchestration/results.py` owns the
+  result and request DTOs. Behaviour is unchanged - the fleet loop imports and calls exactly what
+  it did before. `CollectResult`, `IntegrateResult`, `RunRequest`, and the other DTOs are now
+  imported from `marshal_engine.orchestration.results`.
 - **`marshal_engine` is now organised into layer packages** instead of 23 flat modules:
   `core` (value types, pure logic), `runtime` (processes, git, disk), `accounting` (usage, cost,
   budgets), `backends`, `orchestration` (the fleet loop), and `interfaces` (service, CLI, MCP,

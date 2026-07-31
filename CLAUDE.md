@@ -50,6 +50,9 @@ marshal/
 │   │   └── budgets.py       # budget caps (soft-warn default; optional enforce: true)
 │   ├── orchestration/       # the fleet loop and everything sequenced on top of it
 │   │   ├── fleet.py         # orchestrator: worktree → run backend → record usage → persist
+│   │   ├── provisioning.py  # copy declared context_files / read_paths into a worktree, fail-closed (symlink/special-file/TOCTOU refusals)
+│   │   ├── structured.py    # output_schema: prompt instruction, JSON extraction, schema validation, redaction
+│   │   ├── results.py       # the Pydantic result/request DTOs the service, CLI, and MCP all serialize
 │   │   ├── registry.py      # construct backends by name
 │   │   ├── workflow.py      # declarative YAML workflows: spec + validation + runner over the service primitives
 │   │   └── teams.py         # adversarial review teams: panels of independent READ-ONLY reviewers over one subject (run diff / range / plan / audit) → structured report; never integrates

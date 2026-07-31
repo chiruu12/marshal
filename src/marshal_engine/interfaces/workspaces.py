@@ -45,7 +45,8 @@ from ..accounting.budgets import EnforceBudgetGate
 from ..core.config import ConfigError, FleetConfig, load_config, validate
 from ..core.layout import runs_dir
 from .scaffold import detect_project_markers, scaffold_fleet_config
-from ..orchestration.fleet import RunManyJobResult, with_liveness
+from ..orchestration.fleet import with_liveness
+from ..orchestration.results import RunManyJobResult
 from .service import MarshalService
 from ..runtime.state import FleetState, RunRecord
 from ..runtime.worktree import validate_run_id

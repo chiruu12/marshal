@@ -30,6 +30,7 @@ from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.core.config import BudgetSpec
 from marshal_engine.accounting.eastrouter import ExternalCost
 from marshal_engine.orchestration import fleet as fleet_mod
+from marshal_engine.orchestration import provisioning as provisioning_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
 from marshal_engine.core.retry import RetryPolicy
 from marshal_engine.runtime.state import FleetState, RunRecord
@@ -4091,14 +4092,14 @@ def test_read_paths_refuses_toctou_fifo_swap(
     """#105: a file replaced by a FIFO between validation and copy is refused, not hung."""
     target = repo.parent / "race.md"
     target.write_text("ok-at-validate")
-    real_validate = fleet_mod._validate_read_path_tree
+    real_validate = provisioning_mod._validate_read_path_tree
 
     def _validate_then_swap_to_fifo(src: Path, raw: str) -> None:
         real_validate(src, raw)
         src.unlink()
         os.mkfifo(src)
 
-    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_swap_to_fifo)
+    monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_swap_to_fifo)
     fleet = Fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
@@ -4146,8 +4147,8 @@ def _arm_dir_symlink_swap_after_lstat(
     stale directory stat, then replace ``victim`` with a symlink so a path walk follows into
     ``outside``. Fd-relative ``O_NOFOLLOW|O_DIRECTORY`` open must refuse instead.
     """
-    real_validate = fleet_mod._validate_read_path_tree
-    real_lstat_at = fleet_mod._lstat_at
+    real_validate = provisioning_mod._validate_read_path_tree
+    real_lstat_at = provisioning_mod._lstat_at
     victim_resolved = victim.resolve()
     swapped = False
 
@@ -4172,9 +4173,9 @@ def _arm_dir_symlink_swap_after_lstat(
 
     def _validate_then_arm(src: Path, raw: str) -> None:
         real_validate(src, raw)
-        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+        monkeypatch.setattr(provisioning_mod, "_lstat_at", _lstat_at_then_swap)
 
-    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+    monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_arm)
 
 
 def test_read_paths_refuses_toctou_dir_symlink_swap(
@@ -4312,13 +4313,13 @@ def _arm_same_type_dir_swap_after_validate(
     ``O_NOFOLLOW|O_DIRECTORY`` still succeeds (same type); policy-at-use in the copy walk must
     refuse. Unlike the symlink-swap helper, this does not arm a post-lstat swap.
     """
-    real_validate = fleet_mod._validate_read_path_tree
+    real_validate = provisioning_mod._validate_read_path_tree
 
     def _validate_then_swap(src: Path, raw: str) -> None:
         real_validate(src, raw)
         _replace_dir_with_ordinary(victim, populate)
 
-    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_swap)
+    monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_swap)
 
 
 def _assert_no_smuggled_content(repo: Path, smuggled: str) -> None:
@@ -4508,8 +4509,8 @@ def test_read_paths_refuses_toctou_dir_identity_swap(
     (src_dir / "ok.md").write_text("validated-ok")
     replacement_marker = "REPLACED-DIR-IDENTITY-MARKER"
 
-    real_validate = fleet_mod._validate_read_path_tree
-    real_lstat_at = fleet_mod._lstat_at
+    real_validate = provisioning_mod._validate_read_path_tree
+    real_lstat_at = provisioning_mod._lstat_at
     victim_resolved = src_dir.resolve()
     swapped = False
 
@@ -4536,9 +4537,9 @@ def test_read_paths_refuses_toctou_dir_identity_swap(
 
     def _validate_then_arm(src: Path, raw: str) -> None:
         real_validate(src, raw)
-        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+        monkeypatch.setattr(provisioning_mod, "_lstat_at", _lstat_at_then_swap)
 
-    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+    monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_arm)
     fleet = Fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
@@ -4578,8 +4579,8 @@ def test_read_paths_refuses_toctou_file_identity_swap(
     stand_in = repo.parent / "race-file-identity.md.replacement"
     stand_in.write_text(replacement_marker)
 
-    real_validate = fleet_mod._validate_read_path_tree
-    real_lstat_at = fleet_mod._lstat_at
+    real_validate = provisioning_mod._validate_read_path_tree
+    real_lstat_at = provisioning_mod._lstat_at
     victim_resolved = target.resolve()
     swapped = False
 
@@ -4605,9 +4606,9 @@ def test_read_paths_refuses_toctou_file_identity_swap(
 
     def _validate_then_arm(src: Path, raw: str) -> None:
         real_validate(src, raw)
-        monkeypatch.setattr(fleet_mod, "_lstat_at", _lstat_at_then_swap)
+        monkeypatch.setattr(provisioning_mod, "_lstat_at", _lstat_at_then_swap)
 
-    monkeypatch.setattr(fleet_mod, "_validate_read_path_tree", _validate_then_arm)
+    monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_arm)
     fleet = Fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
@@ -4759,7 +4760,7 @@ def test_provision_oserror_tears_down_worktree(
     def boom(*_a: object, **_k: object) -> None:
         raise OSError("injected disk full")
 
-    monkeypatch.setattr(fleet_mod, "_copy_read_path_tree", boom)
+    monkeypatch.setattr(provisioning_mod, "_copy_read_path_tree", boom)
     with pytest.raises(OSError, match="disk full"):
         fleet.run(
             "writer",
@@ -5029,7 +5030,7 @@ def test_spawn_provision_oserror_terminal_stamps_not_zombie(
     def boom(*_a: object, **_k: object) -> None:
         raise OSError("injected disk full")
 
-    monkeypatch.setattr(fleet_mod, "_copy_read_path_tree", boom)
+    monkeypatch.setattr(provisioning_mod, "_copy_read_path_tree", boom)
     try:
         run_id = fleet.spawn(
             RunRequest(
@@ -5401,7 +5402,7 @@ def test_valid_ref_defs_schema_populates_structured(repo: Path) -> None:
 
 def test_schema_instruction_injection_is_idempotent() -> None:
     """Defense: a future second call site must not double-append the instruction."""
-    from marshal_engine.orchestration.fleet import _STRUCTURED_OUTPUT_MARKER, _task_with_schema_instruction
+    from marshal_engine.orchestration.structured import _STRUCTURED_OUTPUT_MARKER, _task_with_schema_instruction
 
     task = TaskSpec(id="so-idem", goal="do it", output_schema=_SCORE_SCHEMA)
     once = _task_with_schema_instruction(task)
