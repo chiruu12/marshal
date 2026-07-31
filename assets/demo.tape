@@ -1,3 +1,16 @@
+# Regenerates README's demo.gif.  Run it with:  vhs assets/demo.tape
+#
+# Needs `brew install vhs`, `marshal` on $PATH, and a throwaway repo at /tmp/marshal-demo:
+#
+#   mkdir -p /tmp/marshal-demo && cd /tmp/marshal-demo && git init -q -b main
+#   printf 'def hello(name):\n    return f"Hello, {name}!"\n' > hello.py
+#   printf 'clients:\n  ling:\n    backend: command-code\n    model: inclusionai/ling-3.0-flash-free\n' > fleet.config.yaml
+#   git add -A && git commit -qm hello
+#
+# It is a LIVE run: it spends whatever the client costs and takes as long as the agent takes.
+# Any other configured client works - swap `--client ling` and the config above. Reset between
+# takes with `rm -rf /tmp/marshal-demo/.marshal && git -C /tmp/marshal-demo checkout -- hello.py`.
+
 Output "demo.gif"
 
 Require marshal
