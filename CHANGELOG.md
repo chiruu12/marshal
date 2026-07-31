@@ -9,6 +9,15 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Changed
+- **`mcp_server.py` split into an `interfaces/mcp_server/` package** (880 lines → 9 modules, largest
+  291). Tool handlers group into `tools_inspect`, `tools_runs`, `tools_integrate`, `tools_recipes`,
+  and `tools_workspaces`; `schema` holds the parameter descriptions and shared job models; `server`
+  builds the app and registers each group. The helpers the handlers used to capture as closure
+  variables (`registry`, `offload`, `ws_call`, `run_call`) are now an explicit `ToolContext`, so a
+  tool group states what it needs instead of inheriting a nested scope. `build_app`, `build_service`,
+  and `main` are re-exported, so `marshal_engine.interfaces.mcp_server` is unchanged for callers.
+  The tool surface is byte-identical: every tool's name, description, and JSON input schema was
+  diffed before and after (the tool list itself lives in `docs/mcp-tools.md`).
 - **`cli.py` split into an `interfaces/cli/` package** (968 lines → 8 modules, largest 209).
   `parser` owns argument wiring and dispatch; handlers group into `inspect` (read-only views),
   `runs`, `recipes` (workflows/teams), and `admin` (init/doctor/workspace/clean), over a shared
