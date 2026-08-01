@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec
 from marshal_engine.backends.codex import CodexBackend
 
 
@@ -196,4 +196,7 @@ def test_account_info_none_when_binary_missing(
 
 
 def test_available_models_static_playbook(backend: CodexBackend) -> None:
-    assert backend.available_models() == ["gpt-5.6-luna"]
+    catalog = backend.available_models()
+    assert catalog.models == ["gpt-5.6-luna"]
+    # Codex has no probe at all, so this can never be anything but a curated list.
+    assert catalog.source is ModelSource.STATIC

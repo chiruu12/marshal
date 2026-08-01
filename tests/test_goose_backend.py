@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
+from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
 from marshal_engine.backends.goose import GooseBackend, _parse_info_check, _split_provider_model
 
 
@@ -385,4 +385,6 @@ def test_account_info_none_when_binary_missing(
 
 
 def test_available_models_static_playbook(backend: GooseBackend) -> None:
-    assert backend.available_models() == ["cursor-agent/auto"]
+    catalog = backend.available_models()
+    assert catalog.models == ["cursor-agent/auto"]
+    assert catalog.source is ModelSource.STATIC

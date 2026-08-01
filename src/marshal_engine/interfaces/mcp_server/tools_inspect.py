@@ -109,10 +109,11 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
     ) -> dict[str, Any]:
         """List the optional `models:` catalog (id, backends, cost, quota_type, notes) plus the
         fleet's driver-facing context, for the chosen workspace. When no catalog is configured,
-        `backend_models` carries what each backend's CLI reports right now, keyed by backend -
-        `null` there means that CLI exposes no way to ask, NOT that the backend has no models.
-        Pure data - does NOT influence routing (clients still own backend+model). Returns
-        {models, backend_models, driver_context, workspace}."""
+        `backend_models` maps each backend to {models, source}: source `probed` means its CLI
+        answered just now, `static` means a curated list that may name models the account cannot
+        actually run, `unavailable` means it could not be asked at all. Do NOT treat a `static`
+        list as evidence a model is runnable. Pure data - does NOT influence routing (clients
+        still own backend+model). Returns {models, backend_models, driver_context, workspace}."""
         return await ws_call(workspace, lambda svc: svc.list_models())
 
     @app.tool()

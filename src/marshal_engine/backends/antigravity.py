@@ -68,6 +68,7 @@ from typing import Any
 from ..core.types import (
     AgentResult,
     Capabilities,
+    ModelCatalog,
     PermissionFidelity,
     PermissionMode,
     RunOpts,
@@ -198,28 +199,16 @@ class AntigravityBackend(CodingAgentBackend):
         # not "logged out". Doctor must not claim credentials are valid from PATH alone.
         return False
 
-    def available_models(self) -> list[str]:
-        """Model ids from ``agy models``, or the static playbook/docstring fallback.
+    def available_models(self) -> ModelCatalog:
+        """Model ids from ``agy models``, falling back to the curated playbook list.
 
-        One model id per stdout line (verified against the real CLI). Never raises; never
-        returns None — on any probe failure the curated static list is used.
+        One model id per stdout line (verified against the real CLI).
         """
-        if shutil.which(self.binary) is None:
-            return list(_STATIC_MODELS)
-        try:
-            proc = subprocess.run(
-                [self.binary, "models"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return list(_STATIC_MODELS)
-        if proc.returncode != 0:
-            return list(_STATIC_MODELS)
-        models = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
-        return models or list(_STATIC_MODELS)
+        return self._probe_models(
+            [self.binary, "models"],
+            lambda stdout: [ln.strip() for ln in stdout.splitlines() if ln.strip()],
+            _STATIC_MODELS,
+        )
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary]

@@ -949,6 +949,7 @@ def test_models_reports_what_the_backends_say_when_no_catalog(
     `list_models` tool on the same repo returned a full probed list - the two surfaces
     disagreeing about whether the repo had any models at all.
     """
+    from marshal_engine import ModelCatalog, ModelSource
     from marshal_engine.backends.cursor import CursorBackend
     from marshal_engine.backends.opencode import OpenCodeBackend
 
@@ -956,9 +957,13 @@ def test_models_reports_what_the_backends_say_when_no_catalog(
     # depending on what happens to be installed on the machine running the tests.
     monkeypatch.setattr(CursorBackend, "check_available", lambda self: True)
     monkeypatch.setattr(OpenCodeBackend, "check_available", lambda self: True)
-    monkeypatch.setattr(CursorBackend, "available_models", lambda self: ["composer", "grok"])
-    # A probe that cannot answer surfaces as None, which must not read as "has no models".
-    monkeypatch.setattr(OpenCodeBackend, "available_models", lambda self: None)
+    monkeypatch.setattr(
+        CursorBackend,
+        "available_models",
+        lambda self: ModelCatalog(models=["composer", "grok"], source=ModelSource.PROBED),
+    )
+    # A backend that cannot answer reports UNAVAILABLE, which must not read as "has no models".
+    monkeypatch.setattr(OpenCodeBackend, "available_models", lambda self: ModelCatalog())
     cfg = tmp_path / "fleet.config.yaml"
     cfg.write_text("clients:\n  a:\n    backend: cursor\n  b:\n    backend: opencode\n")
 
@@ -966,17 +971,22 @@ def test_models_reports_what_the_backends_say_when_no_catalog(
     assert ret == 0
     out = capsys.readouterr()[0]
     assert "no `models:` catalog" in out
-    assert "cursor: composer, grok" in out
-    assert "opencode: cannot report models" in out
+    assert "cursor [probed]: composer, grok" in out
+    assert "opencode: nothing to report (unavailable)" in out
 
 
 def test_models_json_carries_the_probe_result(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from marshal_engine import ModelCatalog, ModelSource
     from marshal_engine.backends.cursor import CursorBackend
 
     monkeypatch.setattr(CursorBackend, "check_available", lambda self: True)
-    monkeypatch.setattr(CursorBackend, "available_models", lambda self: ["composer"])
+    monkeypatch.setattr(
+        CursorBackend,
+        "available_models",
+        lambda self: ModelCatalog(models=["composer"], source=ModelSource.STATIC),
+    )
     cfg = tmp_path / "fleet.config.yaml"
     cfg.write_text("clients:\n  a:\n    backend: cursor\n")
 
@@ -984,7 +994,9 @@ def test_models_json_carries_the_probe_result(
     assert ret == 0
     data = json.loads(capsys.readouterr()[0])
     assert data["models"] == []
-    assert data["backend_models"] == {"cursor": ["composer"]}
+    # The source rides along in JSON too - a driver must not have to guess whether it is
+    # looking at a live answer or a curated fallback.
+    assert data["backend_models"] == {"cursor": {"models": ["composer"], "source": "static"}}
 
 
 def test_models_unknown_backend_reports_an_error_not_a_traceback(

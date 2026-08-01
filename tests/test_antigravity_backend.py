@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
+from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
 from marshal_engine.backends import antigravity as agy_mod
 from marshal_engine.backends.antigravity import (
     AntigravityBackend,
@@ -453,20 +453,23 @@ def test_available_models_parses_cli_rows(
         return _Proc()
 
     monkeypatch.setattr(
-        "marshal_engine.backends.antigravity.shutil.which", lambda _b: "/usr/bin/agy"
+        "marshal_engine.backends.base.shutil.which", lambda _b: "/usr/bin/agy"
     )
-    monkeypatch.setattr("marshal_engine.backends.antigravity.subprocess.run", _run)
-    assert backend.available_models() == ["gemini-3.1-pro-high", "claude-sonnet-4-6"]
+    monkeypatch.setattr("marshal_engine.backends.base.subprocess.run", _run)
+    catalog = backend.available_models()
+    assert catalog.models == ["gemini-3.1-pro-high", "claude-sonnet-4-6"]
+    assert catalog.source is ModelSource.PROBED
     assert calls and calls[0] == ["agy", "models"]
 
 
 def test_available_models_static_fallback_when_binary_missing(
     backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("marshal_engine.backends.antigravity.shutil.which", lambda _b: None)
-    models = backend.available_models()
-    assert "gemini-3.1-pro" in models
-    assert "gpt-oss-120b" in models
+    monkeypatch.setattr("marshal_engine.backends.base.shutil.which", lambda _b: None)
+    catalog = backend.available_models()
+    assert "gemini-3.1-pro" in catalog.models
+    assert "gpt-oss-120b" in catalog.models
+    assert catalog.source is ModelSource.STATIC
 
 
 # --- trustedWorkspaces transaction (run() adds on prepare, removes on completion) -------------
