@@ -8,6 +8,20 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+- **`available_models()` now returns a `ModelCatalog` (`{models, source}`) instead of a bare list**,
+  applying the cost-provenance rule to model discovery: never present a curated list as a live
+  answer. `source` is `probed` (the CLI answered just now), `static` (a curated list from
+  `docs/model-playbook.md`, used when the CLI has no list command or could not be asked), or
+  `unavailable`. Previously an adapter whose binary was not even installed returned its static
+  fallback as a plain list, indistinguishable from a live probe — so a driver could route at a
+  model the account cannot run and lose a worktree to an unknown-model error. The `list_models`
+  MCP tool and `marshal models` both surface the source; `backend_models` values change from
+  `[model_id] | null` to `{models, source}`.
+- **The probe-then-fall-back path moved to `CodingAgentBackend._probe_models`**, so the four
+  adapters that can ask their CLI share one implementation and no adapter can degrade dishonestly
+  on its own. `ModelCatalog` / `ModelSource` are exported from `marshal_engine`.
+
 ### Fixed
 - **`marshal models` now answers from the same place the `list_models` MCP tool does.** It read
   `fleet.config.yaml` directly, so on a repo with no `models:` catalog it reported "no catalog,

@@ -91,7 +91,7 @@ class CodingAgentBackend(ABC):
     def prepare(self, opts) -> None: ...                         # default no-op; per-run setup before spawn
     def account_info(self) -> dict[str, str] | None: ...         # default None; cheap account metadata (plan tier)
     def verifies_auth(self) -> bool: ...                         # True → doctor FAILs when account_info is None
-    def available_models(self) -> list[str] | None: ...          # default None; concrete adapters always return a non-empty list
+    def available_models(self) -> ModelCatalog: ...              # default UNAVAILABLE; {models, source} - source says probed vs static
 
     # run() lives on the base: build_invocation -> spawn in worktree (timeout!) -> capture -> parse_output
 ```
@@ -102,12 +102,18 @@ Add a **version probe** in `check_available` + **contract tests per backend** (t
 + `verifies_auth` so `marshal doctor` can distinguish installed from logged-in (preflight only —
 spawn is not hard-gated on doctor auth FAIL).
 
-**Model discovery (`available_models`):** every concrete adapter returns a non-empty `list[str]`
-(never `None`). Probe the CLI when it exposes a headless list (`cursor-agent models`,
-`opencode models`, `command-code --list-models`, `agy models`); otherwise return a curated static
-list from [`model-playbook.md`](model-playbook.md) / the adapter docstring. Probes must never raise
-or hang (bounded timeout + static fallback). Shared contract: `tests/test_backend_contract.py`
-(parametrised over `registry.backend_names()`).
+**Model discovery (`available_models`):** every concrete adapter returns a `ModelCatalog`
+(`{models, source}`) with a non-empty `models`. `source` carries the provenance, exactly as
+`UsageSource` does for cost: `probed` when the CLI answered just now (`cursor-agent models`,
+`opencode models`, `command-code --list-models`, `agy models`), `static` when the answer is the
+curated list from [`model-playbook.md`](model-playbook.md) / the adapter docstring, `unavailable`
+when there is nothing to report. The tag is the point - a bare list could not distinguish a live
+answer from a fallback emitted by a backend that was not even installed, so a driver could route
+at a model the account cannot run. Adapters whose CLI can be asked go through
+`CodingAgentBackend._probe_models`, which owns the probe-then-degrade path so no adapter has to
+remember to fall back honestly. Probes must never raise or hang (bounded timeout + static
+fallback). Shared contract: `tests/test_backend_contract.py` (parametrised over
+`registry.backend_names()`).
 
 **Doctor auth probes (fail closed when `verifies_auth`):**
 

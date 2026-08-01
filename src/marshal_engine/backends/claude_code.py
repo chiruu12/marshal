@@ -34,6 +34,8 @@ from typing import Any
 from ..core.types import (
     AgentResult,
     Capabilities,
+    ModelCatalog,
+    ModelSource,
     PermissionFidelity,
     PermissionMode,
     RunOpts,
@@ -98,12 +100,13 @@ class ClaudeCodeBackend(CodingAgentBackend):
         # ``claude auth status`` reports ``loggedIn``; None with binary present → not authenticated.
         return True
 
-    def available_models(self) -> list[str]:
+    def available_models(self) -> ModelCatalog:
         """Curated static model ids — Claude Code exposes no headless model-list probe.
 
-        Static list from docs/model-playbook.md. Never raises; never returns None.
+        Always `STATIC`: this is docs/model-playbook.md talking, not the CLI, so a caller can
+        tell it may be stale rather than trusting it as a live account capability.
         """
-        return list(_STATIC_MODELS)
+        return ModelCatalog(models=list(_STATIC_MODELS), source=ModelSource.STATIC)
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "json"]

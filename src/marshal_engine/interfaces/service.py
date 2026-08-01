@@ -45,7 +45,13 @@ from ..orchestration.results import (
 from ..core.retry import RetryPolicy
 from ..runtime.state import RunRecord
 from ..orchestration.registry import make_backend
-from ..core.types import RunStatus, TaskSpec, UsageSource, resolve_permission_fidelity
+from ..core.types import (
+    ModelCatalog,
+    RunStatus,
+    TaskSpec,
+    UsageSource,
+    resolve_permission_fidelity,
+)
 from ..accounting.usage import UsageSummary
 from ..core.layout import reports_dir
 from ..runtime.worktree import WorktreeError
@@ -140,15 +146,20 @@ class ModelList(BaseModel):
     """
 
     models: list[ModelSpec]
-    # Model ids the configured backends' CLIs report, keyed by backend. Populated ONLY when no
-    # `models:` catalog is configured - a driver otherwise had to leave Marshal and run
-    # `cursor-agent models` in a shell to learn what it could route at. `None` for a backend means
-    # it exposes no way to ask, which is NOT "it has no models"; a caller must tell those apart.
+    # What each configured backend can say about its models, keyed by backend. Populated ONLY when
+    # no `models:` catalog is configured - a driver otherwise had to leave Marshal and run
+    # `cursor-agent models` in a shell to learn what it could route at.
+    #
+    # Each entry carries its own `source`, so "the CLI answered just now" (`probed`), "this is a
+    # curated list that may be stale" (`static`), and "nothing to report" (`unavailable`) are
+    # distinguishable. That distinction used to be a bare `None`, which could not express the
+    # middle case at all - a static fallback from a backend that was not even installed looked
+    # exactly like a live answer.
     #
     # Kept as a SEPARATE field, never merged into `models`: the catalog is curated metadata a human
     # wrote, this is whatever a CLI said just now. Flattening them would erase that difference and
     # let a probe drift into looking like configuration.
-    backend_models: dict[str, list[str] | None] = {}
+    backend_models: dict[str, ModelCatalog] = {}
     driver_context: str | None = None
 
 
@@ -260,18 +271,18 @@ class MarshalService:
         # Probe CONCURRENTLY. Each probe is a subprocess with its own timeout, so running them
         # serially makes the worst case the SUM of those timeouts - enough to blow past an MCP
         # client's request deadline and turn a slow catalogue into a dead tool.
-        probed: dict[str, list[str] | None] = {}
+        probed: dict[str, ModelCatalog] = {}
         if not self.config.models:
             names = sorted({c.backend for c in self._clients.values()})
 
-            def _probe(name: str) -> tuple[str, list[str] | None]:
+            def _probe(name: str) -> tuple[str, ModelCatalog]:
                 backend = self.fleet.backends.get(name)
                 if backend is None:
-                    return name, None
+                    return name, ModelCatalog()
                 try:
                     return name, backend.available_models()
                 except Exception:  # a probe must never take the whole listing down
-                    return name, None
+                    return name, ModelCatalog()
 
             if names:
                 with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:

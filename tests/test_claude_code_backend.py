@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
+from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
 from marshal_engine.backends.claude_code import ClaudeCodeBackend
 
 
@@ -217,8 +217,10 @@ def test_account_info_none_when_binary_missing(
 
 
 def test_available_models_static_playbook(backend: ClaudeCodeBackend) -> None:
-    assert backend.available_models() == [
+    catalog = backend.available_models()
+    assert catalog.models == [
         "claude-opus-4-8",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",
     ]
+    assert catalog.source is ModelSource.STATIC

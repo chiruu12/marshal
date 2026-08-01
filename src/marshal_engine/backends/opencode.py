@@ -50,6 +50,7 @@ from typing import Any
 from ..core.types import (
     AgentResult,
     Capabilities,
+    ModelCatalog,
     PermissionFidelity,
     PermissionMode,
     RunOpts,
@@ -199,34 +200,17 @@ class OpenCodeBackend(CodingAgentBackend):
         # ``opencode auth list`` with ≥1 credential/env auth is the doctor auth signal.
         return True
 
-    def available_models(self) -> list[str]:
-        """Model ids from ``opencode models``, or the static playbook fallback.
+    def available_models(self) -> ModelCatalog:
+        """Model ids from ``opencode models``, falling back to the curated playbook list.
 
-        One ``provider/model`` id per stdout line (verified against the real CLI). Never raises;
-        never returns None — on any probe failure the curated list from docs/model-playbook.md.
+        One ``provider/model`` id per stdout line (verified against the real CLI).
         """
-        if shutil.which(self.binary) is None:
-            return list(_STATIC_MODELS)
-        try:
-            proc = subprocess.run(
-                [self.binary, "models"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return list(_STATIC_MODELS)
-        if proc.returncode != 0:
-            return list(_STATIC_MODELS)
-        models = [
-            line.strip()
-            for line in (proc.stdout or "").splitlines()
-            if line.strip() and not line.strip().startswith("⠀")
-        ]
-        # Drop the ASCII-art banner lines (non id-shaped) — keep provider/model rows only.
-        models = [m for m in models if "/" in m]
-        return models or list(_STATIC_MODELS)
+        def parse(stdout: str) -> list[str]:
+            rows = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+            # Drop the ASCII-art banner lines (non id-shaped) — keep provider/model rows only.
+            return [r for r in rows if "/" in r and not r.startswith("⠀")]
+
+        return self._probe_models([self.binary, "models"], parse, _STATIC_MODELS)
 
     def prepare(self, opts: RunOpts) -> None:
         """Stamp ``OPENCODE_CONFIG_CONTENT`` with the permission snippet for this tier.

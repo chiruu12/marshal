@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec
 from marshal_engine.backends.cursor import (
     SAFE_EDIT_DENY,
     CursorBackend,
@@ -681,19 +681,22 @@ def test_available_models_parses_cli_rows(
         return _Proc()
 
     monkeypatch.setattr(
-        "marshal_engine.backends.cursor.shutil.which", lambda _b: "/usr/bin/cursor-agent"
+        "marshal_engine.backends.base.shutil.which", lambda _b: "/usr/bin/cursor-agent"
     )
-    monkeypatch.setattr("marshal_engine.backends.cursor.subprocess.run", _run)
-    assert backend.available_models() == ["composer-2.5", "gpt-5.2"]
+    monkeypatch.setattr("marshal_engine.backends.base.subprocess.run", _run)
+    catalog = backend.available_models()
+    assert catalog.models == ["composer-2.5", "gpt-5.2"]
+    assert catalog.source is ModelSource.PROBED
     assert calls and calls[0] == ["cursor-agent", "models"]
 
 
 def test_available_models_static_fallback_when_binary_missing(
     backend: CursorBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("marshal_engine.backends.cursor.shutil.which", lambda _b: None)
-    models = backend.available_models()
-    assert models == ["composer-2.5"]
+    monkeypatch.setattr("marshal_engine.backends.base.shutil.which", lambda _b: None)
+    catalog = backend.available_models()
+    assert catalog.models == ["composer-2.5"]
+    assert catalog.source is ModelSource.STATIC
 
 
 def test_failed_run_still_reports_tokens_and_session(backend: CursorBackend) -> None:
