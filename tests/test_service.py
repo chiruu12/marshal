@@ -1483,6 +1483,33 @@ def test_a_base_that_was_never_on_a_branch_still_gets_a_true_message(repo: Path)
     assert "never on one" in result.message, "the cause list omits the case that produced it"
 
 
+def test_a_sibling_run_sharing_the_base_does_not_silence_the_diagnosis(repo: Path) -> None:
+    """A fan-out shares one base, so siblings must not count as refs keeping it alive.
+
+    Run branches are cut FROM the base and contain it by construction. Skipping only the asking
+    run's own branch left every sibling able to vouch for a base that is really gone - so the
+    larger the fan-out, the more certainly the diagnosis went silent. That is backwards: a rewrite
+    under a 1-run fleet is a nuisance, under an 8-run fleet it is eight confusing conflicts."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    rec = svc.run_agent("worker", "edit the shared file")
+    sibling = svc.run_agent("worker", "a concurrent run off the same base")  # noqa: F841
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    _git(repo, "reset", "-q", "--soft", "HEAD~1")
+    (repo / "shared.txt").write_text("the human's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "add shared, reworded")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert "reachable from no branch or tag" in result.message, (
+        "a sibling run branch vouched for a base that is actually orphaned"
+    )
+
+
 def test_integrate_clears_the_note_of_the_verdict_it_supersedes(repo: Path) -> None:
     """A run rejected WITH A REASON and later integrated must not keep the reason.
 

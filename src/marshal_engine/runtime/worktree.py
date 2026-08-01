@@ -14,7 +14,7 @@ import shutil
 import signal
 import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -513,27 +513,31 @@ class WorktreeManager:
         """
         return self._git("merge-base", "--is-ancestor", commit, target).returncode == 0
 
-    def any_ref_contains(self, commit: str, *, ignore: Sequence[str] = ()) -> bool:
-        """Whether any branch or tag other than `ignore` still reaches `commit`.
+    def any_user_ref_contains(self, commit: str) -> bool:
+        """Whether any ref the USER owns still reaches `commit`. Marshal's own are excluded.
 
-        This is what separates "history was rewritten out from under this run" from "this run was
-        deliberately based on another branch": a rewritten commit is reachable from no surviving
-        ref, while a divergent base is still contained by the branch it was cut from. Reachability
-        from the merge target alone cannot tell those apart, and `base_branch` chaining is a
-        supported flow.
+        This is what separates "the base was orphaned out from under this run" from "this run was
+        deliberately based on another branch": an orphaned base is reachable from no surviving ref,
+        while a divergent base is still contained by the branch it was cut from. Reachability from
+        the merge target alone cannot tell those apart, and `base_branch` chaining is supported.
 
-        `ignore` exists because the run's OWN branch was cut from that commit and therefore always
-        contains it - counting it would make every base look alive and silence the diagnosis
-        entirely.
+        Every ref under ``branch_prefix/`` is skipped, not merely the asking run's own branch. Run
+        branches are cut FROM the base, so they contain it by construction - and a fan-out leaves
+        siblings sharing one base, so counting them would let any concurrent run silence the
+        diagnosis for all of them. That is the case this matters in: rewriting history under a
+        1-run fleet is a nuisance, under an 8-run fleet it is eight confusing conflicts.
 
-        Deliberately ref-based, not object-based: the reflog keeps a rewritten commit alive as an
+        Deliberately ref-based, not object-based: the reflog keeps an orphaned commit alive as an
         object long after every ref has moved off it.
         """
         proc = self._git("for-each-ref", "--contains", commit, "--format=%(refname)")
         if proc.returncode != 0:
             return False
-        skip = {f"refs/heads/{name}" for name in ignore if name} | set(ignore)
-        return any(ref.strip() and ref.strip() not in skip for ref in proc.stdout.splitlines())
+        managed = f"refs/heads/{self.branch_prefix}/"
+        return any(
+            ref.strip() and not ref.strip().startswith(managed)
+            for ref in proc.stdout.splitlines()
+        )
 
     def branch_tip(self, branch: str) -> str:
         """The commit sha at the tip of `branch`.

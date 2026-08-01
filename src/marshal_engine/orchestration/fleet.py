@@ -583,7 +583,7 @@ def _orphaned_base_diagnosis(
     try:
         if worktrees.is_ancestor(rec.base_commit, target):
             return ""
-        if worktrees.any_ref_contains(rec.base_commit, ignore=[rec.branch or ""]):
+        if worktrees.any_user_ref_contains(rec.base_commit):
             return ""
     except WorktreeError:
         return ""
