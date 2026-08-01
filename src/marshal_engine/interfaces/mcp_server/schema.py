@@ -45,6 +45,14 @@ _DESC_READ_PATHS = (
     "under .ssh) are refused on the path and every descendant; only regular files/directories "
     "are accepted (FIFOs/sockets/devices refused). Missing or refused paths fail the spawn."
 )
+_DESC_ARTIFACTS_FROM = (
+    "Optional run ids whose artifacts this run should be able to read, copied in read-only under "
+    "`.marshal-context/artifacts/<run_id>/`. This is how a multi-round loop passes work forward: "
+    "round 1 writes its report to `.marshal-artifacts/` in its worktree, Marshal harvests it, and "
+    "round 2 names round 1 here instead of you pasting the findings into the next prompt. Tell the "
+    "agent in the goal that the file is there. A run with no stored artifacts fails the spawn "
+    "rather than silently handing the agent nothing (check `artifacts` on the run record first)."
+)
 _DESC_BASE_BRANCH = (
     "Optional branch to base the run's worktree on (None = current HEAD). Use after commit_run to "
     "chain dependent work off a prior run's branch."
@@ -80,6 +88,9 @@ class Job(BaseModel):
     task_kind: Annotated[str | None, Field(description=_DESC_TASK_KIND)] = None
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
     read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None
+    artifacts_from: Annotated[
+        list[str] | None, Field(description=_DESC_ARTIFACTS_FROM)
+    ] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None

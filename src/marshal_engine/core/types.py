@@ -189,6 +189,10 @@ class TaskSpec(BaseModel):
     # copied into the worktree under `.marshal-context/` (see Fleet provisioning). Unlike
     # context_files these are deliberately outside the worktree checkout.
     read_paths: list[str] = []
+    # Run ids whose harvested artifacts this run should be able to read. Copied in read-only under
+    # `.marshal-context/artifacts/<run_id>/`. This is how round N's report reaches round N+1
+    # without the driver pasting findings into the next prompt by hand.
+    artifacts_from: list[str] = []
     base_branch: str | None = None         # branch to base the worktree on (None = current HEAD)
     # Optional JSON Schema for the agent's FINAL MESSAGE. When set (including {}), the fleet
     # injects a prompt instruction and validates the reply as one JSON object; see

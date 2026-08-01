@@ -41,6 +41,21 @@ def reports_dir(repo: Path | str) -> Path:
     return marshal_dir(repo) / "reports"
 
 
+def artifacts_dir(repo: Path | str) -> Path:
+    """Return ``<repo>/.marshal/artifacts`` — per-run outputs that outlive their worktree.
+
+    A worktree is discarded on clean, so anything an agent wrote there dies with it. Artifacts are
+    harvested out per run so a later round can be handed the previous round's report instead of the
+    driver pasting findings into the next prompt by hand.
+    """
+    return marshal_dir(repo) / "artifacts"
+
+
+def run_artifacts_dir(repo: Path | str, run_id: str) -> Path:
+    """Return ``<repo>/.marshal/artifacts/<run_id>``. Caller must pass a validated run id."""
+    return artifacts_dir(repo) / run_id
+
+
 def budget_gate_path(repo: Path | str) -> Path:
     """Return ``<repo>/.marshal/budget_gate.json`` — cross-process enforce-budget reservations."""
     return marshal_dir(repo) / "budget_gate.json"

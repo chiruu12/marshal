@@ -83,6 +83,13 @@ B needs A's output, batching them in parallel makes each branch off the same bas
 others - they re-invent the same scaffolding and collide at integrate. For sequential work, do one of:
 - **Rounds (simplest):** integrate A into your branch (when A produced a diff), then plan B against
   the new state. For text-only A, read `collect_run` / `text` and put the findings in B's prompt.
+- **Pass a report forward with artifacts (multi-round review/fix loops):** tell A in its goal to
+  write its findings to `.marshal-artifacts/<name>.md` in its worktree. Marshal harvests that when
+  the run ends, so it survives the worktree, and `get_run(A)` lists it under `artifacts`. Then spawn
+  B with `artifacts_from: [A_run_id]` and it lands read-only at
+  `.marshal-context/artifacts/<A_run_id>/`. **Say in B's goal that the file is there** - the copy is
+  not announced to the agent by itself. Prefer this over pasting a long report into B's prompt: it
+  keeps prompts short, and the next round reads what A actually wrote instead of your summary of it.
 - **Chain off A's branch (no integrate yet):** `commit_run(A)` freezes A's work as a commit on its own
   branch (your branch stays untouched), then `spawn`/`run_agent` B with `base_branch` = A's branch so B
   builds on A's actual output. Without `commit_run`, basing B on A's branch sees only the spawn base -

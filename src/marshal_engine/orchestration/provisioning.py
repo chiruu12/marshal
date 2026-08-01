@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
 
+from ..core.ids import validate_run_id
 from ..runtime.worktree import Worktree
 
 def _require_context_files(wt: Worktree, context_files: list[str]) -> None:
@@ -66,6 +68,16 @@ _READ_CONTEXT_DIR = ".marshal-context"
 # Fail-closed secret shapes. Same hazard as silently copying for context_files: gitignored secrets
 # (`.env`, keys under `.ssh`) exist on the driver's machine and must not be handed to an agent.
 _READ_PATH_SECRET_NAME_GLOBS = (".env*", "*.pem", "id_rsa*", "id_ed25519*")
+
+# Directory inside each worktree where an agent writes output meant to OUTLIVE the worktree.
+# Excluded from git like `.marshal-context/`, so writing here never pollutes the run's diff -
+# an artifact is a report about the work, not part of it.
+ARTIFACT_DIR = ".marshal-artifacts"
+
+# Where a prior run's harvested artifacts are mounted for a later one, under `.marshal-context/`.
+# Nested there so one exclude entry still covers every injected read, and so the agent sees all
+# its read-only inputs in one place.
+ARTIFACT_MOUNT = "artifacts"
 
 
 def _is_refused_read_path(path: Path) -> bool:
@@ -521,5 +533,77 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
         _make_readonly(dest)
 
     _append_exclude(wt, f"{_READ_CONTEXT_DIR}/")
+
+
+def prepare_artifact_dir(wt: Worktree) -> None:
+    """Create the worktree's ``.marshal-artifacts/`` and keep it out of git.
+
+    Created up front rather than left to the agent so the directory is always there to write into,
+    and so the exclude entry exists before anything lands in it - an artifact appearing in the
+    run's own diff would make a report about the work look like part of the work.
+    """
+    (wt.path / ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
+    _append_exclude(wt, f"{ARTIFACT_DIR}/")
+
+
+def harvest_artifacts(wt: Worktree, dest_root: Path) -> list[str]:
+    """Copy the run's ``.marshal-artifacts/`` out to `dest_root`; return the relative names stored.
+
+    Runs at the end of EVERY run, including failed ones: a run that died partway may still have
+    written the findings that explain why, and those are exactly what the next round needs.
+
+    Symlinks are skipped, not followed. The agent controls this directory, so a link here is a
+    request to copy something the agent chose - possibly outside its worktree - into durable
+    storage the driver later mounts into other runs. Dereferencing would turn the artifact channel
+    into a worktree-escape, so links are dropped and named in the return value's absence.
+
+    Never raises: harvesting happens after the work is done and its record is being stamped, so a
+    failure here must not turn a finished run into a failed one.
+    """
+    src_root = wt.path / ARTIFACT_DIR
+    if not src_root.is_dir() or src_root.is_symlink():
+        return []
+    stored: list[str] = []
+    for src in sorted(src_root.rglob("*")):
+        if src.is_symlink() or not src.is_file():
+            continue
+        rel = src.relative_to(src_root)
+        dest = dest_root / rel
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+        except OSError:
+            continue
+        stored.append(rel.as_posix())
+    return stored
+
+
+def provision_run_artifacts(wt: Worktree, artifacts_root: Path, run_ids: list[str]) -> None:
+    """Mount earlier runs' harvested artifacts read-only under ``.marshal-context/artifacts/``.
+
+    Fails loudly when a named run has no artifacts. A driver naming a run it wants the next round
+    to build on has stated a dependency; silently handing the agent nothing would let it solve the
+    task from the prompt alone and look like it worked - the same silent-missing-input failure
+    `context_files` was hardened against.
+    """
+    if not run_ids:
+        return
+    dest_root = _ensure_plain_marshal_context_dir(wt.path / _READ_CONTEXT_DIR) / ARTIFACT_MOUNT
+    dest_root.mkdir(parents=True, exist_ok=True)
+    for run_id in run_ids:
+        # Validated as a path segment: a run id reaching the filesystem must not be able to
+        # address a sibling directory (`../`) or escape the artifacts root.
+        validate_run_id(run_id)
+        src = artifacts_root / run_id
+        if not src.is_dir() or not any(src.rglob("*")):
+            raise ValueError(
+                f"artifacts_from names a run with no stored artifacts: {run_id!r}. "
+                f"A run only has artifacts if it wrote them to `{ARTIFACT_DIR}/` in its worktree."
+            )
+        dest = dest_root / run_id
+        if dest.exists():
+            raise ValueError(f"artifacts_from lists {run_id!r} more than once.")
+        _copy_read_path_tree(src, dest)
+        _make_readonly(dest)
 
 

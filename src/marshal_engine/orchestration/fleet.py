@@ -36,7 +36,7 @@ from ..accounting.budgets import compute_budget_status as compute_budget_status
 from ..core.config import BudgetSpec
 from ..accounting.eastrouter import CostResolver, default_cost_resolvers
 from ..runtime.env import merge_user_path, redact_secrets
-from ..core.layout import budget_gate_path, marshal_dir
+from ..core.layout import artifacts_dir, budget_gate_path, marshal_dir, run_artifacts_dir
 from ..runtime.logs import RunLogStore
 from ..core.retry import RetryPolicy, is_transient_failure
 from ..runtime.state import FleetState, RunRecord
@@ -52,7 +52,13 @@ from ..core.types import (
 )
 from ..accounting.usage import UsageEvent, UsageTracker, goal_digest
 from ..runtime.worktree import Worktree, WorktreeError, WorktreeManager, is_git_object_id
-from .provisioning import _provision_read_paths, _require_context_files
+from .provisioning import (
+    _provision_read_paths,
+    _require_context_files,
+    harvest_artifacts,
+    prepare_artifact_dir,
+    provision_run_artifacts,
+)
 from .results import (
     CleanResult,
     CollectResult,
@@ -1001,6 +1007,8 @@ class Fleet:
         """
         _require_context_files(wt, req.task.context_files)
         _provision_read_paths(wt, self.repo_root, req.task.read_paths)
+        provision_run_artifacts(wt, artifacts_dir(self.repo_root), req.task.artifacts_from)
+        prepare_artifact_dir(wt)
         on_pid: Callable[[int], None] | None = None
         on_exit: Callable[[], None] | None = None
         if run_id is not None:
@@ -1208,6 +1216,11 @@ class Fleet:
             )
             event.status = status.value              # report the authoritative process status (incl. EMPTY)
             self.usage.record(event)
+            # Harvest BEFORE the terminal stamp so the record names its artifacts in the same write
+            # that makes it terminal. Landing them afterwards would publish a finished run whose
+            # artifact list is still empty, and a driver polling for terminal-then-reading would
+            # see a run that produced nothing.
+            artifacts = self._harvest_artifacts(wt, run_id)
             # Stamp the terminal record ONLY if the run is still running, so a `cancel_run` that
             # already marked it `cancelled` (the common cancel-wins-first race) is preserved rather
             # than clobbered by this thread returning from the SIGTERM-killed subprocess. The usage
@@ -1216,6 +1229,7 @@ class Fleet:
                 run_id,
                 _still_running,
                 status=status.value,
+                artifacts=artifacts,
                 cost_usd=event.cost_usd,
                 input_tokens=event.input_tokens,
                 output_tokens=event.output_tokens,
@@ -1233,8 +1247,11 @@ class Fleet:
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
             # only if still running, so a concurrent cancel's terminal status wins.
+            # Harvest here too: a run that died partway may still have written the findings that
+            # explain why, and those are exactly what the next round needs.
             self.state.update_if(
-                run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(), error=f"fleet: {exc}"
+                run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(),
+                error=f"fleet: {exc}", artifacts=self._harvest_artifacts(wt, run_id),
             )
             raise
         finally:
@@ -2060,6 +2077,19 @@ class Fleet:
             base_branch_drift=drift,
             message=drift_msg,
         )
+
+    def _harvest_artifacts(self, wt: Worktree, run_id: str) -> list[str]:
+        """Copy this run's `.marshal-artifacts/` into durable storage. Never raises.
+
+        Best-effort in the same sense as run-log persistence: the work is already done and its
+        record is being stamped, so a full disk here must not turn a finished run into a failed
+        one. A harvest failure costs the next round its input; a raise would cost the run itself.
+        """
+        try:
+            return harvest_artifacts(wt, run_artifacts_dir(self.repo_root, run_id))
+        except Exception as exc:  # noqa: BLE001 - harvesting must never break a finished run
+            print(f"[marshal] {run_id}: failed to harvest artifacts: {exc}", file=sys.stderr)
+            return []
 
     def _worktree_for(self, run_id: str) -> Worktree:
         """Reconstruct the live Worktree for a recorded run, or raise if it is gone."""

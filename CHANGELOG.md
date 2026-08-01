@@ -9,6 +9,21 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Artifact passing — a run's report can now reach the next round.** Multi-round work (audit, then
+  fix, then re-audit) needs round N's findings in round N+1, but a worktree is discarded on clean, so
+  anything an agent wrote there died with it. The only way through was to hand-copy findings into the
+  next prompt, which is what drove driver prompts to 60+ lines. An agent now writes to
+  `.marshal-artifacts/` in its own worktree; Marshal harvests that to `.marshal/artifacts/<run_id>/`
+  when the run ends (including a **failed** run — one that died partway may hold the findings that
+  explain why), and a later run names it in `artifacts_from` to get it read-only under
+  `.marshal-context/artifacts/<run_id>/`. The run record's new `artifacts` field lists what a run
+  produced, written in the same update that makes the record terminal, so a driver polling for a
+  finished run never sees one whose artifacts are still missing. Worktree isolation is unchanged: the
+  agent only ever writes inside its own worktree, and harvesting is a copy out. Symlinks in
+  `.marshal-artifacts/` are skipped rather than followed — the agent controls that directory, so a
+  link there is a request to publish something it chose into storage other runs later read, which
+  would turn the artifact channel into a worktree escape. Naming a run with no artifacts fails the
+  spawn rather than silently handing the agent nothing.
 - **`routing` — which client's work actually gets kept, per kind of task.** Marshal recorded what
   ran but nothing about whether it was any good, so it could not answer the question a driver
   actually asks. The new `accounting/ledger.py` derives that on read by joining the usage ledger

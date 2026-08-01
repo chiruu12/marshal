@@ -349,6 +349,7 @@ class MarshalService:
         context_files: list[str] | None = None,
         read_paths: list[str] | None = None,
         *,
+        artifacts_from: list[str] | None = None,
         base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
@@ -378,6 +379,7 @@ class MarshalService:
                 task_kind=task_kind,
                 context_files=context_files or [],
                 read_paths=read_paths or [],
+                artifacts_from=artifacts_from or [],
                 base_branch=base_branch,
                 output_schema=output_schema,
             )
@@ -538,6 +540,7 @@ class MarshalService:
         task_id: str | None = None,
         context_files: list[str] | None = None,
         read_paths: list[str] | None = None,
+        artifacts_from: list[str] | None = None,
         base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
@@ -547,6 +550,7 @@ class MarshalService:
     ) -> RunRecord:
         req = self._request_for(
             client_name, goal, task_id, context_files, read_paths,
+            artifacts_from=artifacts_from,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
             output_schema=output_schema, task_kind=task_kind,
@@ -557,7 +561,7 @@ class MarshalService:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
         Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, task_kind?, context_files?,
-        read_paths?, model?, backend?, duration?, output_schema?}``. Strips ``then`` and
+        read_paths?, artifacts_from?, model?, backend?, duration?, output_schema?}``. Strips ``then`` and
         ``workspace`` (registry-only). Used by single-repo ``run_many`` and the registry's
         cross-workspace fan-out so validation stays fail-fast before any worktree is created.
         """
@@ -568,6 +572,7 @@ class MarshalService:
             body.get("task_id"),
             body.get("context_files"),
             body.get("read_paths"),
+            artifacts_from=body.get("artifacts_from"),
             model=body.get("model"),
             backend=body.get("backend"),
             duration=body.get("duration"),
@@ -591,8 +596,8 @@ class MarshalService:
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
         """Run several clients in parallel. Each job is
-        {client, goal, task_id?, task_kind?, context_files?, read_paths?, model?, backend?,
-        duration?, then?}.
+        {client, goal, task_id?, task_kind?, context_files?, read_paths?, artifacts_from?,
+        model?, backend?, duration?, then?}.
 
         Optional ``then`` is the same field set as a job; it runs in the same worker as soon as that
         job's primary finishes (does not wait for sibling jobs). Client names and ``then`` specs are
@@ -611,6 +616,7 @@ class MarshalService:
         task_id: str | None = None,
         context_files: list[str] | None = None,
         read_paths: list[str] | None = None,
+        artifacts_from: list[str] | None = None,
         base_branch: str | None = None,
         model: str | None = None,
         backend: str | None = None,
@@ -626,6 +632,7 @@ class MarshalService:
         """
         req = self._request_for(
             client_name, goal, task_id, context_files, read_paths,
+            artifacts_from=artifacts_from,
             base_branch=base_branch,
             model=model, backend=backend, duration=duration,
             output_schema=output_schema, task_kind=task_kind,
