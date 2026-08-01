@@ -1,14 +1,24 @@
 """Command Code CLI adapter (`command-code -p`).
 
-Invocation reference (command-code 0.40.x), headless:
+Invocation reference (command-code 1.7.x), headless:
 
-    command-code -p "<PROMPT>" --skip-onboarding -t --max-turns N
+    command-code -p "<PROMPT>" --skip-onboarding -t --max-turns N --output-format json
                  [--permission-mode plan|auto-accept | --yolo] [-m MODEL]
 
-`-p/--print` runs non-interactively: it prints the final assistant response to stdout and exits.
-There is no JSON output for `-p` and no token/cost accounting in the output, so usage is reported
-as `unavailable` - Command Code is a hosted account whose spend lives in its own dashboard, not the
-CLI output (claiming a $0 cost it never reported would be a lie).
+`-p/--print` runs non-interactively and exits. With `--output-format json` it emits an NDJSON event
+stream whose LAST line is the result:
+
+    {"type":"result","subtype":"success","sessionId":…,"stopReason":"end_turn",
+     "usage":{"inputTokens":…,"outputTokens":…,"cacheReadTokens":…,"cacheWriteTokens":…},
+     "durationMs":…,"finalText":…}
+
+That gives tokens and a resumable `sessionId`. It does **not** give a dollar figure, so cost stays
+`unavailable` and `native_usage` stays False (that flag means native *cost*): Command Code is a
+hosted account whose spend lives in its own dashboard, and multiplying tokens by a rate Marshal
+guessed would be a fabricated cost, not a measured one.
+
+Older CLIs that do not know `--output-format` print plain text; `parse_output` falls back to
+scraping stdout when no result line is present, so those keep working with usage `unavailable`.
 
 Headless hygiene baked into every invocation:
   * `--skip-onboarding` skips the interactive taste-onboarding step (it would block an automated run).
@@ -27,6 +37,7 @@ import json
 import re
 import shutil
 import subprocess
+from typing import Any
 
 from ..core.types import (
     AgentResult,
@@ -40,7 +51,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
-from .base import CodingAgentBackend
+from .base import CodingAgentBackend, parse_jsonl
 
 #: Agent-loop turn cap. The runner's wall-clock timeout is the real bound; this guards a runaway.
 _MAX_TURNS = 50
@@ -63,8 +74,8 @@ class CommandCodeBackend(CodingAgentBackend):
     binary = "command-code"
     credential_env_vars = ("COMMAND_CODE_API_KEY",)
     capabilities = Capabilities(
-        json_output=False,
-        native_usage=False,  # hosted account: no tokens/cost in CLI output -> reported unavailable
+        json_output=True,
+        native_usage=False,  # tokens yes, USD no -> cost stays unavailable (see module docstring)
         permission_modes=frozenset(
             {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
         ),
@@ -125,6 +136,8 @@ class CommandCodeBackend(CodingAgentBackend):
             "-t",
             "--max-turns",
             str(_MAX_TURNS),
+            "--output-format",
+            "json",
         ]
         argv += self.map_permission(opts.permission)
         if opts.model:
@@ -132,14 +145,20 @@ class CommandCodeBackend(CodingAgentBackend):
         return argv
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
-        text = _ANSI.sub("", raw_stdout).strip()
-        usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
+        clean = _ANSI.sub("", raw_stdout)
+        result = _final_result(clean)
+        # No result line = an older CLI that ignored `--output-format`, or a run that died before
+        # emitting one. Scrape stdout as before rather than losing the agent's answer entirely.
+        text = (result.get("finalText") or "").strip() if result else clean.strip()
+        usage = _usage_from(self.name, result, _last_model(clean))
+        session_id = result.get("sessionId") if result else None
 
         if exit_code == _CAP_HIT_EXIT:
             return AgentResult(
                 status=RunStatus.FAILED,
                 text=text,
                 usage=usage,
+                session_id=session_id if isinstance(session_id, str) else None,
                 error=f"command-code hit the --max-turns cap ({_MAX_TURNS}); task may be incomplete",
                 exit_code=exit_code,
                 raw_stdout=raw_stdout,
@@ -151,11 +170,70 @@ class CommandCodeBackend(CodingAgentBackend):
             status=RunStatus.EXITED_CLEAN if ok else RunStatus.FAILED,
             text=text,
             usage=usage,
+            session_id=session_id if isinstance(session_id, str) else None,
             error=None if ok else (raw_stderr.strip() or f"command-code exited {exit_code}"),
             exit_code=exit_code,
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _final_result(clean_stdout: str) -> dict[str, Any] | None:
+    """The stream's terminal ``{"type":"result"}`` object, or None when there is not one.
+
+    Scans from the end: the result line is last, and taking the LAST match means a stray `result`
+    echoed inside a tool output cannot be mistaken for the run's own.
+    """
+    for event in reversed(parse_jsonl(clean_stdout)):
+        if event.get("type") == "result":
+            return event
+    return None
+
+
+def _last_model(clean_stdout: str) -> str | None:
+    """The model the final turn actually ran on.
+
+    Taken from the event stream because the result line does not carry it, and the *last* one
+    because a run may switch models mid-stream (fallback on a provider error).
+    """
+    for event in reversed(parse_jsonl(clean_stdout)):
+        inner = event.get("event")
+        if not isinstance(inner, dict):
+            continue
+        model = inner.get("model")
+        if isinstance(model, str) and model:
+            return model
+    return None
+
+
+def _usage_from(
+    backend: str, result: dict[str, Any] | None, model: str | None
+) -> UsageRecord:
+    """Tokens from the result line. Cost is never derived - see the module docstring.
+
+    ``source`` stays ``UNAVAILABLE`` even when tokens are present: the field describes the
+    provenance of the **cost**, and Command Code reports none. Tagging this ``NATIVE`` would put a
+    $0.00 into every cost rollup and make the backend that bills the most look free.
+    """
+    usage = UsageRecord(backend=backend, model=model, source=UsageSource.UNAVAILABLE)
+    tokens = (result or {}).get("usage")
+    if not isinstance(tokens, dict):
+        return usage
+    return usage.model_copy(
+        update={
+            "input_tokens": _int(tokens.get("inputTokens")),
+            "output_tokens": _int(tokens.get("outputTokens")),
+            "cache_read_tokens": _int(tokens.get("cacheReadTokens")),
+            "cache_write_tokens": _int(tokens.get("cacheWriteTokens")),
+        }
+    )
+
+
+def _int(value: Any) -> int:
+    """Non-negative int, or 0. Upstream JSON is version-variable - never raise on a token count."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
 
 
 def _parse_list_models(raw: str) -> list[str]:
