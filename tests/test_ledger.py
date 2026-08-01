@@ -231,6 +231,27 @@ def test_task_kind_filter_selects_one_group() -> None:
     assert ledger.task_kind_filter == "docs"
 
 
+def test_a_blank_task_kind_filter_selects_untagged_rather_than_nothing() -> None:
+    """A filter may only name a key events can produce, or it silently hides the whole ledger.
+
+    Whitespace-only used to normalize to `""` on the filter side while events normalized blank to
+    `untagged`, so this asked for a key nothing has and returned an empty ledger - reading as "no
+    history" when the history was there.
+    """
+    events = [_event("r1", task_kind=None), _event("r2", task_kind="docs")]
+    outcomes = {"r1": "integrated", "r2": "integrated"}
+    for blank in ("   ", "", "\t\n"):
+        ledger = summarize_routing(events, outcomes, task_kind=blank)
+        assert [c.task_kind for c in ledger.cells] == ["untagged"], blank
+        assert ledger.task_kind_filter == "untagged", blank
+
+
+def test_the_task_kind_filter_is_stripped_to_match_its_group() -> None:
+    events = [_event("r1", task_kind="docs")]
+    ledger = summarize_routing(events, {"r1": "integrated"}, task_kind="  docs  ")
+    assert [c.task_kind for c in ledger.cells] == ["docs"]
+
+
 def test_events_outside_the_window_are_excluded() -> None:
     from datetime import datetime, timezone
 

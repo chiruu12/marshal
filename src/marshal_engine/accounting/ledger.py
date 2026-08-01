@@ -44,6 +44,20 @@ MEASURED_SOURCES: Final[frozenset[str]] = frozenset(
 UNTAGGED: Final[str] = "untagged"          # no task_kind was passed at spawn
 UNKNOWN_CLIENT: Final[str] = "unknown"     # ad-hoc backend spawn, no named client
 
+def normalize_task_kind(raw: str | None) -> str:
+    """The grouping key for a task kind. Free text from the driver: strip only.
+
+    Case-folding would merge `Refactor` into `refactor` and hide that the taxonomy is drifting; a
+    typo should be a visible row. Blank (absent, empty, or whitespace-only) is `untagged`.
+
+    Both the events and the `task_kind=` filter go through this, so a filter can only ever name a
+    key that events can actually produce. Normalizing them differently let `--task-kind "  "` ask
+    for `""` - a key nothing normalizes to - and get a silently empty ledger instead of the
+    untagged rows.
+    """
+    return (raw or "").strip() or UNTAGGED
+
+
 _INTEGRATED: Final[str] = RunOutcome.INTEGRATED.value
 _REJECTED: Final[str] = RunOutcome.REJECTED.value
 _ABANDONED: Final[str] = RunOutcome.ABANDONED.value
@@ -127,14 +141,12 @@ def summarize_routing(
     cells: dict[tuple[str, str], RoutingCell] = {}
     duration_totals: dict[tuple[str, str], int] = {}
     integrated_cost: dict[tuple[str, str], float] = {}
-    wanted = task_kind.strip() if task_kind else None
+    wanted = normalize_task_kind(task_kind) if task_kind is not None else None
 
     for event in events:
         if not _in_window(event, since, until):
             continue
-        # Free text from the driver: strip only. Case-folding would merge `Refactor` into
-        # `refactor` and hide that the taxonomy is drifting; a typo should be a visible row.
-        kind = (event.task_kind or "").strip() or UNTAGGED
+        kind = normalize_task_kind(event.task_kind)
         if wanted is not None and kind != wanted:
             continue
         client = event.client or UNKNOWN_CLIENT
