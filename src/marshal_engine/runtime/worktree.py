@@ -505,6 +505,40 @@ class WorktreeManager:
         """True if `branch` has commits not reachable from `target` (work awaiting merge)."""
         return self.unmerged_commit_count(branch, target) > 0
 
+    def is_ancestor(self, commit: str, target: str) -> bool:
+        """Whether `commit` is reachable from `target`. False when either is unknown.
+
+        `git merge-base --is-ancestor` exits 1 for "not an ancestor" and 128 for a bad object, and
+        both mean "not reachable" for the caller's purposes.
+        """
+        return self._git("merge-base", "--is-ancestor", commit, target).returncode == 0
+
+    def any_user_ref_contains(self, commit: str) -> bool:
+        """Whether any ref the USER owns still reaches `commit`. Marshal's own are excluded.
+
+        This is what separates "the base was orphaned out from under this run" from "this run was
+        deliberately based on another branch": an orphaned base is reachable from no surviving ref,
+        while a divergent base is still contained by the branch it was cut from. Reachability from
+        the merge target alone cannot tell those apart, and `base_branch` chaining is supported.
+
+        Every ref under ``branch_prefix/`` is skipped, not merely the asking run's own branch. Run
+        branches are cut FROM the base, so they contain it by construction - and a fan-out leaves
+        siblings sharing one base, so counting them would let any concurrent run silence the
+        diagnosis for all of them. That is the case this matters in: rewriting history under a
+        1-run fleet is a nuisance, under an 8-run fleet it is eight confusing conflicts.
+
+        Deliberately ref-based, not object-based: the reflog keeps an orphaned commit alive as an
+        object long after every ref has moved off it.
+        """
+        proc = self._git("for-each-ref", "--contains", commit, "--format=%(refname)")
+        if proc.returncode != 0:
+            return False
+        managed = f"refs/heads/{self.branch_prefix}/"
+        return any(
+            ref.strip() and not ref.strip().startswith(managed)
+            for ref in proc.stdout.splitlines()
+        )
+
     def branch_tip(self, branch: str) -> str:
         """The commit sha at the tip of `branch`.
 

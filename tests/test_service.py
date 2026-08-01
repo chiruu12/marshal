@@ -1341,6 +1341,175 @@ def test_integrate_message_reaches_the_commit(repo: Path) -> None:
     assert "marshal: integrate" not in log, "the tooling-shaped default won anyway"
 
 
+def _git(root: Path, *a: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), *a], check=True, capture_output=True, text=True
+    )
+    return proc.stdout.strip()
+
+
+def test_a_conflict_from_a_rewritten_base_says_so_instead_of_blaming_the_files(repo: Path) -> None:
+    """The driver's #5 field complaint, reproduced: rewording commits while agents are running
+    orphans their base, every file then conflicts, and the conflict list points at files nobody
+    touched. The real cause - "your base is no longer in history" - was invisible, because the
+    conflict result carried no message at all."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    rec = svc.run_agent("worker", "edit the shared file")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    # Reword the base commit out of existence while the run is "in flight", exactly as the author
+    # did (soft reset + recommit), then diverge so the merge actually conflicts.
+    _git(repo, "reset", "-q", "--soft", "HEAD~1")
+    (repo / "shared.txt").write_text("the human's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "add shared, reworded")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert result.message and "reachable from no branch or tag" in result.message, (
+        "conflict reported with no explanation - the file list is the misleading part"
+    )
+
+
+def test_an_ordinary_conflict_does_not_claim_the_base_was_rewritten(repo: Path) -> None:
+    """The diagnosis must only speak when it is true, or it becomes the new misleading message."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    rec = svc.run_agent("worker", "edit the shared file")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    # A genuine overlap: the base commit is untouched and still reachable.
+    (repo / "shared.txt").write_text("the human's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "human edit on top")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert not (result.message and "reachable from no branch or tag" in result.message)
+
+
+def test_a_divergent_base_branch_is_not_reported_as_rewritten_history(repo: Path) -> None:
+    """`base_branch` chaining is a supported flow, not a broken repo.
+
+    A run spawned from another branch and integrated into this one has a base that is legitimately
+    not an ancestor of the target. Non-ancestry alone therefore cannot mean "rewritten": claiming
+    it would send the driver hunting a history rewrite that never happened - the same misdirection
+    this diagnosis exists to remove.
+    """
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    # A side branch that stays alive, with its own commit; the run is based on it.
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "shared.txt").write_text("the side branch's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "side edit")
+    rec = svc.run_agent("worker", "edit the shared file", base_branch="side")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    # Back on the original branch, conflict for an ordinary reason: both sides touched the file.
+    _git(repo, "checkout", "-q", "-")
+    (repo / "shared.txt").write_text("the main line's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "main-line edit")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert not (result.message and "reachable from no branch or tag" in result.message), (
+        "a live base branch was reported as rewritten history"
+    )
+
+
+def test_an_orphaned_base_offers_causes_rather_than_asserting_a_rewrite(repo: Path) -> None:
+    """`base_branch` takes any commit-ish, so "no surviving ref" does not prove a rewrite.
+
+    A run based on a branch that is later deleted reaches the same state with no rewrite involved.
+    The observation (nothing reaches this base) is what was measured and is the actionable part;
+    the cause is inferred, so the message must offer it rather than assert it. Stating a confident
+    wrong cause is the exact failure this diagnosis exists to remove."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    _git(repo, "checkout", "-q", "-b", "doomed")
+    (repo / "shared.txt").write_text("the doomed branch's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "doomed edit")
+    rec = svc.run_agent("worker", "edit the shared file", base_branch="doomed")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    _git(repo, "checkout", "-q", "-")
+    (repo / "shared.txt").write_text("the main line's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "main-line edit")
+    _git(repo, "branch", "-qD", "doomed")  # no rewrite happened; the ref simply went away
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert "reachable from no branch or tag" in result.message, "the true observation went unsaid"
+    assert "Usually this means" in result.message, "asserted one cause as fact"
+
+
+def test_a_base_that_was_never_on_a_branch_still_gets_a_true_message(repo: Path) -> None:
+    """`base_branch` accepts a raw sha, which is reachable from no ref by construction.
+
+    The diagnosis fires, and should: the measured claim (nothing reaches this base) and the remedy
+    are both correct here. What must not happen is the message insisting history was rewritten, so
+    the cause list names this case too."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    # A commit reachable from no branch: made on a detached HEAD, addressed by sha alone.
+    _git(repo, "checkout", "-q", "--detach")
+    (repo / "shared.txt").write_text("the detached version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "detached edit")
+    loose_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-")
+
+    rec = svc.run_agent("worker", "edit the shared file", base_branch=loose_sha)
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+    (repo / "shared.txt").write_text("the main line's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "main-line edit")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert "reachable from no branch or tag" in result.message
+    assert "never on one" in result.message, "the cause list omits the case that produced it"
+
+
+def test_a_sibling_run_sharing_the_base_does_not_silence_the_diagnosis(repo: Path) -> None:
+    """A fan-out shares one base, so siblings must not count as refs keeping it alive.
+
+    Run branches are cut FROM the base and contain it by construction. Skipping only the asking
+    run's own branch left every sibling able to vouch for a base that is really gone - so the
+    larger the fan-out, the more certainly the diagnosis went silent. That is backwards: a rewrite
+    under a 1-run fleet is a nuisance, under an 8-run fleet it is eight confusing conflicts."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    rec = svc.run_agent("worker", "edit the shared file")
+    sibling = svc.run_agent("worker", "a concurrent run off the same base")  # noqa: F841
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    _git(repo, "reset", "-q", "--soft", "HEAD~1")
+    (repo / "shared.txt").write_text("the human's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "add shared, reworded")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert "reachable from no branch or tag" in result.message, (
+        "a sibling run branch vouched for a base that is actually orphaned"
+    )
+
+
 def test_integrate_clears_the_note_of_the_verdict_it_supersedes(repo: Path) -> None:
     """A run rejected WITH A REASON and later integrated must not keep the reason.
 
