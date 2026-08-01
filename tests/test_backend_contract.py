@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.backends.goose import GooseBackend
 from marshal_engine.orchestration.registry import backend_names, make_backend
 from marshal_engine.core.types import (
     ModelCatalog,
@@ -297,8 +296,33 @@ def test_the_timeout_invariant_survives_a_run_override(
         os.kill(pids[0], 0)  # reaped, not left running after TIMED_OUT
 
 
-def test_goose_compose_prompt_matches_base_signature() -> None:
-    base_params = list(inspect.signature(CodingAgentBackend._compose_prompt).parameters)
-    goose_params = list(inspect.signature(GooseBackend._compose_prompt).parameters)
-    assert goose_params == base_params == ["self", "task"]
-    assert not isinstance(GooseBackend.__dict__.get("_compose_prompt"), staticmethod)
+def test_no_adapter_overrides_compose_prompt(backend: CodingAgentBackend) -> None:
+    """Prompt composition is shared; the only per-backend choice is `resolves_at_mentions`.
+
+    Cursor and Goose used to carry byte-identical overrides that differed from the base in one
+    line. Two copies means a change to the shared `read_paths` wording lands in one and is
+    forgotten in the other, and the divergence is invisible - both still "work".
+    """
+    assert "_compose_prompt" not in type(backend).__dict__, (
+        f"{backend.name}: set `resolves_at_mentions` instead of overriding _compose_prompt"
+    )
+
+
+def test_context_files_reach_the_prompt_in_this_backend_s_syntax(
+    backend: CodingAgentBackend,
+) -> None:
+    task = TaskSpec(id="t1", goal="do it", context_files=["src/a.py"])
+    prompt = backend._compose_prompt(task)
+    assert "src/a.py" in prompt, f"{backend.name}: context_files never reached the prompt"
+    if backend.resolves_at_mentions:
+        assert "@src/a.py" in prompt
+    else:
+        # A literal @mention to a CLI that does not resolve them is just noise in the prompt.
+        assert "@src/a.py" not in prompt
+
+
+def test_read_paths_notice_is_identical_across_backends() -> None:
+    """The notice is one string in one place - this fails if an adapter reintroduces its own."""
+    task = TaskSpec(id="t1", goal="g", read_paths=["/etc/hosts"])
+    notices = {make_backend(n)._compose_prompt(task) for n in _BACKEND_NAMES}
+    assert len(notices) == 1, "backends disagree on the read-only reference wording"

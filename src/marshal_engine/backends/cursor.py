@@ -83,6 +83,7 @@ class CursorBackend(CodingAgentBackend):
     name = "cursor"
     binary = "cursor-agent"
     credential_env_vars = ("CURSOR_API_KEY",)
+    resolves_at_mentions = True  # cursor-agent expands @path mentions in the prompt
     capabilities = Capabilities(
         json_output=True,
         native_usage=False,  # tokens yes; no USD in CLI output — Admin API cost path later
@@ -230,18 +231,6 @@ class CursorBackend(CodingAgentBackend):
             argv += ["--resume", opts.session_id]
         argv.append(self._compose_prompt(task))
         return argv
-
-    def _compose_prompt(self, task: TaskSpec) -> str:
-        prompt = task.goal
-        if task.context_files:
-            mentions = " ".join(f"@{f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant context: {mentions}"
-        if task.read_paths:
-            prompt = (
-                f"{prompt}\n\nRead-only reference material is available under "
-                f".marshal-context/ (do not modify those files)."
-            )
-        return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         return self._parse_event_stream(raw_stdout, raw_stderr, exit_code)

@@ -73,6 +73,10 @@ class CodingAgentBackend(ABC):
     #: Parent env vars this backend may need for CLI auth (API keys). Only this backend's
     #: run forwards them; a cursor child never sees ``ANTHROPIC_API_KEY``. Empty by default.
     credential_env_vars: ClassVar[tuple[str, ...]] = ()
+    #: True if this CLI resolves ``@path`` mentions in a prompt into file content. Those backends
+    #: get ``@file`` mentions for ``context_files``; the rest get a plain bulleted list, which is
+    #: inert text everywhere and cannot be mistaken for an unresolved mention.
+    resolves_at_mentions: ClassVar[bool] = False
 
     # --- hooks subclasses must implement -------------------------------------------------
 
@@ -131,11 +135,21 @@ class CodingAgentBackend(ABC):
     # --- optional hooks ------------------------------------------------------------------
 
     def _compose_prompt(self, task: TaskSpec) -> str:
-        """Build the agent prompt from the task goal and optional context files / read_paths."""
+        """Build the agent prompt from the task goal and optional context files / read_paths.
+
+        The only per-backend difference is how `context_files` are named, so that is a declared
+        flag (`resolves_at_mentions`) rather than an override. Cursor and Goose previously
+        carried byte-identical copies of this method purely to change that one line - two places
+        for a `read_paths` wording fix to be applied, and one to be forgotten in.
+        """
         prompt = task.goal
         if task.context_files:
-            files = "\n".join(f"- {f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant files:\n{files}"
+            if self.resolves_at_mentions:
+                mentions = " ".join(f"@{f}" for f in task.context_files)
+                prompt = f"{prompt}\n\nRelevant context: {mentions}"
+            else:
+                files = "\n".join(f"- {f}" for f in task.context_files)
+                prompt = f"{prompt}\n\nRelevant files:\n{files}"
         if task.read_paths:
             prompt = (
                 f"{prompt}\n\nRead-only reference material is available under "

@@ -70,6 +70,7 @@ class GooseBackend(CodingAgentBackend):
     binary = "goose"
     # GOOSE_MODE is stamped by prepare() via extra_env; provider/model may come from the parent.
     credential_env_vars = ("GOOSE_PROVIDER", "GOOSE_MODEL")
+    resolves_at_mentions = True  # goose expands @path mentions in the prompt
     capabilities = Capabilities(
         json_output=True,
         native_usage=True,  # positive cost when the provider reports it; tokens alone stay unavailable
@@ -88,16 +89,6 @@ class GooseBackend(CodingAgentBackend):
 
     # --- hooks ---------------------------------------------------------------------------
 
-    def check_available(self) -> bool:
-        if shutil.which(self.binary) is None:
-            return False
-        try:
-            proc = subprocess.run(
-                [self.binary, "--version"], capture_output=True, text=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
 
     def account_info(self) -> dict[str, str] | None:
         """Provider + model from ``goose info -v --check`` when auth/configure succeeds.
@@ -155,18 +146,6 @@ class GooseBackend(CodingAgentBackend):
             argv += ["--model", model]
         argv += ["-t", self._compose_prompt(task)]
         return argv
-
-    def _compose_prompt(self, task: TaskSpec) -> str:
-        prompt = task.goal
-        if task.context_files:
-            mentions = " ".join(f"@{f}" for f in task.context_files)
-            prompt = f"{prompt}\n\nRelevant context: {mentions}"
-        if task.read_paths:
-            prompt = (
-                f"{prompt}\n\nRead-only reference material is available under "
-                f".marshal-context/ (do not modify those files)."
-            )
-        return prompt
 
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         events = parse_jsonl(raw_stdout)
