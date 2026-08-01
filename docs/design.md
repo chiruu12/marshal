@@ -96,6 +96,15 @@ class CodingAgentBackend(ABC):
     # run() lives on the base: build_invocation -> spawn in worktree (timeout!) -> capture -> parse_output
 ```
 
+**Overriding `run()`:** an adapter may *wrap* the base loop but must never *replace* it. Cursor
+wraps it in a `.cursor/cli.json` snapshot/restore transaction and Antigravity in a
+`trustedWorkspaces` grant/release transaction; both are setup/teardown around `super().run()`.
+That is the only acceptable shape — the external timeout and the process-**group** kill live in
+`base.run()` and a second copy would be a second thing to get wrong. `tests/test_backend_contract.py`
+enforces both halves: an override must contain a `super().run(` call and must not spawn a process
+itself, and each overriding adapter's real `run()` is driven against a binary that never exits to
+prove the timeout still fires, the group is still signalled, and the child is still reaped.
+
 Rules: code against **capability flags**, not assumptions. Persist `session_id` yourself.
 Add a **version probe** in `check_available` + **contract tests per backend** (their flags/JSON drift fast).
 `check_available` is presence-only; backends with a cheap authenticated probe override `account_info`
