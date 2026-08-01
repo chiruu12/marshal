@@ -10,8 +10,11 @@ from pathlib import Path
 
 from ...accounting.budgets import BudgetExceeded
 from ...core.config import ConfigError
+from ...core.layout import runs_dir
+from ...runtime.state import FleetState
 from ...runtime.worktree import WorktreeError
-from .common import _build_cli_service, _require_git_work_tree
+from ..routing import record_outcome
+from .common import _build_cli_service, _require_git_work_tree, _resolve_repo
 
 def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
     """Shared body for `run` (blocking) and `spawn` (background)."""
@@ -59,3 +62,26 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _cmd_spawn(args: argparse.Namespace) -> int:
     """Start a run in the background; returns its RUNNING record at once."""
     return _cmd_run_like(args, spawn=True)
+
+
+def _cmd_outcome(args: argparse.Namespace) -> int:
+    """Record a judgment about a finished run's work.
+
+    Goes straight to the run records rather than through a MarshalService: a verdict about work
+    that already happened does not depend on which clients are configured today, so this works on
+    a repo with no fleet.config.yaml (same posture as `marshal status`).
+    """
+    repo = _resolve_repo(args)
+    state = FleetState(Path(args.state) if args.state is not None else runs_dir(repo))
+    try:
+        result = record_outcome(state, args.run_id, args.outcome, note=args.note)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), indent=2))
+    else:
+        print(result.message)
+    # A refused overwrite is not success: a caller scripting this must be able to tell that the
+    # verdict it asked for is not the one on the record.
+    return 1 if result.status == "conflict" else 0

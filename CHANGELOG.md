@@ -8,6 +8,22 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **`set_outcome` — record whether a run's work was any good.** `RunRecord.outcome` documented a
+  vocabulary (`integrated` / `rejected` / `abandoned`) but only `integrate` ever wrote to it, and
+  only ever `integrated`. So declining to merge a run left no trace: a diff someone reviewed and
+  threw away was indistinguishable from one nobody had looked at. Available as an MCP tool and as
+  `marshal outcome <run_id> <verdict> [--note]`, which needs no `fleet.config.yaml` — a verdict
+  about work that already happened does not depend on today's client config.
+  `integrated` is **sticky** (a merge commit is a mechanical fact, not an opinion): overwriting it
+  returns status `conflict` and changes nothing, rather than erroring — and for the same reason it
+  cannot be *asserted*, since a permanent verdict for a merge that never happened could never be
+  corrected. A run that has not finished cannot be judged at all. Re-recording the same value
+  is `unchanged` and writes nothing. `RunRecord` gains `outcome_at` and `outcome_note` (additive,
+  both default `None`; the note is truncated at 2000 chars). The `marshal-orchestrate` skill gains
+  a "Record the outcome" step, because an unrecorded rejection is the failure mode this exists to
+  prevent.
+
 ### Changed
 - **Prompt composition is shared across adapters.** Cursor and Goose carried byte-identical
   `_compose_prompt` overrides that differed from the base in one line — how `context_files` are

@@ -274,7 +274,7 @@ the default workspace.
 
 | Tool | Purpose |
 |------|---------|
-| `marshal_quickstart()` | **Start here.** The four-step loop, and which tool to pick when several look alike (the run-ish and status-ish groups). |
+| `marshal_quickstart()` | **Start here.** The canonical loop, and which tool to pick when several look alike (the run-ish and status-ish groups). |
 | `list_workspaces()` | List the repos this server can target (name, path, `ready` + `ready_reason`, client_count). |
 | `add_workspace(name, path, scaffold?)` | Register a repo in the central registry; usable immediately (no reconnect). |
 | `doctor()` | Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth); read-only. Run it before spawning. |
@@ -291,6 +291,7 @@ the default workspace.
 | `collect_run(run_id)` | What a run produced: diff/changed files and/or final text via `produced` (`diff` \| `text` \| `nothing`; read-only; nothing is merged). Review before integrating a diff; for text runs the value is in `text`. |
 | `commit_run(run_id, message?)` | Freeze a finished run's work onto its own branch (your branch untouched) so a dependent run can `spawn` with `base_branch` = that branch. Outcome ∈ `committed`/`clean`/`blocked`/`error`. |
 | `integrate(run_id, cleanup?)` | Merge a diff run's branch into the current branch. Outcome ∈ `merged`/`conflict`/`blocked`/`empty` (no file changes to merge — an outcome, not a fault)/`error`. Skip text-only runs. |
+| `set_outcome(run_id, outcome, note?)` | Record whether a finished run's work was any good: `rejected` (reviewed and wrong/off-scope) or `abandoned` (given up on). `integrated` is written for you by `integrate` and is **sticky** — overwriting it returns `conflict`, not an error. **Record your rejections:** declining to integrate leaves no trace, so an unjudged run and one you threw away look identical, and every `routing` rate is computed over judged runs only. Status ∈ `recorded` / `unchanged` / `conflict`. |
 | `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. Scope-mode cleans also reap orphaned worktree dirs (`orphans_removed`). Returns `{removed, orphans_removed, skipped, errors, dry_run}`. |
 | `status()` | List all runs with status + cost (status ∈ `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
 | `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read/cache-write token columns and a native/admin-api cost split). `window` ∈ `session` (since the MCP server started) \| `day` (last 24h) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger) — same set as `marshal usage --window`. The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd / enforce / spent_known` (soft-warn by default; `enforce: true` refuses over-cap spawns and serializes matching in-flight spawns). `spent_known: false` means spend is unknown — do not treat `spent_usd` / `remaining_usd` as measured. |
@@ -309,6 +310,7 @@ marshal backends           # list backends, availability, and safe-edit permissi
 marshal models             # the `models:` catalog, or what the backends' CLIs report when there is none
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
 marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once
+marshal outcome <run_id> rejected  # record a verdict on a finished run (no config needed)
 marshal status             # list runs, newest first (--limit/--status/--task-id/--since-hours/--full)
 marshal status             # list fleet runs (raw ledger read - see the note below)
 marshal logs <run_id>      # print the persisted stdout/stderr for one run (full, not truncated)

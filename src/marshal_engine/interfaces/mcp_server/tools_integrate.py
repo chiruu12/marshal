@@ -36,6 +36,36 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         )
 
     @app.tool()
+    async def set_outcome(
+        run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
+        outcome: Annotated[Literal["integrated", "rejected", "abandoned"], Field(description=(
+            "Your judgment about the WORK, distinct from the run's process `status`. "
+            "`rejected` = you reviewed it and it was wrong or off-scope; `abandoned` = you gave "
+            "up on it (superseded, no longer needed). `integrated` is written for you by "
+            "`integrate`; passing it here is refused unless a merge actually landed."
+        ))],
+        note: Annotated[str | None, Field(description=(
+            "Short reason, for your future self reading `routing`. Truncated at 2000 chars."
+        ))] = None,
+        workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
+    ) -> dict[str, Any]:
+        """Record whether a finished run's work was any good - the input `routing` ranks on.
+
+        RECORD YOUR REJECTIONS. Declining to integrate leaves no trace, so an unjudged run and a
+        run you threw away look identical; every routing rate is computed over judged runs only,
+        and without rejections it reads 100% for everyone and means nothing.
+
+        `integrated` is sticky - a merge commit is a fact, not an opinion - so overwriting it
+        returns status `conflict` rather than an error, and the record is left alone. For the same
+        reason you cannot ASSERT it: recording `integrated` on a run that was never merged is
+        refused, because a permanent verdict for a merge that never happened could never be
+        corrected. A run that has not finished cannot be judged at all. Re-recording the same value
+        is `unchanged`. Status is one of: recorded | unchanged | conflict."""
+        return await run_call(
+            run_id, workspace, lambda svc: svc.set_outcome(run_id, outcome, note=note),
+        )
+
+    @app.tool()
     async def integrate(
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         message: Annotated[str | None, Field(description=(

@@ -2,7 +2,7 @@
 
 The Marshal MCP server (`marshal mcp`) exposes the tools documented below (the normative list is
 `@app.tool` in `mcp_server.py`). **New to Marshal? Call `marshal_quickstart` first** — it names the
-four-step loop and says which tool to pick when several look alike. Workspace-scoped tools accept an optional `workspace` parameter (defaults to `"default"`);
+canonical loop and says which tool to pick when several look alike. Workspace-scoped tools accept an optional `workspace` parameter (defaults to `"default"`);
 the global ones — `marshal_quickstart`, `list_workspaces`, `add_workspace` — do not. Run-handle tools (`get_run`, `collect_run`, `cancel_run`, `integrate`, …) resolve the
 owning workspace by scanning each repo's ledger, with an optional `workspace` hint to skip the scan.
 
@@ -481,6 +481,43 @@ merge (an outcome, not a fault).
 | `commit` | string \| null | Merge commit hash. |
 | `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. |
 | `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
+
+### `set_outcome`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `run_id` | string | — | The run to judge. |
+| `outcome` | `integrated` \| `rejected` \| `abandoned` | — | Your judgment about the **work**. |
+| `note` | string \| null | `null` | Short reason, kept with the record. Truncated at 2000 chars. |
+| `workspace` | string \| null | `null` | Workspace hint; the run's owning workspace is resolved from `run_id`. |
+
+**Returns:** `{ run_id, status, outcome, previous, note, message, workspace }`
+
+- `status`: `recorded` (the verdict was written) \| `unchanged` (same verdict already recorded —
+  fully idempotent, nothing written) \| `conflict` (the run is already `integrated`; nothing written)
+- `outcome`: what the record says **now** — not what you asked for. A caller that ignores `status`
+  still cannot misread the stored verdict.
+- `previous`: the verdict before this call, or `null` if it had none.
+
+This is judgment about the work, distinct from the run's process `status`: `exited_clean` says a
+process exited 0, not that the diff was any good.
+
+**Record your rejections.** Declining to integrate leaves no trace, so a run you reviewed and threw
+away is indistinguishable from one nobody has looked at. Every `routing` rate is a ratio over
+*judged* runs, so without rejections it reads 100% for every client and means nothing.
+
+`integrated` is **sticky**: a merge commit is a mechanical fact, not an opinion, so it is never
+overwritten and the attempt comes back as `conflict` rather than an error (a driver can branch on
+it). The same reasoning runs the other way — you cannot *assert* it. Recording `integrated` on a
+run whose `merged_into` is unset is refused, because stickiness is justified only by the merge
+existing, and a permanent verdict for a merge that never happened could never be corrected.
+
+A run that has not finished (`queued` / `running`) cannot be judged at all: a verdict on work that
+has not happened is a guess, and rates are computed over verdicts.
+
+There is deliberately no `force` — undoing an integration is a new fact about a different commit,
+not a correction of the old one. Known limitation: an integration later reverted still counts as
+integrated.
 
 ### `clean`
 

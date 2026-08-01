@@ -63,6 +63,12 @@ class RunRecord(BaseModel):
     # written): stamped here rather than rewriting ``events.jsonl`` or appending a second cost
     # event that would double-count in the rollup. Absence means "no judgment yet", never rejected.
     outcome: str | None = None
+    # When the outcome was recorded (UTC isoformat), and the reviewer's short reason. Both additive
+    # and default None, so records written before they existed still parse. The note is TRUNCATED
+    # on write - `text` and `verify_output` already taught us what an unbounded field costs every
+    # reader of a record (see _BULKY_FIELDS).
+    outcome_at: str | None = None
+    outcome_note: str | None = None
     commit: str | None = None  # branch tip after commit_run froze the work (for chaining/integrate)
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
     # Start time of `pid` as the OS reports it. Pids are reused, so this is what makes the pid an

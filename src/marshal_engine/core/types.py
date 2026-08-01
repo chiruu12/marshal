@@ -110,6 +110,23 @@ class RunStatus(str, Enum):
     VERIFY_FAILED = "verify_failed"
 
 
+class RunOutcome(str, Enum):
+    """A driver's judgment about a run's WORK, distinct from `RunStatus`'s process truth.
+
+    `exited_clean` says the process exited 0; it says nothing about whether the diff was any good.
+    That verdict arrives later, from whoever reviewed it, and is stamped on the run record.
+
+    `INTEGRATED` is a mechanical fact - a merge commit exists - so it is never overwritten. The
+    other two are opinions and may be revised. Absence of an outcome means "not judged yet", which
+    is emphatically not the same as `REJECTED`: every routing number is a ratio over *judged* runs,
+    and conflating the two would silently count work nobody has looked at as work someone refused.
+    """
+
+    INTEGRATED = "integrated"
+    REJECTED = "rejected"
+    ABANDONED = "abandoned"
+
+
 class UsageSource(str, Enum):
     """Provenance of a usage record - never present an estimate as ground truth."""
 

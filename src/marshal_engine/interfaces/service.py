@@ -29,6 +29,7 @@ from ..core.config import (
     resolve_model,
 )
 from .doctor import DoctorReport, doctor_report, run_checks
+from .routing import OutcomeResult, record_outcome
 from ..runtime.env import merge_user_path
 from ..orchestration.fleet import BudgetStatus, EnforceBudgetGate, Fleet
 from ..orchestration.results import (
@@ -761,6 +762,16 @@ class MarshalService:
         # it: every integrate landed as "marshal: integrate <run_id>", describing the tooling
         # instead of the change, and had to be rewritten by hand afterwards.
         return self.fleet.integrate(run_id, message=message, cleanup=cleanup)
+
+    def set_outcome(
+        self, run_id: str, outcome: str, *, note: str | None = None
+    ) -> OutcomeResult:
+        """Record a driver's judgment about a run's work (see `routing.record_outcome`).
+
+        Thin delegation on purpose: the CLI reaches the same function without needing a config,
+        so the two surfaces cannot drift apart.
+        """
+        return record_outcome(self.fleet.state, run_id, outcome, note=note)
 
     def clean(
         self,

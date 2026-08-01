@@ -123,8 +123,9 @@ others - they re-invent the same scaffolding and collide at integrate. For seque
     failure, and do not integrate.
   - **`nothing`** — neither text nor file changes (matches run status `empty`).
 - `exited_clean` means "the process exited cleanly," not "the work is correct."
-- Reject work that is wrong or off-scope by simply not integrating it. The worktree stays isolated;
-  main is untouched.
+- Reject work that is wrong or off-scope by not integrating it: the worktree stays isolated and main
+  is untouched. Then **record it** (step 6) - not integrating is invisible on its own, and an
+  unrecorded rejection is a run that looks like nobody ever reviewed it.
 - **When your own read isn't enough** - a migration, a public API, a security-sensitive path -
   `run_team(name, target="run", run_id=...)` puts the same diff in front of several independent
   read-only reviewers (each a different model, each holding one lens) and hands you their reports.
@@ -153,7 +154,22 @@ Only for runs whose product is a diff. Handle the outcome:
 Integrate **one run at a time**, reviewing each. Worktree isolation means main is never touched until
 this step.
 
-## 6. Clean up - reclaim the worktrees
+## 6. Record the outcome - what you rejected, not just what you merged
+`integrate` records `integrated` for you. Nothing records the other half, so **call
+`set_outcome(run_id, "rejected"|"abandoned", note?)` on every run you decide not to merge**:
+- `rejected` - you reviewed it and the work was wrong, off-scope, or worse than a sibling's.
+- `abandoned` - you gave up on it (superseded, no longer needed, the task was wrong).
+
+Why it matters: declining to integrate leaves **no trace**, so a run you reviewed and threw away is
+indistinguishable from one nobody has looked at. `routing` computes every rate over *judged* runs
+only - if you record integrations and never rejections, it reports a 100% success rate for every
+client and tells you nothing.
+
+Add a `note` when the reason is not obvious from the diff; it is what your future self reads out of
+`routing`. `integrated` is sticky (a merge commit is a fact, not an opinion) - trying to overwrite
+it returns `conflict` and changes nothing.
+
+## 7. Clean up - reclaim the worktrees
 A long session leaves a worktree + branch per run. When you're done, `clean(scope?, dry_run?)` tears
 them down in one call (the usage ledger and run-state history are kept; only the disk-heavy worktrees
 and branches go). It **never** touches a running run. Scopes:

@@ -28,7 +28,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
 
     @app.tool()
     async def marshal_quickstart() -> dict[str, Any]:
-        """START HERE. The canonical four-step loop, and which tool to pick when several look alike.
+        """START HERE. The canonical loop, and which tool to pick when several look alike.
 
         Read this before choosing among the run-ish tools (run_agent / spawn / run_many /
         run_workflow) or the status-ish ones (status / get_run / collect_run / get_run_log).
@@ -63,6 +63,10 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                 "integrate.",
                 "4. integrate - merge a diff run's branch into yours. One run at a time. Skip for "
                 "text-only work.",
+                "5. set_outcome - record the runs you DIDN'T merge (`rejected` / `abandoned`). "
+                "integrate records `integrated` for you; nothing records the rest, so a run you "
+                "reviewed and threw away looks exactly like one nobody read. `routing` rates are "
+                "computed over judged runs only, so without this they read 100% for everyone.",
             ],
             "which_run_tool": {
                 "run_agent": "Blocks until the run finishes. Use for short work you want inline.",
