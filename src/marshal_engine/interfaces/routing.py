@@ -19,6 +19,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from ..accounting.ledger import RoutingLedger, summarize_routing
+from ..accounting.usage import UsageTracker, UsageWindow, usage_window_since
 from ..core.types import RunOutcome, RunStatus
 from ..runtime.state import FleetState, RunRecord
 
@@ -168,4 +170,32 @@ def record_outcome(
         f"{run_id} is already recorded {_INTEGRATED!r}{merged}; refusing to overwrite it with "
         f"{outcome!r}. An integration is a mechanical fact, not an opinion - to undo it, "
         "revert the merge and record the outcome of that new run.",
+    )
+
+
+def build_routing(
+    usage: UsageTracker,
+    state: FleetState,
+    *,
+    window: UsageWindow = "all",
+    task_kind: str | None = None,
+    session_start: datetime | None = None,
+    now: datetime | None = None,
+) -> RoutingLedger:
+    """Read the ledger and the run records, and join them into routing evidence.
+
+    This is the only place the two stores meet. `accounting/ledger.py` stays pure and never learns
+    what a run record is - `runtime` and `accounting` are sibling layers that must not import each
+    other, so the outcome mapping is assembled here and handed down.
+
+    Reporting posture, matching every other read path: `strict=False`, so a torn or malformed
+    ledger line is skipped with a warning rather than taking the whole report down.
+    """
+    moment = now or datetime.now(timezone.utc)
+    since = usage_window_since(window, session_start=session_start or moment, now=moment)
+    return summarize_routing(
+        usage.events(),
+        outcome_index(state),
+        since=since,
+        task_kind=task_kind,
     )

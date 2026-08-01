@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -119,6 +119,41 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         list as evidence a model is runnable. Pure data - does NOT influence routing (clients
         still own backend+model). Returns {models, backend_models, driver_context, workspace}."""
         return await ws_call(workspace, lambda svc: svc.list_models())
+
+    @app.tool()
+    async def routing(
+        task_kind: Annotated[str | None, Field(description=(
+            "Only report this kind of work (the free-text tag passed at spawn, e.g. 'refactor'). "
+            "Omit for every kind."
+        ))] = None,
+        window: Annotated[Literal["session", "day", "week", "month", "all"], Field(
+            description="Time window over the usage ledger. Default 'all' - routing wants history."
+        )] = "all",
+        workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
+    ) -> dict[str, Any]:
+        """Which client's work actually got KEPT, per kind of task - your measured history, ranked.
+
+        Read this before a fan-out instead of guessing from model names. Derived on read from the
+        usage ledger joined to recorded outcomes; nothing is stored.
+
+        Read the numbers honestly, because the ledger will not flatter you:
+        - `integration_rate` is over JUDGED runs only, and is `null` when nothing has been judged -
+          that is "unknown", not 0%. `n_judged` sits beside it; a rate without its n is not evidence.
+        - If you record integrations but never rejections (`set_outcome`), every rate reads 100%
+          and this tool is decorative. `caveat` says so when nothing has been judged at all.
+        - `mean_cost_per_integrated` is `null`, never 0, when no integrated run reported real cost.
+          A client with unmeasured cost is never ranked *on* cost - it neither wins nor loses that
+          tiebreak. Compare it against `measured_cost_all_usd`, which includes the money spent on
+          runs you rejected.
+        - `recommended` is `null` rather than a guess when nothing can be ranked.
+
+        Returns {cells, recommended, recommended_task_kind, total_runs, total_judged,
+        events_without_record, task_kind_filter, caveat, window, workspace}."""
+        result = await ws_call(
+            workspace, lambda svc: svc.routing(task_kind=task_kind, window=window)
+        )
+        result["window"] = window
+        return result
 
     @app.tool()
     async def doctor(

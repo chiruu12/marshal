@@ -496,6 +496,42 @@ merge (an outcome, not a fault).
 | `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. |
 | `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
 
+### `routing`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `task_kind` | string \| null | `null` | Only this kind of work (the free-text tag passed at spawn). Omit for all kinds. |
+| `window` | `session` \| `day` \| `week` \| `month` \| `all` | `all` | Window over the usage ledger. Routing wants history, so the default is `all`. `session` is meaningful here (the server is long-lived) but is **not** offered by `marshal routing` — a one-shot CLI process has no session, so the window would start at report time and always return nothing. |
+| `workspace` | string \| null | `null` | Target workspace. |
+
+**Returns:** `{ cells, recommended_by_task_kind, recommended, recommended_task_kind, total_runs,
+total_judged, events_without_record, task_kind_filter, caveat, window, workspace }`
+
+Derived on read by joining the usage ledger to recorded run outcomes; nothing is stored. Each
+cell is one `(task_kind, client)` pair:
+
+- `integration_rate`: integrated ÷ **judged** runs. `null` when nothing has been judged — that is
+  *unknown*, not 0%. `n_judged`, `n_unjudged` and `n_no_record` are all reported so a rate is never
+  read without its denominator.
+- `mean_cost_per_integrated`: `null`, **never 0**, when no integrated run reported a measured cost
+  (`native` / `admin-api`). Compare against `measured_cost_all_usd`, which includes money spent on
+  runs you rejected — cost-per-integrated alone flatters a client that burns four rejects per keeper.
+- `rank` / `cost_ranked`: rank is **within the cell's `task_kind`**, never global — a client
+  measured on `docs` has never done your `refactor` work, so the two are not comparable. Within a
+  kind: integration rate, then duration, then measured cost, then alphabetical. A cell with nothing
+  judged is **unranked** (`rank: null`) but still returned with its counts. A cell with unmeasured
+  cost neither wins nor loses the cost tiebreak.
+- `recommended_by_task_kind`: `task_kind → best client for it`. `recommended` is the single
+  headline answer and is set **only when one `task_kind` is in view** (usually because you passed
+  the filter); with several kinds there is no one answer, so it is `null` and this map is what you
+  read instead.
+- `evidence` / `notes`: the claim with its sample size, and everything that would make the headline
+  misleading on its own (small sample, unmeasured cost, pruned records).
+- `caveat`: set when no run has been judged at all — the ledger is unevaluated, not empty.
+
+**This is only as honest as your `set_outcome` habit.** If you record integrations and never
+rejections, every rate reads 100%.
+
 ### `set_outcome`
 
 | Parameter | Type | Default | Description |
