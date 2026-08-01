@@ -572,7 +572,8 @@ def _orphaned_base_diagnosis(
     `base_branch` is passed through verbatim, so it may be a tag, a raw sha, or a branch since
     deleted - all of which reach this state with no rewrite involved. Naming a rewrite as fact
     would put a confident wrong cause where a vague right one belongs, which is the failure this
-    whole diagnosis exists to remove.
+    whole diagnosis exists to remove. What is *measured* - nothing reaches this base - holds in
+    every one of those cases, and so does the remedy, which is why the message leads with it.
 
     Reachability, not existence: the reflog keeps an orphaned commit alive as an object for a good
     while, so an existence check answers "fine" exactly when the diagnosis is most needed.
@@ -590,8 +591,9 @@ def _orphaned_base_diagnosis(
         f"the commit this run was based on ({rec.base_commit[:12]}) is reachable from no branch or "
         "tag, so git is merging against a base that is no longer in history and the conflicting "
         "files above are probably not the real cause. Usually this means history was rewritten "
-        "(amend / squash / reset) while the run was in flight; a deleted base branch does it too. "
-        "Re-run the task on the current branch, or cherry-pick the run's own commits onto it."
+        "(amend / squash / reset) while the run was in flight; a deleted base branch, or a "
+        "`base_branch` naming a commit that was never on one, do it too. Re-run the task on the "
+        "current branch, or cherry-pick the run's own commits onto it."
     )
 
 

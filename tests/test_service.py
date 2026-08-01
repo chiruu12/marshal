@@ -1454,6 +1454,35 @@ def test_an_orphaned_base_offers_causes_rather_than_asserting_a_rewrite(repo: Pa
     assert "Usually this means" in result.message, "asserted one cause as fact"
 
 
+def test_a_base_that_was_never_on_a_branch_still_gets_a_true_message(repo: Path) -> None:
+    """`base_branch` accepts a raw sha, which is reachable from no ref by construction.
+
+    The diagnosis fires, and should: the measured claim (nothing reaches this base) and the remedy
+    are both correct here. What must not happen is the message insisting history was rewritten, so
+    the cause list names this case too."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    # A commit reachable from no branch: made on a detached HEAD, addressed by sha alone.
+    _git(repo, "checkout", "-q", "--detach")
+    (repo / "shared.txt").write_text("the detached version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "detached edit")
+    loose_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-")
+
+    rec = svc.run_agent("worker", "edit the shared file", base_branch=loose_sha)
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+    (repo / "shared.txt").write_text("the main line's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "main-line edit")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert "reachable from no branch or tag" in result.message
+    assert "never on one" in result.message, "the cause list omits the case that produced it"
+
+
 def test_integrate_clears_the_note_of_the_verdict_it_supersedes(repo: Path) -> None:
     """A run rejected WITH A REASON and later integrated must not keep the reason.
 
