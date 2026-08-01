@@ -24,6 +24,15 @@ versions may include breaking API changes until 1.0.
   guess, including whenever more than one `task_kind` is in view. `accounting` still does not
   import `runtime` — the ledger takes the join as a plain mapping, assembled in
   `interfaces/routing.py`.
+- **Command Code now reports tokens and a session id.** The adapter invoked `-p` in text mode and
+  the docstring claimed no JSON output existed; on 1.7.x `--output-format json` emits an NDJSON
+  event stream whose terminal `result` line carries
+  `usage{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}`, `sessionId`, and `finalText`.
+  Those tokens were being thrown away, and the whole stream — not the final message — is what used
+  to land as the run's `text`. **Cost stays `unavailable`**: the CLI emits no dollar figure, and
+  `native_usage` still means native *cost*, so a Command Code run contributes tokens and a run
+  count to `usage` / `routing` but never a fabricated price. A CLI too old to know the flag prints
+  prose as before and is still parsed.
 - **`set_outcome` — record whether a run's work was any good.** `RunRecord.outcome` documented a
   vocabulary (`integrated` / `rejected` / `abandoned`) but only `integrate` ever wrote to it, and
   only ever `integrated`. So declining to merge a run left no trace: a diff someone reviewed and

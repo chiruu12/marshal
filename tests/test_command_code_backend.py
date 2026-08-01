@@ -104,6 +104,93 @@ def test_parse_output_cap_hit_is_failure(backend: CommandCodeBackend) -> None:
     assert res.text == "partial work"  # surfaced even on a cap hit
 
 
+# --- --output-format json (shapes captured from a real command-code 1.7.0 run) ----------------
+
+#: Trimmed from an actual run. The terminal `result` line is the contract this adapter reads.
+_REAL_STREAM = (
+    '{"type":"event","event":{"type":"model_request_start","model":"inclusionai/ling-3.0-flash-free"}}\n'
+    '{"type":"event","event":{"type":"text_delta","delta":"OK"}}\n'
+    '{"type":"event","event":{"type":"turn_end","turnNumber":1,"usage":'
+    '{"inputTokens":29215,"outputTokens":22,"cacheReadTokens":0,"cacheWriteTokens":0}}}\n'
+    '{"type":"result","subtype":"success","sessionId":"ddc03ecc-b739","stopReason":"end_turn",'
+    '"usage":{"inputTokens":29215,"outputTokens":22,"cacheReadTokens":3,"cacheWriteTokens":7},'
+    '"durationMs":5721,"finalText":"OK"}\n'
+)
+
+
+def test_build_invocation_requests_json(backend: CommandCodeBackend) -> None:
+    argv = backend.build_invocation(TaskSpec(id="t1", goal="go"), _opts())
+    assert argv[argv.index("--output-format") + 1] == "json"
+
+
+def test_parse_output_reads_tokens_and_session_from_the_result_line(
+    backend: CommandCodeBackend,
+) -> None:
+    res = backend.parse_output(_REAL_STREAM, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "OK", "the whole NDJSON stream leaked into text instead of finalText"
+    assert res.session_id == "ddc03ecc-b739"
+    assert res.usage is not None
+    assert (res.usage.input_tokens, res.usage.output_tokens) == (29215, 22)
+    assert (res.usage.cache_read_tokens, res.usage.cache_write_tokens) == (3, 7)
+    assert res.usage.model == "inclusionai/ling-3.0-flash-free"
+
+
+def test_parse_output_never_claims_a_cost_it_was_not_given(
+    backend: CommandCodeBackend,
+) -> None:
+    """Tokens are reported; USD is not, because the CLI does not emit one.
+
+    `source` describes the provenance of the COST. Tagging this run `native` because tokens
+    arrived would put a $0.00 into every rollup and make the backend that bills the most look
+    like the cheapest one in `routing` and `report`."""
+    res = backend.parse_output(_REAL_STREAM, "", 0)
+    assert res.usage is not None
+    assert res.usage.source is UsageSource.UNAVAILABLE
+    assert res.usage.cost_usd == 0.0
+    assert backend.capabilities.native_usage is False, "native_usage means native COST"
+    assert backend.capabilities.json_output is True
+
+
+def test_parse_output_falls_back_to_text_for_a_cli_without_output_format(
+    backend: CommandCodeBackend,
+) -> None:
+    """Older CLIs ignore the flag and print prose. Losing the answer would be worse than no tokens."""
+    res = backend.parse_output("the answer is 42\n", "", 0)
+    assert res.text == "the answer is 42"
+    assert res.session_id is None
+    assert res.usage is not None and res.usage.input_tokens == 0
+
+
+def test_parse_output_takes_the_last_result_line_not_an_echoed_one(
+    backend: CommandCodeBackend,
+) -> None:
+    """A tool that cats a transcript can echo a `result` object mid-stream; the run's own is last."""
+    echoed = (
+        '{"type":"result","subtype":"success","sessionId":"OLD","usage":'
+        '{"inputTokens":1,"outputTokens":1},"finalText":"stale"}\n' + _REAL_STREAM
+    )
+    res = backend.parse_output(echoed, "", 0)
+    assert res.session_id == "ddc03ecc-b739"
+    assert res.text == "OK"
+
+
+def test_parse_output_survives_a_torn_or_odd_result_line(backend: CommandCodeBackend) -> None:
+    """Backend JSON is version-variable - a missing/odd `usage` must not raise mid-run."""
+    torn = '{"type":"result","subtype":"success","usage":"nope","finalText":"done"}\n'
+    res = backend.parse_output(torn, "", 0)
+    assert res.text == "done"
+    assert res.usage is not None and res.usage.input_tokens == 0
+    assert backend.parse_output('{"type":"result"', "", 0).status is RunStatus.EXITED_CLEAN
+
+
+def test_parse_output_cap_hit_still_reports_tokens(backend: CommandCodeBackend) -> None:
+    """A capped run burned real tokens; dropping them would understate the fan-out's usage."""
+    res = backend.parse_output(_REAL_STREAM, "", 8)
+    assert res.status is RunStatus.FAILED
+    assert res.usage is not None and res.usage.input_tokens == 29215
+
+
 # --- check_available (no real CLI; the spawn is mocked) --------------------------------------
 
 
