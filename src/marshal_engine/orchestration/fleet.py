@@ -1244,15 +1244,18 @@ class Fleet:
                 verify_passed=verify_passed,
                 verify_output=verify_output,
             )
+            self._ensure_artifacts_recorded(run_id, record, artifacts)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
             # only if still running, so a concurrent cancel's terminal status wins.
             # Harvest here too: a run that died partway may still have written the findings that
             # explain why, and those are exactly what the next round needs.
-            self.state.update_if(
+            failed_artifacts = self._harvest_artifacts(wt, run_id)
+            failed_rec = self.state.update_if(
                 run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(),
-                error=f"fleet: {exc}", artifacts=self._harvest_artifacts(wt, run_id),
+                error=f"fleet: {exc}", artifacts=failed_artifacts,
             )
+            self._ensure_artifacts_recorded(run_id, failed_rec, failed_artifacts)
             raise
         finally:
             # Release enforce-budget concurrency slots once spend is (or would have been) recorded
@@ -2077,6 +2080,22 @@ class Fleet:
             base_branch_drift=drift,
             message=drift_msg,
         )
+
+    def _ensure_artifacts_recorded(self, run_id: str, record: RunRecord, artifacts: list[str]) -> None:
+        """Land harvested artifact names even when the terminal stamp was lost to a racing cancel.
+
+        The terminal write is guarded on the run still being RUNNING so a `cancel_run` that already
+        stamped `cancelled` wins. That guard is right for the *verdict* and wrong for this: the
+        files are already on disk, so dropping their names leaves a record claiming the run produced
+        nothing while `.marshal/artifacts/<run_id>/` says otherwise. What a run WROTE is not a
+        lifecycle opinion that cancelling can overrule, so it is written unconditionally.
+        """
+        if not artifacts or record.artifacts == artifacts:
+            return
+        try:
+            self.state.update(run_id, artifacts=artifacts)
+        except Exception as exc:  # noqa: BLE001 - the run is over; never raise on bookkeeping
+            print(f"[marshal] {run_id}: failed to record artifacts: {exc}", file=sys.stderr)
 
     def _harvest_artifacts(self, wt: Worktree, run_id: str) -> list[str]:
         """Copy this run's `.marshal-artifacts/` into durable storage. Never raises.

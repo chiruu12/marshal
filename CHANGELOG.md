@@ -18,7 +18,9 @@ versions may include breaking API changes until 1.0.
   explain why), and a later run names it in `artifacts_from` to get it read-only under
   `.marshal-context/artifacts/<run_id>/`. The run record's new `artifacts` field lists what a run
   produced, written in the same update that makes the record terminal, so a driver polling for a
-  finished run never sees one whose artifacts are still missing. Worktree isolation is unchanged: the
+  finished run never sees one whose artifacts are still missing — and written unconditionally when a
+  racing `cancel_run` wins that stamp, because what a run wrote is a fact about files on disk rather
+  than a lifecycle opinion cancelling can overrule. Worktree isolation is unchanged: the
   agent only ever writes inside its own worktree, and harvesting is a copy out. Symlinks in
   `.marshal-artifacts/` are skipped rather than followed — the agent controls that directory, so a
   link there is a request to publish something it chose into storage other runs later read, which

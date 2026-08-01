@@ -28,7 +28,7 @@ from marshal_engine import (
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.core.config import BudgetSpec
-from marshal_engine.core.layout import artifacts_dir
+from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
 from marshal_engine.accounting.eastrouter import ExternalCost
 from marshal_engine.orchestration import fleet as fleet_mod
@@ -5586,3 +5586,34 @@ def test_an_artifact_symlink_is_not_followed_out_of_the_worktree(repo: Path, tmp
     stored = harvest_artifacts(wt, artifacts_dir(repo) / "linky")
     assert stored == ["real.md"], "a symlinked artifact was harvested"
     assert not (artifacts_dir(repo) / "linky" / "stolen.txt").exists()
+
+
+def test_a_cancelled_run_still_records_the_artifacts_it_wrote(repo: Path) -> None:
+    """A racing cancel wins the VERDICT, but must not erase what the run actually produced.
+
+    The terminal stamp is guarded on the run still being RUNNING so `cancel_run` wins. That guard is
+    right for the status and wrong for artifacts: the files are already harvested to disk, so
+    dropping their names leaves a record claiming the run produced nothing while
+    `.marshal/artifacts/<run_id>/` says otherwise - and a driver reading the record believes it."""
+    fleet = Fleet(repo, {"reporter": _Reporter()})
+    real_update_if = fleet.state.update_if
+    stamped: list[str] = []
+
+    def _cancel_first(run_id: str, predicate, **fields):  # type: ignore[no-untyped-def]
+        # Simulate cancel_run landing a terminal status just before the run's own stamp.
+        if "artifacts" in fields and run_id not in stamped:
+            stamped.append(run_id)
+            real_update_if(run_id, lambda r: True, status=RunStatus.CANCELLED.value)
+        return real_update_if(run_id, predicate, **fields)
+
+    fleet.state.update_if = _cancel_first  # type: ignore[method-assign]
+    rec = fleet.run("reporter", TaskSpec(id="racy", goal="audit it"))
+
+    stored = FleetState(runs_dir(repo)).get(rec.run_id)
+    assert stored is not None
+    assert stored.status == "cancelled", "the cancel did not win; this proves nothing"
+    on_disk = (artifacts_dir(repo) / rec.run_id / "FINDINGS.md")
+    assert on_disk.exists(), "harvest did not happen at all"
+    assert stored.artifacts == ["FINDINGS.md"], (
+        "record says the run produced nothing while its artifact is on disk"
+    )
