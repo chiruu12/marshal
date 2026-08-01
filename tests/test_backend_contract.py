@@ -20,6 +20,7 @@ from marshal_engine.core.types import (
     ModelSource,
     PermissionMode,
     RunOpts,
+    RunStatus,
     TaskSpec,
     UsageSource,
 )
@@ -136,6 +137,101 @@ def test_usage_source_in_vocabulary(backend: CodingAgentBackend) -> None:
         result = backend.parse_output(stdout, "", code)
         if result.usage is not None:
             assert result.usage.source in UsageSource
+
+
+# --- the run() escape hatch ------------------------------------------------------------------
+#
+# `base.run()` is the single chokepoint for Marshal's non-negotiable invariant: every agent run
+# gets an external timeout and a process-GROUP kill. Two adapters override `run()` — Cursor wraps
+# it in a `.cursor/cli.json` snapshot/restore transaction, Antigravity in a `trustedWorkspaces`
+# grant/release transaction. Both are setup/teardown around `super().run()`, and that is the only
+# acceptable shape: an override that spawned its own process would be a second, unverified copy
+# of the invariant.
+
+
+def _run_overriding_names() -> list[str]:
+    return [n for n in _BACKEND_NAMES if "run" in type(make_backend(n)).__dict__]
+
+
+def test_a_run_override_must_delegate_to_the_base_loop() -> None:
+    """An adapter may wrap `run()`, but it may not replace it.
+
+    Checked on the source rather than by behaviour because the failure this prevents is a new
+    adapter hand-rolling `subprocess.Popen` with its own timeout - which looks fine in that
+    adapter's own tests and quietly drops the process-group kill for its runs only.
+    """
+    for name in _run_overriding_names():
+        src = inspect.getsource(type(make_backend(name)).__dict__["run"])
+        assert "super().run(" in src, (
+            f"{name}: run() must delegate to CodingAgentBackend.run - the external timeout and "
+            "process-group kill live there and must not be reimplemented per adapter"
+        )
+        for forbidden in ("subprocess.Popen", "subprocess.run", "os.spawn"):
+            assert forbidden not in src, (
+                f"{name}: run() spawns a process itself ({forbidden}); wrap super().run() instead"
+            )
+
+
+#: Per-adapter setup needed to drive the REAL `run()` against a fake binary: redirect any
+#: host-global state the adapter's transaction touches. A `run()`-overriding adapter with no
+#: entry here fails the test below rather than being silently skipped.
+def _isolate(backend: CodingAgentBackend, tmp_path: Path) -> None:
+    if backend.name == "antigravity":
+        backend.settings_path = tmp_path / "settings.json"  # never touch the real user settings
+
+
+@pytest.mark.parametrize("name", _run_overriding_names(), ids=_run_overriding_names())
+def test_the_timeout_invariant_survives_a_run_override(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drive a `run()`-overriding adapter's real loop against a binary that never exits.
+
+    The base loop has its own timeout test, but it runs against a dummy backend - so nothing
+    proved the invariant still held *through* Cursor's and Antigravity's wrappers. A teardown
+    that swallowed the result, or a `finally` that raised, would leave the base's guarantees
+    intact and this adapter's runs unprotected.
+    """
+    import os
+    import signal
+    import sys
+
+    from marshal_engine.backends import base as base_mod
+
+    backend = make_backend(name)
+    _isolate(backend, tmp_path)
+
+    # A fake binary under the adapter's own name that ignores argv and never exits.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shim = bindir / backend.binary
+    shim.write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" -c "import time; time.sleep(30)"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    killed: list[tuple[int, int]] = []
+    real_killpg = os.killpg
+
+    def _spy_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+        real_killpg(pgid, sig)
+
+    monkeypatch.setattr(base_mod.os, "killpg", _spy_killpg)
+
+    pids: list[int] = []
+    result = backend.run(
+        TaskSpec(id="t1", goal="hang"),
+        RunOpts(cwd=tmp_path, permission=PermissionMode.SAFE_EDIT, timeout_s=1, on_pid=pids.append),
+    )
+
+    assert result.status is RunStatus.TIMED_OUT, f"{name}: {result.status} / {result.error}"
+    assert pids, f"{name}: on_pid never fired"
+    assert any(sig == signal.SIGTERM for _, sig in killed), f"{name}: group never SIGTERM'd"
+    assert all(pgid == pids[0] for pgid, _ in killed), f"{name}: signalled the wrong group"
+    with pytest.raises(ProcessLookupError):
+        os.kill(pids[0], 0)  # reaped, not left running after TIMED_OUT
 
 
 def test_goose_compose_prompt_matches_base_signature() -> None:

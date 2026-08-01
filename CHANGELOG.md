@@ -8,6 +8,15 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+- **The backend contract now covers the `run()` escape hatch.** `base.run()` owns Marshal's
+  external-timeout-and-process-group-kill invariant, and its timeout test only ever ran against a
+  dummy backend — nothing proved the invariant still held through the two adapters that override
+  `run()` (Cursor's `.cursor/cli.json` transaction, Antigravity's `trustedWorkspaces` transaction).
+  Two contract tests close that: an override must delegate to `super().run()` and must not spawn a
+  process itself, and each overriding adapter's real `run()` is driven against a binary that never
+  exits to prove the timeout fires, the process group is signalled, and the child is reaped.
+
 ### Changed
 - **`available_models()` now returns a `ModelCatalog` (`{models, source}`) instead of a bare list**,
   applying the cost-provenance rule to model discovery: never present a curated list as a live
