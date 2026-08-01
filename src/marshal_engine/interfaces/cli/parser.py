@@ -12,7 +12,8 @@ from .admin import _cmd_clean, _cmd_doctor, _cmd_init, _cmd_workspace
 from .common import _add_run_args, _positive_hours, _positive_int
 from .inspect import _cmd_backends, _cmd_logs, _cmd_models, _cmd_status, _cmd_usage
 from .recipes import _cmd_team_run, _cmd_teams, _cmd_workflow_run, _cmd_workflows
-from .runs import _cmd_run, _cmd_spawn
+from ...core.types import RunOutcome
+from .runs import _cmd_outcome, _cmd_run, _cmd_spawn
 
 def main(argv: list[str] | None = None) -> int:
     # Recover the user's interactive PATH if the CLI was launched from a context that didn't
@@ -128,6 +129,17 @@ def main(argv: list[str] | None = None) -> int:
     _add_run_args(prun)
     pspwn = sub.add_parser("spawn", help="start a task in the background and return its RUNNING record at once")
     _add_run_args(pspwn)
+    pout = sub.add_parser("outcome", help="record whether a finished run's work was any good")
+    pout.add_argument("run_id", help="the run to judge")
+    pout.add_argument(
+        "outcome",
+        choices=[o.value for o in RunOutcome],
+        help="integrated (usually written by integrate) | rejected | abandoned",
+    )
+    pout.add_argument("--note", default=None, help="short reason, kept with the record")
+    pout.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    pout.add_argument("--state", default=None, help="run-records dir (default: <repo>/.marshal/runs)")
+    pout.add_argument("--json", action="store_true", help="output JSON")
     pws = sub.add_parser("workspace", help="manage the workspace registry (~/.marshal/workspaces.yaml)")
     wsub = pws.add_subparsers(dest="ws_cmd")
     wadd = wsub.add_parser("add", help="register a repo as a workspace (path defaults to cwd)")
@@ -173,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.cmd == "spawn":
         return _cmd_spawn(args)
+    if args.cmd == "outcome":
+        return _cmd_outcome(args)
     if args.cmd == "workspace":
         return _cmd_workspace(args)
     if args.cmd == "mcp":

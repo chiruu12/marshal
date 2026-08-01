@@ -34,7 +34,8 @@ from marshal_engine.core.config import (
     load_config,
 )
 from marshal_engine.interfaces.service import MarshalService
-from marshal_engine.runtime.state import RunRecord
+from marshal_engine.core.layout import runs_dir
+from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.interfaces.service import ModelList, ModelSpec
 
 
@@ -1281,6 +1282,27 @@ def test_integrate_message_reaches_the_commit(repo: Path) -> None:
     ).stdout
     assert "Add the thing the agent was asked for" in log
     assert "marshal: integrate" not in log, "the tooling-shaped default won anyway"
+
+
+def test_integrate_clears_the_note_of_the_verdict_it_supersedes(repo: Path) -> None:
+    """A run rejected WITH A REASON and later integrated must not keep the reason.
+
+    `outcome_note` explains the verdict it was written with. Partial state updates preserve
+    unmentioned fields, so replacing `rejected` with `integrated` alone would leave a record that
+    reads "this was merged" annotated with "this was refused because ..." - and `status --full`
+    prints both."""
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "make a change")
+    (Path(rec.worktree) / "new.txt").write_text("work product\n")
+
+    rejected = svc.set_outcome(rec.run_id, "rejected", note="wrong approach")
+    assert rejected.status == "recorded"
+
+    assert svc.integrate(rec.run_id).status == "merged"
+    after = FleetState(runs_dir(repo)).get(rec.run_id)
+    assert after is not None
+    assert after.outcome == "integrated"
+    assert after.outcome_note is None, "kept the note explaining why it was rejected"
 
 
 class _Cataloged(_Echo):

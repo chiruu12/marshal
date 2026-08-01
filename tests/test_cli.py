@@ -1204,3 +1204,67 @@ def test_cost_split_accounts_for_legacy_estimated_spend() -> None:
 def test_cost_split_omits_estimated_when_absent() -> None:
     b = Bucket(runs=1, priced_runs=1, cost_usd=0.5, cost_native=0.5)
     assert cli_fmt._format_cost_split(b) == "native $0.5000"
+
+
+# --- `marshal outcome` subcommand -------------------------------------------------------------
+
+
+def _seeded_run(tmp_path: Path, **fields: object):
+    from marshal_engine.core.layout import runs_dir
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    state = FleetState(runs_dir(tmp_path))
+    state.add(RunRecord(run_id="r1", task_id="t1", backend="echo", status="exited_clean", **fields))
+    return state
+
+
+def test_outcome_records_a_rejection(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    state = _seeded_run(tmp_path)
+    ret = cli.main(["outcome", "r1", "rejected", "--note", "off scope", "--repo", str(tmp_path)])
+    assert ret == 0
+    assert "recorded" in capsys.readouterr()[0]
+    rec = state.get("r1")
+    assert rec is not None and rec.outcome == "rejected" and rec.outcome_note == "off scope"
+
+
+def test_outcome_needs_no_fleet_config(tmp_path: Path) -> None:
+    """A verdict about work that already happened cannot depend on today's client config."""
+    _seeded_run(tmp_path)
+    assert not (tmp_path / "fleet.config.yaml").exists()
+    assert cli.main(["outcome", "r1", "abandoned", "--repo", str(tmp_path)]) == 0
+
+
+def test_outcome_on_an_integrated_run_exits_nonzero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A refused overwrite is not success - a script must be able to tell it did not take."""
+    _seeded_run(tmp_path, outcome="integrated", merged_into="main")
+    ret = cli.main(["outcome", "r1", "rejected", "--repo", str(tmp_path)])
+    assert ret == 1
+    assert "refusing to overwrite" in capsys.readouterr()[0]
+
+
+def test_outcome_unknown_run_reports_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seeded_run(tmp_path)
+    ret = cli.main(["outcome", "ghost", "rejected", "--repo", str(tmp_path)])
+    assert ret == 1
+    assert "no such run" in capsys.readouterr()[1]
+
+
+def test_outcome_rejects_an_unknown_verdict(tmp_path: Path) -> None:
+    """argparse `choices` fails before any state is touched."""
+    _seeded_run(tmp_path)
+    with pytest.raises(SystemExit):
+        cli.main(["outcome", "r1", "sort-of-ok", "--repo", str(tmp_path)])
+
+
+def test_outcome_json_shape(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _seeded_run(tmp_path)
+    ret = cli.main(["outcome", "r1", "rejected", "--repo", str(tmp_path), "--json"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["status"] == "recorded"
+    assert data["outcome"] == "rejected"
+    assert data["previous"] is None

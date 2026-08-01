@@ -139,6 +139,7 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     app = build_app(build_service())
     names = {t.name for t in asyncio.run(app.list_tools())}
     expected = {
+        "set_outcome",
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
         "status", "usage", "get_run", "get_run_log", "collect_run", "commit_run", "integrate", "clean",
         "cancel_run", "list_workflows", "run_workflow", "doctor", "list_teams", "run_team",
@@ -815,3 +816,28 @@ def test_run_agent_rejects_invalid_output_schema_via_mcp(
                 },
             )
         )
+
+
+def test_set_outcome_round_trips_and_returns_conflict_as_a_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused overwrite must come back as data, not an exception - drivers branch on it."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    state = FleetState(repo / ".marshal" / "runs")
+    state.add(RunRecord(run_id="r1", task_id="t1", backend="echo", status="exited_clean"))
+
+    app = build_app(build_service())
+    assert asyncio.run(app.call_tool("set_outcome", {"run_id": "r1", "outcome": "rejected"}))
+
+    state.update("r1", outcome="integrated")
+    assert asyncio.run(app.call_tool("set_outcome", {"run_id": "r1", "outcome": "rejected"}))
+    rec = state.get("r1")
+    assert rec is not None and rec.outcome == "integrated"  # the sticky verdict survived

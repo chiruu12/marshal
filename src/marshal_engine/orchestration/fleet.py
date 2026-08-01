@@ -40,7 +40,16 @@ from ..core.layout import budget_gate_path, marshal_dir
 from ..runtime.logs import RunLogStore
 from ..core.retry import RetryPolicy, is_transient_failure
 from ..runtime.state import FleetState, RunRecord
-from ..core.types import AgentResult, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord, UsageSource
+from ..core.types import (
+    AgentResult,
+    PermissionMode,
+    RunOpts,
+    RunOutcome,
+    RunStatus,
+    TaskSpec,
+    UsageRecord,
+    UsageSource,
+)
 from ..accounting.usage import UsageEvent, UsageTracker, goal_digest
 from ..runtime.worktree import Worktree, WorktreeError, WorktreeManager, is_git_object_id
 from .provisioning import _provision_read_paths, _require_context_files
@@ -1978,7 +1987,16 @@ class Fleet:
 
         # Judgment lands on the run record (not a second usage event): events.jsonl is one line
         # per run for cost rollups, and rewriting that line would break ledger immutability.
-        self.state.update(run_id, merged_into=target, outcome="integrated")
+        # `outcome_note` is cleared because it explains the verdict being replaced: a run that was
+        # rejected with a reason and then integrated anyway would otherwise read as an integration
+        # annotated with why it was refused.
+        self.state.update(
+            run_id,
+            merged_into=target,
+            outcome=RunOutcome.INTEGRATED.value,
+            outcome_at=datetime.now(timezone.utc).isoformat(),
+            outcome_note=None,
+        )
         if cleanup:
             self.worktrees.remove(wt)
         drift, drift_msg = _base_branch_drift_warning(rec, target)
