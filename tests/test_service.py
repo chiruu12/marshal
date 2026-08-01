@@ -1393,6 +1393,38 @@ def test_an_ordinary_conflict_does_not_claim_the_base_was_rewritten(repo: Path) 
     assert not (result.message and "no longer in the repo's history" in result.message)
 
 
+def test_a_divergent_base_branch_is_not_reported_as_rewritten_history(repo: Path) -> None:
+    """`base_branch` chaining is a supported flow, not a broken repo.
+
+    A run spawned from another branch and integrated into this one has a base that is legitimately
+    not an ancestor of the target. Non-ancestry alone therefore cannot mean "rewritten": claiming
+    it would send the driver hunting a history rewrite that never happened - the same misdirection
+    this diagnosis exists to remove.
+    """
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    # A side branch that stays alive, with its own commit; the run is based on it.
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "shared.txt").write_text("the side branch's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "side edit")
+    rec = svc.run_agent("worker", "edit the shared file", base_branch="side")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    # Back on the original branch, conflict for an ordinary reason: both sides touched the file.
+    _git(repo, "checkout", "-q", "-")
+    (repo / "shared.txt").write_text("the main line's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "main-line edit")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert not (result.message and "no longer in the repo's history" in result.message), (
+        "a live base branch was reported as rewritten history"
+    )
+
+
 def test_integrate_clears_the_note_of_the_verdict_it_supersedes(repo: Path) -> None:
     """A run rejected WITH A REASON and later integrated must not keep the reason.
 

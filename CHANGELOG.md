@@ -42,9 +42,14 @@ versions may include breaking API changes until 1.0.
   so git reports conflicts in files the agent never touched — and `integrate` returned that list
   with **no message at all**, so the one thing the driver needed ("your base is gone") was the one
   thing not said, while the file list actively pointed elsewhere. The conflict result now carries
-  that diagnosis when reachability actually fails, and stays silent otherwise. Reachability, not
-  existence, is the test: the rewritten-away commit remains a live object while the reflog holds
-  it, so an existence check reports "fine" exactly when the diagnosis is needed.
+  that diagnosis when the base was genuinely rewritten away, and stays silent otherwise. Two
+  conditions are required, because either alone misfires: the base must be unreachable from the
+  merge target **and** reached by no surviving ref. A run spawned with `base_branch` onto another
+  branch also fails the first test while being perfectly healthy, so testing only that would
+  announce a rewrite for a supported flow — replacing one misleading message with another.
+  Reachability, not existence, is the test either way: the rewritten-away commit remains a live
+  object while the reflog holds it, so an existence check reports "fine" exactly when the
+  diagnosis is needed.
 
 ### Changed
 - **Prompt composition is shared across adapters.** Cursor and Goose carried byte-identical

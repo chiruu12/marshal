@@ -562,14 +562,23 @@ def _rewritten_base_diagnosis(
     conflict list actively misleads, because the real cause is not in it. Returns "" when the base
     is fine or unknown, so this only ever speaks when it has something true to say.
 
-    The test is REACHABILITY from the merge target, not existence: the rewritten-away commit is
-    still a live object for as long as the reflog holds it, so asking whether it exists says yes
-    right when the diagnosis is most needed.
+    Two conditions, and BOTH are required:
+
+    1. the base is not reachable from the merge target - otherwise there is no base problem at all;
+    2. no ref anywhere still reaches it - which is what makes it *rewritten* rather than merely
+       divergent. A run spawned with `base_branch` onto another branch also fails (1) while being
+       entirely healthy, so testing only (1) would announce a rewrite for a supported flow and
+       misdirect the very conflict this exists to explain.
+
+    Reachability, not existence: the reflog keeps a rewritten commit alive as an object for a good
+    while, so an existence check answers "fine" exactly when the diagnosis is most needed.
     """
     if rec is None or not rec.base_commit:
         return ""
     try:
         if worktrees.is_ancestor(rec.base_commit, target):
+            return ""
+        if worktrees.any_ref_contains(rec.base_commit, ignore=[rec.branch or ""]):
             return ""
     except WorktreeError:
         return ""

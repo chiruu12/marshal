@@ -493,7 +493,7 @@ merge (an outcome, not a fault).
 | `changed_files` | list[string] | |
 | `conflicts` | list[string] | Conflicting paths. When the run's base commit was rewritten away these are *not* the cause — see `message`. |
 | `commit` | string \| null | Merge commit hash. |
-| `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. On `conflict`, explains that the run's base commit is no longer reachable from the target when that is what happened — history rewritten (amend/squash/reset) mid-run makes every file conflict, so the `conflicts` list points away from the real cause. |
+| `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. On `conflict`, explains that the run's base commit was rewritten away when that is what happened — history rewritten (amend/squash/reset) mid-run makes every file conflict, so the `conflicts` list points away from the real cause. Requires that **no surviving ref** reaches the base, so a run deliberately spawned with `base_branch` onto another branch is not mislabelled: its base is legitimately not an ancestor of the target, and that is a supported flow, not a broken repo. |
 | `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
 
 ### `set_outcome`
