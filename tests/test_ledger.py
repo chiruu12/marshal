@@ -248,3 +248,68 @@ def test_an_empty_ledger_recommends_nothing() -> None:
     assert ledger.cells == []
     assert ledger.recommended is None
     assert ledger.total_runs == 0
+
+
+# --- ranking is per task_kind, not global -----------------------------------------------------
+
+
+def test_rank_restarts_within_each_task_kind() -> None:
+    """A client measured on `docs` and one measured on `refactor` are not in the same league.
+
+    Ranking them together would produce a single global order, and `recommended` would then name a
+    client for a kind of task it has never been judged on. Each kind gets its own #1.
+    """
+    cells = [
+        _cell(task_kind="docs", client="slow", n_judged=2, n_integrated=1, integration_rate=0.5),
+        _cell(task_kind="docs", client="good", n_judged=2, n_integrated=2, integration_rate=1.0),
+        _cell(task_kind="refactor", client="weak", n_judged=4, n_integrated=1, integration_rate=0.25),
+    ]
+    ranked = rank_cells(cells)
+    assert [(c.task_kind, c.client, c.rank) for c in ranked] == [
+        ("docs", "good", 1),
+        ("docs", "slow", 2),
+        ("refactor", "weak", 1),
+    ], "ranking leaked across task kinds"
+
+
+def test_no_single_recommendation_when_several_task_kinds_are_in_view() -> None:
+    """`recommended` answers "who should get this task". With several kinds there is no "this"."""
+    outcomes = {"r1": "integrated", "r2": "rejected"}
+    ledger = summarize_routing(
+        [
+            _event("r1", client="a", task_kind="docs"),
+            _event("r2", client="b", task_kind="refactor"),
+        ],
+        outcomes,
+    )
+    assert ledger.recommended is None
+    assert ledger.recommended_task_kind is None
+    # ...but the per-kind answers are still available, which is the useful form here.
+    assert ledger.recommended_by_task_kind == {"docs": "a", "refactor": "b"}
+
+
+def test_single_task_kind_still_gets_a_headline_recommendation() -> None:
+    ledger = summarize_routing(
+        [_event("r1", client="a"), _event("r2", client="b")],
+        {"r1": "integrated", "r2": "rejected"},
+    )
+    assert ledger.recommended == "a"
+    assert ledger.recommended_task_kind == "refactor"
+    assert ledger.recommended_by_task_kind == {"refactor": "a"}
+
+
+def test_the_best_client_of_a_kind_cannot_be_outranked_by_a_better_one_elsewhere() -> None:
+    """REGRESSION: with a global order, a 100%-on-docs client displaced the top refactor client,
+    and `recommended` named it for refactor work it had never done."""
+    ledger = summarize_routing(
+        [
+            _event("d1", client="docs-star", task_kind="docs"),
+            _event("r1", client="refactor-best", task_kind="refactor"),
+            _event("r2", client="refactor-worse", task_kind="refactor"),
+        ],
+        {"d1": "integrated", "r1": "integrated", "r2": "rejected"},
+    )
+    by_key = {(c.task_kind, c.client): c.rank for c in ledger.cells}
+    assert by_key[("refactor", "refactor-best")] == 1
+    assert by_key[("docs", "docs-star")] == 1
+    assert ledger.recommended_by_task_kind["refactor"] == "refactor-best"

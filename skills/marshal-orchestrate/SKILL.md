@@ -174,6 +174,10 @@ kind of task, ranked, with the sample size attached to every rate. Read it **bef
 your next fan-out instead of guessing from model names. It ranks on integration rate first and only
 breaks ties on measured cost, so a backend that reports no cost is never scored as if it were free.
 
+Ranking is **per `task_kind`** — pass the filter for the work you are about to fan out. Without it
+you get every kind at once, each with its own #1 in `recommended_by_task_kind`, and `recommended`
+is `null`: a client that tops your `docs` history has no measured claim on a `refactor`.
+
 ## 7. Clean up - reclaim the worktrees
 A long session leaves a worktree + branch per run. When you're done, `clean(scope?, dry_run?)` tears
 them down in one call (the usage ledger and run-state history are kept; only the disk-heavy worktrees

@@ -500,8 +500,8 @@ merge (an outcome, not a fault).
 | `window` | `session` \| `day` \| `week` \| `month` \| `all` | `all` | Window over the usage ledger. Routing wants history, so the default is `all`. |
 | `workspace` | string \| null | `null` | Target workspace. |
 
-**Returns:** `{ cells, recommended, recommended_task_kind, total_runs, total_judged,
-events_without_record, task_kind_filter, caveat, window, workspace }`
+**Returns:** `{ cells, recommended_by_task_kind, recommended, recommended_task_kind, total_runs,
+total_judged, events_without_record, task_kind_filter, caveat, window, workspace }`
 
 Derived on read by joining the usage ledger to recorded run outcomes; nothing is stored. Each
 cell is one `(task_kind, client)` pair:
@@ -512,9 +512,15 @@ cell is one `(task_kind, client)` pair:
 - `mean_cost_per_integrated`: `null`, **never 0**, when no integrated run reported a measured cost
   (`native` / `admin-api`). Compare against `measured_cost_all_usd`, which includes money spent on
   runs you rejected — cost-per-integrated alone flatters a client that burns four rejects per keeper.
-- `rank` / `cost_ranked`: ranking is integration rate, then duration, then measured cost, then
-  alphabetical. A cell with nothing judged is **unranked** (`rank: null`) but still returned with
-  its counts. A cell with unmeasured cost neither wins nor loses the cost tiebreak.
+- `rank` / `cost_ranked`: rank is **within the cell's `task_kind`**, never global — a client
+  measured on `docs` has never done your `refactor` work, so the two are not comparable. Within a
+  kind: integration rate, then duration, then measured cost, then alphabetical. A cell with nothing
+  judged is **unranked** (`rank: null`) but still returned with its counts. A cell with unmeasured
+  cost neither wins nor loses the cost tiebreak.
+- `recommended_by_task_kind`: `task_kind → best client for it`. `recommended` is the single
+  headline answer and is set **only when one `task_kind` is in view** (usually because you passed
+  the filter); with several kinds there is no one answer, so it is `null` and this map is what you
+  read instead.
 - `evidence` / `notes`: the claim with its sample size, and everything that would make the headline
   misleading on its own (small sample, unmeasured cost, pruned records).
 - `caveat`: set when no run has been judged at all — the ledger is unevaluated, not empty.

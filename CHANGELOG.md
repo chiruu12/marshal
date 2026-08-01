@@ -19,7 +19,9 @@ versions may include breaking API changes until 1.0.
   never `$0`, when no integrated run reported measured cost, and a client whose cost is unmeasured
   neither wins nor loses the cost tiebreak (scoring it as `$0` would make the backend that reports
   nothing the cheapest, and therefore the winner); small samples are never hidden, but every rate
-  carries its `n`; and `recommended` is `null` rather than a guess. `accounting` still does not
+  carries its `n`; ranking is per `task_kind` rather than one global league table, so a client is
+  never recommended for work it was never measured on; and `recommended` is `null` rather than a
+  guess, including whenever more than one `task_kind` is in view. `accounting` still does not
   import `runtime` — the ledger takes the join as a plain mapping, assembled in
   `interfaces/routing.py`.
 - **`set_outcome` — record whether a run's work was any good.** `RunRecord.outcome` documented a

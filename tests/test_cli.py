@@ -1372,3 +1372,51 @@ def test_routing_task_kind_filter(tmp_path: Path, capsys: pytest.CaptureFixture[
     data = json.loads(capsys.readouterr()[0])
     assert data["cells"] == []
     assert data["task_kind_filter"] == "docs"
+
+
+def test_routing_explains_an_empty_session_window_instead_of_claiming_no_history(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI has no long-lived Fleet, so `session` starts at this invocation and matches nothing.
+
+    Printing the same "no runs recorded yet" as a genuinely empty repo would tell a user with real
+    history that they have none. `marshal usage` already says this plainly; routing must too.
+    """
+    _seed_routing(tmp_path)
+    assert cli.main(["routing", "--repo", str(tmp_path), "--window", "session"]) == 0
+    out = capsys.readouterr()[0]
+    assert "window=session" in out
+    assert "no runs recorded yet" not in out
+    assert "--window all" in out
+
+
+def test_routing_recommends_per_task_kind_when_several_are_in_view(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No single "best" line across kinds - one per kind, each earned on that kind's own runs."""
+    from marshal_engine.accounting.usage import UsageEvent
+    from marshal_engine.core.layout import runs_dir, usage_dir
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    u = usage_dir(tmp_path)
+    u.mkdir(parents=True)
+    rows = [("d1", "writer", "docs"), ("r1", "coder", "refactor")]
+    (u / "events.jsonl").write_text(
+        "".join(
+            UsageEvent(
+                ts="2026-07-30T00:00:00+00:00", run_id=r, backend="opencode", client=c,
+                task_kind=k, cost_usd=0.0, source="unavailable", duration_ms=1000,
+                status="exited_clean",
+            ).model_dump_json() + "\n"
+            for r, c, k in rows
+        )
+    )
+    state = FleetState(runs_dir(tmp_path))
+    for r, c, _k in rows:
+        state.add(RunRecord(run_id=r, task_id="t", backend="opencode", client=c,
+                            status="exited_clean", outcome="integrated"))
+
+    assert cli.main(["routing", "--repo", str(tmp_path)]) == 0
+    out = capsys.readouterr()[0]
+    assert "best for 'docs': writer" in out
+    assert "best for 'refactor': coder" in out
