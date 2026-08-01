@@ -1605,3 +1605,40 @@ def test_run_agent_structured_output_round_trip(repo: Path) -> None:
     assert rec.status == "exited_clean"
     assert rec.structured == {"ok": True}
     assert svc.collect_run(rec.run_id).structured == {"ok": True}
+
+
+# --- routing (the join, through the real service) ---------------------------------------------
+
+
+def test_routing_joins_the_ledger_to_run_outcomes(repo: Path) -> None:
+    """The two stores meet only here: task_kind is on the event, outcome on the record."""
+    from marshal_engine.accounting.usage import UsageEvent
+    from marshal_engine.core.layout import runs_dir, usage_dir
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    u = usage_dir(repo)
+    u.mkdir(parents=True, exist_ok=True)
+    (u / "events.jsonl").write_text(
+        UsageEvent(
+            ts="2026-07-30T00:00:00+00:00", run_id="r1", backend="echo", client="worker",
+            task_kind="refactor", cost_usd=0.5, source="native", duration_ms=1000,
+            status="exited_clean",
+        ).model_dump_json() + "\n"
+    )
+    FleetState(runs_dir(repo)).add(
+        RunRecord(run_id="r1", task_id="t", backend="echo", client="worker",
+                  status="exited_clean", outcome="integrated")
+    )
+    svc = _svc(repo)
+    ledger = svc.routing()
+    assert [(c.task_kind, c.client) for c in ledger.cells] == [("refactor", "worker")]
+    assert ledger.cells[0].integration_rate == 1.0
+    assert ledger.cells[0].mean_cost_per_integrated == pytest.approx(0.5)
+    assert ledger.recommended == "worker"
+
+
+def test_routing_on_an_empty_repo_recommends_nothing(repo: Path) -> None:
+    """Never a guessed client: no evidence must read as no recommendation."""
+    ledger = _svc(repo).routing()
+    assert ledger.cells == []
+    assert ledger.recommended is None

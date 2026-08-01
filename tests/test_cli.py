@@ -1268,3 +1268,107 @@ def test_outcome_json_shape(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert data["status"] == "recorded"
     assert data["outcome"] == "rejected"
     assert data["previous"] is None
+
+
+# --- `marshal routing` subcommand -------------------------------------------------------------
+
+
+def _seed_routing(tmp_path: Path) -> None:
+    """One measured+rejected client, one unmeasured+integrated client, one pruned record."""
+    from marshal_engine.accounting.usage import UsageEvent
+    from marshal_engine.core.layout import runs_dir, usage_dir
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    rows = [
+        ("r1", "fw", "native", 0.0012, "integrated"),
+        ("r2", "fw", "native", 0.0015, "rejected"),
+        ("r3", "sub", "unavailable", 0.0, "integrated"),
+        ("r4", "gone", "unavailable", 0.0, None),  # no run record written at all
+    ]
+    u = usage_dir(tmp_path)
+    u.mkdir(parents=True)
+    (u / "events.jsonl").write_text(
+        "".join(
+            UsageEvent(
+                ts="2026-07-30T00:00:00+00:00", run_id=r, backend="opencode", client=c,
+                task_kind="refactor", cost_usd=cost, source=src, duration_ms=1000,
+                status="exited_clean",
+            ).model_dump_json() + "\n"
+            for r, c, src, cost, _ in rows
+        )
+    )
+    state = FleetState(runs_dir(tmp_path))
+    for r, c, _src, _cost, outcome in rows:
+        if r == "r4":
+            continue  # pruned: the event exists, the record does not
+        state.add(RunRecord(run_id=r, task_id="t", backend="opencode", client=c,
+                            status="exited_clean", outcome=outcome))
+
+
+def test_routing_never_prints_zero_for_unmeasured_cost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`$0.0000` would read as free. The honest answer for an unmeasured client is `unavailable`."""
+    _seed_routing(tmp_path)
+    assert cli.main(["routing", "--repo", str(tmp_path)]) == 0
+    out = capsys.readouterr()[0]
+    assert "$0.0000" not in out
+    assert "unavailable" in out
+    assert "$0.0012" in out  # the measured client still shows its real cost
+
+
+def test_routing_shows_the_sample_size_beside_every_rate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_routing(tmp_path)
+    cli.main(["routing", "--repo", str(tmp_path)])
+    out = capsys.readouterr()[0]
+    assert "judged" in out
+    assert "small sample" in out          # n<3 is called out, not hidden
+    assert "pruned" in out                # the record-less event is explained
+
+
+def test_routing_reports_an_unjudged_client_as_unknown_not_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_routing(tmp_path)
+    cli.main(["routing", "--repo", str(tmp_path)])
+    out = capsys.readouterr()[0]
+    # An unreviewed client has not failed - its rate is unknown, and must not render as 0%.
+    assert "unknown (0 of 1 judged)" in out
+    assert " 0% (" not in out
+
+
+def test_routing_needs_no_fleet_config(tmp_path: Path) -> None:
+    _seed_routing(tmp_path)
+    assert not (tmp_path / "fleet.config.yaml").exists()
+    assert cli.main(["routing", "--repo", str(tmp_path)]) == 0
+
+
+def test_routing_on_an_empty_repo_says_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["routing", "--repo", str(tmp_path)]) == 0
+    assert "no runs recorded yet" in capsys.readouterr()[0]
+
+
+def test_routing_json_carries_the_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_routing(tmp_path)
+    assert cli.main(["routing", "--repo", str(tmp_path), "--json"]) == 0
+    data = json.loads(capsys.readouterr()[0])
+    by_client = {c["client"]: c for c in data["cells"]}
+    assert by_client["sub"]["mean_cost_per_integrated"] is None  # unmeasured, not 0
+    assert by_client["fw"]["mean_cost_per_integrated"] == pytest.approx(0.0012)
+    assert by_client["gone"]["rank"] is None                     # unjudged, unranked, still listed
+    assert by_client["gone"]["n_no_record"] == 1
+    assert data["window"] == "all"
+
+
+def test_routing_task_kind_filter(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _seed_routing(tmp_path)
+    assert cli.main(["routing", "--repo", str(tmp_path), "--task-kind", "docs", "--json"]) == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["cells"] == []
+    assert data["task_kind_filter"] == "docs"

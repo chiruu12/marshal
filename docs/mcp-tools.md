@@ -492,6 +492,36 @@ merge (an outcome, not a fault).
 | `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. |
 | `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
 
+### `routing`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `task_kind` | string \| null | `null` | Only this kind of work (the free-text tag passed at spawn). Omit for all kinds. |
+| `window` | `session` \| `day` \| `week` \| `month` \| `all` | `all` | Window over the usage ledger. Routing wants history, so the default is `all`. |
+| `workspace` | string \| null | `null` | Target workspace. |
+
+**Returns:** `{ cells, recommended, recommended_task_kind, total_runs, total_judged,
+events_without_record, task_kind_filter, caveat, window, workspace }`
+
+Derived on read by joining the usage ledger to recorded run outcomes; nothing is stored. Each
+cell is one `(task_kind, client)` pair:
+
+- `integration_rate`: integrated ÷ **judged** runs. `null` when nothing has been judged — that is
+  *unknown*, not 0%. `n_judged`, `n_unjudged` and `n_no_record` are all reported so a rate is never
+  read without its denominator.
+- `mean_cost_per_integrated`: `null`, **never 0**, when no integrated run reported a measured cost
+  (`native` / `admin-api`). Compare against `measured_cost_all_usd`, which includes money spent on
+  runs you rejected — cost-per-integrated alone flatters a client that burns four rejects per keeper.
+- `rank` / `cost_ranked`: ranking is integration rate, then duration, then measured cost, then
+  alphabetical. A cell with nothing judged is **unranked** (`rank: null`) but still returned with
+  its counts. A cell with unmeasured cost neither wins nor loses the cost tiebreak.
+- `evidence` / `notes`: the claim with its sample size, and everything that would make the headline
+  misleading on its own (small sample, unmeasured cost, pruned records).
+- `caveat`: set when no run has been judged at all — the ledger is unevaluated, not empty.
+
+**This is only as honest as your `set_outcome` habit.** If you record integrations and never
+rejections, every rate reads 100%.
+
 ### `set_outcome`
 
 | Parameter | Type | Default | Description |

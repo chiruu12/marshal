@@ -6,6 +6,7 @@ from typing import Any, Sequence
 
 from ...orchestration.fleet import BudgetStatus
 from ...core.types import UsageSource
+from ...accounting.ledger import RoutingCell, RoutingLedger
 from ...accounting.usage import Bucket
 
 def _align_rows(header: Sequence[str], rows: Sequence[Sequence[Any]]) -> list[str]:
@@ -139,3 +140,55 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
     ]
     for line in _align_rows(header, table_rows):
         print(f"  {line}")
+
+
+def _format_integration_rate(cell: RoutingCell) -> str:
+    """The rate with its denominator attached, or an honest "unknown".
+
+    A bare percentage invites a reader to treat 1/1 and 40/40 as the same claim, so the judged
+    count travels with it. Nothing judged is `unknown`, never `0%` - an unreviewed client has not
+    failed, it has not been looked at.
+    """
+    if cell.integration_rate is None:
+        return f"unknown (0 of {cell.n_runs} judged)"
+    return f"{cell.integration_rate * 100:.0f}% ({cell.n_integrated}/{cell.n_judged} judged)"
+
+
+def _format_cell_cost(cell: RoutingCell) -> str:
+    """Mean cost per integrated run - `unavailable` rather than `$0.0000` when unmeasured."""
+    if cell.mean_cost_per_integrated is None:
+        return "unavailable"
+    if cell.priced_integrated_runs < cell.n_integrated:
+        return (
+            f"${cell.mean_cost_per_integrated:.4f} "
+            f"({cell.priced_integrated_runs}/{cell.n_integrated} priced)"
+        )
+    return f"${cell.mean_cost_per_integrated:.4f}"
+
+
+def _format_duration(cell: RoutingCell) -> str:
+    if cell.mean_duration_ms is None:
+        return "-"
+    return f"{cell.mean_duration_ms / 1000:.1f}s"
+
+
+def _print_routing_table(ledger: RoutingLedger) -> None:
+    """Ranked routing evidence. Every rate is printed beside the sample size behind it."""
+    rows = [
+        [
+            str(c.rank) if c.rank is not None else "-",
+            c.task_kind,
+            c.client,
+            str(c.n_runs),
+            _format_integration_rate(c),
+            _format_duration(c),
+            _format_cell_cost(c),
+            "; ".join(c.notes) or "",
+        ]
+        for c in ledger.cells
+    ]
+    for line in _align_rows(
+        ("rank", "task_kind", "client", "runs", "integrated", "mean_dur", "$/integrated", "notes"),
+        rows,
+    ):
+        print(line)

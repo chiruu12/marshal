@@ -139,7 +139,7 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     app = build_app(build_service())
     names = {t.name for t in asyncio.run(app.list_tools())}
     expected = {
-        "set_outcome",
+        "set_outcome", "routing",
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
         "status", "usage", "get_run", "get_run_log", "collect_run", "commit_run", "integrate", "clean",
         "cancel_run", "list_workflows", "run_workflow", "doctor", "list_teams", "run_team",

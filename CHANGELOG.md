@@ -9,6 +9,19 @@ versions may include breaking API changes until 1.0.
 ## [Unreleased]
 
 ### Added
+- **`routing` — which client's work actually gets kept, per kind of task.** Marshal recorded what
+  ran but nothing about whether it was any good, so it could not answer the question a driver
+  actually asks. The new `accounting/ledger.py` derives that on read by joining the usage ledger
+  (which carries `task_kind`) to run records (which carry `outcome`) on `run_id`; nothing is
+  stored. Exposed as a `routing` MCP tool and `marshal routing [--task-kind] [--window]`.
+  It is built to refuse flattering answers: an integration rate is over *judged* runs and is
+  `null` — unknown, not 0% — when nothing has been judged; `mean_cost_per_integrated` is `null`,
+  never `$0`, when no integrated run reported measured cost, and a client whose cost is unmeasured
+  neither wins nor loses the cost tiebreak (scoring it as `$0` would make the backend that reports
+  nothing the cheapest, and therefore the winner); small samples are never hidden, but every rate
+  carries its `n`; and `recommended` is `null` rather than a guess. `accounting` still does not
+  import `runtime` — the ledger takes the join as a plain mapping, assembled in
+  `interfaces/routing.py`.
 - **`set_outcome` — record whether a run's work was any good.** `RunRecord.outcome` documented a
   vocabulary (`integrated` / `rejected` / `abandoned`) but only `integrate` ever wrote to it, and
   only ever `integrated`. So declining to merge a run left no trace: a diff someone reviewed and
