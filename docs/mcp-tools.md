@@ -88,7 +88,11 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 
 **Returns:** `{ clients, skipped, driver_context, workspace }`
 
-- `clients`: `[{ name, backend, model, permission, permission_fidelity }]`
+- `clients`: `[{ name, backend, model, permission, permission_fidelity, billing_notice }]`
+- `billing_notice`: string \| null — set when this client's resolved model bills a
+  **separately-metered provider** rather than the subscription its backend normally uses (today:
+  an OpenCode client on a `fireworks-ai/*` model). `null` on every other client, so a notice means
+  something. Carried on the listing rather than only stderr for the same reason `skipped` is.
 - `skipped`: `[{ name, backend, reason }]` — clients declared in the config that are **not usable
   right now**, and why (backend CLI absent, or a backend name that does not exist). Previously
   these were filtered out silently: Marshal warned on stderr, which an MCP driver never sees, so

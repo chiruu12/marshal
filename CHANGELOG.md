@@ -25,6 +25,17 @@ versions may include breaking API changes until 1.0.
   prevent.
 
 ### Changed
+- **Fireworks models are now an explicit opt-in rather than a hard rejection** (#201). An OpenCode
+  client naming a `fireworks-ai/*` model used to raise `ConfigError` **at load**, so one client's
+  billing choice made every other client in the file unloadable — a blast radius far past the one
+  client concerned. It is now a warning. The accident the guard existed for is still guarded:
+  `resolve_model` defaults an OpenCode client with no model to the Go subscription, so nothing
+  reaches a metered provider unless its id was typed. Those models also report **real per-run USD**
+  (`source=native`), which for some fleets is the only measured cost available — refusing them
+  denied a provider and the cost-provenance story at once. `_reject_fireworks` is replaced by
+  `metered_provider_warning`.
+
+### Changed
 - **Prompt composition is shared across adapters.** Cursor and Goose carried byte-identical
   `_compose_prompt` overrides that differed from the base in one line — how `context_files` are
   named — so a change to the shared `read_paths` wording could land in one and be silently

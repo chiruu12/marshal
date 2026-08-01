@@ -24,7 +24,7 @@ from ..core.config import (
     ConfigError,
     FleetConfig,
     ModelSpec,
-    _reject_fireworks,
+    metered_provider_warning,
     resolve_duration,
     resolve_model,
 )
@@ -99,6 +99,11 @@ class ClientInfo(BaseModel):
     model: str | None
     permission: str
     permission_fidelity: str
+    # Set when this client's resolved model bills a separately-metered provider rather than the
+    # subscription its backend normally uses. Carried on the LISTING, not just stderr: a driver
+    # over MCP never sees stderr - the same reason `SkippedClient` exists - so a stderr-only
+    # advisory is invisible to exactly the caller deciding what to spend money on.
+    billing_notice: str | None = None
 
 
 class SkippedClient(BaseModel):
@@ -198,6 +203,8 @@ class MarshalService:
         self._clients: dict[str, ClientConfig] = {
             n: c for n, c in config.clients.items() if avail.get(c.backend, False)
         }
+        # (client, model) pairs already warned about as metered - see _warn_if_metered.
+        self._metered_warned: set[tuple[str, str]] = set()
         self.skipped_clients: list[str] = [
             n for n, c in config.clients.items() if not avail.get(c.backend, False)
         ]
@@ -254,6 +261,9 @@ class MarshalService:
                         self.fleet.backends[c.backend].capabilities.permission_fidelity,
                         c.permission,
                     ).value,
+                    billing_notice=metered_provider_warning(
+                        ClientConfig(name=c.name, backend=c.backend, model=resolve_model(c))
+                    ),
                 )
                 for c in self._clients.values()
             ],
@@ -311,6 +321,24 @@ class MarshalService:
             parts.append(worker_ctx.strip())
         parts.append(goal)
         return "\n\n".join(parts)
+
+    def _warn_if_metered(self, backend: str, client_name: str, model: str | None) -> None:
+        """Warn once per (client, model) that this run bills a separately-metered provider.
+
+        Deduped: a 20-job fan-out on the same client would otherwise print the same line 20 times
+        and train the reader to skip it. Once per process is enough to make the billing visible
+        without burying the run output it sits next to.
+        """
+        warning = metered_provider_warning(
+            ClientConfig(name=client_name, backend=backend, model=model)
+        )
+        if warning is None:
+            return
+        key = (client_name, model or "")
+        if key in self._metered_warned:
+            return
+        self._metered_warned.add(key)
+        print(f"[marshal] {warning}", file=sys.stderr)
 
     def _request_for(
         self,
@@ -378,12 +406,9 @@ class MarshalService:
             if client is None:
                 raise self._unknown_client_error(client_name)
             resolved_model = model if model is not None else resolve_model(client)
-            if model is not None:
-                # A model override bypasses load_config's guard, so re-check it here (same rule):
-                # pointing an opencode client at a fireworks-ai/* model would bill Fireworks credits.
-                _reject_fireworks(
-                    ClientConfig(name=client.name, backend=client.backend, model=resolved_model)
-                )
+            # A model override never passes through load_config/validate, so the metered-provider
+            # advisory would otherwise be silent on exactly the path that starts the billed run.
+            self._warn_if_metered(client.backend, client.name, resolved_model)
             return RunRequest(
                 backend_name=client.backend,
                 task=task,
@@ -400,7 +425,8 @@ class MarshalService:
             # for an unconfigured run, NOT the repo's `defaults:` block (which is merged into named
             # clients at load time and not retained on FleetConfig).
             ephemeral = ClientConfig(name=f"adhoc-{backend}", backend=backend, model=model)
-            _reject_fireworks(ephemeral)  # same hard guard load_config applies; a typo'd model fails fast
+            # Ad-hoc runs are not in the config at all, so validate() never sees them either.
+            self._warn_if_metered(backend, ephemeral.name, resolve_model(ephemeral))
             self._ensure_backend(backend)  # lazy-add so the Fleet knows the backend; raises ValueError on unknown
             return RunRequest(
                 backend_name=ephemeral.backend,

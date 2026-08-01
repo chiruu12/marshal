@@ -76,7 +76,7 @@ defaults:
 clients:
   implementer:
     backend: opencode          # opencode | cursor | codex | command-code | claude-code | goose | antigravity
-    model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model here is rejected
+    model: opencode-go/glm-5.2 # Go sub - a fireworks-ai/* model bills Fireworks (and reports USD)
     permission: safe-edit
     secret_ref: env:OPENCODE_API_KEY
 
@@ -97,7 +97,8 @@ clients:
   clients on the same backend with different provider homes (`env:`, e.g. `CODEX_HOME`), see
   [`examples/per_client_env.yaml`](../examples/per_client_env.yaml).
 - An OpenCode client with no `model` defaults to `opencode-go/glm-5.2` so runs bill the Go
-  subscription, not Fireworks credits. A `fireworks-ai/*` model is rejected outright.
+  subscription, not Fireworks credits. Naming a `fireworks-ai/*` model explicitly is allowed and
+  warns at load: it bills Fireworks credits, and reports real per-run USD (`source=native`).
 - **`worktree_setup`** (optional, top-level): a command run once in each fresh worktree before the
   agent starts - e.g. `worktree_setup: uv sync --extra dev --extra mcp` to provision the worktree's
   own venv. Accepts a string or an argv list; omit it for repos that need no setup. Marshal scrubs

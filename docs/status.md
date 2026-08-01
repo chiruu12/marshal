@@ -18,7 +18,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `state.py` | Persistent fleet state (one `runs/<run_id>.json` per run) | done |
 | `fleet.py` | Orchestrator: worktree → run → price → record → persist | done |
 | `registry.py` | Construct backends by name | done |
-| `config.py` | `fleet.config.yaml` → clients, Fireworks guard | done |
+| `config.py` | `fleet.config.yaml` → clients, metered-provider advisory | done |
 | `retry.py` | Transient-failure classifier + backoff for run retries | done |
 | `env.py` | Child env allowlist (operational + per-backend credentials) + user PATH recovery + log redaction helpers | done |
 | `logs.py` | Durable per-run stdout/stderr under `.marshal/logs/` | done |
