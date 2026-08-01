@@ -584,7 +584,7 @@ widen agy's write scope. Within one process, overlapping runs on the same cwd ke
 the last claimant releases. Documented for operators in [`usage.md`](usage.md).
 
 **Live verification (2026-06-19).** OpenCode ✅ fully (read + safe-edit worktree write + native
-usage/cost; forced `opencode-go/*` to bill the Go sub, not Fireworks) and Cursor ✅ fully (read +
+usage/cost; defaults to `opencode-go/*` so runs bill the Go sub, with `fireworks-ai/*` an explicit opt-in that reports native USD) and Cursor ✅ fully (read +
 safe-edit worktree write; tokens in the CLI ``result.usage`` envelope, cost Admin API /
 ``unavailable``, env `CURSOR_API_KEY` authenticates). 
 **Antigravity ✅ writes fixed (2026-06-27):** headless edits used to divert to

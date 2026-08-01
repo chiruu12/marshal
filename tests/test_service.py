@@ -254,6 +254,8 @@ def test_list_clients(repo: Path) -> None:
             "permission": "safe-edit",
             # Dummy adapters default to boundary-only (honest fail-closed).
             "permission_fidelity": "boundary-only",
+            # No notice on an ordinary client - one on every row would carry no signal.
+            "billing_notice": None,
         }
     ]
     assert result.driver_context is None  # no context.driver in this config
@@ -965,12 +967,14 @@ def test_request_for_unknown_backend_raises_with_valid_names(repo: Path) -> None
         assert name in msg
 
 
-def test_request_for_adhoc_opencode_fireworks_model_raises(repo: Path) -> None:
-    # The Fireworks guard applies to ad-hoc opencode configs the same way it does to configured
-    # ones - synthesized at request-time, so a typo'd model fails fast before any spawn.
+def test_request_for_adhoc_opencode_accepts_a_metered_model(repo: Path) -> None:
+    # An ad-hoc opencode run may name a Fireworks model: it is a provider choice, and those runs
+    # are the ones that come back with real per-run USD attached.
     svc = _svc(repo)
-    with pytest.raises(ConfigError, match="Fireworks"):
-        svc._request_for(None, "x", backend="opencode", model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+    req = svc._request_for(
+        None, "x", backend="opencode", model="fireworks-ai/accounts/fireworks/models/glm-5p2"
+    )
+    assert req.model == "fireworks-ai/accounts/fireworks/models/glm-5p2"
 
 
 def test_run_agent_model_override_on_configured_client(repo: Path) -> None:
@@ -1028,22 +1032,75 @@ def test_run_agent_goose_malformed_model_raises(repo: Path) -> None:
     create.assert_not_called()
 
 
-def test_run_agent_opencode_fireworks_model_raises_config_error(repo: Path) -> None:
-    # Ad-hoc path: run_agent propagates the same ConfigError the synthesis raises, so a
-    # Fireworks-billed run never starts on the Fleet.
+def test_list_clients_carries_the_billing_notice(repo: Path) -> None:
+    """A driver over MCP never sees stderr, so the advisory must ride the listing.
+
+    This is the same reason `SkippedClient` exists: a fact that only reaches stderr is invisible
+    to exactly the caller deciding what to spend money on.
+    """
+    from marshal_engine.core.config import ClientConfig, FleetConfig
+
+    cfg = FleetConfig(
+        clients={
+            "paid": ClientConfig(
+                name="paid",
+                backend="opencode",
+                model="fireworks-ai/accounts/fireworks/models/glm-5p2",
+            ),
+            "sub": ClientConfig(name="sub", backend="opencode", model="opencode-go/glm-5.2"),
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"opencode": _Echo()})
+    by_name = {c.name: c for c in svc.list_clients().clients}
+    assert "Fireworks credits" in (by_name["paid"].billing_notice or "")
+    # The subscription client must carry no notice at all - a notice on every row is no signal.
+    assert by_name["sub"].billing_notice is None
+
+
+def test_a_metered_model_warns_on_the_paths_validate_never_sees(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The override and ad-hoc paths start a billed run without passing through validate().
+
+    Replacing the hard rejection with a `validate()`-only warning would have made those two
+    paths - the ones that actually launch the Fireworks-billed run - completely silent.
+    """
     svc = _opencode_svc(repo)
-    with pytest.raises(ConfigError, match="Fireworks"):
-        svc.run_agent(backend="opencode", goal="x", task_id="t1",
-                      model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+    fw = "fireworks-ai/accounts/fireworks/models/glm-5p2"
+
+    svc._request_for("impl", "x", model=fw)  # override on a configured client
+    err = capsys.readouterr()[1]
+    assert "Fireworks credits" in err
+
+    svc._request_for(None, "x", backend="opencode", model=fw)  # ad-hoc
+    assert "Fireworks credits" in capsys.readouterr()[1]
 
 
-def test_run_agent_client_model_override_fireworks_raises(repo: Path) -> None:
-    # Override path: a model override on a CONFIGURED opencode client must hit the same Fireworks
-    # guard as an ad-hoc opencode run. Overrides bypass load_config, so _request_for re-checks.
-    svc = _opencode_svc(repo)  # configured client "impl" is backend=opencode
-    with pytest.raises(ConfigError, match="Fireworks"):
-        svc.run_agent("impl", "x", task_id="t1",
-                      model="fireworks-ai/accounts/fireworks/models/glm-5p2")
+def test_the_metered_warning_is_not_repeated_per_run(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A fan-out would otherwise print the same line once per job and train the reader to skip it."""
+    svc = _opencode_svc(repo)
+    fw = "fireworks-ai/accounts/fireworks/models/glm-5p2"
+    for _ in range(5):
+        svc._request_for("impl", "x", model=fw)
+    assert capsys.readouterr()[1].count("Fireworks credits") == 1
+
+
+def test_run_agent_passes_a_metered_model_through(repo: Path) -> None:
+    # Both the ad-hoc and the client-override paths reach the backend with the model as written.
+    svc = _opencode_svc(repo)
+    for kwargs in (
+        {"backend": "opencode", "goal": "x", "task_id": "t1"},
+        {"client_name": "impl", "goal": "x", "task_id": "t2"},
+    ):
+        req = svc._request_for(
+            kwargs.get("client_name"),
+            "x",
+            backend=kwargs.get("backend"),
+            model="fireworks-ai/accounts/fireworks/models/glm-5p2",
+        )
+        assert req.model == "fireworks-ai/accounts/fireworks/models/glm-5p2"
 
 
 # --- list_models + duration presets ---------------------------------------------------------

@@ -49,8 +49,10 @@ stale — it is not evidence your account can run that model).
 | `antigravity` *(experimental)* | `gemini-3.1-pro` (heavy), `gemini-3.5-flash` (light), also `claude-sonnet-4.6` / `claude-opus-4.6` / `gpt-oss-120b` | varies | **unavailable** | probe `agy models` | Worktree **writes** now land correctly (worktree pre-registered as a trusted workspace); supports `safe-edit`/`yolo` only (no `read-only`). Doctor is path-only (no cheap auth probe). |
 | `goose` | `cursor-agent/auto` (Cursor-backed), or bare model / `provider/model` for other providers | Standard | **native** when provider reports positive cost; else **unavailable** | static (`cursor-agent/auto`; `local-models` is GGUF/MLX only) | Headless via `GOOSE_MODE=auto`; `permission_fidelity=boundary-only`. Pin Cursor with `cursor-agent/auto` (needs `cursor-agent login`). CLI ≥ 1.43 live-verified. Doctor auth via `goose info -v --check`. |
 
-> OpenCode must use an `opencode-go/*` model - a `fireworks-ai/*` model is rejected at config load so
-> you never burn Fireworks credits. Omitting `model` defaults to `opencode-go/glm-5.2`.
+> OpenCode defaults to an `opencode-go/*` model, which bills the Go subscription; omitting `model`
+> resolves to `opencode-go/glm-5.2`. A `fireworks-ai/*` model is allowed and warns at load - it bills
+> Fireworks credits instead, and in exchange reports **real per-run USD** (`source=native`), which is
+> the only measured cost some fleets have.
 
 > **Optional: real cost via EastRouter (third-party).** If you route a `codex` client through
 > EastRouter instead of stock OpenAI, set `usage_api: eastrouter` to read its **real** per-run cost

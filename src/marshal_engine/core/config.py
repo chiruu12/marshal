@@ -1,8 +1,9 @@
 """Fleet configuration - `fleet.config.yaml` declares N named clients.
 
 Each client pins a backend + permission + model. Secrets are referenced (`env:VAR`), never
-inlined. Includes a Fireworks guard: an OpenCode client must use a Go model (`opencode-go/...`),
-never a `fireworks-ai/...` model, so runs bill the Go subscription rather than Fireworks credits.
+inlined. An OpenCode client with no model defaults to a Go model (`opencode-go/...`) so runs bill
+the Go subscription; naming a `fireworks-ai/...` model is an explicit, warned opt-in that bills
+Fireworks credits and reports real per-run USD.
 
 The optional top-level `models:` block is a catalog the driver can read (`list_models` / `marshal
 models`) - it describes which model ids the fleet exposes, which backends they run on, and the
@@ -249,9 +250,6 @@ def load_config(path: Path | str) -> FleetConfig:
             secret_ref=str(merged["secret_ref"]) if merged.get("secret_ref") else None,
             usage_api=str(merged["usage_api"]) if merged.get("usage_api") else None,
         )
-        # Enforce the Fireworks guard at LOAD so an invalid config can't be built via any entry
-        # point (CLI / library / MCP), not only the MCP path that happens to call validate().
-        _reject_fireworks(client)
         clients[name] = client
     # Fleet-wide layered context (tolerate it being absent or not a mapping). `worker` prefixes
     # every worker goal; `driver` is surfaced to the driver.
@@ -552,24 +550,35 @@ def resolve_secret(ref: str | None) -> str | None:
     return None
 
 
-def _reject_fireworks(client: ClientConfig) -> None:
-    """Hard guard: an OpenCode client must never use a ``fireworks-ai/*`` model.
+def metered_provider_warning(client: ClientConfig) -> str | None:
+    """Advisory when a client is pointed at a separately-metered provider, else None.
 
-    Such a model bills Fireworks credits instead of the Go subscription. This is the single
-    source of truth for the rule; both ``load_config`` and ``validate`` call it.
+    This used to be a hard rejection, on the theory that a ``fireworks-ai/*`` model billing
+    Fireworks credits instead of the OpenCode Go subscription was always a mistake. It is not -
+    those models report real per-run USD, which is the only cost provenance some fleets have, so
+    refusing them denied users a provider *and* the measured-cost story.
+
+    The accident it actually guarded against is still guarded: ``resolve_model`` defaults an
+    OpenCode client with no model to the Go subscription, so nothing reaches a metered provider
+    unless someone typed its id. That makes this a notice, not a veto - and it no longer takes
+    the whole config down with it (a single client's billing choice used to make every other
+    client in the file unloadable).
     """
     if client.backend == "opencode" and client.model and client.model.startswith("fireworks-ai/"):
-        raise ConfigError(
-            f"client {client.name!r}: OpenCode model {client.model!r} bills Fireworks credits; "
-            "use an 'opencode-go/...' model"
+        return (
+            f"client {client.name!r}: OpenCode model {client.model!r} bills Fireworks credits, "
+            "not the Go subscription (use an 'opencode-go/...' model for the sub)"
         )
+    return None
 
 
 def validate(cfg: FleetConfig) -> list[str]:
     """Raise ConfigError on hard problems; return a list of soft warnings."""
     warnings: list[str] = []
     for c in cfg.clients.values():
-        _reject_fireworks(c)
+        metered = metered_provider_warning(c)
+        if metered:
+            warnings.append(metered)
         if c.backend == "opencode" and not c.model:
             warnings.append(
                 f"client {c.name!r}: no model set; defaulting to {DEFAULT_OPENCODE_MODEL} (Go sub)"

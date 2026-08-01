@@ -58,31 +58,55 @@ def test_resolve_model_defaults_opencode_to_go() -> None:
     assert resolve_model(c2) is None
 
 
-def test_fireworks_model_is_rejected() -> None:
+def test_a_metered_provider_model_warns_but_loads() -> None:
+    """Choosing Fireworks is a billing decision, not a config error.
+
+    Those models report real per-run USD - the only cost provenance some fleets have - so
+    refusing them denied a provider and the measured-cost story at once.
+    """
     cfg = FleetConfig(
         clients={
-            "bad": ClientConfig(
-                name="bad",
+            "paid": ClientConfig(
+                name="paid",
                 backend="opencode",
                 model="fireworks-ai/accounts/fireworks/models/glm-5p2",
             )
         }
     )
-    with pytest.raises(ConfigError, match="Fireworks"):
-        validate(cfg)
+    warnings = validate(cfg)
+    assert any("Fireworks credits" in w and "paid" in w for w in warnings)
 
 
-def test_load_config_rejects_fireworks_at_load(tmp_path: Path) -> None:
-    # The guard must fire at LOAD, not only when validate() is called (the MCP path).
+def test_a_metered_model_does_not_take_the_whole_config_down(tmp_path: Path) -> None:
+    """REGRESSION (#201): one client's billing choice used to make every other client unloadable.
+
+    The rejection fired at load, so a config with one Fireworks client raised ConfigError and the
+    unrelated clients beside it never existed - a blast radius far past the one client concerned.
+    """
     p = tmp_path / "fleet.config.yaml"
     p.write_text(
         "clients:\n"
-        "  bad:\n"
+        "  paid:\n"
         "    backend: opencode\n"
         "    model: fireworks-ai/accounts/fireworks/models/glm-5p2\n"
+        "  sub:\n"
+        "    backend: opencode\n"
+        "    model: opencode-go/glm-5.2\n"
     )
-    with pytest.raises(ConfigError, match="Fireworks"):
-        load_config(p)
+    cfg = load_config(p)
+    assert set(cfg.clients) == {"paid", "sub"}
+    assert cfg.clients["paid"].model == "fireworks-ai/accounts/fireworks/models/glm-5p2"
+
+
+def test_omitting_the_model_still_defaults_to_the_subscription() -> None:
+    """The accident the old guard existed for is still guarded.
+
+    Nothing reaches a metered provider unless its id was typed; an OpenCode client with no model
+    resolves to the Go subscription.
+    """
+    c = ClientConfig(name="c", backend="opencode")
+    assert resolve_model(c) == DEFAULT_OPENCODE_MODEL
+    assert not (resolve_model(c) or "").startswith("fireworks-ai/")
 
 
 def test_missing_config_file_raises_friendly_error(tmp_path: Path) -> None:
