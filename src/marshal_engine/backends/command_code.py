@@ -31,6 +31,7 @@ import subprocess
 from ..core.types import (
     AgentResult,
     Capabilities,
+    ModelCatalog,
     PermissionFidelity,
     PermissionMode,
     RunOpts,
@@ -104,28 +105,16 @@ class CommandCodeBackend(CodingAgentBackend):
         # ``command-code status`` is authenticated-only; config.json presence ≠ logged in.
         return True
 
-    def available_models(self) -> list[str]:
-        """Model ids from ``command-code --list-models``, or the static playbook fallback.
+    def available_models(self) -> ModelCatalog:
+        """Model ids from ``command-code --list-models``, falling back to the curated list.
 
         Rows are ``<id>  <description>``; section headers (no padded description) are skipped.
-        Never raises; never returns None — on probe failure uses docs/model-playbook.md.
         """
-        if shutil.which(self.binary) is None:
-            return list(_STATIC_MODELS)
-        try:
-            proc = subprocess.run(
-                [self.binary, "--list-models"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return list(_STATIC_MODELS)
-        if proc.returncode != 0:
-            return list(_STATIC_MODELS)
-        models = _parse_list_models(_ANSI.sub("", proc.stdout or ""))
-        return models or list(_STATIC_MODELS)
+        return self._probe_models(
+            [self.binary, "--list-models"],
+            lambda stdout: _parse_list_models(_ANSI.sub("", stdout)),
+            _STATIC_MODELS,
+        )
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [

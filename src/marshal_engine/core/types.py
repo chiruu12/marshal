@@ -118,6 +118,34 @@ class UsageSource(str, Enum):
     UNAVAILABLE = "unavailable"  # backend exposes no usage data
 
 
+class ModelSource(str, Enum):
+    """Provenance of a model listing - never present a curated list as a live answer.
+
+    Same rule as ``UsageSource``, applied to a second kind of fact. A driver choosing what to
+    route at needs to know whether the CLI said this *just now* or whether Marshal is reciting
+    what a doc said months ago: a static list can name a model the account cannot actually run,
+    and a run that fails on an unknown model id is a wasted worktree and a confusing error.
+    """
+
+    PROBED = "probed"            # this backend's CLI reported these ids just now
+    STATIC = "static"            # curated list; the CLI could not be asked, or did not answer
+    UNAVAILABLE = "unavailable"  # nothing to report at all
+
+
+class ModelCatalog(BaseModel):
+    """What a backend can say about the models it runs, with where the answer came from.
+
+    Carrying the provenance inline is what lets ``UNAVAILABLE`` mean "could not ask" without
+    overloading an empty list or a null to mean it - the ambiguity that let a static fallback
+    read as a live probe.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    models: list[str] = []
+    source: ModelSource = ModelSource.UNAVAILABLE
+
+
 class Capabilities(BaseModel):
     """Feature flags so the orchestrator degrades gracefully per backend."""
 

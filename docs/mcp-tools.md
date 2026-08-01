@@ -105,11 +105,17 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 **Returns:** `{ models, backend_models, driver_context, workspace }`
 
 - `models`: `[{ id, backends, cost, quota_type, notes }]` — the optional `models:` catalog (metadata only)
-- `backend_models`: `{ backend: [model_id] | null }` — model ids each configured backend's CLI
-  reports, populated **only when no `models:` catalog is configured**. `null` for a backend means
-  it exposes no way to ask, which is not the same as "it has no models". Kept separate from
-  `models` on purpose: the catalog is curated metadata a human wrote, this is whatever a CLI said
-  just now — and neither drives routing, which clients own.
+- `backend_models`: `{ backend: { models: [model_id], source } }` — what each configured backend
+  can say about the models it runs, populated **only when no `models:` catalog is configured**.
+  `source` is one of:
+  - `probed` — the backend's CLI answered just now. This is live evidence.
+  - `static` — a curated list from `docs/model-playbook.md`, used because the CLI could not be
+    asked (not installed, probe failed, output shape changed) or has no model-list command at all.
+    It may name a model the account cannot actually run; do not treat it as a capability check.
+  - `unavailable` — nothing to report.
+
+  Kept separate from `models` on purpose: the catalog is curated metadata a human wrote, this is
+  whatever a CLI said just now — and neither drives routing, which clients own.
 
 ### `doctor`
 

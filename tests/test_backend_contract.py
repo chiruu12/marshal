@@ -15,7 +15,14 @@ import pytest
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.goose import GooseBackend
 from marshal_engine.orchestration.registry import backend_names, make_backend
-from marshal_engine.core.types import PermissionMode, RunOpts, TaskSpec, UsageSource
+from marshal_engine.core.types import (
+    ModelCatalog,
+    ModelSource,
+    PermissionMode,
+    RunOpts,
+    TaskSpec,
+    UsageSource,
+)
 
 _BACKEND_NAMES = backend_names()
 
@@ -39,7 +46,7 @@ def test_registry_param_covers_all_adapters() -> None:
 def test_available_models_is_overridden(backend: CodingAgentBackend) -> None:
     cls = type(backend)
     assert "available_models" in cls.__dict__, (
-        f"{cls.__name__} must override available_models (base returns None)"
+        f"{cls.__name__} must override available_models (base reports UNAVAILABLE)"
     )
 
 
@@ -92,10 +99,36 @@ def test_available_models_nonempty_strings(
 ) -> None:
     # Force the no-binary path so CI without CLIs still exercises the static fallback.
     monkeypatch.setattr("shutil.which", lambda _name: None)
-    models = backend.available_models()
-    assert isinstance(models, list)
-    assert len(models) >= 1
-    assert all(isinstance(m, str) and m.strip() for m in models)
+    catalog = backend.available_models()
+    assert isinstance(catalog, ModelCatalog)
+    assert len(catalog.models) >= 1
+    assert all(isinstance(m, str) and m.strip() for m in catalog.models)
+
+
+def test_a_curated_fallback_never_claims_to_be_a_live_answer(
+    backend: CodingAgentBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no CLI on PATH, nothing reported can be `PROBED` - it is a curated list.
+
+    This is the property the bare-list return type could not express: an adapter that fell back
+    to `docs/model-playbook.md` because its binary was absent looked exactly like one whose CLI
+    had just answered. A driver reading that list could route at a model the account cannot run.
+    """
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    assert backend.available_models().source is ModelSource.STATIC
+
+
+def test_available_models_never_raises(
+    backend: CodingAgentBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe is a convenience; it must degrade, never take down the caller's listing."""
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError("probe exploded")
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/fake")
+    monkeypatch.setattr(subprocess, "run", _boom)
+    catalog = backend.available_models()
+    assert catalog.source is not ModelSource.PROBED
 
 
 def test_usage_source_in_vocabulary(backend: CodingAgentBackend) -> None:

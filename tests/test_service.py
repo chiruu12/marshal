@@ -13,6 +13,8 @@ import pytest
 from marshal_engine import (
     AgentResult,
     Capabilities,
+    ModelCatalog,
+    ModelSource,
     PermissionFidelity,
     PermissionMode,
     RunOpts,
@@ -1286,17 +1288,17 @@ class _Cataloged(_Echo):
 
     name = "cataloged"
 
-    def available_models(self) -> list[str] | None:
-        return ["fast-1", "slow-2"]
+    def available_models(self) -> ModelCatalog:
+        return ModelCatalog(models=["fast-1", "slow-2"], source=ModelSource.PROBED)
 
 
 class _Opaque(_Echo):
-    """A backend with no way to ask - None, which is NOT 'it has no models'."""
+    """A backend with no way to ask - UNAVAILABLE, which is NOT 'it has no models'."""
 
     name = "opaque"
 
-    def available_models(self) -> list[str] | None:
-        return None
+    def available_models(self) -> ModelCatalog:
+        return ModelCatalog()
 
 
 def test_list_models_proxies_the_backend_when_no_catalog_is_configured(repo: Path) -> None:
@@ -1307,15 +1309,21 @@ def test_list_models_proxies_the_backend_when_no_catalog_is_configured(repo: Pat
     svc = MarshalService(repo, cfg, backends={"cataloged": _Cataloged()})
     listing = svc.list_models()
     assert listing.models == [], "no catalog is configured"
-    assert listing.backend_models["cataloged"] == ["fast-1", "slow-2"]
+    assert listing.backend_models["cataloged"].models == ["fast-1", "slow-2"]
+    assert listing.backend_models["cataloged"].source is ModelSource.PROBED
 
 
-def test_a_backend_that_cannot_be_asked_reports_none_not_empty(repo: Path) -> None:
-    """`None` means "no way to ask"; `[]` would claim the backend runs nothing. A driver has to be
-    able to tell those apart before concluding it cannot route anywhere."""
+def test_a_backend_that_cannot_be_asked_reports_unavailable_not_empty(repo: Path) -> None:
+    """`UNAVAILABLE` means "no way to ask"; an untagged `[]` would claim the backend runs nothing.
+
+    A driver has to be able to tell those apart before concluding it cannot route anywhere -
+    and, separately, to tell both apart from a curated `STATIC` list that may be stale.
+    """
     cfg = FleetConfig(clients={"w": ClientConfig(name="w", backend="opaque")})
     svc = MarshalService(repo, cfg, backends={"opaque": _Opaque()})
-    assert svc.list_models().backend_models["opaque"] is None
+    catalog = svc.list_models().backend_models["opaque"]
+    assert catalog.models == []
+    assert catalog.source is ModelSource.UNAVAILABLE
 
 
 def test_a_configured_catalog_suppresses_the_probe(repo: Path) -> None:
@@ -1465,9 +1473,9 @@ def test_list_models_probes_backends_concurrently(tmp_path: Path) -> None:
     from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
 
     class _SlowProbe(_Echo):
-        def available_models(self) -> list[str]:
+        def available_models(self) -> ModelCatalog:
             time.sleep(0.4)
-            return ["m"]
+            return ModelCatalog(models=["m"], source=ModelSource.PROBED)
 
     names = ["b1", "b2", "b3", "b4"]
     cfg = FleetConfig(
@@ -1491,11 +1499,11 @@ def test_list_models_survives_a_raising_probe(tmp_path: Path) -> None:
     from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
 
     class _Ok(_Echo):
-        def available_models(self) -> list[str]:
-            return ["good-model"]
+        def available_models(self) -> ModelCatalog:
+            return ModelCatalog(models=["good-model"], source=ModelSource.PROBED)
 
     class _Boom(_Echo):
-        def available_models(self) -> list[str]:
+        def available_models(self) -> ModelCatalog:
             raise RuntimeError("probe exploded")
 
     cfg = FleetConfig(
@@ -1508,10 +1516,11 @@ def test_list_models_survives_a_raising_probe(tmp_path: Path) -> None:
         tmp_path, cfg, backends={"ok": _Ok(), "bad": _Boom()}
     )
     result = svc.list_models()
-    assert result.backend_models["bad"] is None
+    assert result.backend_models["bad"].source is ModelSource.UNAVAILABLE
     # "Survives" means the good probe's answer is still present and correct — not that the
-    # whole map collapsed to None/empty alongside the failure.
-    assert result.backend_models["ok"] == ["good-model"]
+    # whole map collapsed alongside the failure.
+    assert result.backend_models["ok"].models == ["good-model"]
+    assert result.backend_models["ok"].source is ModelSource.PROBED
 
 
 def test_run_agent_threads_output_schema_to_the_task(repo: Path) -> None:

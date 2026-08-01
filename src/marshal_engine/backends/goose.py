@@ -41,6 +41,8 @@ from ..runtime.env import redact_secrets
 from ..core.types import (
     AgentResult,
     Capabilities,
+    ModelCatalog,
+    ModelSource,
     PermissionFidelity,
     PermissionMode,
     RunOpts,
@@ -124,13 +126,13 @@ class GooseBackend(CodingAgentBackend):
         # in" — doctor must not green-light Goose on a bare ``--version``.
         return True
 
-    def available_models(self) -> list[str]:
+    def available_models(self) -> ModelCatalog:
         """Curated static model ids — Goose exposes no remote-provider model-list probe.
 
-        ``goose local-models`` covers downloaded GGUF/MLX only, not provider/model ids. Static
-        list from docs/model-playbook.md. Never raises; never returns None.
+        ``goose local-models`` covers downloaded GGUF/MLX only, not provider/model ids. Always
+        `STATIC`: this is docs/model-playbook.md talking, not the CLI.
         """
-        return list(_STATIC_MODELS)
+        return ModelCatalog(models=list(_STATIC_MODELS), source=ModelSource.STATIC)
 
     def prepare(self, opts: RunOpts) -> None:
         """Stamp GOOSE_MODE for headless permission semantics (argv has no --yes/--plan)."""

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
+from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
 from marshal_engine.backends.opencode import (
     SAFE_EDIT_BASH_DENIES,
     OpenCodeBackend,
@@ -570,17 +570,20 @@ def test_available_models_parses_cli_rows(
         return _Proc()
 
     monkeypatch.setattr(
-        "marshal_engine.backends.opencode.shutil.which", lambda _b: "/usr/bin/opencode"
+        "marshal_engine.backends.base.shutil.which", lambda _b: "/usr/bin/opencode"
     )
-    monkeypatch.setattr("marshal_engine.backends.opencode.subprocess.run", _run)
-    assert backend.available_models() == ["opencode-go/glm-5.2", "opencode-go/kimi-k2.6"]
+    monkeypatch.setattr("marshal_engine.backends.base.subprocess.run", _run)
+    catalog = backend.available_models()
+    assert catalog.models == ["opencode-go/glm-5.2", "opencode-go/kimi-k2.6"]
+    assert catalog.source is ModelSource.PROBED
     assert calls and calls[0][:2] == ["opencode", "models"]
 
 
 def test_available_models_static_fallback_when_binary_missing(
     backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("marshal_engine.backends.opencode.shutil.which", lambda _b: None)
-    models = backend.available_models()
-    assert "opencode-go/glm-5.2" in models
-    assert all("/" in m for m in models)
+    monkeypatch.setattr("marshal_engine.backends.base.shutil.which", lambda _b: None)
+    catalog = backend.available_models()
+    assert "opencode-go/glm-5.2" in catalog.models
+    assert all("/" in m for m in catalog.models)
+    assert catalog.source is ModelSource.STATIC

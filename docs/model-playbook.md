@@ -30,8 +30,9 @@ Pick a model for the *weight*, and note how its cost is known - Marshal never fa
 
 `list_models` / each adapter's `available_models()` surfaces what you can configure. When the CLI
 exposes a headless catalogue the adapter probes it (bounded timeout; never raises); otherwise it
-returns the curated static ids in this table. Every concrete adapter answers with a non-empty list
-— never `None`.
+returns the curated static ids in this table. The answer is always tagged with its `source`, so
+`probed` (the CLI said so just now) is distinguishable from `static` (this table, which may be
+stale — it is not evidence your account can run that model).
 
 | Backend | Model | Best weight | Cost source | Discovery | Notes |
 |---------|-------|-------------|-------------|-----------|-------|

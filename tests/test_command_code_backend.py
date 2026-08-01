@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
+from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
 from marshal_engine.backends import base as backend_base
 from marshal_engine.backends.command_code import CommandCodeBackend
 
@@ -257,16 +257,20 @@ def test_available_models_parses_cli(
         return _Proc()
 
     monkeypatch.setattr(
-        "marshal_engine.backends.command_code.shutil.which",
+        "marshal_engine.backends.base.shutil.which",
         lambda _b: "/usr/bin/command-code",
     )
-    monkeypatch.setattr("marshal_engine.backends.command_code.subprocess.run", _run)
-    assert backend.available_models() == ["zai-org/glm-5.2"]
+    monkeypatch.setattr("marshal_engine.backends.base.subprocess.run", _run)
+    catalog = backend.available_models()
+    assert catalog.models == ["zai-org/glm-5.2"]
+    assert catalog.source is ModelSource.PROBED
     assert calls and calls[0] == ["command-code", "--list-models"]
 
 
 def test_available_models_static_fallback_when_binary_missing(
     backend: CommandCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("marshal_engine.backends.command_code.shutil.which", lambda _b: None)
-    assert backend.available_models() == ["zai-org/glm-5.2"]
+    monkeypatch.setattr("marshal_engine.backends.base.shutil.which", lambda _b: None)
+    catalog = backend.available_models()
+    assert catalog.models == ["zai-org/glm-5.2"]
+    assert catalog.source is ModelSource.STATIC

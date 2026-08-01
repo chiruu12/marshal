@@ -11,6 +11,8 @@ from .backends.base import CodingAgentBackend
 from .core.types import (
     AgentResult,
     Capabilities,
+    ModelCatalog,
+    ModelSource,
     PermissionFidelity,
     PermissionMode,
     RunOpts,
@@ -24,6 +26,8 @@ __all__ = [
     "CodingAgentBackend",
     "AgentResult",
     "Capabilities",
+    "ModelCatalog",
+    "ModelSource",
     "PermissionFidelity",
     "PermissionMode",
     "RunOpts",

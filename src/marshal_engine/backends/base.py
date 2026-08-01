@@ -24,10 +24,21 @@ import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar
 
 from ..runtime.env import child_env, redact_secrets
-from ..core.types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageRecord
+from ..core.types import (
+    AgentResult,
+    Capabilities,
+    ModelCatalog,
+    ModelSource,
+    PermissionMode,
+    RunOpts,
+    RunStatus,
+    TaskSpec,
+    UsageRecord,
+)
 
 _VERSION_PROBE_TIMEOUT_S = 15.0
 
@@ -159,21 +170,63 @@ class CodingAgentBackend(ABC):
         """
         return None
 
-    def available_models(self) -> list[str] | None:
-        """Model ids this backend's CLI reports it can run, or None if it cannot be asked.
+    def available_models(self) -> ModelCatalog:
+        """Model ids this backend can run, tagged with where the answer came from.
 
         A **read-only convenience**, so a driver does not have to leave the tool and shell out to
         `cursor-agent models` to find out what it may configure - which is exactly what happened in
         the field, on both sides of a single day.
 
-        None means "this backend exposes no way to ask", which is NOT the same as "no models"; a
-        caller must be able to tell those apart. Implementations must be side-effect-light and never
-        raise: return None on any failure (missing binary, unauthenticated, unparseable output).
+        The `source` is the point. `PROBED` means the CLI answered just now; `STATIC` means the
+        CLI could not be asked and this is a curated list that may name a model the account
+        cannot actually run; `UNAVAILABLE` means there is nothing to report. Returning a bare
+        list conflated the first two, so a fallback printed by a backend that was not even
+        installed was indistinguishable from a live answer.
+
+        Implementations must be side-effect-light and never raise: degrade to `STATIC`, or to the
+        default `UNAVAILABLE`, on any failure (missing binary, unauthenticated, unparseable output).
 
         This never feeds routing. Clients own backend+model; this is a catalogue you read, and the
         distinction is what keeps a probe from quietly becoming configuration.
         """
-        return None
+        return ModelCatalog()
+
+    def _probe_models(
+        self,
+        argv: list[str],
+        parse: Callable[[str], list[str]],
+        static: Sequence[str],
+        *,
+        timeout_s: float = 20.0,
+    ) -> ModelCatalog:
+        """Shared probe-then-fall-back-to-curated path for adapters whose CLI can list models.
+
+        Every failure mode lands on the same answer - the curated list, tagged `STATIC` - so no
+        adapter has to remember to degrade honestly on its own. `parse` yielding nothing counts
+        as a failure: a CLI whose output shape changed upstream would otherwise report an empty
+        live catalogue, which reads as "this backend has no models".
+        """
+        if shutil.which(self.binary) is None:
+            return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                stdin=subprocess.DEVNULL,  # headless: an interactive probe must not deadlock
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+        if proc.returncode != 0:
+            return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+        try:
+            models = parse(proc.stdout or "")
+        except Exception:  # noqa: BLE001 - a parser fault must not take the listing down
+            models = []
+        if not models:
+            return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+        return ModelCatalog(models=models, source=ModelSource.PROBED)
 
     def verifies_auth(self) -> bool:
         """True if account_info() doubles as an authenticated-only probe.

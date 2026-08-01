@@ -14,6 +14,7 @@ from ...orchestration.fleet import compute_budget_status
 from ...core.layout import logs_dir, runs_dir, usage_dir
 from ...runtime.logs import RunLogStore
 from ...orchestration.registry import backend_names, default_backends
+from ...core.types import ModelSource
 from ...runtime.state import FleetState, compact_run, filter_runs
 from ...accounting.usage import UsageTracker, usage_window_since
 from .common import _build_cli_service, _resolve_repo
@@ -77,7 +78,9 @@ def _cmd_models(args: argparse.Namespace) -> int:
     if args.json:
         payload = {
             "models": [m.model_dump() for m in listing.models],
-            "backend_models": listing.backend_models,
+            "backend_models": {
+                name: cat.model_dump(mode="json") for name, cat in listing.backend_models.items()
+            },
             "driver_context": listing.driver_context,
         }
         print(json.dumps(payload, indent=2))
@@ -93,14 +96,17 @@ def _cmd_models(args: argparse.Namespace) -> int:
             args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml"
         )
         print(f"no `models:` catalog in {cfg_path} (add a top-level `models:` list to curate one)")
-        # `None` is "this CLI exposes no way to ask", NOT "this backend has no models" - rendered
-        # differently so nobody routes around a backend because a probe was unsupported.
+        # Always print the source. A curated fallback and a live answer look identical once
+        # they are both just a list of ids, and only one of them is evidence the account can
+        # actually run those models.
         for name in sorted(listing.backend_models):
-            ids = listing.backend_models[name]
-            if ids is None:
-                print(f"\n{name}: cannot report models (no probe on this CLI)")
+            catalog = listing.backend_models[name]
+            if not catalog.models:
+                print(f"\n{name}: nothing to report ({catalog.source.value})")
             else:
-                print(f"\n{name}: {', '.join(ids) if ids else '(reported none)'}")
+                print(f"\n{name} [{catalog.source.value}]: {', '.join(catalog.models)}")
+        if any(c.source is ModelSource.STATIC for c in listing.backend_models.values()):
+            print("\nstatic = a curated list, not the CLI's answer; it may name unavailable models")
     if listing.driver_context:
         print(f"\ndriver context: {listing.driver_context}")
     return 0
