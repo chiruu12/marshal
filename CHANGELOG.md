@@ -8,7 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **`marshal models` now answers from the same place the `list_models` MCP tool does.** It read
+  `fleet.config.yaml` directly, so on a repo with no `models:` catalog it reported "no catalog,
+  add one" while the MCP tool on that same repo returned a full probed list — the CLI claiming
+  absence where there was something to show. Both surfaces now go through
+  `MarshalService.list_models`, and `marshal models` renders `backend_models`, distinguishing a
+  backend that reported nothing from one whose CLI exposes no way to ask. `marshal models --json`
+  gains the `backend_models` key.
+
 ### Changed
+- **`assets/social-card.png` is a committed designed asset**, no longer drawn by
+  `assets/render.py` — re-running the script used to overwrite the real card with its rough
+  approximation. `render.py` still renders `logo-mark-32.png` from `logo.svg`.
 - **`mcp_server.py` split into an `interfaces/mcp_server/` package** (880 lines → 9 modules, largest
   291). Tool handlers group into `tools_inspect`, `tools_runs`, `tools_integrate`, `tools_recipes`,
   and `tools_workspaces`; `schema` holds the parameter descriptions and shared job models; `server`

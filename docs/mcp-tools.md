@@ -102,7 +102,7 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Target workspace. |
 
-**Returns:** `{ models, driver_context, workspace }`
+**Returns:** `{ models, backend_models, driver_context, workspace }`
 
 - `models`: `[{ id, backends, cost, quota_type, notes }]` — the optional `models:` catalog (metadata only)
 - `backend_models`: `{ backend: [model_id] | null }` — model ids each configured backend's CLI
