@@ -86,7 +86,9 @@ class RoutingCell(BaseModel):
     cost_native: float = 0.0
     cost_admin_api: float = 0.0
 
-    rank: int | None = None  # None = unranked (nothing judged), still listed
+    #: Rank WITHIN this cell's `task_kind`, best first. `None` = unranked (nothing judged), still
+    #: listed. Never a global rank: clients are only comparable on the same kind of work.
+    rank: int | None = None
     cost_ranked: bool = False
     evidence: str = ""
     notes: list[str] = []
@@ -96,6 +98,12 @@ class RoutingLedger(BaseModel):
     """The full picture, ranked. `recommended` is `None` rather than a guess when nothing is judged."""
 
     cells: list[RoutingCell] = []
+    #: ``task_kind -> best client for it``. The useful answer when several kinds are in view, since
+    #: a client that tops `docs` says nothing about who should get a `refactor`.
+    recommended_by_task_kind: dict[str, str] = {}
+    #: The single best client, set ONLY when exactly one `task_kind` is in view. With several kinds
+    #: there is no one answer, and picking the highest rate across them would recommend a client
+    #: for work it was never measured on.
     recommended: str | None = None
     recommended_task_kind: str | None = None
     total_runs: int = 0
@@ -179,9 +187,13 @@ def summarize_routing(
 
     ranked = rank_cells(list(cells.values()))
     total_judged = sum(c.n_judged for c in ranked)
-    top = next((c for c in ranked if c.rank == 1), None)
+    best = {c.task_kind: c.client for c in reversed(ranked) if c.rank == 1}
+    kinds = {c.task_kind for c in ranked}
+    # One headline answer only when there is one question. See `recommended`.
+    top = next((c for c in ranked if c.rank == 1), None) if len(kinds) == 1 else None
     return RoutingLedger(
         cells=ranked,
+        recommended_by_task_kind=dict(sorted(best.items())),
         recommended=top.client if top else None,
         recommended_task_kind=top.task_kind if top else None,
         total_runs=sum(c.n_runs for c in ranked),
@@ -197,12 +209,18 @@ def summarize_routing(
 
 
 def rank_cells(cells: Sequence[RoutingCell]) -> list[RoutingCell]:
-    """Order cells best-first and stamp `rank` on the ones that can be ranked at all.
+    """Order cells and stamp `rank` **within each `task_kind`**, best first.
 
-    The key order is the whole policy, so it is worth stating plainly:
+    Ranking is per task kind because that is the only comparison the data supports. A client
+    measured on `docs` and a client measured on `refactor` have never done the same work, so a
+    single global order would put them in one league table and let "best" name a client for a kind
+    of task it was never judged on. Rows are grouped by `task_kind` alphabetically, and the rank
+    counter restarts in each group.
+
+    Within a group the key order is the whole policy:
 
     1. Judged or not. A cell with no recorded verdict has no evidence and cannot be ranked; it
-       sorts last and keeps `rank=None`. It is still returned, with its counts.
+       sorts last in its group and keeps `rank=None`. It is still returned, with its counts.
     2. Integration rate, descending. This is the question being asked - did the work get kept.
     3. Mean duration, ascending; unknown duration sorts as infinity, so it can lose a tiebreak
        but never win one.
@@ -211,21 +229,24 @@ def rank_cells(cells: Sequence[RoutingCell]) -> list[RoutingCell]:
        an unmeasured cell as $0 would make the backend that reports nothing the cheapest, and
        therefore the winner. Cost sits below rate and duration on purpose - it breaks ties, it
        does not decide.
-    5. `(task_kind, client)` alphabetically, so the order never depends on dict insertion.
+    5. `client` alphabetically, so the order never depends on dict insertion.
     """
     ordered = sorted(
         cells,
         key=lambda c: (
+            c.task_kind,
             0 if c.integration_rate is not None else 1,
             -(c.integration_rate or 0.0),
             c.mean_duration_ms if c.duration_runs else math.inf,
             c.mean_cost_per_integrated if c.priced_integrated_runs else math.inf,
-            c.task_kind,
             c.client,
         ),
     )
     rank = 0
+    current_kind: str | None = None
     for cell in ordered:
+        if cell.task_kind != current_kind:
+            current_kind, rank = cell.task_kind, 0
         if cell.integration_rate is None:
             cell.rank = None
             continue
