@@ -8,6 +8,15 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+- **Prompt composition is shared across adapters.** Cursor and Goose carried byte-identical
+  `_compose_prompt` overrides that differed from the base in one line — how `context_files` are
+  named — so a change to the shared `read_paths` wording could land in one and be silently
+  forgotten in the other. That single difference is now the declared `resolves_at_mentions` flag,
+  and the contract suite asserts no adapter overrides the method and that every backend emits the
+  identical read-only notice. Goose's `check_available` override, which duplicated the base's
+  behaviour verbatim, is also gone.
+
 ### Added
 - **The backend contract now covers the `run()` escape hatch.** `base.run()` owns Marshal's
   external-timeout-and-process-group-kill invariant, and its timeout test only ever ran against a

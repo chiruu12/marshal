@@ -96,6 +96,13 @@ class CodingAgentBackend(ABC):
     # run() lives on the base: build_invocation -> spawn in worktree (timeout!) -> capture -> parse_output
 ```
 
+**Prompt composition is shared.** `_compose_prompt` lives only on the base; the single
+per-backend difference — whether the CLI resolves `@path` mentions into file content — is the
+declared flag `resolves_at_mentions` (Cursor and Goose set it). Adapters must not override the
+method: two copies means a change to the shared `read_paths` wording lands in one and is silently
+forgotten in the other. Enforced by `tests/test_backend_contract.py`, which also asserts every
+backend emits the identical read-only notice.
+
 **Overriding `run()`:** an adapter may *wrap* the base loop but must never *replace* it. Cursor
 wraps it in a `.cursor/cli.json` snapshot/restore transaction and Antigravity in a
 `trustedWorkspaces` grant/release transaction; both are setup/teardown around `super().run()`.
