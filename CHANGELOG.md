@@ -35,6 +35,17 @@ versions may include breaking API changes until 1.0.
   denied a provider and the cost-provenance story at once. `_reject_fireworks` is replaced by
   `metered_provider_warning`.
 
+### Fixed
+- **`integrate` now explains a conflict caused by a rewritten base commit.** Rewriting history
+  (amend, squash, soft-reset-and-recommit) while agents are running leaves their branches hanging
+  off a commit no longer reachable from the target. Every file then reads as changed on both sides,
+  so git reports conflicts in files the agent never touched — and `integrate` returned that list
+  with **no message at all**, so the one thing the driver needed ("your base is gone") was the one
+  thing not said, while the file list actively pointed elsewhere. The conflict result now carries
+  that diagnosis when reachability actually fails, and stays silent otherwise. Reachability, not
+  existence, is the test: the rewritten-away commit remains a live object while the reflog holds
+  it, so an existence check reports "fine" exactly when the diagnosis is needed.
+
 ### Changed
 - **Prompt composition is shared across adapters.** Cursor and Goose carried byte-identical
   `_compose_prompt` overrides that differed from the base in one line — how `context_files` are

@@ -505,6 +505,14 @@ class WorktreeManager:
         """True if `branch` has commits not reachable from `target` (work awaiting merge)."""
         return self.unmerged_commit_count(branch, target) > 0
 
+    def is_ancestor(self, commit: str, target: str) -> bool:
+        """Whether `commit` is reachable from `target`. False when either is unknown.
+
+        `git merge-base --is-ancestor` exits 1 for "not an ancestor" and 128 for a bad object, and
+        both mean "not reachable" for the caller's purposes.
+        """
+        return self._git("merge-base", "--is-ancestor", commit, target).returncode == 0
+
     def branch_tip(self, branch: str) -> str:
         """The commit sha at the tip of `branch`.
 

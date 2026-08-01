@@ -551,6 +551,37 @@ def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool
     return True, f"warning: run was based on {rec.base_branch!r}, merging into {target!r}"
 
 
+def _rewritten_base_diagnosis(
+    worktrees: WorktreeManager, rec: RunRecord | None, target: str
+) -> str:
+    """Explain a conflict caused by the run's base commit no longer being in history.
+
+    Rewriting history (amend, squash, soft-reset-and-recommit) while an agent works leaves its
+    branch hanging off a commit that is no longer an ancestor of anything. Every file then reads as
+    changed on both sides, so git reports conflicts in files the agent never touched - and the
+    conflict list actively misleads, because the real cause is not in it. Returns "" when the base
+    is fine or unknown, so this only ever speaks when it has something true to say.
+
+    The test is REACHABILITY from the merge target, not existence: the rewritten-away commit is
+    still a live object for as long as the reflog holds it, so asking whether it exists says yes
+    right when the diagnosis is most needed.
+    """
+    if rec is None or not rec.base_commit:
+        return ""
+    try:
+        if worktrees.is_ancestor(rec.base_commit, target):
+            return ""
+    except WorktreeError:
+        return ""
+    return (
+        f"the commit this run was based on ({rec.base_commit[:12]}) is no longer in the repo's "
+        "history, so git is comparing against a base that no longer exists and the conflicting "
+        "files above are not the real cause. History was rewritten (amend / squash / reset) while "
+        "the run was in flight. Re-run the task on the current branch, or cherry-pick the run's "
+        "own commits onto it."
+    )
+
+
 def _deferred_provision_error(exc: BaseException) -> str:
     """Phase-named error for a spawn-path provision/setup failure (never a bare str(exc))."""
     msg = str(exc)
@@ -1983,6 +2014,10 @@ class Fleet:
                 merged_into=target,
                 conflicts=merge.conflicts,
                 commit=commit,
+                # A conflict used to come back with no message at all, so a conflict caused by a
+                # rewritten base looked identical to a genuine overlap - and the file list pointed
+                # away from the cause. Say which one it is when we can tell.
+                message=_rewritten_base_diagnosis(self.worktrees, rec, target),
             )
 
         # Judgment lands on the run record (not a second usage event): events.jsonl is one line

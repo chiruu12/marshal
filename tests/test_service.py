@@ -1341,6 +1341,58 @@ def test_integrate_message_reaches_the_commit(repo: Path) -> None:
     assert "marshal: integrate" not in log, "the tooling-shaped default won anyway"
 
 
+def _git(root: Path, *a: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), *a], check=True, capture_output=True, text=True
+    )
+    return proc.stdout.strip()
+
+
+def test_a_conflict_from_a_rewritten_base_says_so_instead_of_blaming_the_files(repo: Path) -> None:
+    """The driver's #5 field complaint, reproduced: rewording commits while agents are running
+    orphans their base, every file then conflicts, and the conflict list points at files nobody
+    touched. The real cause - "your base is no longer in history" - was invisible, because the
+    conflict result carried no message at all."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    rec = svc.run_agent("worker", "edit the shared file")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    # Reword the base commit out of existence while the run is "in flight", exactly as the author
+    # did (soft reset + recommit), then diverge so the merge actually conflicts.
+    _git(repo, "reset", "-q", "--soft", "HEAD~1")
+    (repo / "shared.txt").write_text("the human's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "add shared, reworded")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert result.message and "no longer in the repo's history" in result.message, (
+        "conflict reported with no explanation - the file list is the misleading part"
+    )
+
+
+def test_an_ordinary_conflict_does_not_claim_the_base_was_rewritten(repo: Path) -> None:
+    """The diagnosis must only speak when it is true, or it becomes the new misleading message."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    rec = svc.run_agent("worker", "edit the shared file")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    # A genuine overlap: the base commit is untouched and still reachable.
+    (repo / "shared.txt").write_text("the human's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "human edit on top")
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert not (result.message and "no longer in the repo's history" in result.message)
+
+
 def test_integrate_clears_the_note_of_the_verdict_it_supersedes(repo: Path) -> None:
     """A run rejected WITH A REASON and later integrated must not keep the reason.
 
