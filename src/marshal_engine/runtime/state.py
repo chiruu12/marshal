@@ -92,6 +92,10 @@ class RunRecord(BaseModel):
     # Declared outside-worktree paths this run was allowed to read (copied under `.marshal-context/`).
     # Empty means the run saw only its worktree. Surfaced so a reviewer can tell when a run saw more.
     read_paths: list[str] = []
+    # Files this run wrote to `.marshal-artifacts/`, harvested to `.marshal/artifacts/<run_id>/`
+    # and therefore still readable after the worktree is gone. Names only - the content stays on
+    # disk. A later run reads them by naming this run in its `artifacts_from`.
+    artifacts: list[str] = []
     # DERIVED ON READ, never persisted (see FleetState._write). Whether the agent process is alive
     # right now: True/False when the pid's identity could be checked, None when it could not (no
     # pid recorded, or the probe is unavailable) - and None on any terminal record, where the

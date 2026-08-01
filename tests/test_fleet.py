@@ -28,6 +28,8 @@ from marshal_engine import (
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.core.config import BudgetSpec
+from marshal_engine.core.layout import artifacts_dir, runs_dir
+from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
 from marshal_engine.accounting.eastrouter import ExternalCost
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
@@ -5462,3 +5464,156 @@ def test_schema_instruction_injection_is_idempotent() -> None:
     twice = _task_with_schema_instruction(once)
     assert once.goal == twice.goal
     assert once.goal.count(_STRUCTURED_OUTPUT_MARKER) == 1
+
+
+class _Reporter(CodingAgentBackend):
+    """Writes a report into `.marshal-artifacts/`, the way a review agent would."""
+
+    name = "reporter"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            "import pathlib;"
+            "p=pathlib.Path('.marshal-artifacts');p.mkdir(exist_ok=True);"
+            "(p/'FINDINGS.md').write_text('the bug is on line 12');"
+            "print('reported')",
+        ]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+class _Reader(CodingAgentBackend):
+    """Echoes whatever an earlier round left for it, proving the artifact arrived."""
+
+    name = "reader"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            "import pathlib;"
+            "hits=sorted(pathlib.Path('.marshal-context/artifacts').rglob('FINDINGS.md'));"
+            "print(hits[0].read_text() if hits else 'NOTHING')",
+        ]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+def test_an_artifact_written_in_one_run_reaches_the_next(repo: Path) -> None:
+    """The whole point: round N's report reaches round N+1 without the driver retyping it."""
+    fleet = Fleet(repo, {"reporter": _Reporter(), "reader": _Reader()})
+    first = fleet.run("reporter", TaskSpec(id="round1", goal="audit it"))
+    assert first.artifacts == ["FINDINGS.md"], "the run's own record does not name what it produced"
+    assert (artifacts_dir(repo) / first.run_id / "FINDINGS.md").read_text() == "the bug is on line 12"
+
+    second = fleet.run(
+        "reader", TaskSpec(id="round2", goal="fix it", artifacts_from=[first.run_id])
+    )
+    assert second.text == "the bug is on line 12", "round 2 could not read round 1's report"
+
+
+def test_an_artifact_survives_the_worktree_it_was_written_in(repo: Path) -> None:
+    """Artifacts exist because worktrees do not: cleanup must not take the report with it."""
+    fleet = Fleet(repo, {"reporter": _Reporter()})
+    rec = fleet.run("reporter", TaskSpec(id="doomed", goal="audit it"), cleanup=True)
+    assert not Path(rec.worktree).exists(), "worktree survived, so this proves nothing"
+    assert (artifacts_dir(repo) / rec.run_id / "FINDINGS.md").exists()
+
+
+def test_an_artifact_never_shows_up_in_the_run_diff(repo: Path) -> None:
+    """A report ABOUT the work must not look like part of the work, or it gets integrated."""
+    fleet = Fleet(repo, {"reporter": _Reporter()})
+    rec = fleet.run("reporter", TaskSpec(id="clean-diff", goal="audit it"))
+    status = subprocess.run(
+        ["git", "-C", str(rec.worktree), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert ".marshal-artifacts" not in status, "the report shows up as part of the work"
+
+
+def test_naming_a_run_with_no_artifacts_fails_loudly(repo: Path) -> None:
+    """Silently handing the agent nothing is the failure mode context_files was hardened against:
+    the agent solves it from the prompt, looks successful, and the driver cannot tell."""
+    fleet = Fleet(repo, {"writer": _Writer(), "reader": _Reader()})
+    bare = fleet.run("writer", TaskSpec(id="no-art", goal="x"))
+    assert bare.artifacts == []
+    with pytest.raises(ValueError, match="no stored artifacts"):
+        fleet.run("reader", TaskSpec(id="wants", goal="x", artifacts_from=[bare.run_id]))
+
+
+def test_an_artifact_symlink_is_not_followed_out_of_the_worktree(repo: Path, tmp_path: Path) -> None:
+    """The agent controls this directory, so a link here is a request to copy something it chose.
+
+    Following one would let a run publish host content into durable storage that the driver later
+    mounts into OTHER runs - turning the artifact channel into a worktree escape."""
+    secret = tmp_path / "outside.txt"
+    secret.write_text("host content")
+    fleet = Fleet(repo, {"reporter": _Reporter()})
+    wt = fleet.worktrees.create("linky")
+    art = Path(wt.path) / ARTIFACT_DIR
+    art.mkdir(parents=True, exist_ok=True)
+    (art / "stolen.txt").symlink_to(secret)
+    (art / "real.md").write_text("legitimate")
+
+    stored = harvest_artifacts(wt, artifacts_dir(repo) / "linky")
+    assert stored == ["real.md"], "a symlinked artifact was harvested"
+    assert not (artifacts_dir(repo) / "linky" / "stolen.txt").exists()
+
+
+def test_a_cancelled_run_still_records_the_artifacts_it_wrote(repo: Path) -> None:
+    """A racing cancel wins the VERDICT, but must not erase what the run actually produced.
+
+    The terminal stamp is guarded on the run still being RUNNING so `cancel_run` wins. That guard is
+    right for the status and wrong for artifacts: the files are already harvested to disk, so
+    dropping their names leaves a record claiming the run produced nothing while
+    `.marshal/artifacts/<run_id>/` says otherwise - and a driver reading the record believes it."""
+    fleet = Fleet(repo, {"reporter": _Reporter()})
+    real_update_if = fleet.state.update_if
+    stamped: list[str] = []
+
+    def _cancel_first(run_id: str, predicate, **fields):  # type: ignore[no-untyped-def]
+        # Simulate cancel_run landing a terminal status just before the run's own stamp.
+        if "artifacts" in fields and run_id not in stamped:
+            stamped.append(run_id)
+            real_update_if(run_id, lambda r: True, status=RunStatus.CANCELLED.value)
+        return real_update_if(run_id, predicate, **fields)
+
+    fleet.state.update_if = _cancel_first  # type: ignore[method-assign]
+    rec = fleet.run("reporter", TaskSpec(id="racy", goal="audit it"))
+
+    stored = FleetState(runs_dir(repo)).get(rec.run_id)
+    assert stored is not None
+    assert stored.status == "cancelled", "the cancel did not win; this proves nothing"
+    on_disk = (artifacts_dir(repo) / rec.run_id / "FINDINGS.md")
+    assert on_disk.exists(), "harvest did not happen at all"
+    assert stored.artifacts == ["FINDINGS.md"], (
+        "record says the run produced nothing while its artifact is on disk"
+    )

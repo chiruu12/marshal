@@ -841,3 +841,24 @@ def test_set_outcome_round_trips_and_returns_conflict_as_a_payload(
     assert asyncio.run(app.call_tool("set_outcome", {"run_id": "r1", "outcome": "rejected"}))
     rec = state.get("r1")
     assert rec is not None and rec.outcome == "integrated"  # the sticky verdict survived
+
+
+def test_artifacts_from_is_wired_into_the_run_tools_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The driver reaches Marshal through MCP, so a param the engine accepts but the tool schema
+    omits does not exist as far as the only user is concerned."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+    for name in ("spawn", "run_agent"):
+        assert "artifacts_from" in tools[name].input_schema["properties"], name
+    job = tools["run_many"].input_schema["$defs"]["Job"]["properties"]
+    assert "artifacts_from" in job, "a run_many job cannot pass a report to its round-2 sibling"
