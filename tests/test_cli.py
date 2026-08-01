@@ -1374,20 +1374,20 @@ def test_routing_task_kind_filter(tmp_path: Path, capsys: pytest.CaptureFixture[
     assert data["task_kind_filter"] == "docs"
 
 
-def test_routing_explains_an_empty_session_window_instead_of_claiming_no_history(
+def test_routing_refuses_the_session_window_rather_than_answering_it_empty(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The CLI has no long-lived Fleet, so `session` starts at this invocation and matches nothing.
+    """A one-shot CLI has no session, so `--window session` could only ever report zero runs.
 
-    Printing the same "no runs recorded yet" as a genuinely empty repo would tell a user with real
-    history that they have none. `marshal usage` already says this plainly; routing must too.
+    `marshal usage` still takes it (spend "so far" is at least coherent); a routing report over no
+    runs is not, and printing an empty table would tell a user with real history they have none.
+    So the flag rejects the question instead of answering it misleadingly.
     """
     _seed_routing(tmp_path)
-    assert cli.main(["routing", "--repo", str(tmp_path), "--window", "session"]) == 0
-    out = capsys.readouterr()[0]
-    assert "window=session" in out
-    assert "no runs recorded yet" not in out
-    assert "--window all" in out
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["routing", "--repo", str(tmp_path), "--window", "session"])
+    assert exc.value.code == 2
+    assert "session" not in capsys.readouterr()[1].split("choose from")[1]
 
 
 def test_routing_recommends_per_task_kind_when_several_are_in_view(

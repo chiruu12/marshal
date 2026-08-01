@@ -497,7 +497,7 @@ merge (an outcome, not a fault).
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `task_kind` | string \| null | `null` | Only this kind of work (the free-text tag passed at spawn). Omit for all kinds. |
-| `window` | `session` \| `day` \| `week` \| `month` \| `all` | `all` | Window over the usage ledger. Routing wants history, so the default is `all`. |
+| `window` | `session` \| `day` \| `week` \| `month` \| `all` | `all` | Window over the usage ledger. Routing wants history, so the default is `all`. `session` is meaningful here (the server is long-lived) but is **not** offered by `marshal routing` — a one-shot CLI process has no session, so the window would start at report time and always return nothing. |
 | `workspace` | string \| null | `null` | Target workspace. |
 
 **Returns:** `{ cells, recommended_by_task_kind, recommended, recommended_task_kind, total_runs,

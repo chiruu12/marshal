@@ -252,16 +252,9 @@ def _cmd_routing(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
         return 0
     if not ledger.cells:
-        if args.window == "session":
-            # The CLI has no long-lived Fleet, so `session` starts at THIS invocation and can only
-            # ever match nothing. Same honesty as `marshal usage`: say why it is empty rather than
-            # let it read as "you have no history".
-            print(
-                "no runs in window=session (since this CLI invocation — typically empty; "
-                "no long-lived Fleet; use --window all/day/week/month for real history)"
-            )
-        else:
-            print("no runs recorded yet")
+        # `session` is not an accepted choice here (see parser.py), so an empty ledger means an
+        # empty ledger - it cannot be an artefact of a window that starts at report time.
+        print("no runs recorded yet")
         return 0
     _print_routing_table(ledger)
     if ledger.caveat:

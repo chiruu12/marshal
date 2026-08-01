@@ -139,7 +139,11 @@ def main(argv: list[str] | None = None) -> int:
     prout = sub.add_parser("routing", help="which client's work actually got kept, per task kind")
     prout.add_argument("--task-kind", default=None, help="only this kind of work (e.g. refactor)")
     prout.add_argument(
-        "--window", default="all", choices=list(USAGE_WINDOWS),
+        # `session` is deliberately absent: a one-shot CLI process has no session, so the window
+        # would start at report time and could only ever return nothing. `marshal usage` still
+        # accepts it (spend "so far" is at least a coherent question); a routing report built from
+        # zero runs is not, so the flag refuses the question rather than answering it emptily.
+        "--window", default="all", choices=[w for w in USAGE_WINDOWS if w != "session"],
         help="time window over the usage ledger (default: all - routing wants history)",
     )
     prout.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")

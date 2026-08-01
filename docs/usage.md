@@ -312,7 +312,7 @@ marshal models             # the `models:` catalog, or what the backends' CLIs r
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
 marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once
 marshal outcome <run_id> rejected  # record a verdict on a finished run (no config needed)
-marshal routing            # which client's work got kept, per task kind (--task-kind/--window)
+marshal routing            # which client's work got kept, per task kind (--task-kind/--window; no `session` window - a one-shot CLI has none)
 marshal status             # list runs, newest first (--limit/--status/--task-id/--since-hours/--full)
 marshal status             # list fleet runs (raw ledger read - see the note below)
 marshal logs <run_id>      # print the persisted stdout/stderr for one run (full, not truncated)
