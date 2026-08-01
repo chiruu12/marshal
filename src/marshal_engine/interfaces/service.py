@@ -29,7 +29,7 @@ from ..core.config import (
     resolve_model,
 )
 from .doctor import DoctorReport, doctor_report, run_checks
-from .routing import OutcomeResult, record_outcome
+from .routing import OutcomeResult, build_routing, record_outcome
 from ..runtime.env import merge_user_path
 from ..orchestration.fleet import BudgetStatus, EnforceBudgetGate, Fleet
 from ..orchestration.results import (
@@ -53,7 +53,8 @@ from ..core.types import (
     UsageSource,
     resolve_permission_fidelity,
 )
-from ..accounting.usage import UsageSummary
+from ..accounting.ledger import RoutingLedger
+from ..accounting.usage import UsageSummary, UsageWindow
 from ..core.layout import reports_dir
 from ..runtime.worktree import WorktreeError
 from ..orchestration.teams import (
@@ -762,6 +763,27 @@ class MarshalService:
         # it: every integrate landed as "marshal: integrate <run_id>", describing the tooling
         # instead of the change, and had to be rewritten by hand afterwards.
         return self.fleet.integrate(run_id, message=message, cleanup=cleanup)
+
+    def routing(
+        self,
+        *,
+        task_kind: str | None = None,
+        window: UsageWindow = "all",
+        now: datetime | None = None,
+    ) -> RoutingLedger:
+        """Which client's work actually got kept, per kind of task - derived on read.
+
+        Never stored: the ledger holds facts, this is the interpretation, and a stored ranking
+        would be stale the moment the next run lands.
+        """
+        return build_routing(
+            self.fleet.usage,
+            self.fleet.state,
+            window=window,
+            task_kind=task_kind,
+            session_start=self.session_start,
+            now=now,
+        )
 
     def set_outcome(
         self, run_id: str, outcome: str, *, note: str | None = None

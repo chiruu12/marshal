@@ -10,7 +10,14 @@ from ...runtime.env import merge_user_path
 from ...accounting.usage import USAGE_WINDOWS
 from .admin import _cmd_clean, _cmd_doctor, _cmd_init, _cmd_workspace
 from .common import _add_run_args, _positive_hours, _positive_int
-from .inspect import _cmd_backends, _cmd_logs, _cmd_models, _cmd_status, _cmd_usage
+from .inspect import (
+    _cmd_backends,
+    _cmd_logs,
+    _cmd_models,
+    _cmd_routing,
+    _cmd_status,
+    _cmd_usage,
+)
 from .recipes import _cmd_team_run, _cmd_teams, _cmd_workflow_run, _cmd_workflows
 from ...core.types import RunOutcome
 from .runs import _cmd_outcome, _cmd_run, _cmd_spawn
@@ -129,6 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     _add_run_args(prun)
     pspwn = sub.add_parser("spawn", help="start a task in the background and return its RUNNING record at once")
     _add_run_args(pspwn)
+    prout = sub.add_parser("routing", help="which client's work actually got kept, per task kind")
+    prout.add_argument("--task-kind", default=None, help="only this kind of work (e.g. refactor)")
+    prout.add_argument(
+        "--window", default="all", choices=list(USAGE_WINDOWS),
+        help="time window over the usage ledger (default: all - routing wants history)",
+    )
+    prout.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
+    prout.add_argument("--json", action="store_true", help="output JSON")
     pout = sub.add_parser("outcome", help="record whether a finished run's work was any good")
     pout.add_argument("run_id", help="the run to judge")
     pout.add_argument(
@@ -185,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.cmd == "spawn":
         return _cmd_spawn(args)
+    if args.cmd == "routing":
+        return _cmd_routing(args)
     if args.cmd == "outcome":
         return _cmd_outcome(args)
     if args.cmd == "workspace":

@@ -16,9 +16,11 @@ from ...runtime.logs import RunLogStore
 from ...orchestration.registry import backend_names, default_backends
 from ...core.types import ModelSource
 from ...runtime.state import FleetState, compact_run, filter_runs
+from ..routing import build_routing
 from ...accounting.usage import UsageTracker, usage_window_since
 from .common import _build_cli_service, _resolve_repo
 from .formatting import (
+    _print_routing_table,
     _format_bucket_cost,
     _format_bucket_rate,
     _format_cost_display,
@@ -228,4 +230,34 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     sys.stdout.write(text)
     if not text.endswith("\n"):
         sys.stdout.write("\n")
+    return 0
+
+
+def _cmd_routing(args: argparse.Namespace) -> int:
+    """Which client's work actually got kept, per kind of task.
+
+    Config-free like `marshal status`: this reads history, and history does not depend on which
+    clients happen to be configured today.
+    """
+    repo = _resolve_repo(args)
+    ledger = build_routing(
+        UsageTracker(usage_dir(repo)),
+        FleetState(runs_dir(repo)),
+        window=args.window,
+        task_kind=args.task_kind,
+    )
+    if args.json:
+        payload = ledger.model_dump(mode="json")
+        payload["window"] = args.window
+        print(json.dumps(payload, indent=2))
+        return 0
+    if not ledger.cells:
+        print("no runs recorded yet")
+        return 0
+    _print_routing_table(ledger)
+    if ledger.caveat:
+        # Not an error: there IS history, nobody has judged it. Saying "no data" would be wrong.
+        print(f"\nnote: {ledger.caveat}")
+    elif ledger.recommended:
+        print(f"\nbest for {ledger.recommended_task_kind!r}: {ledger.recommended}")
     return 0
