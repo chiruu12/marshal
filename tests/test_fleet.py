@@ -5074,22 +5074,27 @@ def test_cancel_requested_wins_over_setup_failure_stamp(repo: Path) -> None:
         run_id = fleet.spawn(
             RunRequest(backend_name="writer", task=TaskSpec(id="cancelrace", goal="x"))
         )
+        # Wait on the HANDLE's pid, which is what this test goes on to signal. The record's pid
+        # is stamped from a different place, so polling that raced: the record could carry a pid
+        # while `handle.pid` was still None, and the assert below failed on Linux, where
+        # `_pid_start_time` sleeps between the two and widens the window.
         deadline = time.monotonic() + 5
-        rec = fleet.state.get(run_id)
+        handle = None
+        pid = None
         while time.monotonic() < deadline:
-            rec = fleet.state.get(run_id)
-            if rec and rec.pid is not None:
-                break
+            handle = _inflight_handle(fleet.state.dir, run_id)
+            if handle is not None:
+                with _active_runs_guard:
+                    pid = handle.pid
+                if pid is not None:
+                    break
             time.sleep(0.02)
-        assert rec is not None and rec.pid is not None
+        assert handle is not None, "run never appeared in the in-flight pool"
+        assert pid is not None, "handle never published a pid"
 
-        handle = _inflight_handle(fleet.state.dir, run_id)
-        assert handle is not None
         # Simulate cancel_run's kill half WITHOUT stamping cancelled on the record yet.
         with _active_runs_guard:
             handle.cancel_requested = True
-            pid = handle.pid
-        assert pid is not None
         try:
             os.killpg(pid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
