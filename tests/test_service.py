@@ -1369,7 +1369,7 @@ def test_a_conflict_from_a_rewritten_base_says_so_instead_of_blaming_the_files(r
 
     result = svc.integrate(rec.run_id)
     assert result.status == "conflict"
-    assert result.message and "no longer in the repo's history" in result.message, (
+    assert result.message and "reachable from no branch or tag" in result.message, (
         "conflict reported with no explanation - the file list is the misleading part"
     )
 
@@ -1390,7 +1390,7 @@ def test_an_ordinary_conflict_does_not_claim_the_base_was_rewritten(repo: Path) 
 
     result = svc.integrate(rec.run_id)
     assert result.status == "conflict"
-    assert not (result.message and "no longer in the repo's history" in result.message)
+    assert not (result.message and "reachable from no branch or tag" in result.message)
 
 
 def test_a_divergent_base_branch_is_not_reported_as_rewritten_history(repo: Path) -> None:
@@ -1420,9 +1420,38 @@ def test_a_divergent_base_branch_is_not_reported_as_rewritten_history(repo: Path
 
     result = svc.integrate(rec.run_id)
     assert result.status == "conflict"
-    assert not (result.message and "no longer in the repo's history" in result.message), (
+    assert not (result.message and "reachable from no branch or tag" in result.message), (
         "a live base branch was reported as rewritten history"
     )
+
+
+def test_an_orphaned_base_offers_causes_rather_than_asserting_a_rewrite(repo: Path) -> None:
+    """`base_branch` takes any commit-ish, so "no surviving ref" does not prove a rewrite.
+
+    A run based on a branch that is later deleted reaches the same state with no rewrite involved.
+    The observation (nothing reaches this base) is what was measured and is the actionable part;
+    the cause is inferred, so the message must offer it rather than assert it. Stating a confident
+    wrong cause is the exact failure this diagnosis exists to remove."""
+    svc = _svc(repo)
+    (repo / "shared.txt").write_text("original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add shared")
+
+    _git(repo, "checkout", "-q", "-b", "doomed")
+    (repo / "shared.txt").write_text("the doomed branch's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "doomed edit")
+    rec = svc.run_agent("worker", "edit the shared file", base_branch="doomed")
+    (Path(rec.worktree) / "shared.txt").write_text("the agent's version\n")
+
+    _git(repo, "checkout", "-q", "-")
+    (repo / "shared.txt").write_text("the main line's version\n")
+    _git(repo, "commit", "-q", "-a", "-m", "main-line edit")
+    _git(repo, "branch", "-qD", "doomed")  # no rewrite happened; the ref simply went away
+
+    result = svc.integrate(rec.run_id)
+    assert result.status == "conflict"
+    assert "reachable from no branch or tag" in result.message, "the true observation went unsaid"
+    assert "Usually this means" in result.message, "asserted one cause as fact"
 
 
 def test_integrate_clears_the_note_of_the_verdict_it_supersedes(repo: Path) -> None:
