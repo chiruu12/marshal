@@ -907,7 +907,9 @@ def test_models_json_with_catalog(tmp_path: Path, capsys: pytest.CaptureFixture[
     ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg), "--json"])
     assert ret == 0
     data = json.loads(capsys.readouterr()[0])
-    assert set(data) == {"models", "driver_context"}
+    assert set(data) == {"models", "backend_models", "driver_context"}
+    # A configured catalog is the curated answer, so nothing is probed.
+    assert data["backend_models"] == {}
     assert data["models"] == [
         {"id": "<provider>/<model-a>", "backends": ["opencode", "claude-code"],
          "cost": "native", "quota_type": "subscription", "notes": "placeholder"},
@@ -936,6 +938,69 @@ def test_models_no_catalog_prints_friendly_message(tmp_path: Path, capsys: pytes
     assert ret == 0
     out = capsys.readouterr()[0]
     assert "no `models:` catalog" in out
+
+
+def test_models_reports_what_the_backends_say_when_no_catalog(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No catalog is not the same as nothing to show.
+
+    The CLI used to read the config directly and stop at "no catalog", while the MCP
+    `list_models` tool on the same repo returned a full probed list - the two surfaces
+    disagreeing about whether the repo had any models at all.
+    """
+    from marshal_engine.backends.cursor import CursorBackend
+    from marshal_engine.backends.opencode import OpenCodeBackend
+
+    # Clients whose CLI is missing are dropped before the probe, so pin availability rather than
+    # depending on what happens to be installed on the machine running the tests.
+    monkeypatch.setattr(CursorBackend, "check_available", lambda self: True)
+    monkeypatch.setattr(OpenCodeBackend, "check_available", lambda self: True)
+    monkeypatch.setattr(CursorBackend, "available_models", lambda self: ["composer", "grok"])
+    # A probe that cannot answer surfaces as None, which must not read as "has no models".
+    monkeypatch.setattr(OpenCodeBackend, "available_models", lambda self: None)
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  a:\n    backend: cursor\n  b:\n    backend: opencode\n")
+
+    ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg)])
+    assert ret == 0
+    out = capsys.readouterr()[0]
+    assert "no `models:` catalog" in out
+    assert "cursor: composer, grok" in out
+    assert "opencode: cannot report models" in out
+
+
+def test_models_json_carries_the_probe_result(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from marshal_engine.backends.cursor import CursorBackend
+
+    monkeypatch.setattr(CursorBackend, "check_available", lambda self: True)
+    monkeypatch.setattr(CursorBackend, "available_models", lambda self: ["composer"])
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  a:\n    backend: cursor\n")
+
+    ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg), "--json"])
+    assert ret == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["models"] == []
+    assert data["backend_models"] == {"cursor": ["composer"]}
+
+
+def test_models_unknown_backend_reports_an_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Going through the service resolves backends, which reading the config never did.
+
+    An unknown backend name raises from the registry during service construction; catching only
+    ConfigError would surface a raw traceback for a plain config typo.
+    """
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  a:\n    backend: nonexistent\n")
+    ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg)])
+    assert ret == 1
+    err = capsys.readouterr()[1]
+    assert "unknown backend" in err and "nonexistent" in err
 
 
 def test_models_malformed_config_returns_error(

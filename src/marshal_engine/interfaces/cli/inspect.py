@@ -9,14 +9,14 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from ...core.config import BudgetSpec, ConfigError, FleetConfig, load_config
+from ...core.config import BudgetSpec, ConfigError, load_config
 from ...orchestration.fleet import compute_budget_status
 from ...core.layout import logs_dir, runs_dir, usage_dir
 from ...runtime.logs import RunLogStore
 from ...orchestration.registry import backend_names, default_backends
 from ...runtime.state import FleetState, compact_run, filter_runs
 from ...accounting.usage import UsageTracker, usage_window_since
-from .common import _resolve_repo
+from .common import _build_cli_service, _resolve_repo
 from .formatting import (
     _format_bucket_cost,
     _format_bucket_rate,
@@ -58,35 +58,51 @@ def _cmd_backends(args: argparse.Namespace) -> int:
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
-    """Print the optional `models:` catalog from the fleet config (the driver's "sheet")."""
-    repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()
-    cfg_path = Path(args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml")
-    config = FleetConfig()  # empty default - same posture as a repo with no config file
-    if cfg_path.exists():
-        try:
-            config = load_config(cfg_path)
-        except ConfigError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+    """Print the `models:` catalog, or - when there is none - what the backends' CLIs report.
+
+    Goes through ``MarshalService.list_models`` rather than reading the config directly, so the
+    CLI and the MCP tool answer from the same place. Reading the config here is what let this
+    command say "no catalog, add one" on a repo where the MCP tool was returning a full probed
+    list - the CLI reporting absence while the same repo had models to show.
+    """
+    try:
+        listing = _build_cli_service(args).list_models()
+    except (ConfigError, ValueError) as exc:
+        # ValueError too: building a service resolves every configured client's backend, and an
+        # unknown backend name raises from the registry. Reading the config directly never
+        # touched the registry, so this command could not fail that way before - matches the
+        # `run` / `spawn` handling rather than surfacing a traceback.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if args.json:
         payload = {
-            "models": [m.model_dump() for m in config.models],
-            "driver_context": config.context.driver,
+            "models": [m.model_dump() for m in listing.models],
+            "backend_models": listing.backend_models,
+            "driver_context": listing.driver_context,
         }
         print(json.dumps(payload, indent=2))
         return 0
-    if not config.models:
-        print(
-            f"no `models:` catalog in {cfg_path} (add a top-level `models:` list to expose one)"
-        )
-        return 0
-    for m in config.models:
+    for m in listing.models:
         backends = ",".join(m.backends)
         cost = m.cost or "-"
         quota = m.quota_type or "-"
         print(f"{m.id:40} backends={backends:30} cost={cost:12} quota={quota:14} {m.notes}")
-    if config.context.driver:
-        print(f"\ndriver context: {config.context.driver}")
+    if not listing.models:
+        repo = _resolve_repo(args)
+        cfg_path = Path(
+            args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml"
+        )
+        print(f"no `models:` catalog in {cfg_path} (add a top-level `models:` list to curate one)")
+        # `None` is "this CLI exposes no way to ask", NOT "this backend has no models" - rendered
+        # differently so nobody routes around a backend because a probe was unsupported.
+        for name in sorted(listing.backend_models):
+            ids = listing.backend_models[name]
+            if ids is None:
+                print(f"\n{name}: cannot report models (no probe on this CLI)")
+            else:
+                print(f"\n{name}: {', '.join(ids) if ids else '(reported none)'}")
+    if listing.driver_context:
+        print(f"\ndriver context: {listing.driver_context}")
     return 0
 
 

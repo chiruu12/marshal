@@ -1,25 +1,20 @@
-"""Regenerate the raster brand assets from assets/logo.svg.
+"""Regenerate logo-mark-32.png from assets/logo.svg.
 
     uv run --with pillow python assets/render.py assets
 
-Writes logo-mark-32.png (favicon scale) and social-card.png (1280x640, GitHub's social
-preview size). logo.svg is the single source for the mark: its paths are parsed here, so
-editing the SVG is enough and the geometry is never restated.
+logo.svg is the single source for the mark: its paths are parsed here, so editing the SVG is
+enough and the geometry is never restated. Requires Pillow.
 
-Requires Pillow, and a font for the card's wordmark - the candidates below are macOS system
-fonts; add your own path to FONTS on another platform.
+social-card.png is NOT generated - it is a designed asset committed as-is. This script used to
+draw a rough approximation of it, which meant re-running the script silently replaced the real
+card with the approximation.
 """
 import re
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
-FONTS = [
-    "/System/Library/Fonts/Supplemental/Futura.ttc",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-]
 SS = 8  # supersample factor; the mark is downsampled from this for antialiasing
 VIEWBOX = 100.0  # logo.svg's coordinate space
 
@@ -50,36 +45,11 @@ def crown(polys, colour, size):
     return img.resize((size, size), Image.LANCZOS)
 
 
-def font(size):
-    for path in FONTS:
-        if Path(path).exists():
-            return ImageFont.truetype(path, size)
-    raise SystemExit(f"no usable font found; add one to FONTS in {__file__}")
-
-
 def main(out):
     out = Path(out)
     polys, colour = load_mark(out / "logo.svg")
-
     crown(polys, colour, 32).save(out / "logo-mark-32.png")
-
-    W, H = 1280, 640
-    card = Image.new("RGB", (W, H), (13, 13, 15))
-    d = ImageDraw.Draw(card)
-    mark = crown(polys, colour, 176)
-    card.paste(mark, (W // 2 - 88, 104), mark)
-
-    bold, body = font(96), font(30)
-
-    def centre(text, y, f, fill):
-        d.text(((W - d.textbbox((0, 0), text, font=f)[2]) / 2, y), text, font=f, fill=fill)
-
-    centre("MARSHAL", 300, bold, (255, 255, 255))
-    centre("Run a fleet of AI coding agents in parallel,", 432, body, (150, 150, 158))
-    centre("in isolated git worktrees — and know what each one cost.", 474, body, (150, 150, 158))
-    d.rectangle([(W / 2 - 40, 544), (W / 2 + 40, 548)], fill=colour)
-    card.save(out / "social-card.png")
-    print(f"wrote {out}/logo-mark-32.png and {out}/social-card.png")
+    print(f"wrote {out}/logo-mark-32.png")
 
 
 if __name__ == "__main__":

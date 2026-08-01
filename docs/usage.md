@@ -132,7 +132,8 @@ clients:
 - **`models`** (optional, top-level): a catalog the driver reads with `list_models` / `marshal models`.
   Each entry has `id` (provider/model), `backends` it runs on, and short free-form strings for
   `cost` / `quota_type` / `notes`. Pure metadata — does **not** change routing (clients still own
-  backend+model). Absent or empty = no catalog to expose.
+  backend+model). Absent or empty = nothing curated, in which case both surfaces fall back to
+  probing the configured backends' CLIs and report that under `backend_models`.
 - **Duration presets** — per-spawn timeout overrides for `run_agent` / `spawn` / `run_many` (and
   `marshal run` / `marshal spawn` with `--duration`). Pass a preset name (`short`=300s,
   `medium`=1200s, `large`=6000s, `long`=24000s) or a positive integer of seconds. The override
@@ -277,7 +278,7 @@ the default workspace.
 | `add_workspace(name, path, scaffold?)` | Register a repo in the central registry; usable immediately (no reconnect). |
 | `doctor()` | Preflight the setup (toolchain, repo, config, per-backend CLI availability + auth); read-only. Run it before spawning. |
 | `list_clients` | List configured clients (name, backend, model, permission, permission_fidelity) plus `driver_context`. |
-| `list_models` | List the optional `models:` catalog (`id`, `backends`, `cost`, `quota_type`, `notes`) plus `driver_context`. |
+| `list_models` | List the optional `models:` catalog (`id`, `backends`, `cost`, `quota_type`, `notes`) plus `driver_context`. With no catalog configured, `backend_models` carries what each backend's CLI reports right now, keyed by backend — `null` there means that CLI exposes no way to ask, **not** that the backend has no models. |
 | `run_agent(client?, goal, task_id?, context_files?, read_paths?, base_branch?, model?, backend?, duration?)` | Delegate a goal to a worker agent in an isolated worktree; returns the run record. Product may be a diff or text (both first-class). Omit `client` for an ad-hoc spawn by `backend` (+ optional `model`). `duration` is a preset name or positive seconds. `base_branch` bases the worktree on a branch other than HEAD (e.g. after `commit_run`). `read_paths` is a read-only escape hatch for files outside the worktree (copied under `.marshal-context/` as immutable files/dirs; secret-shaped descendants, symlinks inside a declared tree, and special files like FIFOs are refused; copies open fail-closed). See [`examples/read_paths.py`](../examples/read_paths.py). |
 | `run_many(jobs, max_concurrency?)` | Delegate several `{client?, goal, task_id?, context_files?, read_paths?, workspace?, then?, …}` jobs in parallel, each in its own worktree (each product may be a diff or text); optional per-job `then` runs a follow-up in the same worker as soon as that job's primary finishes (does not wait for sibling jobs). Per-job `workspace` allows mixed-repo batches under one concurrency cap. Returns one `{primary, then?, then_skipped?}` object per input job (input order): `primary` is the job's run; `then` is the follow-up when it ran; `then_skipped` explains why `then` did not (primary failed, no branch, primary's branch has no commits beyond its base, `commit_run` blocked, …). Pipelined review: [`examples/pipelined_review.py`](../examples/pipelined_review.py); mixed workspaces: [`examples/multi_workspace.py`](../examples/multi_workspace.py). |
 | `spawn(client?, goal, task_id?, context_files?, read_paths?, base_branch?, model?, backend?, duration?)` | Start a worker agent in the background; returns its RUNNING record at once (before worktree provisioning finishes) - poll `get_run`/`status`; `cancel_run` works during setup. Same delegation primitive as `run_agent` (diff or text product). Same ad-hoc/`model`/`duration`/`base_branch`/`read_paths` rules. |
@@ -304,7 +305,7 @@ the default workspace.
 marshal init               # scaffold a starter fleet.config.yaml in the current repo
 marshal doctor             # preflight: toolchain, auth, and backend safe-edit permission_fidelity
 marshal backends           # list backends, availability, and safe-edit permission_fidelity
-marshal models             # list the optional `models:` catalog from fleet.config.yaml
+marshal models             # the `models:` catalog, or what the backends' CLIs report when there is none
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
 marshal spawn --goal "…"   # start a task in the background; returns its RUNNING record at once
 marshal status             # list runs, newest first (--limit/--status/--task-id/--since-hours/--full)

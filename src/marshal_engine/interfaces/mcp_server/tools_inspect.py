@@ -108,8 +108,11 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
         """List the optional `models:` catalog (id, backends, cost, quota_type, notes) plus the
-        fleet's driver-facing context, for the chosen workspace. Pure data - does NOT influence
-        routing (clients still own backend+model). Returns {models, driver_context, workspace}."""
+        fleet's driver-facing context, for the chosen workspace. When no catalog is configured,
+        `backend_models` carries what each backend's CLI reports right now, keyed by backend -
+        `null` there means that CLI exposes no way to ask, NOT that the backend has no models.
+        Pure data - does NOT influence routing (clients still own backend+model). Returns
+        {models, backend_models, driver_context, workspace}."""
         return await ws_call(workspace, lambda svc: svc.list_models())
 
     @app.tool()
