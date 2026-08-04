@@ -1,6 +1,6 @@
 [project]
 name = "MarshalFleet"
-version = "0.2.1"
+version = "0.2.2"
 description = "Orchestration engine for driving a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver via MCP + Skills"
 readme = "README.md"
 requires-python = ">=3.11"
