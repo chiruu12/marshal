@@ -8,7 +8,10 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-05
+
 ### Added
+
 - **Artifact passing — a run's report can now reach the next round.** Multi-round work (audit, then
   fix, then re-audit) needs round N's findings in round N+1, but a worktree is discarded on clean, so
   anything an agent wrote there died with it. The only way through was to hand-copy findings into the
@@ -65,7 +68,24 @@ versions may include breaking API changes until 1.0.
   a "Record the outcome" step, because an unrecorded rejection is the failure mode this exists to
   prevent.
 
+- **The backend contract now covers the `run()` escape hatch.** `base.run()` owns Marshal's
+  external-timeout-and-process-group-kill invariant, and its timeout test only ever ran against a
+  dummy backend — nothing proved the invariant still held through the two adapters that override
+  `run()` (Cursor's `.cursor/cli.json` transaction, Antigravity's `trustedWorkspaces` transaction).
+  Two contract tests close that: an override must delegate to `super().run()` and must not spawn a
+  process itself, and each overriding adapter's real `run()` is driven against a binary that never
+  exits to prove the timeout fires, the process group is signalled, and the child is reaped.
+
+- **Usage ledger routing facts (Phase 1).** Each `UsageEvent` may carry `task_kind` (caller
+  free-text tag) and `goal_digest` (truncated sha256 of the goal — never the text). Both are
+  optional so older `events.jsonl` lines still parse and roll up. `task_kind` is accepted on
+  `TaskSpec` and threaded through MCP `run_agent` / `spawn` / `run_many` and CLI `run` / `spawn`
+  (`--task-kind`). Judgment about the work arrives after the usage line is written, so successful
+  `integrate` stamps `outcome: integrated` on the **run record** instead — the ledger stays
+  immutable and one-line-per-run. No ranking, registry file, or new MCP tools in this phase.
+
 ### Changed
+
 - **Fireworks models are now an explicit opt-in rather than a hard rejection** (#201). An OpenCode
   client naming a `fireworks-ai/*` model used to raise `ConfigError` **at load**, so one client's
   billing choice made every other client in the file unloadable — a blast radius far past the one
@@ -76,25 +96,6 @@ versions may include breaking API changes until 1.0.
   denied a provider and the cost-provenance story at once. `_reject_fireworks` is replaced by
   `metered_provider_warning`.
 
-### Fixed
-- **`integrate` now explains a conflict caused by a base commit that is no longer in history.** Rewriting history
-  (amend, squash, soft-reset-and-recommit) while agents are running leaves their branches hanging
-  off a commit no longer reachable from the target. Every file then reads as changed on both sides,
-  so git reports conflicts in files the agent never touched — and `integrate` returned that list
-  with **no message at all**, so the one thing the driver needed ("your base is gone") was the one
-  thing not said, while the file list actively pointed elsewhere. The conflict result now carries
-  that diagnosis when the base is reachable from nothing, and stays silent otherwise. Two
-  conditions are required, because either alone misfires: the base must be unreachable from the
-  merge target **and** reached by no surviving ref. A run spawned with `base_branch` onto another
-  branch also fails the first test while being perfectly healthy, so testing only that would
-  announce a problem for a supported flow — replacing one misleading message with another. For the
-  same reason the message reports the observation and offers the likely causes rather than
-  asserting a rewrite: `base_branch` takes any commit-ish, so a deleted base branch reaches this
-  state with no rewrite involved. Reachability, not existence, is the test either way — an orphaned
-  commit stays a live object while the reflog holds it, so an existence check reports "fine"
-  exactly when the diagnosis is needed.
-
-### Changed
 - **Prompt composition is shared across adapters.** Cursor and Goose carried byte-identical
   `_compose_prompt` overrides that differed from the base in one line — how `context_files` are
   named — so a change to the shared `read_paths` wording could land in one and be silently
@@ -103,16 +104,6 @@ versions may include breaking API changes until 1.0.
   identical read-only notice. Goose's `check_available` override, which duplicated the base's
   behaviour verbatim, is also gone.
 
-### Added
-- **The backend contract now covers the `run()` escape hatch.** `base.run()` owns Marshal's
-  external-timeout-and-process-group-kill invariant, and its timeout test only ever ran against a
-  dummy backend — nothing proved the invariant still held through the two adapters that override
-  `run()` (Cursor's `.cursor/cli.json` transaction, Antigravity's `trustedWorkspaces` transaction).
-  Two contract tests close that: an override must delegate to `super().run()` and must not spawn a
-  process itself, and each overriding adapter's real `run()` is driven against a binary that never
-  exits to prove the timeout fires, the process group is signalled, and the child is reaped.
-
-### Changed
 - **`available_models()` now returns a `ModelCatalog` (`{models, source}`) instead of a bare list**,
   applying the cost-provenance rule to model discovery: never present a curated list as a live
   answer. `source` is `probed` (the CLI answered just now), `static` (a curated list from
@@ -126,16 +117,6 @@ versions may include breaking API changes until 1.0.
   adapters that can ask their CLI share one implementation and no adapter can degrade dishonestly
   on its own. `ModelCatalog` / `ModelSource` are exported from `marshal_engine`.
 
-### Fixed
-- **`marshal models` now answers from the same place the `list_models` MCP tool does.** It read
-  `fleet.config.yaml` directly, so on a repo with no `models:` catalog it reported "no catalog,
-  add one" while the MCP tool on that same repo returned a full probed list — the CLI claiming
-  absence where there was something to show. Both surfaces now go through
-  `MarshalService.list_models`, and `marshal models` renders `backend_models`, distinguishing a
-  backend that reported nothing from one whose CLI exposes no way to ask. `marshal models --json`
-  gains the `backend_models` key.
-
-### Changed
 - **`assets/social-card.png` is a committed designed asset**, no longer drawn by
   `assets/render.py` — re-running the script used to overwrite the real card with its rough
   approximation. `render.py` still renders `logo-mark-32.png` from `logo.svg`.
@@ -172,19 +153,33 @@ versions may include breaking API changes until 1.0.
   scheduled for removal in a later release. Modules that were never part of the documented API moved
   without a shim.
 
-### Removed
-- **YAGNI cleanup of unused public / near-public surface.** Dropped unused helpers and fields with
-  no in-repo consumers: `AgentResult.ok`, `UsageRecord.duration_ms` (wall-clock remains on
-  `AgentResult` / `RunRecord` / ledger `UsageEvent`), `TaskSpec.role` (routing stays driver/config;
-  teams' `RoleReview.role` unchanged), `Capabilities.stream_json` / `sessions` / `server_mode`
-  (CLI/doctor still surface `json_output` / `native_usage`), `WorktreeManager.list`, module helper
-  `workflow.list_workflows` (use `discover_workflows(...).workflows`; MCP/CLI
-  `MarshalService.list_workflows` unchanged), `env.base_env_var_names` (survivor `is_base_env_var`),
-  unused `WorkspaceRegistry.run_gate` property (`_run_gate` storage kept), `fleet.BudgetExceeded`
-  re-export (import from `marshal_engine.accounting.budgets`), unused
-  `fetch_run_cost(..., output_tokens=)`
-  parameter, and the never-selected `missing_config="silent"` arm.
 ### Fixed
+
+- **`integrate` now explains a conflict caused by a base commit that is no longer in history.** Rewriting history
+  (amend, squash, soft-reset-and-recommit) while agents are running leaves their branches hanging
+  off a commit no longer reachable from the target. Every file then reads as changed on both sides,
+  so git reports conflicts in files the agent never touched — and `integrate` returned that list
+  with **no message at all**, so the one thing the driver needed ("your base is gone") was the one
+  thing not said, while the file list actively pointed elsewhere. The conflict result now carries
+  that diagnosis when the base is reachable from nothing, and stays silent otherwise. Two
+  conditions are required, because either alone misfires: the base must be unreachable from the
+  merge target **and** reached by no surviving ref. A run spawned with `base_branch` onto another
+  branch also fails the first test while being perfectly healthy, so testing only that would
+  announce a problem for a supported flow — replacing one misleading message with another. For the
+  same reason the message reports the observation and offers the likely causes rather than
+  asserting a rewrite: `base_branch` takes any commit-ish, so a deleted base branch reaches this
+  state with no rewrite involved. Reachability, not existence, is the test either way — an orphaned
+  commit stays a live object while the reflog holds it, so an existence check reports "fine"
+  exactly when the diagnosis is needed.
+
+- **`marshal models` now answers from the same place the `list_models` MCP tool does.** It read
+  `fleet.config.yaml` directly, so on a repo with no `models:` catalog it reported "no catalog,
+  add one" while the MCP tool on that same repo returned a full probed list — the CLI claiming
+  absence where there was something to show. Both surfaces now go through
+  `MarshalService.list_models`, and `marshal models` renders `backend_models`, distinguishing a
+  backend that reported nothing from one whose CLI exposes no way to ask. `marshal models --json`
+  gains the `backend_models` key.
+
 - **`clean`'s orphan sweep no longer deletes a worktree mid-create (#181).** Between
   `worktrees.create` and the RUNNING record landing, a concurrent `marshal clean` (CLI beside an
   MCP server) saw a directory with no ledger entry and discarded it. `_start` now writes a durable
@@ -201,14 +196,19 @@ versions may include breaking API changes until 1.0.
   `cancelled` — the record stays `running` with an `error` stating the cancel could not be
   confirmed (claiming `cancelled` would leave a live agent behind a lie).
 
-### Added
-- **Usage ledger routing facts (Phase 1).** Each `UsageEvent` may carry `task_kind` (caller
-  free-text tag) and `goal_digest` (truncated sha256 of the goal — never the text). Both are
-  optional so older `events.jsonl` lines still parse and roll up. `task_kind` is accepted on
-  `TaskSpec` and threaded through MCP `run_agent` / `spawn` / `run_many` and CLI `run` / `spawn`
-  (`--task-kind`). Judgment about the work arrives after the usage line is written, so successful
-  `integrate` stamps `outcome: integrated` on the **run record** instead — the ledger stays
-  immutable and one-line-per-run. No ranking, registry file, or new MCP tools in this phase.
+### Removed
+
+- **YAGNI cleanup of unused public / near-public surface.** Dropped unused helpers and fields with
+  no in-repo consumers: `AgentResult.ok`, `UsageRecord.duration_ms` (wall-clock remains on
+  `AgentResult` / `RunRecord` / ledger `UsageEvent`), `TaskSpec.role` (routing stays driver/config;
+  teams' `RoleReview.role` unchanged), `Capabilities.stream_json` / `sessions` / `server_mode`
+  (CLI/doctor still surface `json_output` / `native_usage`), `WorktreeManager.list`, module helper
+  `workflow.list_workflows` (use `discover_workflows(...).workflows`; MCP/CLI
+  `MarshalService.list_workflows` unchanged), `env.base_env_var_names` (survivor `is_base_env_var`),
+  unused `WorkspaceRegistry.run_gate` property (`_run_gate` storage kept), `fleet.BudgetExceeded`
+  re-export (import from `marshal_engine.accounting.budgets`), unused
+  `fetch_run_cost(..., output_tokens=)`
+  parameter, and the never-selected `missing_config="silent"` arm.
 
 ## [0.2.1] - 2026-07-31
 
@@ -1320,7 +1320,8 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
   present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
-[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/chiruu12/marshal/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/chiruu12/marshal/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/chiruu12/marshal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chiruu12/marshal/compare/v0.0.1...v0.1.0
