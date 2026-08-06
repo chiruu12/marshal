@@ -25,8 +25,9 @@ Notes:
   * ``account_info()`` runs ``goose info -v --check`` so doctor fails closed when the binary is
     present but provider auth/configure is missing (parity with Cursor's ``verifies_auth``).
   * Token/cost fields are often null depending on provider. Positive reported cost is stamped
-    ``source=native``; ``cost: 0`` / tokens-only stay ``unavailable`` so Fleet can estimate
-    (OpenCode parity — a zero cost usually means "unpriced", not "free").
+    ``source=native``; ``cost: 0`` / tokens-only stay ``unavailable`` (OpenCode parity — a zero cost
+    usually means "unpriced", not "free"). Unavailable is where it ends: Fleet does not estimate,
+    so the run reports no cost rather than a made-up one.
 """
 
 from __future__ import annotations

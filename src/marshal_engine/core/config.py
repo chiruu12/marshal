@@ -132,8 +132,10 @@ class ClientConfig(BaseModel):
     env: dict[str, str] = {}
     secret_ref: str | None = None
     # Optional provider usage-API to read REAL cost from after a run (e.g. "eastrouter"). When set,
-    # the fleet fetches the actual charge for the run and reports cost as admin-api instead of an
-    # estimate. Unset = price from the local table (or unavailable). See eastrouter.py.
+    # the fleet fetches the actual charge for the run and reports cost as admin-api. Unset means the
+    # run keeps whatever the backend reported: native cost if it gave one, else unavailable. Marshal
+    # never prices a run itself - there is no local price table, and inventing one would be the fake
+    # $0 the ledger exists to refuse. See eastrouter.py.
     usage_api: str | None = None
 
 
