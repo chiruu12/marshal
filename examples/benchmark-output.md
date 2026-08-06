@@ -10,10 +10,10 @@ run across four clients.
 
 | Strategy   | Backend       | Model                          | Status    | Cost          | Source       | Duration | Tokens (in / out) |
 |------------|---------------|--------------------------------|-----------|---------------|--------------|----------|-------------------|
-| deepseek   | opencode      | opencode-go/deepseek-v4-flash  | succeeded | **$0.0029**   | native       | 81.8 s   | 11,740 / 1,977    |
-| claude     | claude-code   | claude-sonnet-4-6              | succeeded | $0.3374       | native       | 121.4 s  | 17 / 6,837        |
-| cmdcode    | command-code  | zai-org/GLM-5.2                | succeeded | `unavailable` | unavailable  | 252.6 s  | 0 / 0             |
-| codex-glm  | codex         | z-ai/glm-5.1 (via EastRouter)  | succeeded | `unavailable` | unavailable  | 283.0 s  | 231,075 / 7,812   |
+| deepseek   | opencode      | opencode-go/deepseek-v4-flash  | exited_clean | **$0.0029**   | native       | 81.8 s   | 11,740 / 1,977    |
+| claude     | claude-code   | claude-sonnet-4-6              | exited_clean | $0.3374       | native       | 121.4 s  | 17 / 6,837        |
+| cmdcode    | command-code  | zai-org/GLM-5.2                | exited_clean | `unavailable` | unavailable  | 252.6 s  | 0 / 0             |
+| codex-glm  | codex         | z-ai/glm-5.1 (via EastRouter)  | exited_clean | `unavailable` | unavailable  | 283.0 s  | 231,075 / 7,812   |
 
 ```
 cheapest: deepseek (opencode)  $0.0029   [cmdcode, codex-glm not ranked: cost unavailable]
