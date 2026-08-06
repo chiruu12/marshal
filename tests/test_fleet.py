@@ -1004,7 +1004,7 @@ def test_tokened_run_is_unavailable_not_estimated(repo: Path) -> None:
     fleet = Fleet(repo, {"tok": _Tokened()})
     rec = fleet.run("tok", TaskSpec(id="p1", goal="x"))
     assert rec.status == "exited_clean"
-    assert rec.cost_usd == 0.0
+    assert rec.cost_usd is None          # no provenance, so no amount - not an amount of zero
     assert rec.source == "unavailable"
     assert rec.input_tokens == 1_000_000
     assert rec.duration_ms >= 0
@@ -1020,7 +1020,8 @@ def test_native_zero_cost_is_not_repriced(repo: Path) -> None:
 def test_tokened_run_unpriced_is_unavailable_not_zero(repo: Path) -> None:
     fleet = Fleet(repo, {"tok": _Tokened()})
     rec = fleet.run("tok", TaskSpec(id="p2", goal="x"))
-    assert rec.cost_usd == 0.0
+    assert rec.cost_usd is None
+    assert rec.cost_usd != 0.0           # the name of this test, now actually enforced
     assert rec.source == "unavailable"   # cost unknown, never shown as a real $0
 
 
@@ -1121,7 +1122,7 @@ def test_usage_api_no_attribution_keeps_unavailable(repo: Path) -> None:
     )
     rec = fleet.run("tok", TaskSpec(id="er2", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
     assert rec.source == "unavailable"     # resolver declined to attribute -> unavailable stands
-    assert rec.cost_usd == 0.0
+    assert rec.cost_usd is None
 
 
 def test_usage_api_resolver_failure_is_safe(repo: Path) -> None:
@@ -1132,7 +1133,7 @@ def test_usage_api_resolver_failure_is_safe(repo: Path) -> None:
     rec = fleet.run("tok", TaskSpec(id="er3", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter")
     assert rec.status == "exited_clean"     # a resolver crash never fails a finished run...
     assert rec.source == "unavailable"     # ...and never corrupts the cost
-    assert rec.cost_usd == 0.0
+    assert rec.cost_usd is None
 
 
 def test_collect_run_returns_diff_and_changed_files(repo: Path) -> None:

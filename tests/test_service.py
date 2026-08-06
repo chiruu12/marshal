@@ -1868,3 +1868,46 @@ def test_routing_on_an_empty_repo_recommends_nothing(repo: Path) -> None:
     ledger = _svc(repo).routing()
     assert ledger.cells == []
     assert ledger.recommended is None
+
+
+def test_report_serializes_unmeasured_cost_as_null(repo: Path) -> None:
+    """The MCP/JSON surface a driver reads must not present unmeasured spend as $0.
+
+    `cheapest` was already honest; the per-strategy rows were not, and the rows are what an agent
+    sums when it decides which lane is expensive.
+    """
+    svc = _svc(repo)
+    state = FleetState(runs_dir(repo))
+    state.add(RunRecord(
+        run_id="r1", task_id="bench", backend="cursor", client="composer",
+        status="exited_clean", cost_usd=0.0, source="unavailable",
+    ))
+    state.add(RunRecord(
+        run_id="r2", task_id="bench", backend="opencode", client="fw-kimi",
+        status="exited_clean", cost_usd=0.0012, source="native",
+    ))
+
+    result = svc.report("bench")
+    by_client = {s.client: s for s in result.strategies}
+    assert by_client["composer"].cost_usd is None
+    assert by_client["fw-kimi"].cost_usd == 0.0012
+    assert result.cheapest == "fw-kimi"   # the unmeasured row never wins by defaulting to zero
+
+    payload = result.model_dump(mode="json")
+    row = next(s for s in payload["strategies"] if s["client"] == "composer")
+    assert row["cost_usd"] is None
+    assert row["source"] == "unavailable"
+
+
+def test_report_cheapest_ignores_unmeasured_rows_entirely(repo: Path) -> None:
+    """With nothing measured there is no cheapest - not a tie at zero."""
+    svc = _svc(repo)
+    state = FleetState(runs_dir(repo))
+    for i in (1, 2):
+        state.add(RunRecord(
+            run_id=f"r{i}", task_id="bench", backend="cursor", client=f"c{i}",
+            status="exited_clean", cost_usd=0.0, source="unavailable",
+        ))
+    result = svc.report("bench")
+    assert result.cheapest is None
+    assert all(s.cost_usd is None for s in result.strategies)

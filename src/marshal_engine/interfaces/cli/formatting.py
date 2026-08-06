@@ -36,9 +36,9 @@ def _align_rows(header: Sequence[str], rows: Sequence[Sequence[Any]]) -> list[st
     return out
 
 
-def _format_cost_display(cost_usd: float, source: str | None) -> str:
+def _format_cost_display(cost_usd: float | None, source: str | None) -> str:
     """Human cost string from amount + provenance; unknown spend is never rendered as $0."""
-    if source is None or source == UsageSource.UNAVAILABLE.value:
+    if cost_usd is None or source is None or source == UsageSource.UNAVAILABLE.value:
         return "unavailable"
     return f"${cost_usd:.4f}"
 

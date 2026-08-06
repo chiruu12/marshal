@@ -24,9 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from ..core.types import canonical_status
+from ..core.types import UsageSource, canonical_status
 from .worktree import is_git_object_id, validate_run_id
 
 
@@ -44,7 +44,11 @@ class RunRecord(BaseModel):
     # `main` moves while the agent works, reviewing against the name compares to a different base
     # than the agent started from. The sha is what the run actually branched off.
     base_commit: str | None = None
-    cost_usd: float = 0.0
+    # None when nothing was measured - NOT 0.0. A backend that cannot report spend (Cursor, Codex,
+    # Command Code) used to serialize `{"cost_usd": 0.0, "source": "unavailable"}`, and a reader
+    # taking the number without the provenance beside it concluded the run was free. `0.0` here now
+    # means an actually-measured zero. See `_null_unmeasured_cost` for the rule.
+    cost_usd: float | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     duration_ms: int = 0
@@ -129,6 +133,27 @@ class RunRecord(BaseModel):
         if isinstance(value, str) and is_git_object_id(value):
             return value
         return None
+
+    @model_validator(mode="after")
+    def _null_unmeasured_cost(self) -> RunRecord:
+        """Drop a cost the provenance does not support, on both write and read.
+
+        The amount is only meaningful next to `source`: `native` and `admin-api` are measurements,
+        anything else (`unavailable`, or None on a run that has not finished) is the absence of one.
+        Carrying `0.0` under an absent provenance states a fact nobody observed - the same
+        record-disagrees-with-reality failure the ledger is built to avoid, and one a driver acted
+        on in the field, reading a whole unmeasurable lane as free.
+
+        Applied here rather than at the write site because `_update_locked` re-validates the merged
+        record and `get` validates on read, so one rule normalizes new writes and pre-existing
+        ledgers alike - no migration pass, and a record written by an older Marshal reads correctly
+        the first time it is loaded.
+        """
+        if self.source not in (UsageSource.NATIVE.value, UsageSource.ADMIN_API.value):
+            # object.__setattr__ would skip validation re-entry; assignment is fine here because
+            # the model does not validate on assignment.
+            self.cost_usd = None
+        return self
 
 
 #: Fields computed when a record is READ and deliberately kept out of the ledger. The ledger holds

@@ -117,7 +117,7 @@ class StrategyResult(BaseModel):
     backend: str
     model: str | None
     status: str
-    cost_usd: float
+    cost_usd: float | None  # None = unmeasured (see `source`); 0.0 = a measured zero
     source: str | None
     duration_ms: int
     input_tokens: int
