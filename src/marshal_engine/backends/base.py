@@ -169,8 +169,9 @@ class CodingAgentBackend(ABC):
     def extract_usage(self, result: AgentResult) -> UsageRecord | None:
         """Return the usage record for a run. Default: whatever parse_output captured.
 
-        Backends without in-output usage (e.g. Cursor) override this to fetch from an
-        admin API or estimate from a price table, tagging the record's `source` accordingly.
+        Backends without in-output usage (e.g. Cursor) may override this to fetch from a provider
+        admin API, tagging the record's `source` accordingly. Estimating is not an option: a run
+        whose cost no one reported stays `unavailable`, never a guessed figure.
         """
         return result.usage
 
