@@ -8,6 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run whose cost could not be measured no longer reports `$0`.** `RunRecord.cost_usd` and
+  `StrategyResult.cost_usd` are now `float | None`, and an amount whose `source` is not `native` or
+  `admin-api` serializes as `null`. Backends that expose no spend (Cursor, Codex, Command Code)
+  previously emitted `{"cost_usd": 0.0, "source": "unavailable"}`, and a driver reading the number
+  without the provenance beside it concluded those runs were free — reported from the field after a
+  whole Cursor lane was treated as costing nothing. The human CLI was already honest here
+  (`_format_cost_display` printed `unavailable`); the machine surfaces every driver agent actually
+  consumes were not. A literal `0.0` now means a provider reported a real zero. Records written by
+  earlier versions are normalized on read, so no migration pass is needed
+  ([#227](https://github.com/chiruu12/marshal/issues/227)).
+
 ## [0.2.2] - 2026-08-05
 
 ### Added

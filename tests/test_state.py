@@ -40,7 +40,7 @@ def test_add_get_update_list(tmp_path: Path) -> None:
     got = st.get("r1")
     assert got is not None and got.status == "running"
 
-    updated = st.update("r1", status="exited_clean", cost_usd=0.02)
+    updated = st.update("r1", status="exited_clean", cost_usd=0.02, source="native")
     assert updated.status == "exited_clean"
     assert updated.cost_usd == 0.02
     assert len(st.list()) == 1
@@ -55,7 +55,7 @@ def test_update_validates_and_does_not_corrupt(tmp_path: Path) -> None:
         st.update("r1", cost_usd="not-a-number")
     # the run is still readable and unchanged
     got = st.get("r1")
-    assert got is not None and got.cost_usd == 0.0
+    assert got is not None and got.cost_usd is None
     assert len(st.list()) == 1
 
 
@@ -157,7 +157,7 @@ def test_update_if_predicate_true_writes_and_returns_new(tmp_path: Path) -> None
     # the new field. Locks the contract: update_if returns the new record on success, not None.
     st = FleetState(tmp_path / "runs")
     st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running"))
-    result = st.update_if("r1", lambda r: r.status == "running", status="exited_clean", cost_usd=0.5)
+    result = st.update_if("r1", lambda r: r.status == "running", status="exited_clean", cost_usd=0.5, source="native")
     assert result.status == "exited_clean"
     assert result.cost_usd == 0.5
 
@@ -171,8 +171,8 @@ def test_add_with_existing_run_id_clobbers(tmp_path: Path) -> None:
     # suffix), so this is a no-op in production; the test pins the behavior so a future
     # refactor that turns add() into a strict create has to make a deliberate decision.
     st = FleetState(tmp_path / "runs")
-    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running", cost_usd=0.1))
-    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="exited_clean", cost_usd=0.9))
+    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="running", cost_usd=0.1, source="native"))
+    st.add(RunRecord(run_id="r1", task_id="t1", backend="opencode", status="exited_clean", cost_usd=0.9, source="native"))
     recs = st.list()
     assert len(recs) == 1
     assert recs[0].status == "exited_clean"
@@ -237,7 +237,7 @@ class TestCrossProcessRunRecordUpdates:
             FleetState(runs).update("r1", merged_into="main")
 
         def stamp_terminal() -> None:
-            FleetState(runs).update("r1", status="exited_clean", cost_usd=0.5)
+            FleetState(runs).update("r1", status="exited_clean", cost_usd=0.5, source="native")
 
         with ThreadPoolExecutor(max_workers=writers_per_role * 2) as pool:
             futures = [
@@ -276,7 +276,7 @@ st = FleetState(runs)
 if role == "merged":
     st.update("r1", merged_into="main")
 else:
-    st.update("r1", status="exited_clean", cost_usd=0.5)
+    st.update("r1", status="exited_clean", cost_usd=0.5, source="native")
 """
         # Eight one-shot processes (4 merged + 4 terminal) with an injected RMW delay: without
         # flock, sibling fields are lost in the final record; with flock, both survive.
@@ -381,3 +381,66 @@ def test_base_commit_sha_loads_and_branch_name_poison_is_stripped(tmp_path: Path
     poisoned = FleetState(d).get("poisoned")
     assert poisoned is not None
     assert poisoned.base_commit is None  # stripped, record still loads
+
+
+def test_unmeasured_cost_reads_as_none_not_zero(tmp_path: Path) -> None:
+    """A backend that cannot report spend must not serialize a measured-looking $0.
+
+    The field report that prompted this read `{"cost_usd": 0.0, "source": "unavailable"}` as a
+    free run and concluded a whole Cursor lane cost nothing.
+    """
+    state = FleetState(tmp_path / "runs")
+    state.add(
+        RunRecord(
+            run_id="r1", task_id="t", backend="cursor", status=RunStatus.EXITED_CLEAN.value,
+            cost_usd=0.0, source="unavailable",
+        )
+    )
+    assert state.get("r1").cost_usd is None
+    assert "0.0" not in (tmp_path / "runs" / "r1.json").read_text(encoding="utf-8").split(
+        '"cost_usd": '
+    )[1].split(",")[0]
+
+
+def test_measured_zero_cost_is_preserved(tmp_path: Path) -> None:
+    """`0.0` from a measuring provenance is a real observation, not an absent one."""
+    state = FleetState(tmp_path / "runs")
+    state.add(
+        RunRecord(
+            run_id="r1", task_id="t", backend="opencode", status=RunStatus.EXITED_CLEAN.value,
+            cost_usd=0.0, source="native",
+        )
+    )
+    rec = state.get("r1")
+    assert rec.cost_usd == 0.0
+    assert rec.cost_usd is not None
+
+
+def test_legacy_record_with_zero_and_unavailable_reads_as_none(tmp_path: Path) -> None:
+    """Records written before this rule load correctly on first read - no migration pass."""
+    runs = tmp_path / "runs"
+    runs.mkdir(parents=True)
+    (runs / "old.json").write_text(
+        '{"run_id": "old", "task_id": "t", "backend": "codex", "status": "succeeded",'
+        ' "cost_usd": 0.0, "source": "unavailable"}',
+        encoding="utf-8",
+    )
+    assert FleetState(runs).get("old").cost_usd is None
+
+
+def test_cost_is_nulled_when_an_update_clears_its_provenance(tmp_path: Path) -> None:
+    """The rule re-applies through the locked read-modify-write, not just on construction."""
+    state = FleetState(tmp_path / "runs")
+    state.add(
+        RunRecord(run_id="r1", task_id="t", backend="opencode", cost_usd=0.5, source="native")
+    )
+    assert state.get("r1").cost_usd == 0.5
+    state.update("r1", source="unavailable")
+    assert state.get("r1").cost_usd is None
+
+
+def test_unfinished_run_has_no_cost(tmp_path: Path) -> None:
+    """A queued run has no provenance yet, so it has no cost - not a cost of zero."""
+    rec = RunRecord(run_id="r1", task_id="t", backend="opencode", status="queued")
+    assert rec.cost_usd is None
+    assert rec.source is None
