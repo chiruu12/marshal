@@ -373,14 +373,23 @@ nothing is merged). Branch on `produced` (`diff` | `text` | `nothing`).
 | `status` | string \| null | `null` | Only runs with this exact status. |
 | `task_id` | string \| null | `null` | Only runs with this `task_id`. |
 | `since_hours` | float \| null | `null` | Only runs started within N hours. A run whose start time is unreadable is **kept** — a missing timestamp is not evidence it falls outside the window. |
-| `full` | bool | `false` | Include `text` and `verify_output`. |
+| `view` | `"poll"` \| `"compact"` \| `"full"` | `"poll"` | How much of each run to return (see below). |
 
-**Returns:** `{ runs, returned, matched, truncated, compact }`, newest first.
+**Returns:** `{ runs, returned, matched, truncated, view }`, newest first.
 
-**Compact by default.** `text` and `verify_output` are unbounded and dominate a listing's size
-(one observed reply was ~395k characters), so they are replaced by `has_text` /
-`has_verify_output` flags — a caller must be able to tell "this run produced no message" from
-"this view omitted it". Use `get_run` for one run's full text, or `full=true`.
+**Three views, narrowest by default.** Polling is the highest-frequency call a driver makes, so
+the default carries only what a poll asks — is it done, and was it any good:
+
+| View | Fields |
+|------|--------|
+| `poll` (default) | `run_id`, `task_id`, `backend`, `client`, `status`, `agent_alive`, `cost_usd`, `source`, `duration_ms`, `outcome`, `ended_at` |
+| `compact` | the whole record — `worktree`, `branch`, `base_commit`, token counts, `read_paths`, `artifacts`, `pid` … — minus the unbounded text |
+| `full` | everything, including `text` and `verify_output` |
+
+Each view is a superset of the one above it. `text` and `verify_output` are unbounded and dominate
+a listing's size (one observed reply was ~395k characters), so every view below `full` replaces
+them with `has_text` / `has_verify_output` flags — a caller must be able to tell "this run produced
+no message" from "this view omitted it". Use `get_run` for one run's full text.
 
 **Never silently capped.** `matched` is the number of runs that passed the filters and `returned`
 is how many came back, with `truncated` saying whether anything was dropped. A driver that read a

@@ -312,8 +312,17 @@ def test_status_is_compact_and_reports_what_it_left_out(
     assert out["returned"] == 2 and out["matched"] == 5
     assert out["truncated"] is True, "a capped list must say so, never look complete"
     assert out["runs"][0]["run_id"] == "r4.echo.x", "newest first"
-    assert "text" not in out["runs"][0], "the compact view still carried the bulky field"
+    assert "text" not in out["runs"][0], "the default view still carried the bulky field"
     assert out["runs"][0]["has_text"] is True, "cannot tell an omitted field from an empty one"
+    # The default is the POLL shape: enough to decide "done? any good?" and nothing else. Polling
+    # is the highest-frequency call a driver makes, so every extra field is paid for on every poll.
+    assert set(out["runs"][0]) == {
+        "run_id", "task_id", "backend", "client", "status", "agent_alive",
+        "cost_usd", "source", "duration_ms", "outcome", "ended_at",
+        "has_text", "has_verify_output",
+        "workspace",  # added by the multi-workspace tag, not part of the record
+    }
+    assert out["view"] == "poll"
 
     assert call(task_id="t")["matched"] == 3
     assert call(status="failed")["matched"] == 0
@@ -321,7 +330,15 @@ def test_status_is_compact_and_reports_what_it_left_out(
     # suite stayed green because nothing exercised the filter. Cover it.
     assert call(since_hours=1.0)["matched"] == 0, "all five runs are dated 2026-01, well outside 1h"
     assert call(since_hours=24 * 365 * 100)["matched"] == 5
-    assert "text" in call(limit=1, full=True)["runs"][0]
+    # Widening is opt-in, and each step up is a superset of the last.
+    compact = call(limit=1, view="compact")["runs"][0]
+    assert "text" not in compact and compact["has_text"] is True
+    assert "worktree" in compact and "input_tokens" in compact, "compact must keep the details"
+    assert set(call(limit=1)["runs"][0]) < set(compact), "poll must be a strict subset of compact"
+
+    full = call(limit=1, view="full")["runs"][0]
+    assert full["text"] == "x" * 5000
+    assert "has_text" not in full, "the flag is a stand-in for the field, not a companion to it"
 
 
 def test_duration_param_is_wired_into_spawn_schema(
@@ -862,3 +879,37 @@ def test_artifacts_from_is_wired_into_the_run_tools_schema(
         assert "artifacts_from" in tools[name].input_schema["properties"], name
     job = tools["run_many"].input_schema["$defs"]["Job"]["properties"]
     assert "artifacts_from" in job, "a run_many job cannot pass a report to its round-2 sibling"
+
+
+def test_quickstart_only_names_parameters_that_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every `tool(param=...)` the quickstart recommends must be a real parameter of that tool.
+
+    `marshal_quickstart` is the driver's map of the server, so a parameter renamed out from under
+    it sends drivers at an argument that no longer exists - and an unknown kwarg over MCP is
+    dropped silently, so the driver gets the default view while believing it asked for something
+    else. Caught in review once (`status(full=true)` outliving the `full` bool); this closes it.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+    import json
+    import re
+
+    from marshal_engine.interfaces.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+
+    text = json.dumps(asyncio.run(app.call_tool("marshal_quickstart", {})).structured_content)
+    referenced = set(re.findall(r"(\w+)\((\w+)=", text))
+    assert referenced, "the quickstart stopped naming any tool parameters - regex likely stale"
+    for tool_name, param in sorted(referenced):
+        if tool_name not in tools:
+            continue  # prose like `list(x=...)`, not a tool reference
+        assert param in tools[tool_name].input_schema["properties"], (
+            f"quickstart recommends {tool_name}({param}=...) but {tool_name} has no {param!r}"
+        )

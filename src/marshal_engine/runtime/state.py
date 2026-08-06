@@ -22,7 +22,7 @@ import threading
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
@@ -171,6 +171,37 @@ _BULKY_FIELDS = ("text", "verify_output")
 #: Production leaves this ``None``. Tests may assign a short sleep to widen the race window when
 #: verifying that the flock prevents sibling-field loss under concurrent writers.
 _rmw_between_read_write: Callable[[], None] | None = None
+
+
+#: What a driver needs to decide "is this run done, and was it any good" - the question `status` is
+#: actually called to answer, and the only one worth re-reading on every poll. Everything else is a
+#: detail you want once, about one run, and `get_run` is where you ask for it.
+_POLL_FIELDS = (
+    "run_id", "task_id", "backend", "client", "status", "agent_alive",
+    "cost_usd", "source", "duration_ms", "outcome", "ended_at",
+)
+
+#: How much of a run a listing renders. `poll` is the default because polling is the highest-
+#: frequency call a driver makes, and it was re-reading ~30 fields per run per poll to watch two.
+RunView = Literal["poll", "compact", "full"]
+
+
+def render_run(rec: RunRecord, view: RunView) -> dict[str, Any]:
+    """One run as a dict at the requested level of detail. The one builder CLI and MCP share.
+
+    `poll` answers "is it done yet"; `compact` is the whole record minus its unbounded text;
+    `full` is everything. Both trimmed views carry the `has_<field>` flags, so no view ever lets an
+    omission read as an absence.
+    """
+    if view == "full":
+        return rec.model_dump(mode="json")
+    if view == "compact":
+        return compact_run(rec)
+    data = compact_run(rec)
+    return {
+        **{key: data[key] for key in _POLL_FIELDS},
+        **{f"has_{field}": data[f"has_{field}"] for field in _BULKY_FIELDS},
+    }
 
 
 def compact_run(rec: RunRecord) -> dict[str, Any]:
