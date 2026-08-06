@@ -8,6 +8,21 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Documentation
+
+- **The README's quickstart now ends where the loop actually ends.** It stopped at `integrate`, so
+  the one step nothing does for you — recording the runs you *didn't* merge — was missing from the
+  place most people learn the loop. Added `marshal outcome` / `marshal routing` as step 6, with why
+  it matters: `routing` rates are computed over judged runs only, so skipping it makes every client
+  read 100%.
+- **Proof tables report `exited_clean`, not `succeeded`.** The status was renamed precisely because
+  `succeeded` overclaims — it means the process exited 0, not that the work is right — and the
+  headline tables still used the retired word (README, `docs/nerds.md`,
+  `examples/benchmark-output.md`).
+- **The tagline no longer promises more than the tool delivers.** "know exactly what each one cost"
+  sat directly above a table where half the rows read `unavailable`; it now describes the honest
+  behaviour rather than an ideal one.
+
 ### Changed
 
 - **`status` returns a poll-shaped listing by default.** `compact_run` only ever dropped the two

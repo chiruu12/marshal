@@ -4,7 +4,7 @@
 
 
 <p align="center">
-  Run a fleet of AI coding agents in parallel, in isolated git worktrees, and know exactly what each one cost.
+  Run a fleet of AI coding agents in parallel, in isolated git worktrees, with per-run cost you can trust — measured where the provider reports it, marked <code>unavailable</code> where it does not, and never a fake $0.
 </p>
 
 [![CI](https://github.com/chiruu12/marshal/actions/workflows/ci.yml/badge.svg)](https://github.com/chiruu12/marshal/actions/workflows/ci.yml)
@@ -18,10 +18,10 @@ One task, four routing strategies, measured cost and latency from the ledger. No
 
 | Strategy | Backend | Model | Status | Cost | Source | Duration | Tokens (in / out) |
 |---|---|---|---|---|---|---|---|
-| deepseek | opencode | opencode-go/deepseek-v4-flash | succeeded | **$0.0029** | native | 81.8 s | 11,740 / 1,977 |
-| claude | claude-code | claude-sonnet-4-6 | succeeded | $0.3374 | native | 121.4 s | 17 / 6,837 |
-| cmdcode | command-code | zai-org/GLM-5.2 | succeeded | `unavailable` | unavailable | 252.6 s | 0 / 0 |
-| codex-glm | codex | z-ai/glm-5.1 (via EastRouter) | succeeded | `unavailable` | unavailable | 283.0 s | 231,075 / 7,812 |
+| deepseek | opencode | opencode-go/deepseek-v4-flash | exited_clean | **$0.0029** | native | 81.8 s | 11,740 / 1,977 |
+| claude | claude-code | claude-sonnet-4-6 | exited_clean | $0.3374 | native | 121.4 s | 17 / 6,837 |
+| cmdcode | command-code | zai-org/GLM-5.2 | exited_clean | `unavailable` | unavailable | 252.6 s | 0 / 0 |
+| codex-glm | codex | z-ai/glm-5.1 (via EastRouter) | exited_clean | `unavailable` | unavailable | 283.0 s | 231,075 / 7,812 |
 
 **cheapest:** deepseek ($0.0029) · **fastest:** deepseek (81.8 s)
 
@@ -104,6 +104,18 @@ hello-docstring.codex.d56489fe  codex        exited_clean  unavailable  .marshal
 
 **5. Review, then merge.** From a driver agent over MCP: `collect_run("<run_id>")` returns the diff read-only, and `integrate("<run_id>", message="...")` merges it. `exited_clean` means the process exited cleanly. It does **not** mean the code is correct, so the diff review is not optional.
 
+**6. Record what you *didn't* merge.** `integrate` records `integrated` for you. Nothing records the rest — so a run you reviewed and threw away looks identical to one nobody read.
+
+```bash
+marshal outcome <run_id> rejected --note "wrong approach"
+marshal routing                  # which client's work actually got kept, per task kind
+```
+
+This is what turns the ledger into routing evidence. `routing` rates are computed over *judged*
+runs only, so skipping this step makes every client read 100% — flattering and useless. Tag work at
+spawn (`--task-kind refactor`) and the answer comes back per kind of task, with `n_judged` beside
+every rate and `null` rather than a guess when nothing has been judged.
+
 MCP tool reference: [`docs/mcp-tools.md`](docs/mcp-tools.md). Orientation for drivers: call `marshal_quickstart()` first.
 
 ## Demo
@@ -126,6 +138,7 @@ the tokens. On a paid backend that reports cost, that column carries the real fi
 - **One base class, many backends.** Backend choice is a per-call parameter, never global.
 - **Parallel by default.** Each agent runs in its own git worktree until you explicitly integrate.
 - **Per-provider usage tracking.** Every run's cost is tagged by provenance; unknown cost is `unavailable`, never a fake $0.
+- **Routing from evidence, not vibes.** Record which runs you kept, and `routing` ranks clients by what actually survived review — per kind of task, with the sample size attached, and never ranked on a cost it could not measure.
 - **Robust headless execution:** hard timeouts, process-group kill, and no prompting modes that deadlock without stdin.
 
 ## How it compares
@@ -139,7 +152,7 @@ the tokens. On a paid backend that reports cost, that column carries the real fi
 
 ## What you can drive it with
 
-Seven backend adapters. Model is set per client in `fleet.config.yaml` (or ad-hoc via `--model` / MCP `model=`).
+Model is set per client in `fleet.config.yaml` (or ad-hoc via `--model` / MCP `model=`). `marshal backends` lists what this build ships and `marshal doctor` says which are actually usable on your machine.
 
 | Backend | Model flag | Cost provenance |
 |---|---|---|
