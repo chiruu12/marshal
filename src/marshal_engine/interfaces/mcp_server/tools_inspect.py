@@ -46,7 +46,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                 "A run that only reads and reasons DOES return its work: its final message is on "
                 "the record as `text`, and the run is `exited_clean`. collect_run reports which "
                 "artifact it was via `produced` (`diff` | `text` | `nothing`) and returns the "
-                "message itself for a text run; get_run (or status(full=true)) gives you the raw "
+                "message itself for a text run; get_run (or status(view='full')) gives you the raw "
                 "record if you want it. `empty` is an outcome, not a fault: the process exited 0 "
                 "with neither text nor file changes - nothing to integrate. What Marshal lacks "
                 "is STRUCTURED output: the result is prose you parse. Where a backend truncates "
@@ -76,9 +76,9 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                 "run_workflow": "A declarative recipe (fan-out, gates, integrate) from a YAML file.",
             },
             "which_status_tool": {
-                "status": "List runs. Filtered and compact by default - pass `limit`, `status`, "
-                "`task_id`, `since_hours`. Check `agent_alive` to tell 'still working' from "
-                "'finished, outcome not yet written'.",
+                "status": "List runs. Filtered, and poll-shaped by default - pass `limit`, "
+                "`status`, `task_id`, `since_hours`, and `view` to widen. Check `agent_alive` to "
+                "tell 'still working' from 'finished, outcome not yet written'.",
                 "get_run": "One run's full record, including its final text.",
                 "collect_run": "What the run produced (diff and/or text via `produced`). Review "
                 "step before integrate; for text runs, read `text`.",

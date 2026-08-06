@@ -879,3 +879,37 @@ def test_artifacts_from_is_wired_into_the_run_tools_schema(
         assert "artifacts_from" in tools[name].input_schema["properties"], name
     job = tools["run_many"].input_schema["$defs"]["Job"]["properties"]
     assert "artifacts_from" in job, "a run_many job cannot pass a report to its round-2 sibling"
+
+
+def test_quickstart_only_names_parameters_that_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every `tool(param=...)` the quickstart recommends must be a real parameter of that tool.
+
+    `marshal_quickstart` is the driver's map of the server, so a parameter renamed out from under
+    it sends drivers at an argument that no longer exists - and an unknown kwarg over MCP is
+    dropped silently, so the driver gets the default view while believing it asked for something
+    else. Caught in review once (`status(full=true)` outliving the `full` bool); this closes it.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+    import json
+    import re
+
+    from marshal_engine.interfaces.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name: t for t in asyncio.run(app.list_tools())}
+
+    text = json.dumps(asyncio.run(app.call_tool("marshal_quickstart", {})).structured_content)
+    referenced = set(re.findall(r"(\w+)\((\w+)=", text))
+    assert referenced, "the quickstart stopped naming any tool parameters - regex likely stale"
+    for tool_name, param in sorted(referenced):
+        if tool_name not in tools:
+            continue  # prose like `list(x=...)`, not a tool reference
+        assert param in tools[tool_name].input_schema["properties"], (
+            f"quickstart recommends {tool_name}({param}=...) but {tool_name} has no {param!r}"
+        )
