@@ -312,8 +312,17 @@ def test_status_is_compact_and_reports_what_it_left_out(
     assert out["returned"] == 2 and out["matched"] == 5
     assert out["truncated"] is True, "a capped list must say so, never look complete"
     assert out["runs"][0]["run_id"] == "r4.echo.x", "newest first"
-    assert "text" not in out["runs"][0], "the compact view still carried the bulky field"
+    assert "text" not in out["runs"][0], "the default view still carried the bulky field"
     assert out["runs"][0]["has_text"] is True, "cannot tell an omitted field from an empty one"
+    # The default is the POLL shape: enough to decide "done? any good?" and nothing else. Polling
+    # is the highest-frequency call a driver makes, so every extra field is paid for on every poll.
+    assert set(out["runs"][0]) == {
+        "run_id", "task_id", "backend", "client", "status", "agent_alive",
+        "cost_usd", "source", "duration_ms", "outcome", "ended_at",
+        "has_text", "has_verify_output",
+        "workspace",  # added by the multi-workspace tag, not part of the record
+    }
+    assert out["view"] == "poll"
 
     assert call(task_id="t")["matched"] == 3
     assert call(status="failed")["matched"] == 0
@@ -321,7 +330,15 @@ def test_status_is_compact_and_reports_what_it_left_out(
     # suite stayed green because nothing exercised the filter. Cover it.
     assert call(since_hours=1.0)["matched"] == 0, "all five runs are dated 2026-01, well outside 1h"
     assert call(since_hours=24 * 365 * 100)["matched"] == 5
-    assert "text" in call(limit=1, full=True)["runs"][0]
+    # Widening is opt-in, and each step up is a superset of the last.
+    compact = call(limit=1, view="compact")["runs"][0]
+    assert "text" not in compact and compact["has_text"] is True
+    assert "worktree" in compact and "input_tokens" in compact, "compact must keep the details"
+    assert set(call(limit=1)["runs"][0]) < set(compact), "poll must be a strict subset of compact"
+
+    full = call(limit=1, view="full")["runs"][0]
+    assert full["text"] == "x" * 5000
+    assert "has_text" not in full, "the flag is a stand-in for the field, not a companion to it"
 
 
 def test_duration_param_is_wired_into_spawn_schema(

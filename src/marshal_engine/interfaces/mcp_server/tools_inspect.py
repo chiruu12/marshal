@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
 
-from ...runtime.state import compact_run, filter_runs
+from ...runtime.state import RunView, filter_runs, render_run
 from ...accounting.usage import UsageWindow, usage_window_since
 from ..workspaces import (
     DEFAULT_WORKSPACE,
@@ -256,18 +256,23 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
             "Only runs started within this many hours. A run with an unreadable start time is "
             "KEPT - a missing timestamp is not evidence it falls outside the window."
         ))] = None,
-        full: Annotated[bool, Field(description=(
-            "Include the agent's final message and verify output. Off by default: these are "
-            "unbounded and dominate a listing's size. Use `get_run` for one run's full text."
-        ))] = False,
+        view: Annotated[RunView, Field(description=(
+            "How much of each run to return. 'poll' (default) is the polling shape: whether it "
+            "finished and whether it was any good. 'compact' adds the rest of the record "
+            "(worktree, branch, base_commit, tokens, read_paths, artifacts...) minus the unbounded "
+            "text. 'full' adds the agent's final message and verify output - unbounded, and it "
+            "dominates a listing's size, so prefer `get_run` for one run's text."
+        ))] = "poll",
     ) -> dict[str, Any]:
         """List fleet runs, newest first, with status and cost. Omit `workspace` to aggregate
         across every workspace (each run tagged with its workspace); pass one to scope to it.
 
-        Compact by default: `text` and `verify_output` are replaced by `has_text` /
-        `has_verify_output` flags, so an omitted field is never misread as an empty one. Pass
-        `full=true` for the whole record. Filter with `status` / `task_id` / `since_hours` and page
-        with `limit` rather than pulling the entire ledger.
+        Returns the polling shape by default - `run_id`, `task_id`, `backend`, `client`, `status`,
+        `agent_alive`, `cost_usd`, `source`, `duration_ms`, `outcome`, `ended_at`. Widen with
+        `view` when you need a run's worktree or token counts, or call `get_run` for one run.
+        Every view replaces `text` / `verify_output` with `has_text` / `has_verify_output` flags
+        until you ask for 'full', so an omitted field is never misread as an empty one. Filter with
+        `status` / `task_id` / `since_hours` and page with `limit` rather than pulling the ledger.
         """
         rows = await offload(registry.ledger_runs, workspace)
         since = (
@@ -281,13 +286,12 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         page = matched[:limit]
         return {
             "runs": [
-                tag(rec.model_dump(mode="json") if full else compact_run(rec), by_run[id(rec)])
-                for rec in page
+                tag(render_run(rec, view), by_run[id(rec)]) for rec in page
             ],
             "returned": len(page),
             "matched": len(matched),
             "truncated": len(matched) > len(page),
-            "compact": not full,
+            "view": view,
         }
 
     @app.tool()

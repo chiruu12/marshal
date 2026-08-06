@@ -68,8 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     ps.add_argument("--since-hours", type=_positive_hours, default=None,
                     help="only runs started within N hours")
     ps.add_argument(
-        "--full", action="store_true",
-        help="include the agent's final message and verify output (omitted by default: unbounded)",
+        "--view", default="poll", choices=["poll", "compact", "full"],
+        help="--json detail: poll (default; is it done, was it good) | compact (+ worktree, "
+             "tokens, paths) | full (+ the agent's final message and verify output, unbounded)",
     )
     pl = sub.add_parser("logs", help="print the persisted stdout/stderr for one run")
     pl.add_argument("run_id", help="the run id to fetch the log for")

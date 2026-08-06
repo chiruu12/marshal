@@ -8,6 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **`status` returns a poll-shaped listing by default.** `compact_run` only ever dropped the two
+  unbounded text fields, so every row still carried ~30 fields — `pid`, `pid_start_time`,
+  `worktree`, `base_commit`, `read_paths`, token counts — and polling is the highest-frequency call
+  a driver makes, so it re-read all of them to watch two. The default now carries `run_id`,
+  `task_id`, `backend`, `client`, `status`, `agent_alive`, `cost_usd`, `source`, `duration_ms`,
+  `outcome`, `ended_at`. **Breaking:** the `full` boolean is replaced by `view`
+  (`poll` | `compact` | `full`) on the MCP tool and `--view` on the CLI; `view="compact"` is the
+  previous default and `view="full"` the previous `full=true`. The reply's `compact` key is now
+  `view`. Every view below `full` still reports `has_text` / `has_verify_output`, so an omitted
+  field never reads as an absent one ([#228](https://github.com/chiruu12/marshal/issues/228)).
+
 ### Fixed
 
 - **A run whose cost could not be measured no longer reports `$0`.** `RunRecord.cost_usd` and

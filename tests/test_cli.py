@@ -1420,3 +1420,56 @@ def test_routing_recommends_per_task_kind_when_several_are_in_view(
     out = capsys.readouterr()[0]
     assert "best for 'docs': writer" in out
     assert "best for 'refactor': coder" in out
+
+
+def _seed_run_for_views(state_dir: Path) -> None:
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    FleetState(state_dir).add(RunRecord(
+        run_id="r1", task_id="t1", backend="opencode", client="kimi",
+        status="exited_clean", cost_usd=0.5, source="native",
+        worktree="/tmp/wt", branch="marshal/r1", input_tokens=10, output_tokens=20,
+        text="y" * 4000, started_at="2026-01-01T00:00:00+00:00",
+    ))
+
+
+def test_status_json_defaults_to_the_poll_view(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Polling is the highest-frequency call, so the default carries only what a poll asks."""
+    runs = tmp_path / "runs"
+    _seed_run_for_views(runs)
+    assert cli.main(["status", "--json", "--state", str(runs)]) == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert data["view"] == "poll"
+    row = data["runs"][0]
+    assert set(row) == {
+        "run_id", "task_id", "backend", "client", "status", "agent_alive",
+        "cost_usd", "source", "duration_ms", "outcome", "ended_at",
+        "has_text", "has_verify_output",
+    }
+    assert row["has_text"] is True, "an omitted field must never read as an absent one"
+
+
+def test_status_json_views_widen_and_nest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each view is a superset of the one below it, so widening never loses a field."""
+    runs = tmp_path / "runs"
+    _seed_run_for_views(runs)
+
+    def rows(*extra: str) -> dict[str, object]:
+        assert cli.main(["status", "--json", "--state", str(runs), *extra]) == 0
+        return json.loads(capsys.readouterr()[0])["runs"][0]
+
+    poll, compact, full = rows(), rows("--view", "compact"), rows("--view", "full")
+    assert set(poll) < set(compact) < set(full) | {"has_text", "has_verify_output"}
+    assert "worktree" not in poll and compact["worktree"] == "/tmp/wt"
+    assert "text" not in compact and compact["has_text"] is True
+    assert full["text"] == "y" * 4000
+
+
+def test_status_rejects_an_unknown_view(tmp_path: Path) -> None:
+    """A typo'd view must fail loudly, not silently fall back to a shape the caller did not ask for."""
+    with pytest.raises(SystemExit):
+        cli.main(["status", "--json", "--state", str(tmp_path / "runs"), "--view", "everything"])

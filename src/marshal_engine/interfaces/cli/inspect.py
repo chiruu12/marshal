@@ -15,7 +15,7 @@ from ...core.layout import logs_dir, runs_dir, usage_dir
 from ...runtime.logs import RunLogStore
 from ...orchestration.registry import backend_names, default_backends
 from ...core.types import ModelSource
-from ...runtime.state import FleetState, compact_run, filter_runs
+from ...runtime.state import FleetState, filter_runs, render_run
 from ..routing import build_routing
 from ...accounting.usage import UsageTracker, usage_window_since
 from .common import _build_cli_service, _resolve_repo
@@ -194,13 +194,13 @@ def _cmd_status(args: argparse.Namespace) -> int:
     )
     runs = matched if args.limit is None else matched[: args.limit]
     if args.json:
-        # Same compact-by-default shape as the MCP tool, and the same refusal to cap silently.
+        # Same views and same default as the MCP tool, and the same refusal to cap silently.
         print(json.dumps({
-            "runs": [r.model_dump(mode="json") if args.full else compact_run(r) for r in runs],
+            "runs": [render_run(r, args.view) for r in runs],
             "returned": len(runs),
             "matched": len(matched),
             "truncated": len(matched) > len(runs),
-            "compact": not args.full,
+            "view": args.view,
         }, indent=2))
         return 0
     if len(matched) > len(runs):
