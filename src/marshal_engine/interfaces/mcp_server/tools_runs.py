@@ -42,7 +42,10 @@ def _resolve_all(
     """
     out: dict[str, tuple[str, Any]] = {}
     for run_id in dict.fromkeys(run_ids):
-        resolved = registry.resolve_run(run_id, workspace)
+        try:
+            resolved = registry.resolve_run(run_id, workspace)
+        except ValueError:
+            continue  # unresolvable; the caller reports it as unknown
         if resolved is not None:
             out[run_id] = resolved
     return out

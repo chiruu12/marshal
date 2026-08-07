@@ -974,3 +974,40 @@ def test_wait_for_runs_round_trips_and_tags_the_workspace(
     assert payload["settled"][0]["workspace"]
     assert payload["unknown"] == ["r-ghost"]
     assert payload["pending"] == []
+
+
+def test_wait_for_runs_reports_a_malformed_id_as_unknown_without_aborting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One bad id must not throw away the runs that already finished beside it.
+
+    Run-id validation is fail-closed (a `../` id would compose a path into another workspace's
+    ledger) and still refuses here - no path is built from it. But this is a batch call whose
+    contract is that every id lands in exactly one list, so the refusal is reported as `unknown`
+    rather than raised, the same partial-over-nothing rule the timeout path follows.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    FleetState(repo / ".marshal" / "runs").add(
+        RunRecord(run_id="r-good", task_id="t", backend="echo", status="exited_clean")
+    )
+
+    app = build_app(build_service())
+    payload = asyncio.run(
+        app.call_tool(
+            "wait_for_runs",
+            {"run_ids": ["r-good", "../../etc/passwd"], "timeout_s": 1},
+        )
+    ).structured_content
+
+    assert payload is not None
+    assert [r["run_id"] for r in payload["settled"]] == ["r-good"]
+    assert payload["unknown"] == ["../../etc/passwd"]
+    assert payload["timed_out"] is False
