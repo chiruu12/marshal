@@ -183,20 +183,46 @@ def _cmd_team_run(args: argparse.Namespace) -> int:
             print(f"error: cannot read {args.plan_file}: {exc}", file=sys.stderr)
             return 1
 
-    subject = TeamSubject(
-        kind=args.target, run_id=args.run_id, base=args.base, head=args.head, text=text,
-        paths=args.path or [],
-    )
+    base, head = args.base, args.head
+    pr_ref = None
+    if args.pr is not None and (base or head):
+        print(
+            "error: pass either --pr or --base/--head, not both: --pr resolves the range itself, "
+            "and honouring both would review something neither argument describes.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         svc = MarshalService(repo, config, config_path=cfg_path)
+        if args.pr is not None:
+            pr_ref = svc.resolve_pr(args.pr)
+            base, head = pr_ref.base, pr_ref.head
+        subject = TeamSubject(
+            kind=args.target, run_id=args.run_id, base=base, head=head, text=text,
+            paths=args.path or [],
+        )
         result = svc.run_team(args.name, subject, max_concurrency=args.max_concurrency)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.json:
-        print(json.dumps(result.model_dump(mode="json"), indent=2))
+        payload = result.model_dump(mode="json")
+        if pr_ref is not None:
+            payload["pull_request"] = {
+                "number": pr_ref.number, "title": pr_ref.title, "url": pr_ref.url,
+                "state": pr_ref.state, "stale": pr_ref.stale,
+                "base": pr_ref.base, "head": pr_ref.head,
+            }
+        print(json.dumps(payload, indent=2))
     else:
+        if pr_ref is not None:
+            # Printed BEFORE the reviews: a panel reporting on the wrong PR reads exactly like one
+            # reporting on the right PR, so name the subject before anyone reads a word of it.
+            stale = "  [CLOSED/MERGED]" if pr_ref.stale else ""
+            print(f"PR #{pr_ref.number}: {pr_ref.title}{stale}")
+            print(f"{pr_ref.url}  ({pr_ref.base}...{pr_ref.head[:12]})\n")
         print(result.unified_report)
         if result.report_dir:
             print(f"reports written: {result.report_dir}")

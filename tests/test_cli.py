@@ -1473,3 +1473,37 @@ def test_status_rejects_an_unknown_view(tmp_path: Path) -> None:
     """A typo'd view must fail loudly, not silently fall back to a shape the caller did not ask for."""
     with pytest.raises(SystemExit):
         cli.main(["status", "--json", "--state", str(tmp_path / "runs"), "--view", "everything"])
+
+
+def test_team_run_refuses_pr_together_with_explicit_refs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Silently preferring one would review a range neither argument describes."""
+    from marshal_engine.interfaces.cli import main
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    code = main([
+        "team", "run", "hard-gate", "--target", "range",
+        "--pr", "7", "--base", "main", "--repo", str(repo),
+    ])
+    assert code == 1
+    assert "either --pr or --base/--head" in capsys.readouterr().err
+
+
+def test_team_run_pr_reports_a_missing_gh_before_spawning_reviewers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A review panel is expensive; an unusable `gh` must fail up front, not after fan-out."""
+    from marshal_engine.interfaces.cli import main
+
+    monkeypatch.setattr(
+        "marshal_engine.interfaces.pull_requests.shutil.which", lambda _: None
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    code = main([
+        "team", "run", "hard-gate", "--target", "range", "--pr", "7", "--repo", str(repo),
+    ])
+    assert code == 1
+    assert "GitHub CLI" in capsys.readouterr().err
