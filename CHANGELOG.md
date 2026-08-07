@@ -10,6 +10,13 @@ versions may include breaking API changes until 1.0.
 
 ### Documentation
 
+- **`marshal_quickstart` routes among all five run-reading tools.** Three verbs (`get_`, `collect_`,
+  `read_`) spell one operation, so nothing in the names says which returns the record, the log, the
+  diff, or a file — and `read_run_file`, the least guessable of them, was the one missing from the
+  map. It is now listed with its artifact-handover case, the four docstrings open with what each
+  returns in the same shape, and a test requires every run-reading tool to have a row (renamed
+  `which_status_tool` → `which_read_tool`; it routes among reads, not statuses).
+
 - **The README's quickstart now ends where the loop actually ends.** It stopped at `integrate`, so
   the one step nothing does for you — recording the runs you *didn't* merge — was missing from the
   place most people learn the loop. Added `marshal outcome` / `marshal routing` as step 6, with why
