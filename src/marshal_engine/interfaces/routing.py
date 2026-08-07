@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..accounting.ledger import RoutingLedger, summarize_routing
 from ..accounting.usage import UsageTracker, UsageWindow, usage_window_since
-from ..core.types import RunOutcome, RunStatus
+from ..core.types import RunOutcome, is_terminal
 from ..runtime.state import FleetState, RunRecord
 
 #: ``run_id -> outcome``. See `outcome_index` for why absence and ``None`` must stay distinct.
@@ -30,8 +30,6 @@ OutcomeIndex = dict[str, str | None]
 _INTEGRATED = RunOutcome.INTEGRATED.value
 _LEGAL = {o.value for o in RunOutcome}
 
-#: Statuses that mean the run has not finished. There is nothing to judge yet.
-_NON_TERMINAL = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
 
 #: Cap on the reviewer's note. `text` and `verify_output` already showed what an unbounded field
 #: costs: every reader of the record pays for it, and `status --full` dumps it.
@@ -102,7 +100,7 @@ def record_outcome(
         seen["previous"] = rec.outcome
         seen["run_status"] = rec.status
         seen["merged_into"] = rec.merged_into
-        if rec.status in _NON_TERMINAL:
+        if not is_terminal(rec.status):
             # Judging work that has not finished is not a verdict, it is a guess - and `outcome`
             # is what every routing rate is computed over.
             seen["refusal"] = "unfinished"

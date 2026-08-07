@@ -425,6 +425,38 @@ This is a read: it copies nothing and starts nothing, so the driver stays the on
 next agent sees — which is where that judgement belongs, since the driver is what reviewed the
 output.
 
+### `wait_for_runs`
+
+Block until every named run reaches a terminal state, or until `timeout_s` (default 60, max 600).
+The close of the `spawn` loop: without it a driver polls `status` on a cadence it has to guess,
+spending a tool call and a model turn on each tick to learn "not yet" — too tight burns tokens, too
+loose adds dead wall-clock to every run.
+
+MCP has no server-initiated push, so "notify me when done" can only be a blocking wait. This is
+still a poll loop; the point is that it runs server-side, where a tick costs a few file reads rather
+than a turn of context.
+
+Returns `{settled, pending, unknown, timed_out, waited_ms}`. Every requested id appears in exactly
+one of the three lists.
+
+- **`settled` means finished, never succeeded.** `failed`, `timed_out`, `cancelled`, `verify_failed`
+  and `empty` all land there. Terminality is the same predicate `status` and `routing` use — there
+  is deliberately no second definition of "done" that could disagree with the record you then read.
+  Branch on each record's `status` exactly as you would after a poll.
+- **Expiry is not an error.** It returns normally with `timed_out: true` and the unfinished runs in
+  `pending`; re-call with just those ids. This is what makes the tool safe under a short client-side
+  request timeout: the call is cut off, the driver keeps its progress and asks again, so the worst
+  case degrades to a coarser poll instead of a broken tool.
+- **`unknown`** is ids with no record in any workspace. Nothing will ever create them, so they are
+  reported immediately and never waited on — they do not hold the call open.
+- Run ids may **span workspaces**. Each is resolved to its owning repo once, up front (a run cannot
+  change workspaces), and they share one deadline. Returned records are workspace-tagged.
+- It **reports; it does not act** — no implicit `collect_run`, no implicit `integrate`. Review what
+  settled before merging anything.
+- A run whose supervisor was killed keeps a `running` record forever and will wait out the full
+  timeout — terminality describes the record, not the process, which is why every wait is bounded.
+  `cancel_run` on it releases the wait on the next tick.
+
 ### `cancel_run`
 
 SIGTERM the agent process group — but only for a **live child of the server process handling the
