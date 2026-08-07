@@ -100,6 +100,10 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         run_id: Annotated[str | None, Field(description="Run whose diff to review (target 'run').")] = None,
         base: Annotated[str | None, Field(description="Base ref (target 'range').")] = None,
         head: Annotated[str | None, Field(description="Head ref (target 'range'; default HEAD).")] = None,
+        pr: Annotated[int | None, Field(description=(
+            "GitHub PR number to review (target 'range'). Fills in `base`/`head` for you, so pass "
+            "it INSTEAD of them, not alongside. Needs `gh` on PATH."
+        ))] = None,
         text: Annotated[str | None, Field(description="The plan to review (target 'plan').")] = None,
         paths: Annotated[
             list[str] | None,
@@ -122,8 +126,36 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         objections, weighing them against each other, and deciding what happens next is YOUR job -
         that judgment is not safely derivable from reviewer prose. Reviewers listed under
         `incomplete_roles` did not report at all; that is a missing lens, not approval. Nothing is
-        ever integrated by this tool."""
+        ever integrated by this tool.
+
+        **Reviewing a PR:** pass `pr=<number>` with `target='range'`. A pull request IS a commit
+        range, so there is no separate 'pr' target and every `target: range` team reviews one
+        unchanged; `pr` only resolves the endpoints (via `gh`) and diffs from the merge base, so the
+        panel sees what the PR changed and not what the base branch gained since. The reply echoes
+        `pull_request` with the title and URL - check it names the PR you meant before you read a
+        word of the reviews, and note `stale: true` for an already-closed or merged PR."""
+        pr_ref = None
+        if pr is not None:
+            if base or head:
+                raise ValueError(
+                    "pass either `pr` or `base`/`head`, not both: `pr` resolves the range itself, "
+                    "and honouring both would review something neither argument describes."
+                )
+            # Same workspace `ws_call` will use below, so the PR is resolved against the repo whose
+            # remote actually owns it - not the default one.
+            pr_ref = await offload(registry.get(workspace).resolve_pr, pr)
+            base, head = pr_ref.base, pr_ref.head
+
         subject = TeamSubject(
             kind=target, run_id=run_id, base=base, head=head, text=text, paths=paths or []
         )
-        return await ws_call(workspace, lambda svc: svc.run_team(name, subject))
+        result = await ws_call(workspace, lambda svc: svc.run_team(name, subject))
+        if pr_ref is not None:
+            # Echoed so the driver can confirm WHAT was reviewed. A panel reporting on the wrong
+            # PR reads exactly like one reporting on the right PR.
+            result["pull_request"] = {
+                "number": pr_ref.number, "title": pr_ref.title, "url": pr_ref.url,
+                "state": pr_ref.state, "stale": pr_ref.stale,
+                "base": pr_ref.base, "head": pr_ref.head,
+            }
+        return result

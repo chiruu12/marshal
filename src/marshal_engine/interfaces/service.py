@@ -29,6 +29,7 @@ from ..core.config import (
     resolve_model,
 )
 from .doctor import DoctorReport, doctor_report, run_checks
+from .pull_requests import PullRequestRef, resolve_pr
 from .routing import OutcomeResult, build_routing, record_outcome
 from .waiting import DEFAULT_POLL_INTERVAL_S, WaitResult, wait_for_terminal
 from ..runtime.env import merge_user_path
@@ -1002,6 +1003,15 @@ class MarshalService:
         if proc.returncode != 0:
             raise ConfigError(f"cannot diff {base}...{head}: {proc.stderr.strip() or 'git failed'}")
         return proc.stdout
+
+    def resolve_pr(self, number: int, *, remote: str = "origin") -> PullRequestRef:
+        """Resolve a GitHub PR to the `base`/`head` refs a `range` review reads.
+
+        Thin delegation (see `pull_requests.resolve_pr`), so the CLI and the MCP tool share one
+        resolver. A PR is a commit range; this only finds its endpoints, which is why no new team
+        target kind exists and every `target: range` team reviews a PR unchanged.
+        """
+        return resolve_pr(self.repo_root, number, remote=remote)
 
     def list_teams(self) -> TeamListing:
         """Discover review teams under ``<repo>/teams/`` (well-formed and broken)."""
