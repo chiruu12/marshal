@@ -76,9 +76,10 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                 "run_many": "Several jobs in parallel (optional per-job then chains). Returns when all chains finish.",
                 "run_workflow": "A declarative recipe (fan-out, gates, integrate) from a YAML file.",
             },
-            # Five tools read a run and their names do not say which is which - `get`, `collect`,
-            # and `read` are three verbs for one operation. Until they are renamed this map is how
-            # a driver picks, so every run-reading tool has to appear here (test-enforced).
+            # `get`, `collect`, and `read` are three verbs for one operation, so a tool's name does
+            # not say what it returns. Until they are renamed this map is how a driver picks, and
+            # every run-reading tool has to appear in it (test-enforced; `docs/mcp-tools.md` is the
+            # normative list of what exists).
             "which_read_tool": {
                 "status": "Reads MANY runs, filtered - poll-shaped by default; pass `limit`, "
                 "`status`, `task_id`, `since_hours`, and `view` to widen. Check `agent_alive` to "

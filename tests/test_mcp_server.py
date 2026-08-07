@@ -920,8 +920,8 @@ def test_quickstart_routes_every_run_reading_tool(
 ) -> None:
     """`which_read_tool` must name every tool that reads a run, and only tools that exist.
 
-    Five tools read a run and their names - `get_`, `collect_`, `read_` - do not say which returns
-    the record, the log, the diff, or a file. This map is the only thing that does, so a read tool
+    The names - `get_`, `collect_`, `read_` - are three verbs for one operation, so none of them
+    says which returns the record, the log, the diff, or a file. This map is the only thing that does, so a read tool
     added without a row here is a tool a driver has to discover by trial. Enumerated explicitly
     rather than inferred, because "reads a run" is a judgement about intent that no naming pattern
     can be trusted to detect - adding the sixth read tool should force a decision here.
