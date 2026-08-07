@@ -58,6 +58,10 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                 "1. doctor - is this workspace ready? Catches a missing CLI, a broken config, and "
                 "a backend that recently failed on billing, BEFORE you spend a run.",
                 "2. spawn (or run_agent) - delegate the work to a worker agent.",
+                "2b. wait_for_runs - after spawning, block on the run ids instead of polling "
+                "`status` yourself. One tool call covers the whole wait; hand-rolled polling spends "
+                "a turn per tick to be told 'not yet'. Expiry returns what settled so far, so "
+                "re-call for whatever is still `pending`.",
                 "3. collect_run - read what the run produced (`produced`: diff | text | nothing). "
                 "`exited_clean` means the process exited 0, NOT that the work is correct. For a "
                 "diff run, review before step 4; for a text run, the value is in `text` - skip "
@@ -72,7 +76,10 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
             "which_run_tool": {
                 "run_agent": "Blocks until the run finishes. Use for short work you want inline.",
                 "spawn": "Returns immediately with a RUNNING record. Use for anything long - it "
-                "does not hold your turn. Poll with get_run, stop with cancel_run.",
+                "does not hold your turn. Then wait_for_runs; stop with cancel_run.",
+                "wait_for_runs": "Blocks until spawned runs finish (or your timeout). Not a way to "
+                "start work - the close of the spawn loop. `settled` means finished, NOT succeeded: "
+                "branch on each record's `status`.",
                 "run_many": "Several jobs in parallel (optional per-job then chains). Returns when all chains finish.",
                 "run_workflow": "A declarative recipe (fan-out, gates, integrate) from a YAML file.",
             },

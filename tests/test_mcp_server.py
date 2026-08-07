@@ -142,7 +142,8 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         "set_outcome", "routing",
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
         "status", "usage", "get_run", "get_run_log", "collect_run", "commit_run", "integrate", "clean",
-        "cancel_run", "list_workflows", "run_workflow", "doctor", "list_teams", "run_team",
+        "cancel_run", "wait_for_runs", "list_workflows", "run_workflow", "doctor", "list_teams",
+        "run_team",
     }
     assert expected <= names
 
@@ -943,3 +944,33 @@ def test_quickstart_routes_every_run_reading_tool(
 
     assert mapped == {"status", "get_run", "collect_run", "get_run_log", "read_run_file"}
     assert mapped <= tools, f"which_read_tool routes to tools that do not exist: {mapped - tools}"
+
+
+def test_wait_for_runs_round_trips_and_tags_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settled records must come back workspace-tagged: a wait may span repos, and an untagged
+    record is not addressable by the integrate/collect calls that follow it."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    state = FleetState(repo / ".marshal" / "runs")
+    state.add(RunRecord(run_id="r-done", task_id="t", backend="echo", status="exited_clean"))
+
+    app = build_app(build_service())
+    payload = asyncio.run(
+        app.call_tool("wait_for_runs", {"run_ids": ["r-done", "r-ghost"], "timeout_s": 1})
+    ).structured_content
+
+    assert payload is not None
+    assert payload["timed_out"] is False
+    assert [r["run_id"] for r in payload["settled"]] == ["r-done"]
+    assert payload["settled"][0]["workspace"]
+    assert payload["unknown"] == ["r-ghost"]
+    assert payload["pending"] == []
