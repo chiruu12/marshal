@@ -1911,3 +1911,49 @@ def test_report_cheapest_ignores_unmeasured_rows_entirely(repo: Path) -> None:
     result = svc.report("bench")
     assert result.cheapest is None
     assert all(s.cost_usd is None for s in result.strategies)
+
+
+def test_wait_for_runs_returns_at_once_when_everything_is_already_terminal(repo: Path) -> None:
+    """The real-clock path: a wait on finished runs must not idle out a poll interval."""
+    import time
+
+    svc = _svc(repo)
+    rec = svc.run_agent("worker", "do a thing")
+
+    started = time.monotonic()
+    result = svc.wait_for_runs([rec.run_id], timeout_s=30)
+    elapsed = time.monotonic() - started
+
+    assert result.all_settled
+    assert [r.run_id for r in result.settled] == [rec.run_id]
+    assert result.timed_out is False
+    assert elapsed < 1.0, "it slept despite the run already being finished"
+
+
+def test_wait_for_runs_reports_an_unknown_id_without_waiting_for_it(repo: Path) -> None:
+    """A nonexistent run can never settle, so waiting on it would only burn the timeout."""
+    import time
+
+    svc = _svc(repo)
+    started = time.monotonic()
+    result = svc.wait_for_runs(["no-such-run"], timeout_s=30)
+
+    assert result.unknown == ["no-such-run"]
+    assert result.settled == [] and result.pending == []
+    assert result.timed_out is False
+    assert time.monotonic() - started < 1.0
+
+
+def test_wait_for_runs_hands_back_a_partial_result_on_expiry(repo: Path) -> None:
+    """A run stuck `running` must return as `pending`, not raise and not hang past the timeout."""
+    svc = _svc(repo)
+    done = svc.run_agent("worker", "finished work")
+    svc.fleet.state.add(
+        RunRecord(run_id="stuck", task_id="t", backend="echo", status="running")
+    )
+
+    result = svc.wait_for_runs([done.run_id, "stuck"], timeout_s=0.2, poll_interval_s=0.05)
+
+    assert result.timed_out is True
+    assert [r.run_id for r in result.settled] == [done.run_id]
+    assert [r.run_id for r in result.pending] == ["stuck"]

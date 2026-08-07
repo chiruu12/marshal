@@ -8,6 +8,24 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`wait_for_runs` — the close of the spawn loop.** `spawn` returned a RUNNING record and nothing
+  finished the job: a driver fanning out five runs polled `status` on a cadence it had to guess,
+  spending a tool call and a model turn per tick to be told "not yet". Too tight burned tokens, too
+  loose added dead wall-clock to every run. MCP has no server-initiated push, so "notify me when
+  done" can only be a blocking wait; the polling now happens server-side, where a tick costs a few
+  file reads instead of a turn of context.
+
+  Returns `{settled, pending, unknown, timed_out, waited_ms}`, and every id lands in exactly one
+  list. **`settled` means finished, not succeeded** — `failed`/`timed_out`/`cancelled`/
+  `verify_failed` are all settled, so the driver branches on `status` exactly as after a poll.
+  Terminality is the same predicate `status` and `routing` use (now `core.types.is_terminal`, one
+  definition instead of the two that could have disagreed). Expiry returns the partial result rather
+  than raising, which is what makes it safe under a shorter client-side request timeout: the caller
+  keeps its progress and re-calls, degrading to a coarser poll instead of a broken tool. Ids may
+  span workspaces. It reports and does not act — no implicit collect, no implicit integrate.
+
 ### Documentation
 
 - **`marshal_quickstart` routes among all five run-reading tools.** Three verbs (`get_`, `collect_`,

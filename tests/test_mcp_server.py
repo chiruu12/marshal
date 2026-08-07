@@ -142,7 +142,8 @@ def test_build_app_registers_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         "set_outcome", "routing",
         "run_agent", "run_many", "spawn", "benchmark", "report", "list_clients", "list_models",
         "status", "usage", "get_run", "get_run_log", "collect_run", "commit_run", "integrate", "clean",
-        "cancel_run", "list_workflows", "run_workflow", "doctor", "list_teams", "run_team",
+        "cancel_run", "wait_for_runs", "list_workflows", "run_workflow", "doctor", "list_teams",
+        "run_team",
     }
     assert expected <= names
 
@@ -943,3 +944,100 @@ def test_quickstart_routes_every_run_reading_tool(
 
     assert mapped == {"status", "get_run", "collect_run", "get_run_log", "read_run_file"}
     assert mapped <= tools, f"which_read_tool routes to tools that do not exist: {mapped - tools}"
+
+
+def test_wait_for_runs_round_trips_and_tags_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settled records must come back workspace-tagged: a wait may span repos, and an untagged
+    record is not addressable by the integrate/collect calls that follow it."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    state = FleetState(repo / ".marshal" / "runs")
+    state.add(RunRecord(run_id="r-done", task_id="t", backend="echo", status="exited_clean"))
+
+    app = build_app(build_service())
+    payload = asyncio.run(
+        app.call_tool("wait_for_runs", {"run_ids": ["r-done", "r-ghost"], "timeout_s": 1})
+    ).structured_content
+
+    assert payload is not None
+    assert payload["timed_out"] is False
+    assert [r["run_id"] for r in payload["settled"]] == ["r-done"]
+    assert payload["settled"][0]["workspace"]
+    assert payload["unknown"] == ["r-ghost"]
+    assert payload["pending"] == []
+
+
+def test_wait_for_runs_reports_a_malformed_id_as_unknown_without_aborting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One bad id must not throw away the runs that already finished beside it.
+
+    Run-id validation is fail-closed (a `../` id would compose a path into another workspace's
+    ledger) and still refuses here - no path is built from it. But this is a batch call whose
+    contract is that every id lands in exactly one list, so the refusal is reported as `unknown`
+    rather than raised, the same partial-over-nothing rule the timeout path follows.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    FleetState(repo / ".marshal" / "runs").add(
+        RunRecord(run_id="r-good", task_id="t", backend="echo", status="exited_clean")
+    )
+
+    app = build_app(build_service())
+    payload = asyncio.run(
+        app.call_tool(
+            "wait_for_runs",
+            {"run_ids": ["r-good", "../../etc/passwd"], "timeout_s": 1},
+        )
+    ).structured_content
+
+    assert payload is not None
+    assert [r["run_id"] for r in payload["settled"]] == ["r-good"]
+    assert payload["unknown"] == ["../../etc/passwd"]
+    assert payload["timed_out"] is False
+
+
+def test_wait_for_runs_surfaces_a_broken_workspace_instead_of_calling_the_run_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken config must not be reported as "no such run".
+
+    `ConfigError` subclasses `ValueError`, and the malformed-id handler catches `ValueError` - so
+    without an explicit re-raise, a run that exists in a workspace whose config is broken comes back
+    as `unknown`. That is the wrong answer to a different question, and it hides the fixable cause.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.core.config import ConfigError
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.interfaces.workspaces import WorkspaceRegistry
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+
+    def boom(self: Any, run_id: str, hint: str | None = None) -> Any:
+        raise ConfigError("fleet.config.yaml is not parseable")
+
+    monkeypatch.setattr(WorkspaceRegistry, "resolve_run", boom)
+    app = build_app(build_service())
+
+    with pytest.raises(Exception, match="not parseable"):
+        asyncio.run(app.call_tool("wait_for_runs", {"run_ids": ["r-1"], "timeout_s": 1}))

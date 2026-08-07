@@ -1,10 +1,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Sequence
 
 from pydantic import BaseModel, Field
 
+from ...core.config import ConfigError
+from ...runtime.state import RunRecord
+from ..waiting import MAX_WAIT_S, wait_for_terminal
+from ..workspaces import WorkspaceRegistry
 
 from .context import ToolContext
 
@@ -28,6 +32,30 @@ from .schema import (
     _DESC_WORKSPACE,
     _DESC_WS_HINT,
 )
+
+def _resolve_all(
+    registry: WorkspaceRegistry, run_ids: Sequence[str], workspace: str | None
+) -> dict[str, tuple[str, Any]]:
+    """Map each known run id to its ``(workspace_name, service)``; unknown ids are simply absent.
+
+    Resolved ONCE up front rather than on every poll tick: a run cannot change workspaces, so
+    re-scanning each tick would be pure cost, multiplied by however long the wait runs.
+    """
+    out: dict[str, tuple[str, Any]] = {}
+    for run_id in dict.fromkeys(run_ids):
+        try:
+            resolved = registry.resolve_run(run_id, workspace)
+        except ConfigError:
+            # NOT swallowed: `ConfigError` subclasses `ValueError`, so a broken workspace config
+            # would otherwise be reported as "no such run" - hiding an actionable failure behind a
+            # wrong answer about a run that does exist. Only a malformed id becomes `unknown`.
+            raise
+        except ValueError:
+            continue  # not a usable id; the caller reports it as unknown
+        if resolved is not None:
+            out[run_id] = resolved
+    return out
+
 
 def register(app: "MCPServer", ctx: ToolContext) -> None:
     """Register this group's tools on ``app``."""
@@ -151,6 +179,58 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                 task_kind=task_kind,
             ),
         )
+
+    @app.tool()
+    async def wait_for_runs(
+        run_ids: Annotated[list[str], Field(min_length=1, description=(
+            "The runs to wait on, from spawn/run_many. May span workspaces - each id is resolved "
+            "to its owning repo, and they all share one deadline."
+        ))],
+        timeout_s: Annotated[float, Field(gt=0, le=MAX_WAIT_S, description=(
+            "Give up after this many seconds and return what has settled so far. Your MCP client's "
+            "own request timeout may be shorter and will cut the call off first - which is safe, "
+            "because expiry is a partial result, not an error: call again for whatever is still "
+            "pending."
+        ))] = 60.0,
+        workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
+    ) -> dict[str, Any]:
+        """Block until these runs finish (or `timeout_s`) - so you don't spend a turn per poll.
+
+        This is the close of the spawn loop. `spawn` returns RUNNING immediately; without this you
+        poll `status` on a cadence you have to guess, spending a tool call and a model turn on each
+        tick to learn "not yet". Here the polling happens server-side, where a tick is a few file
+        reads.
+
+        Returns `{settled, pending, unknown, timed_out, waited_ms}`. `settled` is every run that
+        reached a terminal state - which includes FAILED, TIMED_OUT and CANCELLED: settled means
+        finished, never succeeded, so branch on each record's `status` exactly as after a poll.
+        `unknown` is ids with no record anywhere; they are reported at once and never waited on.
+
+        On expiry this returns normally with `timed_out: true` and the unfinished runs in
+        `pending` - re-call with just those ids. It reports; it does not act: no implicit
+        collect_run, no implicit integrate. Review what settled before you merge anything.
+
+        A run whose supervisor was killed keeps a `running` record forever and will wait out the
+        full timeout; `cancel_run` on it releases the wait immediately.
+        """
+        resolved = await offload(_resolve_all, registry, run_ids, workspace)
+        unknown = [rid for rid in run_ids if rid not in resolved]
+
+        def _fetch(ids: Sequence[str]) -> dict[str, RunRecord | None]:
+            return {rid: resolved[rid][1].get_run(rid) for rid in ids if rid in resolved}
+
+        result = await offload(
+            wait_for_terminal, _fetch, list(resolved), timeout_s=timeout_s,
+        )
+        payload = result.model_dump(mode="json")
+        # Records come back tagged with the workspace that owns them, since a single wait may span
+        # several and an untagged record is not addressable afterwards.
+        for key in ("settled", "pending"):
+            payload[key] = [
+                tag(rec, resolved[rec["run_id"]][0]) for rec in payload[key]
+            ]
+        payload["unknown"] = unknown
+        return payload
 
     @app.tool()
     async def cancel_run(

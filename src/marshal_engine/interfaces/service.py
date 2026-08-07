@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import sys
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,7 @@ from ..core.config import (
 )
 from .doctor import DoctorReport, doctor_report, run_checks
 from .routing import OutcomeResult, build_routing, record_outcome
+from .waiting import DEFAULT_POLL_INTERVAL_S, WaitResult, wait_for_terminal
 from ..runtime.env import merge_user_path
 from ..orchestration.fleet import BudgetStatus, EnforceBudgetGate, Fleet
 from ..orchestration.results import (
@@ -831,6 +832,26 @@ class MarshalService:
         so the two surfaces cannot drift apart.
         """
         return record_outcome(self.fleet.state, run_id, outcome, note=note)
+
+    def wait_for_runs(
+        self,
+        run_ids: Sequence[str],
+        *,
+        timeout_s: float = 60.0,
+        poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    ) -> WaitResult:
+        """Block until these runs finish, or until ``timeout_s`` - the close of the spawn loop.
+
+        Never raises on expiry; `WaitResult.pending` is the partial result and the caller re-calls.
+        See `waiting.wait_for_terminal`. Single-repo, like the rest of this class; the MCP tool
+        waits across workspaces by resolving each run first and sharing one deadline.
+        """
+        return wait_for_terminal(
+            lambda ids: {rid: self.fleet.state.get(rid) for rid in ids},
+            run_ids,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+        )
 
     def clean(
         self,

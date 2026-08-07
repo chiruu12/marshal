@@ -110,6 +110,25 @@ class RunStatus(str, Enum):
     VERIFY_FAILED = "verify_failed"
 
 
+#: The statuses that mean a run has NOT finished. Everything else is terminal.
+#:
+#: Defined as the complement rather than by listing the terminal states, so a status added later is
+#: terminal until someone says otherwise. That is the safe default for the two readers: `routing`
+#: would rather skip an unjudgeable run than count it, and a waiter would rather return early than
+#: block on a state it does not recognise until its timeout expires.
+NON_TERMINAL_STATUSES = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
+
+
+def is_terminal(status: str | None) -> bool:
+    """Has this run finished? The one definition - `routing` and `wait_for_runs` share it.
+
+    `None` (a record with no status yet) is not terminal. Note this asks about the RECORD, not the
+    process: a supervisor killed mid-run leaves a record reading `running` forever, which is why
+    every waiter is timeout-bounded rather than trusting this to eventually flip.
+    """
+    return status is not None and status not in NON_TERMINAL_STATUSES
+
+
 class RunOutcome(str, Enum):
     """A driver's judgment about a run's WORK, distinct from `RunStatus`'s process truth.
 
