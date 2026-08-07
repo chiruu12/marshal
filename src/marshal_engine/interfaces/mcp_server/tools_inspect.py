@@ -31,7 +31,8 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         """START HERE. The canonical loop, and which tool to pick when several look alike.
 
         Read this before choosing among the run-ish tools (run_agent / spawn / run_many /
-        run_workflow) or the status-ish ones (status / get_run / collect_run / get_run_log).
+        run_workflow) or the read-ish ones (status / get_run / collect_run / get_run_log /
+        read_run_file) - `which_read_tool` says what each one returns.
         """
         return {
             "what_marshal_is": (
@@ -75,14 +76,21 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                 "run_many": "Several jobs in parallel (optional per-job then chains). Returns when all chains finish.",
                 "run_workflow": "A declarative recipe (fan-out, gates, integrate) from a YAML file.",
             },
-            "which_status_tool": {
-                "status": "List runs. Filtered, and poll-shaped by default - pass `limit`, "
+            # Five tools read a run and their names do not say which is which - `get`, `collect`,
+            # and `read` are three verbs for one operation. Until they are renamed this map is how
+            # a driver picks, so every run-reading tool has to appear here (test-enforced).
+            "which_read_tool": {
+                "status": "Reads MANY runs, filtered - poll-shaped by default; pass `limit`, "
                 "`status`, `task_id`, `since_hours`, and `view` to widen. Check `agent_alive` to "
                 "tell 'still working' from 'finished, outcome not yet written'.",
-                "get_run": "One run's full record, including its final text.",
-                "collect_run": "What the run produced (diff and/or text via `produced`). Review "
-                "step before integrate; for text runs, read `text`.",
-                "get_run_log": "One run's raw stdout/stderr. For diagnosing a failure.",
+                "get_run": "Reads ONE run's whole record, including its final text.",
+                "collect_run": "Reads what one run PRODUCED (diff and/or text via `produced`). The "
+                "review step before integrate; for text runs, the value is in `text`.",
+                "get_run_log": "Reads one run's raw stdout/stderr, untruncated. For diagnosing a "
+                "failure the record's `text` does not explain.",
+                "read_run_file": "Reads ONE FILE out of a run's worktree, by path. How an artifact "
+                "reaches the next agent: read the file the run wrote, put it in the next `goal`. "
+                "To build on a run's CODE instead, use commit_run + spawn(base_branch=...).",
             },
             "safety": (
                 "Runs are isolated in their own worktrees; a bad run costs a worktree, not your "
@@ -172,7 +180,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any] | None:
-        """Get a run record by id, located across all workspaces (or via the `workspace` hint).
+        """Reads ONE RUN'S WHOLE RECORD by id, across all workspaces (or via the `workspace` hint).
 
         status is one of: exited_clean | empty (exited 0 with neither text nor file changes - an
         outcome, not a fault; nothing to integrate) | failed | timed_out | cancelled |
@@ -191,7 +199,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
-        """Return a run's persisted full stdout/stderr (or null if no log was written).
+        """Reads ONE RUN'S RAW STDOUT/STDERR, untruncated (null if no log was written).
 
         Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
         a `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---` section -
@@ -211,7 +219,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
-        """Collect what a run produced: diff/changed files and/or final text via `produced`
+        """Reads WHAT ONE RUN PRODUCED: diff/changed files and/or final text, tagged by `produced`
         (read-only; nothing is merged). Branch on `produced` (`diff` | `text` | `nothing`)."""
         return await run_call(run_id, workspace, lambda svc: svc.collect_run(run_id))
 
@@ -223,7 +231,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         ))],
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
-        """Read one file out of a run's worktree - how one agent's output reaches the next.
+        """Reads ONE FILE out of a run's worktree - how one agent's output reaches the next.
 
         For handing over an ARTIFACT (a report, a findings file, a generated spec): read it here,
         then put the content in the next run's `goal`. That keeps the handover faithful - the next

@@ -682,7 +682,7 @@ def test_quickstart_names_the_loop_and_disambiguates_the_lookalike_tools(
         assert tool in steps, f"the canonical loop does not mention {tool}"
     # Every lookalike is disambiguated, which is the actual complaint.
     assert {"run_agent", "spawn", "run_many", "run_workflow"} <= set(payload["which_run_tool"])
-    assert {"status", "get_run", "collect_run", "get_run_log"} <= set(payload["which_status_tool"])
+    assert {"status", "get_run", "collect_run", "get_run_log"} <= set(payload["which_read_tool"])
     # The blocking-vs-async distinction is stated, not left to be inferred from the names.
     assert "Blocks" in payload["which_run_tool"]["run_agent"]
     assert "does not hold your turn" in payload["which_run_tool"]["spawn"]
@@ -913,3 +913,33 @@ def test_quickstart_only_names_parameters_that_exist(
         assert param in tools[tool_name].input_schema["properties"], (
             f"quickstart recommends {tool_name}({param}=...) but {tool_name} has no {param!r}"
         )
+
+
+def test_quickstart_routes_every_run_reading_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`which_read_tool` must name every tool that reads a run, and only tools that exist.
+
+    Five tools read a run and their names - `get_`, `collect_`, `read_` - do not say which returns
+    the record, the log, the diff, or a file. This map is the only thing that does, so a read tool
+    added without a row here is a tool a driver has to discover by trial. Enumerated explicitly
+    rather than inferred, because "reads a run" is a judgement about intent that no naming pattern
+    can be trusted to detect - adding the sixth read tool should force a decision here.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    tools = {t.name for t in asyncio.run(app.list_tools())}
+
+    routed = asyncio.run(app.call_tool("marshal_quickstart", {})).structured_content
+    assert routed is not None
+    mapped = set(routed["which_read_tool"])
+
+    assert mapped == {"status", "get_run", "collect_run", "get_run_log", "read_run_file"}
+    assert mapped <= tools, f"which_read_tool routes to tools that do not exist: {mapped - tools}"

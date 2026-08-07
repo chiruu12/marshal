@@ -15,7 +15,7 @@ from.
 
 The canonical loop and the decision boundary between the lookalike tools. No parameters.
 
-**Returns:** `{ what_marshal_is, non_code_runs, the_loop, which_run_tool, which_status_tool, safety, multi_repo }`.
+**Returns:** `{ what_marshal_is, non_code_runs, the_loop, which_run_tool, which_read_tool, safety, multi_repo }`.
 
 `what_marshal_is` leads with **fleet primitive**: parallel sub-agents in isolated worktrees; a run's
 product may be a **DIFF or TEXT** (both first-class). Names write and read-and-reason uses
