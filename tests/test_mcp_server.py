@@ -1011,3 +1011,33 @@ def test_wait_for_runs_reports_a_malformed_id_as_unknown_without_aborting(
     assert [r["run_id"] for r in payload["settled"]] == ["r-good"]
     assert payload["unknown"] == ["../../etc/passwd"]
     assert payload["timed_out"] is False
+
+
+def test_wait_for_runs_surfaces_a_broken_workspace_instead_of_calling_the_run_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken config must not be reported as "no such run".
+
+    `ConfigError` subclasses `ValueError`, and the malformed-id handler catches `ValueError` - so
+    without an explicit re-raise, a run that exists in a workspace whose config is broken comes back
+    as `unknown`. That is the wrong answer to a different question, and it hides the fixable cause.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.core.config import ConfigError
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.interfaces.workspaces import WorkspaceRegistry
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+
+    def boom(self: Any, run_id: str, hint: str | None = None) -> Any:
+        raise ConfigError("fleet.config.yaml is not parseable")
+
+    monkeypatch.setattr(WorkspaceRegistry, "resolve_run", boom)
+    app = build_app(build_service())
+
+    with pytest.raises(Exception, match="not parseable"):
+        asyncio.run(app.call_tool("wait_for_runs", {"run_ids": ["r-1"], "timeout_s": 1}))

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Sequence
 
 from pydantic import BaseModel, Field
 
+from ...core.config import ConfigError
 from ...runtime.state import RunRecord
 from ..waiting import MAX_WAIT_S, wait_for_terminal
 from ..workspaces import WorkspaceRegistry
@@ -44,8 +45,13 @@ def _resolve_all(
     for run_id in dict.fromkeys(run_ids):
         try:
             resolved = registry.resolve_run(run_id, workspace)
+        except ConfigError:
+            # NOT swallowed: `ConfigError` subclasses `ValueError`, so a broken workspace config
+            # would otherwise be reported as "no such run" - hiding an actionable failure behind a
+            # wrong answer about a run that does exist. Only a malformed id becomes `unknown`.
+            raise
         except ValueError:
-            continue  # unresolvable; the caller reports it as unknown
+            continue  # not a usable id; the caller reports it as unknown
         if resolved is not None:
             out[run_id] = resolved
     return out
