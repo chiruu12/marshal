@@ -121,15 +121,20 @@ def resolve_pr(
 
     # Fetch the head COMMIT, not a branch: a fork's head is not in this repo, and pull/N/head is the
     # server's own copy of it, so this works for forks and for a deleted source branch alike.
-    _fetch(repo, remote, f"pull/{number}/head", number, runner)
+    #
+    # Landed on a ref of our own rather than read back out of FETCH_HEAD, which is a single
+    # repo-global file: one MCP server resolves PRs for a workspace concurrently, so two overlapping
+    # resolutions would overwrite each other's FETCH_HEAD and make a perfectly valid review fail.
+    # The ref is namespaced per PR, so concurrent resolutions cannot collide at all.
+    head_ref = f"refs/marshal/pr/{number}/head"
+    _fetch(repo, remote, f"+refs/pull/{number}/head:{head_ref}", number, runner)
 
     # The head OID came from `gh` BEFORE the fetch, so a force-push in between leaves us naming a
     # commit that is no longer the PR's head. Asking merely whether that object EXISTS locally does
     # not catch it: the superseded commit is usually still lying around from an earlier fetch, and
     # the panel would then review the old revision as though it were current. So compare against
-    # what this fetch actually retrieved - FETCH_HEAD is the server's answer, `gh`'s was a guess by
-    # the time we used it.
-    fetched = _rev_parse(repo, "FETCH_HEAD", runner)
+    # what this fetch actually retrieved - `gh`'s answer was a guess by the time we used it.
+    fetched = _rev_parse(repo, head_ref, runner)
     if fetched != head_oid:
         raise ConfigError(
             f"PR #{number} moved while it was being resolved: `gh` reported head "

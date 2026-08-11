@@ -242,12 +242,12 @@ def test_a_force_push_is_caught_even_though_the_old_commit_is_still_local(tmp_pa
     An earlier fetch of this PR leaves the old head in the object store, so "does this object
     exist?" answers yes and the panel reviews the revision the author already replaced - a stale
     review that reads exactly like a current one. Only comparing against what THIS fetch retrieved
-    catches it, which is why the check is an equality against FETCH_HEAD and not an existence probe.
+    catches it, so the check is an equality against the fetched ref, not an existence probe.
     """
     newer = "b" * 40
     runner = _Runner({
         "gh pr view": (0, _meta()),
-        "rev-parse --verify --quiet FETCH_HEAD": (0, newer),
+        "rev-parse --verify --quiet refs/marshal/pr/7/head": (0, newer),
     })
 
     with pytest.raises(ConfigError) as exc:
@@ -261,19 +261,37 @@ def test_a_force_push_is_caught_even_though_the_old_commit_is_still_local(tmp_pa
 def test_a_head_the_fetch_did_not_retrieve_at_all_is_refused(tmp_path: Path) -> None:
     runner = _Runner({
         "gh pr view": (0, _meta()),
-        "rev-parse --verify --quiet FETCH_HEAD": (1, ""),
+        "rev-parse --verify --quiet refs/marshal/pr/7/head": (1, ""),
     })
 
     with pytest.raises(ConfigError, match="moved"):
         resolve_pr(tmp_path, 7, runner=runner)
 
 
-def test_the_head_is_checked_against_fetch_head_after_the_fetch_not_before(tmp_path: Path) -> None:
-    """Ordering is the whole point: reading FETCH_HEAD first would report the previous fetch."""
+def test_the_head_is_checked_against_the_fetched_ref_after_the_fetch_not_before(tmp_path: Path) -> None:
+    """Ordering is the whole point: reading the ref first would report the PREVIOUS fetch's head."""
     runner = _Runner({"gh pr view": (0, _meta())})
     resolve_pr(tmp_path, 7, runner=runner)
 
     joined = [" ".join(c) for c in runner.calls]
     fetched = next(i for i, c in enumerate(joined) if "pull/7/head" in c)
-    probed = next(i for i, c in enumerate(joined) if "FETCH_HEAD" in c)
+    probed = next(i for i, c in enumerate(joined) if "rev-parse" in c and "pr/7/head" in c)
     assert probed > fetched
+
+
+def test_the_head_lands_on_a_per_pr_ref_so_concurrent_resolutions_cannot_collide(
+    tmp_path: Path,
+) -> None:
+    """FETCH_HEAD is one repo-global file; a workspace resolves PRs concurrently.
+
+    Two overlapping `run_team(pr=...)` calls would overwrite each other's FETCH_HEAD, and the
+    force-push check would then reject a perfectly current head - failing a valid review rather
+    than a stale one. A ref namespaced by PR number has no shared state to race over.
+    """
+    runner = _Runner({"gh pr view": (0, _meta())})
+    resolve_pr(tmp_path, 7, runner=runner)
+
+    fetch = runner.argv_for("refs/pull/7/head")
+    assert fetch is not None
+    assert fetch[-1] == "+refs/pull/7/head:refs/marshal/pr/7/head"
+    assert runner.argv_for("FETCH_HEAD") is None
