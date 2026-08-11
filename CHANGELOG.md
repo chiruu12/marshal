@@ -20,6 +20,13 @@ versions may include breaking API changes until 1.0.
   the partial sum. A total that looks measured and is short by whatever the silent attempts cost is
   the failure the cost invariant exists to prevent; "unknown" is not. Tokens still add up — those
   were reported.
+- **A truncated EastRouter usage walk no longer yields a cost tagged `admin-api`.** When the page
+  cap was hit or a later page's request failed, the partial set was used as though it were the whole
+  window. Token reconciliation does not catch that on its own — it tolerates 10% of prompt tokens
+  going missing, so a dropped record under that threshold reconciles while its charge is simply
+  absent. Cost now stays `unavailable` when the walk was cut short by Marshal's own page cap or a
+  transport error. An API that ignores `offset` is unchanged: that is everything it will return, not
+  a remainder Marshal gave up on, and reconciliation still has to agree before any cost is claimed.
 
 ### Changed
 
