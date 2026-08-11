@@ -67,7 +67,17 @@ _READ_CONTEXT_DIR = ".marshal-context"
 
 # Fail-closed secret shapes. Same hazard as silently copying for context_files: gitignored secrets
 # (`.env`, keys under `.ssh`) exist on the driver's machine and must not be handed to an agent.
-_READ_PATH_SECRET_NAME_GLOBS = (".env*", "*.pem", "id_rsa*", "id_ed25519*")
+_READ_PATH_SECRET_NAME_GLOBS = (
+    ".env*", "*.pem", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
+    # Credential files that are not key-shaped and were not covered by the original list. Every one
+    # of these is a plain file in a predictable place holding a live token: copying it into a
+    # worktree hands it to the agent, and therefore to a model provider.
+    ".netrc", "_netrc", "credentials", "*.kdbx", "*.p12", "*.pfx", "*.key",
+    ".npmrc", ".pypirc", ".dockercfg", "hosts.yml", "hosts.json", "gh_token*",
+)
+
+#: Directory names whose contents are credentials regardless of the file names inside them.
+_READ_PATH_SECRET_DIRS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config/gh"})
 
 # Directory inside each worktree where an agent writes output meant to OUTLIVE the worktree.
 # Excluded from git like `.marshal-context/`, so writing here never pollutes the run's diff -
@@ -81,10 +91,53 @@ ARTIFACT_MOUNT = "artifacts"
 
 
 def _is_refused_read_path(path: Path) -> bool:
-    """True when ``path`` matches a secret-shaped name or lives under a ``.ssh`` directory."""
-    if any(part == ".ssh" for part in path.parts):
+    """True when ``path`` is credential-shaped by name, or sits in a credential directory.
+
+    A denylist cannot be complete, which is why it is no longer the only thing standing between an
+    agent and the host's secrets - `read_paths` is scoped to the repo unless the operator opts out
+    (see `_ensure_read_path_in_scope`). This list is the second layer, for the case where a secret
+    lives inside the repo itself.
+    """
+    parts = path.parts
+    if any(part in _READ_PATH_SECRET_DIRS for part in parts):
+        return True
+    # Two-segment directory names (".config/gh") need a pairwise check.
+    if any(
+        f"{a}/{b}" in _READ_PATH_SECRET_DIRS for a, b in zip(parts, parts[1:], strict=False)
+    ):
         return True
     return any(fnmatch.fnmatch(path.name, pat) for pat in _READ_PATH_SECRET_NAME_GLOBS)
+
+
+def _ensure_read_path_in_scope(src: Path, raw: str, repo_root: Path, allow_external: bool) -> None:
+    """Refuse a `read_path` outside the workspace's own repo unless the operator opted in.
+
+    The denylist above is a guess about which names hold secrets, and a guess cannot cover a host's
+    whole filesystem. Scope can: a path inside the repo is content the operator already trusts this
+    workspace with, and everything else needs a deliberate `allow_external_read_paths: true`.
+
+    This is also what closes the cross-workspace read channel. `read_paths` pointing at another
+    workspace's `.marshal/runs` would copy that workspace's ledger into this one's worktree, which
+    contradicts the tenancy claim that each workspace keeps its own state - and no name-based rule
+    would have caught it, because there is nothing secret-shaped about the name `runs`.
+
+    Note who the caller is: `read_paths` comes from the driver agent, so "the operator asked for
+    it" holds only as far as the driver is trustworthy. Scoping keeps a prompt-injected driver from
+    turning a context-provisioning feature into an arbitrary host-file reader.
+    """
+    if allow_external:
+        return
+    try:
+        inside = src.is_relative_to(repo_root.resolve())
+    except (OSError, ValueError):
+        inside = False
+    if not inside:
+        raise ValueError(
+            f"read_paths refuses a path outside this workspace's repo: {src} (declared as {raw!r}). "
+            f"Set `allow_external_read_paths: true` in fleet.config.yaml to permit it, or copy what "
+            f"the agent needs into the repo. Scoping is what keeps this from being a way to read "
+            f"any file on the host - including another workspace's ledger."
+        )
 
 
 def _resolve_read_path(raw: str, repo_root: Path) -> Path:
@@ -152,8 +205,10 @@ def _validate_read_path_tree(src: Path, raw: str) -> None:
         if _is_refused_read_path(path):
             raise ValueError(
                 f"read_paths refuses secret-shaped path: {path}. "
-                f"Paths matching .env*/*.pem/id_rsa*/id_ed25519* or inside a .ssh directory "
-                f"are never copied into a worktree (including descendants of {raw!r})."
+                f"Credential-shaped names (dotenv files, private keys, .netrc, npm/pypi/docker "
+                f"and gh credential files) and anything inside a credential directory (.ssh, .aws, "
+                f".gnupg, .kube, .docker) are never copied into a worktree - including descendants "
+                f"of {raw!r}."
             )
         if not path.is_dir() and not path.is_file():
             raise ValueError(
@@ -441,7 +496,9 @@ def _ensure_plain_marshal_context_dir(dest_root: Path) -> Path:
     return dest_root
 
 
-def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) -> None:
+def _provision_read_paths(
+    wt: Worktree, repo_root: Path, read_paths: list[str], *, allow_external: bool = False
+) -> None:
     """Copy declared outside-worktree paths into ``.marshal-context/`` as read-only.
 
     Unlike ``context_files`` (which must already be *in* the worktree), ``read_paths`` are
@@ -474,6 +531,7 @@ def _provision_read_paths(wt: Worktree, repo_root: Path, read_paths: list[str]) 
     resolved: list[tuple[str, Path]] = []
     for raw in read_paths:
         src = _resolve_read_path(raw, repo_root)
+        _ensure_read_path_in_scope(src, raw, repo_root, allow_external)
         if not src.exists():
             raise ValueError(
                 f"read_paths not found: {raw!r}. "

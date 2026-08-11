@@ -216,6 +216,11 @@ class FleetConfig(BaseModel):
     # pre-commit/pre-merge hooks cannot deadlock a headless driver. Set true only when hooks are
     # known non-interactive; see SECURITY.md.
     integrate_run_hooks: bool = False
+    # When false (default), ``read_paths`` may only name paths inside this workspace's own repo.
+    # The secret-name denylist is a guess about which files hold credentials and cannot cover a
+    # whole host; scope can. Also what stops `read_paths` reaching another workspace's ledger.
+    # True permits any readable path - only where the driver issuing read_paths is trusted.
+    allow_external_read_paths: bool = False
     # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
     # connection error). 0 disables retries. Genuine task failures and timeouts are never retried.
     retries: int = 2
@@ -278,6 +283,9 @@ def load_config(path: Path | str) -> FleetConfig:
         verify=verify,
         allow_unsafe_commands=allow_unsafe_commands,
         integrate_run_hooks=_parse_integrate_run_hooks(raw.get("integrate_run_hooks")),
+        allow_external_read_paths=_parse_bool_flag(
+            raw.get("allow_external_read_paths"), "allow_external_read_paths"
+        ),
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
         budgets=_parse_budgets(raw.get("budgets")),
@@ -354,6 +362,15 @@ def reject_disallowed_setup_commands(
         reason = setup_command_refusal(cmd, allow_unsafe=allow_unsafe_commands)
         if reason:
             raise ConfigError(f"{field}: {reason}")
+
+
+def _parse_bool_flag(value: Any, key: str) -> bool:
+    """Parse an optional boolean config flag; absent means False (the closed setting)."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(f"{key} must be a boolean, got {type(value).__name__}")
 
 
 def _parse_allow_unsafe_commands(value: Any) -> bool:

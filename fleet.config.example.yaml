@@ -42,6 +42,14 @@ defaults:
 # git timeout; prefer verify: / CI when unsure. See SECURITY.md.
 # integrate_run_hooks: true
 
+# `read_paths` (the per-run hatch for handing an agent files it can read) is limited to paths
+# inside THIS repo unless you set this. The refusal list for credential-shaped names is a guess
+# about which files hold secrets and cannot cover a whole machine; scoping to the repo can. It is
+# also what keeps a read_path from reaching another registered workspace's ledger. Set true only
+# where you trust whatever issues read_paths - it is a driver agent, and a prompt-injected one
+# would otherwise be able to read any file you can. See SECURITY.md.
+# allow_external_read_paths: true
+
 # How many times to re-run a run that failed for a TRANSIENT reason (DB lock, rate limit, 5xx,
 # connection error) - with exponential backoff. Defaults to 2; set 0 to disable. Genuine task
 # failures and timeouts are never retried.
