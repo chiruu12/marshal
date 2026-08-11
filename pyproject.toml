@@ -85,6 +85,14 @@ exclude = [
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+# Stated explicitly rather than inherited. Ruff's DEFAULT rule set is not a stable contract - 0.16
+# widened it, and a routine lockfile bump turned the commit gate red with ~280 findings across 20
+# rules that no one had chosen. Pinning the set means a ruff upgrade changes ruff, and adopting a
+# new rule is its own reviewed commit. These four are the set the codebase was in fact linted
+# against; broadening it is tracked separately.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

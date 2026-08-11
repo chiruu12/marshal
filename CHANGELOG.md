@@ -43,6 +43,13 @@ versions may include breaking API changes until 1.0.
   keeps its progress and re-calls, degrading to a coarser poll instead of a broken tool. Ids may
   span workspaces. It reports and does not act — no implicit collect, no implicit integrate.
 
+### Changed
+
+- **The ruff rule set is pinned explicitly (`select = ["E4", "E7", "E9", "F"]`).** It had been
+  inherited from ruff's default, which is not a stable contract: 0.16 widened it, so a lockfile bump
+  alone turned the commit gate red with ~280 findings across ~20 rules nobody had chosen. A ruff
+  upgrade now changes ruff, and adopting a rule is its own reviewed commit (#239).
+
 ### Documentation
 
 - **`marshal_quickstart` routes among all five run-reading tools.** Three verbs (`get_`, `collect_`,
