@@ -22,6 +22,11 @@ versions may include breaking API changes until 1.0.
   *itself* being reported as "no changes". Repo hooks are copied into a run only when
   `integrate_run_hooks` is set, since that opt-in means the operator's hooks should actually run.
 
+  A run's clone also inherits the repo's committer identity, so a repo that sets `user.email`
+  per-repo rather than globally still commits (a clone does not read `.git/config`). Only the
+  identity crosses over - copying the whole local config would re-point a run at paths in the
+  operator's repo.
+
   This is isolation of git state, not a filesystem sandbox: nothing stops an agent writing to an
   absolute path elsewhere on the host (#175 tracks that).
 

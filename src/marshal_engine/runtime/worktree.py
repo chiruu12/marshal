@@ -294,6 +294,8 @@ class WorktreeManager:
                 f"{checkout.stderr.strip()}"
             )
 
+        self._inherit_identity(path)
+
         if self.integrate_run_hooks:
             _copy_repo_hooks(self.repo_root, path)
 
@@ -536,6 +538,26 @@ class WorktreeManager:
         sha = self._git("rev-parse", "HEAD", cwd=wt.path).stdout.strip()
         self._publish(wt, sha)
         return sha
+
+    def _inherit_identity(self, clone_path: Path) -> None:
+        """Carry the repo's committer identity into a run's clone.
+
+        A linked worktree read the repo's LOCAL config; a clone does not - `git clone` copies
+        objects and refs, not `.git/config`. So a repo that sets `user.email` per-repo (rather than
+        globally) produced runs whose every commit failed with "Author identity unknown". That is a
+        real setup, not a corner: per-repo identity is how one keeps work and personal commits apart.
+
+        Only the identity is copied, deliberately. Cloning the whole local config would drag along
+        keys that name paths in the operator's repo (`core.hooksPath`, `filter.*`), which is exactly
+        the shared-execution surface this class exists to stop pointing at.
+        """
+        for key in ("user.name", "user.email"):
+            # Read with the repo as cwd so the answer is the EFFECTIVE value - repo-local if set,
+            # otherwise the global the clone would have found anyway. Absent stays absent: git's own
+            # "Author identity unknown" is the right error, and inventing one would forge authorship.
+            value = self._git("config", "--get", key).stdout.strip()
+            if value:
+                self._git("config", key, value, cwd=clone_path)
 
     def publish(self, wt: Worktree) -> None:
         """Make the run's branch in the driver's repo match its clone.

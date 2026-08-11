@@ -1006,3 +1006,51 @@ def test_a_runs_commits_reach_the_repo_as_a_normal_branch(repo: Path) -> None:
     assert m.branch_tip(wt.branch) == sha       # visible in the driver's repo, by branch name
     assert m.has_unmerged_commits(wt.branch, m.current_branch())
     assert "new.txt" in m.merged_diff_files(wt.branch, m.current_branch())
+
+
+def test_a_run_can_commit_when_the_identity_is_only_repo_local(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A clone does not inherit `.git/config`, so the committer identity has to be carried over.
+
+    Per-repo identity is a normal setup - it is how people keep work and personal commits apart -
+    and under a linked worktree it came for free. Without this, every commit in every run of such a
+    repo fails with "Author identity unknown". Global config is pointed at an empty dir so the test
+    proves the repo-local value is what gets used, rather than passing on the developer's own.
+    """
+    empty_home = tmp_path / "no_global"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_home / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_home / "gitsystem"))
+
+    m = WorktreeManager(repo)
+    wt = m.create("identity")
+    (wt.path / "work.txt").write_text("done\n")
+
+    sha = m.commit_all(wt, "agent work")
+    assert sha is not None
+    author = subprocess.run(
+        ["git", "-C", str(wt.path), "log", "-1", "--format=%ae"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert author == "test@example.com"  # the repo's identity, not a fabricated one
+
+
+def test_a_runs_clone_does_not_inherit_the_repos_local_config_wholesale(repo: Path) -> None:
+    """Only the identity crosses over.
+
+    Copying the whole local config would carry keys that name paths in the operator's repo -
+    `core.hooksPath`, `filter.*` - re-pointing a run at the very shared execution surface that
+    isolating it was meant to remove.
+    """
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.hooksPath", str(repo / ".git" / "hooks")],
+        check=True, capture_output=True, text=True,
+    )
+    m = WorktreeManager(repo)
+    wt = m.create("noconfig")
+
+    clone_config = (wt.path / ".git" / "config").read_text()
+    assert "hooksPath" not in clone_config
+    assert "user" in clone_config  # identity did cross over
