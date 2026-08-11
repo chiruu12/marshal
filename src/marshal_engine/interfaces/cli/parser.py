@@ -124,6 +124,11 @@ def main(argv: list[str] | None = None) -> int:
     trun.add_argument("--base", default=None, help="base ref (--target range)")
     trun.add_argument("--head", default=None, help="head ref (--target range; default HEAD)")
     trun.add_argument(
+        "--pr", type=int, default=None,
+        help="GitHub PR number to review (--target range); fills in --base/--head, so pass it "
+             "instead of them. Needs `gh` on PATH",
+    )
+    trun.add_argument(
         "--path", action="append", default=None,
         help="limit a range diff to this path (repeatable); without it a large diff is truncated at the tail",
     )

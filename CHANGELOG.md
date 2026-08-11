@@ -10,6 +10,23 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **Review a GitHub PR with a team: `run_team(..., pr=<number>)` / `marshal team run --pr N`.**
+  Adversarial panels already covered a run's diff, a commit range, a plan and a whole-repo audit,
+  but not the thing most review actually happens on. A PR *is* a commit range, so there is no new
+  target kind and no engine change — `pr` only resolves the endpoints, and every existing
+  `target: range` team reviews a PR unchanged.
+
+  Three correctness properties worth naming. The diff is taken **from the merge base**, so the panel
+  sees what the PR changed rather than what the base branch gained since it opened. The head is used
+  as a **commit SHA, never a branch name** — a fork's branch name is attacker-chosen data, and
+  `--output=...` handed to git as a revision is an arbitrary file write. The base prefers the
+  **remote-tracking ref** over a same-named local branch, since a stale local copy silently widens
+  the review. The result echoes `pull_request` (title, URL, `stale`) because a panel reporting on
+  the wrong PR reads exactly like one reporting on the right PR.
+
+  The `gh` dependency stops at the `interfaces` layer: `orchestration/teams.py` never learns GitHub
+  exists, so the engine stays embeddable for repos that were never hosted there.
+
 - **`wait_for_runs` — the close of the spawn loop.** `spawn` returned a RUNNING record and nothing
   finished the job: a driver fanning out five runs polled `status` on a cadence it had to guess,
   spending a tool call and a model turn per tick to be told "not yet". Too tight burned tokens, too

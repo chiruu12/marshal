@@ -302,7 +302,7 @@ the default workspace.
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. Returns `{workflows, errors, workspace}` — malformed recipe files land in `errors` (filename → message). |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
 | `list_teams()` | List adversarial review teams found in `<repo>/teams/`. Returns `{teams, errors, workspace}` — malformed team files land in `errors` (filename → message). |
-| `run_team(name, target, run_id?/base?/head?/paths?/text?)` | Run a panel of independent read-only reviewers over one subject (`run` diff, commit `range`, a `plan`, or an `audit` of the repo). Returns `unified_report` (read first) plus each reviewer's full report; all persisted under `.marshal/reports/<stamp>-<team>-<id>/`. **Computes no verdict** — collecting the objections and deciding is the caller's job. Never integrates. Runnable form: [`examples/adversarial_review.py`](../examples/adversarial_review.py); team templates in [`examples/teams/`](../examples/teams/). |
+| `run_team(name, target, run_id?/base?/head?/pr?/paths?/text?)` | Run a panel of independent read-only reviewers over one subject (`run` diff, commit `range`, a `plan`, or an `audit` of the repo). To review a GitHub PR, pass `pr=<number>` with `target='range'` — a pull request *is* a commit range, so every `target: range` team reviews one unchanged (needs `gh`; see [`docs/mcp-tools.md`](mcp-tools.md) for the full contract). Returns `unified_report` (read first) plus each reviewer's full report; all persisted under `.marshal/reports/<stamp>-<team>-<id>/`. **Computes no verdict** — collecting the objections and deciding is the caller's job. Never integrates. Runnable form: [`examples/adversarial_review.py`](../examples/adversarial_review.py); team templates in [`examples/teams/`](../examples/teams/). |
 
 ## Use it as a CLI
 
@@ -323,7 +323,7 @@ marshal usage              # per-provider usage summary (--window session|day|we
 marshal workflows          # list + validate workflow recipes against the config
 marshal workflow run NAME  # execute a workflow recipe (--input key=value, --max-concurrency)
 marshal teams              # list + validate review teams (incl. the fail-closed read-only rule)
-marshal team run NAME      # run a review panel (--target run|plan|range|audit, --run-id/--base/--head/--path/--text/--plan-file); prints the unified report; exits non-zero only if a reviewer failed to report
+marshal team run NAME      # run a review panel (--target run|plan|range|audit, --run-id/--base/--head/--pr/--path/--text/--plan-file); prints the unified report; exits non-zero only if a reviewer failed to report. `--pr N` reviews a GitHub PR (needs `gh`): it fills in --base/--head from the merge base, so pass it instead of them
 marshal workspace list     # show the workspace registry
 marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.yaml; path defaults to cwd)
 marshal workspace remove <name>      # drop a workspace from the registry

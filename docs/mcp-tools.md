@@ -285,6 +285,30 @@ prose: a decision derived from text the reviewed material can influence is not a
 trusting, and judgment belongs to the caller. Read `unified_report` first, then the individual
 reports. This tool never integrates.
 
+**Reviewing a pull request.** Pass `pr=<number>` with `target='range'`. A PR *is* a commit range,
+so there is deliberately no `pr` target kind and no engine change: `pr` resolves the endpoints and
+every existing `target: range` team reviews a PR unchanged.
+
+- The diff is taken **from the merge base** (`base...head`, three-dot). Reviewing `base..head`
+  against a moving branch would show the panel everything `main` gained since the PR opened, and
+  the reviewers would spend their lenses on code the PR's author never wrote.
+- The head is used as a **commit SHA, never a branch name**. A PR can come from a fork whose branch
+  the author chose, so that name is attacker-controlled data; a branch called `--output=...` handed
+  to git as a revision is an arbitrary file write. Marshal reads `headRefOid` instead, so the
+  hostile string never becomes an argument.
+- Both endpoints are **refreshed before the diff, and the resolution fails closed if either cannot
+  be**. The base is the fully-qualified remote-tracking ref (`refs/remotes/origin/main`), fetched
+  with an explicit refspec so a narrowed `remote.*.fetch` mapping cannot leave it stale; the head is
+  checked against what the fetch actually retrieved, so a force-push mid-resolve is refused rather
+  than reviewed. Every one of those failures would otherwise produce a plausible, wrong diff that
+  nothing in the output marks as wrong.
+- The reply echoes `pull_request` with the title, URL and `stale` (true for a closed or merged PR).
+  Check it names the PR you meant: a panel reporting on the wrong PR reads exactly like one
+  reporting on the right PR.
+
+`gh` must be on PATH and authenticated; a missing or unauthenticated CLI fails **before** any
+reviewer spawns, since a panel is expensive.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `name` | string | *(required)* | Review team name (from `list_teams`). |
@@ -292,6 +316,7 @@ reports. This tool never integrates.
 | `run_id` | string \| null | `null` | Run whose diff to review (target `run`). |
 | `base` | string \| null | `null` | Base ref (target `range`). Validated — a ref that git would read as an option is refused. |
 | `head` | string \| null | `null` | Head ref (target `range`; default `HEAD`). |
+| `pr` | int \| null | `null` | GitHub PR number to review (target `range`). Fills in `base`/`head`, so pass it **instead of** them — supplying both is refused rather than silently preferring one. Needs `gh` on PATH. |
 | `text` | string \| null | `null` | The plan to review (target `plan`). |
 | `paths` | list[string] \| null | `null` | Limit a `range` diff to these paths. Use it on a large change: the subject is truncated at the **tail**, and git orders paths alphabetically, so `src/` and `tests/` are exactly what gets cut. Paths that are empty, start with `-`, or contain newlines are refused. |
 | `workspace` | string \| null | `null` | Target workspace. |
