@@ -1134,6 +1134,29 @@ def test_a_run_directory_is_outside_the_repo(repo: Path) -> None:
     assert (repo / ".marshal").resolve() not in resolved.parents
 
 
+def test_the_fleet_puts_runs_outside_the_repo_too(repo: Path) -> None:
+    """Through `Fleet`, the way production builds it - not just a hand-made WorktreeManager.
+
+    This is the test that was missing: asserting the property on a directly-constructed manager
+    proved the default, while `Fleet` passed its own `base_dir` and put runs back under the repo.
+    The boundary has to hold on the path runs actually take.
+    """
+    from marshal_engine.orchestration.fleet import Fleet
+
+    fleet = Fleet(repo, {})
+    assert not fleet.worktrees.base_dir.resolve().is_relative_to(repo.resolve())
+    # The ledger DOES stay with the repo - it is Marshal-written, and now out of the agent's reach.
+    assert fleet.state.dir.resolve().is_relative_to(repo.resolve())
+
+
+def test_a_pinned_base_dir_does_not_drag_runs_back_into_the_repo(repo: Path) -> None:
+    """`base_dir` pins Marshal's state; it must not silently re-nest the agent's working tree."""
+    from marshal_engine.orchestration.fleet import Fleet
+
+    fleet = Fleet(repo, {}, base_dir=repo / ".marshal")
+    assert not fleet.worktrees.base_dir.resolve().is_relative_to(repo.resolve())
+
+
 def test_two_checkouts_of_the_same_project_do_not_share_a_run_tree(tmp_path: Path) -> None:
     """Keyed by resolved path, not by name.
 

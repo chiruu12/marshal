@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from marshal_engine.core.layout import runs_root
+
 from marshal_engine import (
     AgentResult,
     Capabilities,
@@ -529,8 +531,10 @@ def test_run_routes_to_correct_repo_and_resolves_cold(tmp_path: Path) -> None:
     ]
     reg = WorkspaceRegistry(defs, prebuilt={"default": _echo_service(repo_a), "beta": _echo_service(repo_b)})
     rec = reg.get("beta").run_agent("worker", "do x", task_id="t1")
-    assert Path(rec.worktree or "").resolve().is_relative_to(repo_b.resolve())
-    assert not Path(rec.worktree or "").resolve().is_relative_to(repo_a.resolve())
+    # Run trees live outside their repo now, so "which workspace ran this" is the run ROOT, not
+    # the repo dir. Same property: B's work went to B's tree and nowhere near A's.
+    assert Path(rec.worktree or "").resolve().is_relative_to(runs_root(repo_b))
+    assert not Path(rec.worktree or "").resolve().is_relative_to(runs_root(repo_a))
 
     # A COLD registry (no prebuilt, no in-memory index) resolves the run purely by scanning ledgers,
     # building only the owning workspace (which has no config -> zero clients, still fine for get_run).
@@ -1364,7 +1368,7 @@ def test_mcp_round_trip_run_query_cancel(tmp_path: Path) -> None:
 
     rec = _call(app, "run_agent", {"client": "worker", "goal": "x", "task_id": "t1", "workspace": "beta"})
     assert rec["workspace"] == "beta" and rec["status"] == "exited_clean"
-    assert Path(rec["worktree"]).resolve().is_relative_to(repo_b.resolve())
+    assert Path(rec["worktree"]).resolve().is_relative_to(runs_root(repo_b))
     rid = rec["run_id"]
 
     got = _call(app, "get_run", {"run_id": rid})  # resolves cross-workspace, no hint
@@ -1435,8 +1439,8 @@ def test_registry_run_many_mixed_workspaces(tmp_path: Path) -> None:
     assert len(paired) == 2
     assert paired[0][0] == "default" and paired[0][1].primary.status == "exited_clean"
     assert paired[1][0] == "beta" and paired[1][1].primary.status == "exited_clean"
-    assert Path(paired[0][1].primary.worktree).resolve().is_relative_to(repo_a.resolve())
-    assert Path(paired[1][1].primary.worktree).resolve().is_relative_to(repo_b.resolve())
+    assert Path(paired[0][1].primary.worktree).resolve().is_relative_to(runs_root(repo_a))
+    assert Path(paired[1][1].primary.worktree).resolve().is_relative_to(runs_root(repo_b))
     # Ledgers stay per-workspace (no shared run state).
     assert {r.run_id for r in FleetState(repo_a / ".marshal" / "runs").list()} == {paired[0][1].primary.run_id}
     assert {r.run_id for r in FleetState(repo_b / ".marshal" / "runs").list()} == {paired[1][1].primary.run_id}
@@ -1505,8 +1509,8 @@ def test_mcp_run_many_mixed_workspaces(tmp_path: Path) -> None:
     assert len(rm) == 2
     assert rm[0]["workspace"] == "default" and rm[0]["primary"]["status"] == "exited_clean"
     assert rm[1]["workspace"] == "beta" and rm[1]["primary"]["status"] == "exited_clean"
-    assert Path(rm[0]["primary"]["worktree"]).resolve().is_relative_to(repo_a.resolve())
-    assert Path(rm[1]["primary"]["worktree"]).resolve().is_relative_to(repo_b.resolve())
+    assert Path(rm[0]["primary"]["worktree"]).resolve().is_relative_to(runs_root(repo_a))
+    assert Path(rm[1]["primary"]["worktree"]).resolve().is_relative_to(runs_root(repo_b))
 
 
 def test_mcp_run_many_unknown_workspace_errors(tmp_path: Path) -> None:
