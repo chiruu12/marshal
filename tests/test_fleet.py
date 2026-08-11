@@ -31,6 +31,7 @@ from marshal_engine.core.config import BudgetSpec
 from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
 from marshal_engine.accounting.eastrouter import ExternalCost
+from marshal_engine.accounting.usage import UsageEvent
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
@@ -5618,3 +5619,109 @@ def test_a_cancelled_run_still_records_the_artifacts_it_wrote(repo: Path) -> Non
     assert stored.artifacts == ["FINDINGS.md"], (
         "record says the run produced nothing while its artifact is on disk"
     )
+
+
+# --- retries are billed, not silently discarded -------------------------------------------------
+
+
+class _FlakyBiller(CodingAgentBackend):
+    """Fails transiently N times, reporting real usage on every attempt including the failures.
+
+    A provider can charge for an attempt it then fails - a rate limit part-way through leaves real
+    tokens spent - so the failed attempts here carry usage exactly as a backend would report it.
+    """
+
+    name = "flaky"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, failures: int, failed_source: UsageSource = UsageSource.NATIVE) -> None:
+        self.failures = failures
+        self.failed_source = failed_source
+        self.calls = 0
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "pass"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text="", exit_code=exit_code)
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+        self.calls += 1
+        if self.calls <= self.failures:
+            return AgentResult(
+                status=RunStatus.FAILED,
+                error="connection reset by peer",  # transient -> retried
+                usage=UsageRecord(
+                    backend="flaky", input_tokens=100, output_tokens=10,
+                    cost_usd=0.02, source=self.failed_source,
+                ),
+            )
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN,
+            text="done",
+            usage=UsageRecord(
+                backend="flaky", input_tokens=7, output_tokens=3,
+                cost_usd=0.005, source=UsageSource.NATIVE,
+            ),
+        )
+
+
+def _only_event(fleet: Fleet) -> UsageEvent:
+    events = fleet.usage.events()
+    assert len(events) == 1, f"one ledger line per run, got {len(events)}"
+    return events[0]
+
+
+def test_a_retried_run_is_billed_for_every_attempt(repo: Path) -> None:
+    """The ledger line is the RUN's total, not the last attempt's.
+
+    Keeping only the final result meant a three-attempt run reported what its third attempt cost -
+    an undercount presented as a measurement, which is the one thing the cost invariant forbids.
+    """
+    backend = _FlakyBiller(failures=2)
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, base_delay_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="r1", goal="x"), ts="2026-08-12T00:00:00Z")
+
+    assert rec.attempts == 3
+    event = _only_event(fleet)
+    assert event.input_tokens == 100 + 100 + 7    # both abandoned attempts, plus the one that worked
+    assert event.output_tokens == 10 + 10 + 3
+    assert event.cost_usd == pytest.approx(0.02 + 0.02 + 0.005)
+    assert event.source == UsageSource.NATIVE.value
+
+
+def test_an_unpriced_attempt_makes_the_runs_cost_unknown_not_short(repo: Path) -> None:
+    """The mixed case: some attempts measured, some not.
+
+    Summing only what was reported would produce a figure that LOOKS measured and is short by
+    whatever the silent attempts cost. `unavailable` is the honest answer - the report layer
+    already reads it as "unknown", never as $0 - and losing the partial figure is the deliberate
+    price of not publishing a wrong one. Tokens still add up: those were reported.
+    """
+    backend = _FlakyBiller(failures=1, failed_source=UsageSource.UNAVAILABLE)
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=2, base_delay_s=0.0))
+    fleet.run("flaky", TaskSpec(id="r2", goal="x"), ts="2026-08-12T00:00:00Z")
+
+    event = _only_event(fleet)
+    assert event.input_tokens == 107          # facts still summed
+    assert event.cost_usd == 0.0
+    assert event.source == UsageSource.UNAVAILABLE.value
+
+
+def test_a_run_that_never_retried_is_unchanged(repo: Path) -> None:
+    """No abandoned attempts must mean no change at all to the recorded line."""
+    backend = _FlakyBiller(failures=0)
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, base_delay_s=0.0))
+    fleet.run("flaky", TaskSpec(id="r3", goal="x"), ts="2026-08-12T00:00:00Z")
+
+    event = _only_event(fleet)
+    assert event.input_tokens == 7
+    assert event.cost_usd == pytest.approx(0.005)
+    assert event.source == UsageSource.NATIVE.value

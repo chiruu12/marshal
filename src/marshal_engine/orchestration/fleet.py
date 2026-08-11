@@ -1192,10 +1192,14 @@ class Fleet:
                 # Prompt-level schema instruction only (no backend-contract change). Validation
                 # runs AFTER retries so a schema-invalid reply is never treated as transient.
                 run_task = _task_with_schema_instruction(req.task)
-                result, attempts = self._run_with_retries(backend, run_task, opts, run_id)
+                result, attempts, abandoned = self._run_with_retries(
+                    backend, run_task, opts, run_id
+                )
                 result = _apply_structured_output(req.task, result)
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
             self._price_usage(usage, req.model)      # normalize cost + source (unavailable unless native)
+            # Fold in what the retried-away attempts spent, so the run's line is the run's total.
+            usage = self._fold_abandoned_attempts(usage, abandoned, req.model, backend)
             self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
             # The workspace's optional verify gate: only a would-be-SUCCEEDED run that actually
@@ -1324,10 +1328,15 @@ class Fleet:
 
     def _run_with_retries(
         self, backend: CodingAgentBackend, task: TaskSpec, opts: RunOpts, run_id: str
-    ) -> tuple[AgentResult, int]:
+    ) -> tuple[AgentResult, int, list[AgentResult]]:
         """Run the backend, retrying only on a transient (infra/transport) failure with backoff.
 
-        Returns the final result and the number of attempts made. The worktree is reused across
+        Returns the final result, the number of attempts made, and every ABANDONED attempt's result.
+
+        The abandoned ones are returned rather than dropped because a provider can charge for an
+        attempt it then failed - a rate limit hit part-way through leaves real tokens spent, and the
+        backend reports them. Keeping only the last result meant the ledger stated a three-attempt
+        run cost what its final attempt cost, which is an undercount presented as a measurement. The worktree is reused across
         attempts: the markers we retry on (DB lock, rate limit, 5xx, connection errors) happen at
         startup/transport time, before an agent writes anything, so there is nothing to reset. A
         genuine task failure or a timeout is returned as-is - never retried.
@@ -1339,12 +1348,13 @@ class Fleet:
         cancel was already requested.
         """
         attempt = 1
+        abandoned: list[AgentResult] = []
         while True:
             result = backend.run(task, opts)
             if attempt >= self.retries.max_attempts or not is_transient_failure(result):
-                return result, attempt
+                return result, attempt, abandoned
             if self._cancel_requested(run_id):
-                return result, attempt
+                return result, attempt, abandoned
             delay = self.retries.delay_for(attempt)
             print(
                 f"[marshal] {run_id}: transient failure (attempt {attempt}/"
@@ -1357,7 +1367,10 @@ class Fleet:
             # let the loop wake up and spawn a fresh agent into the worktree - and bill for it -
             # after cancel intent was already recorded (possibly without a `cancelled` stamp).
             if self._cancel_requested(run_id):
-                return result, attempt
+                return result, attempt, abandoned
+            # Recorded only once the loop commits to REPLACING this result - so the list holds
+            # exactly the attempts whose usage no other code path will ever see.
+            abandoned.append(result)
             attempt += 1
 
     def _execute_bg(
@@ -1487,6 +1500,57 @@ class Fleet:
             return  # backend authoritatively reported the cost (a real $0 included) - never override
         usage.cost_usd = 0.0
         usage.source = UsageSource.UNAVAILABLE
+
+    def _fold_abandoned_attempts(
+        self,
+        usage: UsageRecord | None,
+        abandoned: list[AgentResult],
+        model: str | None,
+        backend: CodingAgentBackend,
+    ) -> UsageRecord | None:
+        """Add the retried-away attempts' usage to the run's record, or say the total is unknown.
+
+        Tokens are summed unconditionally - they are facts each attempt reported, and a run that
+        burned three attempts really did consume all of them.
+
+        Cost is stricter, because cost here is native-or-nothing (see `_price_usage`: there is no
+        price table, so an attempt is either a provider-reported figure or unmeasured). Summing only
+        the attempts that happened to report cost would produce a number that looks measured and is
+        short by however much the silent attempts cost. So the total is only stated when EVERY
+        attempt that reported tokens also reported cost; otherwise the run's cost goes back to
+        `unavailable`, which the report layer already knows means "unknown", not "$0".
+
+        Losing a measured figure in that mixed case is deliberate. An undercount presented as a
+        measurement is the failure this codebase keeps guarding against; an honest "unknown" is not.
+        """
+        if not abandoned:
+            return usage
+        priors: list[UsageRecord] = []
+        for result in abandoned:
+            prior = backend.extract_usage(result)  # same seam the final attempt goes through
+            if prior is None:
+                continue
+            self._price_usage(prior, model)
+            priors.append(prior)
+        if not priors:
+            return usage
+        if usage is None:
+            usage = priors.pop(0)
+        measured = usage.source is UsageSource.NATIVE
+        for prior in priors:
+            usage.input_tokens += prior.input_tokens
+            usage.output_tokens += prior.output_tokens
+            usage.cache_read_tokens += prior.cache_read_tokens
+            usage.cache_write_tokens += prior.cache_write_tokens
+            if prior.source is UsageSource.NATIVE:
+                usage.cost_usd += prior.cost_usd
+            elif prior.input_tokens or prior.output_tokens:
+                # This attempt burned tokens nobody priced, so no total can be stated.
+                measured = False
+        if not measured:
+            usage.cost_usd = 0.0
+            usage.source = UsageSource.UNAVAILABLE
+        return usage
 
     def _apply_external_cost(self, usage: UsageRecord | None, req: RunRequest, *, start_iso: str) -> None:
         """Override cost with the REAL charge from a provider usage-API, when the client opts in.
