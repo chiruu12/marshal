@@ -8,6 +8,23 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Each run now gets its own clone, not a linked worktree (#180).** Linked worktrees share the main
+  repo's `.git`, so an agent could write a hook or a command-executing config key (`core.hooksPath`,
+  `filter.*.smudge`, and others) into shared state and have it execute during a **later, unrelated
+  run** - surviving cleanup, because tearing down a worktree never rewrote that state. A clone has
+  its own `.git`, so there is nothing shared to poison. `git clone --local` hardlinks the object
+  store, so a run costs about what it did before.
+
+  A run's branch is published into the driver's repo when it is created and whenever its commits are
+  read, so integrate, diffs and ancestry are unchanged. This also fixes work an agent committed
+  *itself* being reported as "no changes". Repo hooks are copied into a run only when
+  `integrate_run_hooks` is set, since that opt-in means the operator's hooks should actually run.
+
+  This is isolation of git state, not a filesystem sandbox: nothing stops an agent writing to an
+  absolute path elsewhere on the host (#175 tracks that).
+
 ### Added
 
 - **Review a GitHub PR with a team: `run_team(..., pr=<number>)` / `marshal team run --pr N`.**

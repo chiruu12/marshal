@@ -561,15 +561,16 @@ def test_discard_removes_worktree_and_branch(repo: Path) -> None:
     assert "marshal/disc1" not in branches
 
 
-def test_discard_reclaims_dir_when_git_admin_entry_corrupt(repo: Path) -> None:
-    # The dir survives but git's admin entry is gone (a prior partial prune): `git worktree remove`
-    # refuses ("not a working tree"). discard must still reclaim the disk-heavy dir, not raise.
+def test_discard_reclaims_a_run_dir_that_is_no_longer_a_git_repo(repo: Path) -> None:
+    # A killed agent (or a half-finished clean) can leave the dir present but its .git gone, so git
+    # refuses to treat it as a repo at all. Reclaiming the disk-heavy dir is the point of discard,
+    # so it must not raise and must not leave the dir behind.
     m = WorktreeManager(repo)
     wt = m.create("disc3")
-    shutil.rmtree(repo / ".git" / "worktrees" / "disc3")  # corrupt: drop the admin entry, keep dir
+    shutil.rmtree(wt.path / ".git")
     assert wt.path.exists()
     m.discard(wt.path, wt.branch)  # must not raise
-    assert not wt.path.exists()    # dir reclaimed via the rmtree fallback
+    assert not wt.path.exists()
 
 
 def test_discard_tolerates_already_gone_worktree(repo: Path) -> None:
@@ -807,165 +808,93 @@ def test_verify_oserror_reports_not_raises(repo: Path, monkeypatch: pytest.Monke
     assert wt.path.exists()  # verify never tears down
 
 
-def test_create_failure_deletes_leaked_branch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A failed `git worktree add -b` must not leave the branch behind (M7)."""
-    m = WorktreeManager(repo)
-    real_git = m._git
+def test_create_refuses_a_taken_branch_and_leaves_its_work_untouched(repo: Path) -> None:
+    """The data-loss case: a same-named branch may hold unmerged work (M7).
 
-    def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ("worktree", "add") and "-b" in args:
-            # Reproduce git's leak: create the branch, then fail the worktree checkout.
-            branch = args[args.index("-b") + 1]
-            real_git("branch", branch, cwd=cwd)
-            return subprocess.CompletedProcess(
-                args=["git", *args], returncode=1, stdout="", stderr="simulated worktree add fail"
-            )
-        return real_git(*args, cwd=cwd)
-
-    monkeypatch.setattr(m, "_git", flaky)
-    with pytest.raises(WorktreeError, match="worktree add failed"):
-        m.create("leak_branch")
-    branches = subprocess.run(
-        ["git", "-C", str(repo), "branch", "--list", "marshal/leak_branch"],
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert "marshal/leak_branch" not in branches
-    # Retry on the same id must succeed (the whole point of deleting the leaked branch).
-    monkeypatch.undo()
-    wt = m.create("leak_branch")
-    assert wt.path.exists()
-    m.remove(wt)
-
-
-def test_create_failure_preserves_preexisting_branch(repo: Path) -> None:
-    """A failed add must NOT `branch -D` a pre-existing same-named branch (M7 data-loss)."""
+    A run must never adopt or delete it. With a clone this is checked in the DRIVER's repo before
+    anything is created, because a clone would not refuse on its own - `clone` puts the repo's
+    branches under refs/remotes/, so `checkout -b` inside it would shadow the taken name and the
+    collision would surface only later.
+    """
     m = WorktreeManager(repo)
 
     def git(*args: str) -> str:
         return subprocess.run(
-            ["git", "-C", str(repo), *args],
-            check=True,
-            capture_output=True,
-            text=True,
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
         ).stdout.strip()
 
-    # Unmerged work on the exact branch name create() would use.
     git("checkout", "-b", "marshal/preexist")
     (repo / "important.txt").write_text("keep me\n")
     git("add", "important.txt")
     git("commit", "-m", "unmerged work")
     tip = git("rev-parse", "HEAD")
-    git("checkout", "-")  # back to the original branch
+    git("checkout", "-")
 
-    with pytest.raises(WorktreeError, match="worktree add failed"):
-        m.create("preexist")  # -b rejects: branch already exists
-
-    assert git("rev-parse", "marshal/preexist") == tip  # tip (and unmerged work) survived
-    listed = subprocess.run(
-        ["git", "-C", str(repo), "branch", "--list", "marshal/preexist"],
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert "marshal/preexist" in listed
-    assert not (repo / "important.txt").exists()  # main checkout untouched
-
-
-def test_create_failure_cleanup_timeout_does_not_mask_add_error(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A TimeoutExpired / WorktreeError from best-effort `-D` must not replace the add error."""
-    m = WorktreeManager(repo)
-    real_git = m._git
-
-    def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ("worktree", "add") and "-b" in args:
-            branch = args[args.index("-b") + 1]
-            real_git("branch", branch, cwd=cwd)
-            return subprocess.CompletedProcess(
-                args=["git", *args], returncode=1, stdout="", stderr="simulated worktree add fail"
-            )
-        if args[:2] == ("branch", "-D"):
-            # What `_git` raises when the cleanup itself times out.
-            raise WorktreeError("git 'branch -D marshal/mask_me' timed out after 30s")
-        return real_git(*args, cwd=cwd)
-
-    monkeypatch.setattr(m, "_git", flaky)
-    with pytest.raises(WorktreeError, match="worktree add failed.*simulated worktree add fail"):
-        m.create("mask_me")
-
-
-def test_create_failure_skips_delete_on_already_exists_despite_stale_probe(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """TOCTOU: probe says absent, but add fails with 'already exists' → never `-D` (M7)."""
-    m = WorktreeManager(repo)
-    real_git = m._git
-    # Concurrent creator's branch (exists before add; probe will lie and say absent).
-    real_git("branch", "marshal/race")
-    tip = real_git("rev-parse", "marshal/race").stdout.strip()
-    deleted: list[str] = []
-
-    def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ("show-ref", "--verify"):
-            # Stale probe: report absent even though the concurrent branch is already there.
-            return subprocess.CompletedProcess(
-                args=["git", *args], returncode=1, stdout="", stderr=""
-            )
-        if args[:2] == ("worktree", "add") and "-b" in args:
-            branch = args[args.index("-b") + 1]
-            return subprocess.CompletedProcess(
-                args=["git", *args],
-                returncode=128,
-                stdout="",
-                stderr=f"fatal: a branch named '{branch}' already exists\n",
-            )
-        if args[:2] == ("branch", "-D"):
-            deleted.append(args[2] if len(args) > 2 else "")
-            return real_git(*args, cwd=cwd)
-        return real_git(*args, cwd=cwd)
-
-    monkeypatch.setattr(m, "_git", flaky)
     with pytest.raises(WorktreeError, match="already exists"):
-        m.create("race")
-    assert deleted == [], f"branch -D must not run on already-exists; got {deleted!r}"
-    assert real_git("rev-parse", "marshal/race").stdout.strip() == tip
+        m.create("preexist")
+
+    assert git("rev-parse", "marshal/preexist") == tip  # tip (and its unmerged work) survived
+    assert "marshal/preexist" in git("branch", "--list", "marshal/preexist")
 
 
-def test_merged_diff_files_raises_on_git_failure(
+def test_a_failed_create_leaves_no_branch_and_the_id_stays_reusable(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """merged_diff_files must raise WorktreeError on git failure, matching merged_diff (M5)."""
+    """The leak case: a half-finished create must not strand the branch name it was going to use.
+
+    Under a clone the branch is born inside the run's own directory, so tearing that directory down
+    IS the rollback - there is no separate branch in the driver's repo to clean up, and therefore no
+    window in which cleanup could delete the wrong one.
+    """
     m = WorktreeManager(repo)
     real_git = m._git
 
     def flaky(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        if args[:1] == ("diff",) and "--name-only" in args:
+        if args[:1] == ("checkout",) and "-b" in args:
             return subprocess.CompletedProcess(
-                args=["git", *args], returncode=128, stdout="", stderr="fatal: bad revision"
+                args=["git", *args], returncode=1, stdout="", stderr="simulated checkout fail"
             )
         return real_git(*args, cwd=cwd)
 
     monkeypatch.setattr(m, "_git", flaky)
-    with pytest.raises(WorktreeError, match="could not list files"):
-        m.merged_diff_files("marshal/missing", "main")
+    with pytest.raises(WorktreeError, match="simulated checkout fail"):
+        m.create("leak_branch")
+
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/leak_branch"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "marshal/leak_branch" not in branches
+    assert not (m.base_dir / "leak_branch").exists()  # no half-built run dir left behind
+
+    monkeypatch.undo()
+    wt = m.create("leak_branch")  # the id is reusable, which is the point
+    assert wt.path.exists()
+    m.remove(wt)
 
 
-def test_branch_tip_raises_on_unresolvable_ref(repo: Path) -> None:
-    """Failed rev-parse must raise — never return the ref name as if it were a sha (#173)."""
+def test_create_never_deletes_a_branch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Structural guard on the M7 data-loss vector, not a scenario.
+
+    The old add-then-clean-up path had to reason about WHICH branch a failure left behind; deleting
+    the wrong one destroyed unmerged work. Cloning removes the need to delete anything at all, so
+    assert the capability is simply absent - no failure mode can reintroduce it.
+    """
     m = WorktreeManager(repo)
-    missing = "definitely/not/a/ref"
-    # Pre-fix: git echoed the argument on stdout and branch_tip returned it unchecked.
-    raw = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", missing],
-        capture_output=True,
-        text=True,
-    )
-    assert raw.returncode != 0
-    assert raw.stdout.strip() == missing
-    with pytest.raises(WorktreeError, match="could not resolve tip"):
-        tip = m.branch_tip(missing)
-        raise AssertionError(f"branch_tip must not return the ref name; got {tip!r}")
+    real_git = m._git
+    deletes: list[tuple[str, ...]] = []
+
+    def watched(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("branch", "-D"):
+            deletes.append(args)
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", watched)
+    m.create("no_delete")
+    with pytest.raises(WorktreeError):
+        m.create("no_delete")  # second create fails: dir and branch are both taken
+
+    assert deletes == []
 
 
 def test_branch_tip_returns_sha_for_real_branch(repo: Path) -> None:
@@ -1022,3 +951,58 @@ def test_setup_on_pid_publishes_and_on_exit_fires(repo: Path) -> None:
     assert isinstance(seen.get("pid"), int) and seen["pid"] > 0
     assert seen.get("exited") is True
     assert (wt.path / "marker").read_text() == "ok"
+
+
+# --- #180: a run's git admin state is its own -------------------------------------------------
+
+
+def test_a_run_cannot_reach_the_repos_git_admin_state(repo: Path) -> None:
+    """The whole reason runs are clones rather than linked worktrees.
+
+    A linked worktree's `.git` is a FILE pointing into the main repo's `.git`, so writing a hook or
+    a command-executing config key from inside a run landed in shared state and fired during a
+    LATER, unrelated run - and survived cleanup, because tearing down a worktree never rewrote it.
+    A clone has its own `.git` directory, so the same writes reach nothing but the run itself.
+    """
+    m = WorktreeManager(repo)
+    wt = m.create("own_git")
+
+    git_dir = wt.path / ".git"
+    assert git_dir.is_dir(), "a linked worktree's .git is a file into the shared common dir"
+    assert git_dir.resolve().is_relative_to(wt.path.resolve())
+
+    # What an agent would write. Both land inside the run and nowhere else.
+    (git_dir / "hooks").mkdir(exist_ok=True)
+    (git_dir / "hooks" / "post-checkout").write_text("#!/bin/sh\necho pwned\n")
+    subprocess.run(
+        ["git", "-C", str(wt.path), "config", "core.hooksPath", str(git_dir / "hooks")],
+        check=True, capture_output=True, text=True,
+    )
+
+    assert not (repo / ".git" / "hooks" / "post-checkout").exists()
+    repo_config = (repo / ".git" / "config").read_text()
+    assert "hooksPath" not in repo_config
+
+    # And the poison does not outlive the run: teardown is a directory removal, so there is no
+    # residue left in shared state for the next run to execute.
+    m.discard(wt.path, wt.branch)
+    assert "hooksPath" not in (repo / ".git" / "config").read_text()
+    assert not (repo / ".git" / "hooks" / "post-checkout").exists()
+
+
+def test_a_runs_commits_reach_the_repo_as_a_normal_branch(repo: Path) -> None:
+    """Isolation must not change how work is integrated.
+
+    The run commits inside its own clone, where nothing in the driver's repo can see it. Publishing
+    on commit is what keeps every downstream branch operation - merge, ancestry, unmerged counts -
+    a plain local-branch operation against the repo, exactly as it was.
+    """
+    m = WorktreeManager(repo)
+    wt = m.create("publish")
+    (wt.path / "new.txt").write_text("agent work\n")
+    sha = m.commit_all(wt, "agent work")
+
+    assert sha is not None
+    assert m.branch_tip(wt.branch) == sha       # visible in the driver's repo, by branch name
+    assert m.has_unmerged_commits(wt.branch, m.current_branch())
+    assert "new.txt" in m.merged_diff_files(wt.branch, m.current_branch())
