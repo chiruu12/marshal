@@ -46,9 +46,8 @@ versions may include breaking API changes until 1.0.
 ### Changed
 
 - **The ruff rule set is pinned explicitly (`select = ["E4", "E7", "E9", "F"]`).** It had been
-  inherited from ruff's default, which is not a stable contract: 0.16 widened it, so a lockfile bump
-  alone turned the commit gate red with ~280 findings across ~20 rules nobody had chosen. A ruff
-  upgrade now changes ruff, and adopting a rule is its own reviewed commit (#239).
+  inherited from ruff's default, which is not a stable contract across ruff releases. Pinning means
+  upgrading ruff changes ruff, and adopting a rule is its own reviewed change (#239).
 
 ### Documentation
 
