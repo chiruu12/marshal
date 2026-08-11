@@ -10,6 +10,18 @@ versions may include breaking API changes until 1.0.
 
 ### Changed
 
+- **Run directories now live outside the repo, at `~/.marshal/worktrees/<repo>-<digest>/` (#175).**
+  While a run worked at `<repo>/.marshal/worktrees/<id>`, a plain `../../..` from the agent's cwd
+  reached the operator's live checkout, their `.git`, and Marshal's own ledger — no exploit needed,
+  just a relative path. The path is keyed by a digest of the resolved repo path, so two checkouts of
+  the same project never share a run tree. `MARSHAL_HOME` relocates it (another disk, or an isolated
+  test run). Runs left by an earlier version stay cleanable in place.
+
+  This narrows the accident; it is not a sandbox. An agent can still write to an absolute path
+  elsewhere on the host — only an OS-level sandbox would change that, and Marshal does not claim one.
+
+### Changed
+
 - **Each run now gets its own clone, not a linked worktree (#180).** Linked worktrees share the main
   repo's `.git`, so an agent could write a hook or a command-executing config key (`core.hooksPath`,
   `filter.*.smudge`, and others) into shared state and have it execute during a **later, unrelated

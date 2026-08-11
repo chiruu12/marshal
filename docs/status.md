@@ -157,7 +157,7 @@ after a would-be-succeeded run with file changes; failure lands as **`verify_fai
 output tail on the record, worktree kept for review; (4) **repo-shape-aware scaffold** - a new
 workspace's starter config carries commented `worktree_setup` suggestions detected from the repo
 layout (root vs nested `pyproject.toml`/`package.json`/`go.mod`/`Cargo.toml`); (5) **orphan
-reaping** - scope-mode `clean` reconciles `.marshal/worktrees` against the ledger and reaps dirs
+reaping** - scope-mode `clean` reconciles the run root against the ledger and reaps dirs
 with no (readable) run record (`orphans_removed`); (6) resolution errors carry actionable hints
 (ad-hoc `backend=` escape hatch, `doctor`, `add_workspace`).
 **Adversarial review teams** (`teams.py`) - a declarative panel of independent, read-only reviewer

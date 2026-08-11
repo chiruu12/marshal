@@ -45,3 +45,21 @@ def _hermetic_workspaces_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     registry file just ``monkeypatch.setenv`` this var to its own path, overriding this default.
     """
     monkeypatch.setenv("MARSHAL_WORKSPACES_FILE", str(tmp_path / "_no_registry_for_tests.yaml"))
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_marshal_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Give every test its own Marshal home, so run directories never touch the real ``~/.marshal``.
+
+    Run trees live outside the repo now (`layout.runs_root`), which means the default path is in the
+    developer's home rather than in a tmp repo. Without this the suite would create directories
+    there, leak state between tests, and - on `clean` - delete under a real user directory.
+
+    Deliberately a SIBLING of ``tmp_path`` rather than a child. Most tests use ``tmp_path`` as the
+    repo, so putting the home inside it would nest every run directory in the repo under test - the
+    exact layout `runs_root` exists to end - and tests would then assert against an arrangement
+    production no longer has.
+    """
+    monkeypatch.setenv("MARSHAL_HOME", str(tmp_path_factory.mktemp("marshal_home")))
