@@ -684,9 +684,15 @@ class Fleet:
         merge_user_path()
         self.repo_root = Path(repo_root)
         base = Path(base_dir) if base_dir is not None else marshal_dir(self.repo_root)
+        # Run directories do NOT follow `base_dir`. The ledger, logs and run records under
+        # `<repo>/.marshal/` are Marshal-written and belong with the repo; the run's working tree is
+        # the one directory an agent writes, and it lives outside the repo so a relative path from
+        # the agent's cwd cannot climb into the checkout or the ledger (#175). Only an explicit
+        # `worktree_base` overrides that - one rule, so there is no second path where the boundary
+        # silently does not hold.
         self.worktrees = WorktreeManager(
             self.repo_root,
-            worktree_base or base / "worktrees",
+            worktree_base,
             setup_cmd=worktree_setup,
             verify_cmd=verify,
             allow_unsafe_commands=allow_unsafe_commands,

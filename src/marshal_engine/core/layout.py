@@ -6,6 +6,9 @@ layer agree on one layout. Import from this module instead of hardcoding subpath
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 from pathlib import Path
 
 _MARSHAL_DIRNAME = ".marshal"
@@ -16,8 +19,41 @@ def marshal_dir(repo: Path | str) -> Path:
     return Path(repo) / _MARSHAL_DIRNAME
 
 
-def worktrees_dir(repo: Path | str) -> Path:
-    """Return ``<repo>/.marshal/worktrees``."""
+def marshal_home() -> Path:
+    """Marshal's per-user directory: ``MARSHAL_HOME`` if set, else ``~/.marshal``.
+
+    Same home the workspace registry already lives in. The env var exists so a run tree can be put
+    on another disk - and so the test suite never writes to the developer's real home.
+    """
+    raw = os.environ.get("MARSHAL_HOME")
+    return Path(raw).expanduser() if raw else Path.home() / ".marshal"
+
+
+def runs_root(repo: Path | str) -> Path:
+    """Where this repo's run directories live - ``<marshal home>/worktrees/<name>-<digest>``.
+
+    **Outside the repo, deliberately.** A run's working tree is the one directory an agent is meant
+    to write, and while it sat at ``<repo>/.marshal/worktrees/<id>`` a plain ``../../..`` reached
+    the operator's live checkout, their `.git`, and Marshal's own ledger - no exploit needed, just a
+    relative path (#175). Moving it out does not make the agent unable to write elsewhere on the
+    host; it removes the case where wandering upward lands somewhere costly by accident.
+
+    Keyed by a digest of the resolved repo path, not by name alone: two checkouts of the same
+    project (a worktree per feature, say) are different repos and must not share a run tree. The
+    readable name is a prefix so the directory is identifiable by eye.
+    """
+    resolved = Path(repo).expanduser().resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", resolved.name) or "repo"
+    return marshal_home() / "worktrees" / f"{name}-{digest}"
+
+
+def legacy_worktrees_dir(repo: Path | str) -> Path:
+    """Return ``<repo>/.marshal/worktrees`` - where run directories lived before ``runs_root``.
+
+    Kept so runs created by an older Marshal stay cleanable: their records hold absolute paths
+    under here, and cleanup refuses any path outside a known base. Nothing new is created here.
+    """
     return marshal_dir(repo) / "worktrees"
 
 

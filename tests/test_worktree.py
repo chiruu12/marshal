@@ -1109,3 +1109,98 @@ def test_copied_hooks_cannot_be_used_to_overwrite_a_file_outside_the_run(repo: P
 
     copied.write_text("#!/bin/sh\necho pwned\n")  # what an agent would do
     assert outside.read_text() == "#!/bin/sh\necho operator\n"
+
+
+# --- #175: a run's directory is not inside the repo it is working on ---------------------------
+
+
+def test_a_run_directory_is_outside_the_repo(repo: Path) -> None:
+    """The `../..` reach, removed.
+
+    While run dirs sat at `<repo>/.marshal/worktrees/<id>`, climbing three levels from the agent's
+    cwd landed in the operator's live checkout - and `.marshal/runs`, the ledger. No exploit was
+    needed for that, just a relative path. This does not make the agent unable to write elsewhere on
+    the host; it removes the case where wandering upward lands somewhere costly by accident.
+    """
+    m = WorktreeManager(repo)
+    wt = m.create("outside")
+
+    resolved = wt.path.resolve()
+    assert not resolved.is_relative_to(repo.resolve())
+    # The repo is not an ancestor, so no number of `..` from inside the run passes THROUGH the
+    # checkout or the ledger - which is exactly what the old `<repo>/.marshal/worktrees/<id>`
+    # location could not say.
+    assert repo.resolve() not in resolved.parents
+    assert (repo / ".marshal").resolve() not in resolved.parents
+
+
+def test_the_fleet_puts_runs_outside_the_repo_too(repo: Path) -> None:
+    """Through `Fleet`, the way production builds it - not just a hand-made WorktreeManager.
+
+    This is the test that was missing: asserting the property on a directly-constructed manager
+    proved the default, while `Fleet` passed its own `base_dir` and put runs back under the repo.
+    The boundary has to hold on the path runs actually take.
+    """
+    from marshal_engine.orchestration.fleet import Fleet
+
+    fleet = Fleet(repo, {})
+    assert not fleet.worktrees.base_dir.resolve().is_relative_to(repo.resolve())
+    # The ledger DOES stay with the repo - it is Marshal-written, and now out of the agent's reach.
+    assert fleet.state.dir.resolve().is_relative_to(repo.resolve())
+
+
+def test_a_pinned_base_dir_does_not_drag_runs_back_into_the_repo(repo: Path) -> None:
+    """`base_dir` pins Marshal's state; it must not silently re-nest the agent's working tree."""
+    from marshal_engine.orchestration.fleet import Fleet
+
+    fleet = Fleet(repo, {}, base_dir=repo / ".marshal")
+    assert not fleet.worktrees.base_dir.resolve().is_relative_to(repo.resolve())
+
+
+def test_two_checkouts_of_the_same_project_do_not_share_a_run_tree(tmp_path: Path) -> None:
+    """Keyed by resolved path, not by name.
+
+    A worktree-per-feature setup has several directories with the SAME basename that are different
+    repos. Sharing a run tree between them would collide run ids and let one repo's cleanup delete
+    another's work.
+    """
+    from marshal_engine.core.layout import runs_root
+
+    a = tmp_path / "a" / "project"
+    b = tmp_path / "b" / "project"
+    for path in (a, b):
+        path.mkdir(parents=True)
+        _init_repo(path)
+
+    assert runs_root(a) != runs_root(b)
+    assert runs_root(a).name.startswith("project-")  # still identifiable by eye
+
+
+def test_runs_left_by_an_older_marshal_can_still_be_cleaned(repo: Path) -> None:
+    """Upgrade path: old records point into `<repo>/.marshal/worktrees`.
+
+    Teardown refuses any path outside a base dir Marshal owns - which is what stops a poisoned
+    record aiming cleanup at the host. Without accepting the legacy base too, upgrading would strand
+    every existing run's directory as permanently un-cleanable.
+    """
+    from marshal_engine.core.layout import legacy_worktrees_dir
+
+    legacy = legacy_worktrees_dir(repo) / "old_run"
+    legacy.mkdir(parents=True)
+    (legacy / "leftover.txt").write_text("from a previous version\n")
+
+    m = WorktreeManager(repo)
+    m.discard(legacy, None)  # must not raise "outside base dir"
+    assert not legacy.exists()
+
+
+def test_cleanup_still_refuses_a_path_under_neither_base(repo: Path, tmp_path: Path) -> None:
+    """The legacy allowance widens the containment check by exactly one directory, not generally."""
+    m = WorktreeManager(repo)
+    elsewhere = tmp_path / "somewhere_else"
+    elsewhere.mkdir()
+    (elsewhere / "keep").write_text("safe\n")
+
+    with pytest.raises(WorktreeError, match="outside base dir"):
+        m.discard(elsewhere, None)
+    assert (elsewhere / "keep").exists()

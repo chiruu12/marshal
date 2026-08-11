@@ -30,13 +30,13 @@ disclosure.
 Marshal's job is to run autonomous coding agents safely. The guarantees and boundaries:
 
 - **Worktree isolation is a git-branch boundary, not a filesystem sandbox.** Each run gets its
-  own checkout on a separate `marshal/<id>` branch under `.marshal/worktrees/`. No commits reach
+  own clone on a separate `marshal/<id>` branch, outside your repo. No commits reach
   your branch without an explicit `integrate`. That is the guarantee — not that the agent cannot
   write elsewhere on disk. Worktrees live inside the repo, and a determined or prompt-injected
   agent can reach paths outside its checkout (e.g. via `../..`); only point Marshal at repos and
   backends you trust. Driver-supplied `task_id` / run directory names are validated before any
   `git worktree` op: charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`),
-  length-capped, and the resolved path must be a strict descendant of `.marshal/worktrees/`
+  length-capped, and the resolved path must be a strict descendant of the repo's run root
   (`is_relative_to`, equality with the base dir refused so cleanup cannot wipe the shared root).
   Hostile ids fail closed with a clear error — they are never sanitize-rewritten. Cleanup also
   refuses to `git branch -D` any name outside the managed `marshal/` prefix.

@@ -29,7 +29,7 @@ teams do so.
 | **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, goose, antigravity). Chosen per call, never global. |
 | **client** | A named worker in `fleet.config.yaml` pinning a backend + model + permission. You route tasks to clients by name. |
 | **run** | One execution of a client on a task; ends `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`. |
-| **worktree** | The isolated git checkout **one run** works in (under `.marshal/worktrees/`). The safety boundary — main is untouched until you integrate. |
+| **worktree** | The isolated git checkout **one run** works in — its own clone, under `~/.marshal/worktrees/<repo>-<digest>/` (outside your repo; set `MARSHAL_HOME` to relocate). The safety boundary — main is untouched until you integrate. |
 | **workspace** | A **whole repo** the server can target. Distinct from *worktree*: a workspace holds many runs, each in its own worktree. One server can target several workspaces (`list_workspaces`, `workspace=`). |
 | **integrate** | Merge a run's worktree branch back into the target repo's current branch (the only step that touches it). |
 | **workflow** | A declarative YAML recipe that sequences the primitives (fan-out → collect → gated integrate). |
@@ -435,7 +435,7 @@ Full runnable scripts (including `run_many` + `then`, `read_paths`, review teams
 multi-workspace) live under [`examples/`](../examples/); start with
 [`examples/library_quickstart.py`](../examples/library_quickstart.py).
 
-Each run lands in its own git worktree under `.marshal/worktrees/`, with state in
+Each run lands in its own clone under `~/.marshal/worktrees/<repo>-<digest>/`, with state in
 `.marshal/runs/<run_id>.json` (one file per run), usage in `.marshal/usage/`, and the **full raw
 stdout/stderr** in `.marshal/logs/<run_id>.log` (so a driver can `marshal logs <run_id>` to
 inspect what the agent actually did — esp. on a failure, where the 16KB-truncated `text` on the

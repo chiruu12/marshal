@@ -117,13 +117,13 @@ Prefer `enforced-denies` clients for sensitive work. Full cheat sheets: [`design
 ## Worktree-isolation threat model
 
 Worktree isolation is the **safety boundary**. Each run executes inside its own git worktree under
-`.marshal/worktrees/`. The agent edits there, not in your working tree.
+`~/.marshal/worktrees/<repo>-<digest>/`. The agent edits there, not in your working tree.
 
 **Guarantees:**
 
 - Driver-supplied `task_id` / run directory names are validated before any `git worktree` op:
   charset `[A-Za-z0-9._-]`, length-capped, resolved path must be a strict descendant of
-  `.marshal/worktrees/`. Hostile ids fail closed — never sanitize-rewritten.
+  the repo's run root. Hostile ids fail closed — never sanitize-rewritten.
 - **Main branch is untouched until explicit `integrate`.** `collect_run` is read-only; merge is a
   separate step you control.
 - Every run has a **hard timeout and process-group kill** — agent grandchildren are not orphaned.

@@ -25,7 +25,7 @@ from ..core.ids import MAX_TASK_ID_LEN as MAX_TASK_ID_LEN
 from ..core.ids import MAX_WORKTREE_ID_LEN as MAX_WORKTREE_ID_LEN
 from ..core.ids import validate_run_id as validate_run_id
 from ..core.ids import validate_worktree_id as _validate_worktree_id
-from ..core.layout import worktrees_dir
+from ..core.layout import legacy_worktrees_dir, runs_root
 
 
 class WorktreeError(RuntimeError):
@@ -154,7 +154,12 @@ class WorktreeManager:
         integrate_run_hooks: bool = False,
     ) -> None:
         self.repo_root = Path(repo_root)
-        self.base_dir = Path(base_dir) if base_dir is not None else worktrees_dir(self.repo_root)
+        self.base_dir = Path(base_dir) if base_dir is not None else runs_root(self.repo_root)
+        # Runs made by an older Marshal live under `<repo>/.marshal/worktrees`. Their records hold
+        # absolute paths there, and teardown refuses any path outside a known base - so without this
+        # an upgrade would strand every existing run's directory as permanently un-cleanable. Only
+        # ever read: nothing new is created here.
+        self.legacy_base_dir = legacy_worktrees_dir(self.repo_root) if base_dir is None else None
         self.branch_prefix = branch_prefix
         self.git_timeout_s = git_timeout_s
         # Optional command run in each fresh worktree right after `git worktree add` (e.g. provision a
@@ -768,6 +773,20 @@ class WorktreeManager:
         _ensure_managed_branch(branch, self.branch_prefix)
         self._git("branch", "-D", branch)
 
+    def _ensure_removable(self, path: Path) -> Path:
+        """Require ``path`` to sit under a base dir Marshal owns - the current one or the legacy one.
+
+        Teardown deletes directories, so the containment check is what stops a poisoned or stale
+        record from pointing cleanup at the host. Accepting the legacy base as well is what lets a
+        repo that ran an older Marshal still clean up the runs it left behind.
+        """
+        try:
+            return _ensure_under_base(path, self.base_dir)
+        except WorktreeError:
+            if self.legacy_base_dir is None:
+                raise
+            return _ensure_under_base(path, self.legacy_base_dir)
+
     def remove(self, wt: Worktree, delete_branch: bool = True) -> None:
         """Reclaim a run's directory (and by default its branch).
 
@@ -775,7 +794,7 @@ class WorktreeManager:
         is no admin entry in the main repo to unregister, which is precisely the shared state that
         made a worktree teardown able to leave things behind.
         """
-        _ensure_under_base(wt.path, self.base_dir)
+        self._ensure_removable(wt.path)
         if wt.path.exists():
             _restore_writable_dirs(wt.path)
             try:
@@ -807,7 +826,7 @@ class WorktreeManager:
         ``read_paths`` at 0o555) cannot strand the worktree.
         """
         p = Path(path)
-        _ensure_under_base(p, self.base_dir)
+        self._ensure_removable(p)
         if p.exists():
             _restore_writable_dirs(p)
             # `ignore_errors` because reclaiming the disk is the whole point: a run dir left
