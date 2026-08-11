@@ -1592,6 +1592,10 @@ class Fleet:
             committed_diff = ""
             commit_count = 0
             if wt.branch:
+                # The run works in its own clone, so commits the AGENT made are not in the driver's
+                # repo yet - and every branch read below happens there. Without this, self-committed
+                # work reads as "no changes" instead of as the work it is.
+                self.worktrees.publish(wt)
                 target = self._collect_target(rec)
                 commit_count = self.worktrees.unmerged_commit_count(wt.branch, target)
                 if commit_count:

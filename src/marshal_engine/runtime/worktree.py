@@ -122,7 +122,24 @@ class MergeResult(BaseModel):
 
 
 class WorktreeManager:
-    """Create, inspect, and tear down git worktrees under a base directory."""
+    """Create, inspect, and tear down one isolated checkout per run, under a base directory.
+
+    Each run gets its own **clone** (`git clone --local`), not a linked worktree. The difference is
+    the git admin directory: linked worktrees share the main repo's `.git`, so an agent could write
+    a hook or a command-executing config key (`core.hooksPath`, `filter.*.smudge`, ...) there and
+    have it execute during a LATER, unrelated run - and survive cleanup, because tearing down a
+    worktree never rewrites shared git state (#180). A clone has its own `.git`, so there is nothing
+    shared to poison - including the object store, which is copied rather than hardlinked so a run
+    cannot reach the driver's objects through a shared inode.
+
+    A run's commits are published back into the main repo when they are committed, which is what
+    keeps every branch operation here (merge, ancestry, unmerged counts) a plain local-branch
+    operation against the driver's repo.
+
+    This is an isolation boundary for git state and for the run's own working tree. It is **not** a
+    filesystem sandbox: nothing here stops an agent writing to an absolute path elsewhere on the
+    host (#175). Do not describe it as one.
+    """
 
     def __init__(
         self,
@@ -224,27 +241,75 @@ class WorktreeManager:
         path = self.base_dir / task_id
         _ensure_under_base(path, self.base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        # Fast-path probe: skip leaked-branch cleanup when the ref already existed. Not
-        # authoritative alone (TOCTOU: another process can create the same name between probe
-        # and add) — the add's own stderr is the source of truth below.
-        branch_existed = (
-            self._git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
+        if path.exists():
+            raise WorktreeError(
+                f"run directory for {task_id!r} already exists at {path}; clean it before reusing "
+                "the id"
+            )
+        # The DRIVER's repo decides whether this branch name is free, and it is checked before
+        # anything is created. A clone would not refuse on its own: `clone` puts the repo's branches
+        # under refs/remotes/, so `checkout -b` in the clone would happily shadow a name that is
+        # already taken here and the collision would only surface later, at publish. Refusing up
+        # front also means the pre-existing branch is never a candidate for cleanup - the run that
+        # did not start cannot delete work it did not create.
+        if self._git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+            raise WorktreeError(
+                f"branch {branch!r} already exists; refusing to reuse it for {task_id!r} - it may "
+                "hold unmerged work. Clean the earlier run or choose another task id."
+            )
+        base = self.resolve_base_branch(base_branch)
+        # Pinned to a commit in the DRIVER's repo, because a clone does not have the repo's branches
+        # as local ones - they arrive under refs/remotes/ - so a base like another run's
+        # `marshal/<id>` branch (how `spawn(base_branch=...)` chains off earlier work) is not a
+        # checkoutable name inside the clone. The commit always is. `base` itself stays the name the
+        # caller gave, since that is what the run record reports as its base.
+        resolved = self._git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+        if resolved.returncode != 0 or not resolved.stdout.strip():
+            raise WorktreeError(
+                f"base {base!r} for {task_id!r} is not a commit in this repo"
+            )
+        base_commit = resolved.stdout.strip()
+
+        # `--no-hardlinks` is the security-relevant flag, not an optimisation knob. A plain
+        # `--local` clone HARDLINKS the object store, and a hardlink is the same inode: an agent
+        # that chmods a loose object in its own clone and writes to it corrupts the DRIVER's object
+        # database through the shared inode (verified - `git fsck` on the repo reports the damage
+        # afterwards). Copying costs disk proportional to history, which is the price of the run
+        # being unable to reach back into the repo at all. `--no-checkout` because the branch is
+        # created below; checking out the base first would only be thrown away.
+        clone = self._git(
+            "clone", "--local", "--no-hardlinks", "--no-checkout", "--quiet",
+            str(self.repo_root), str(path),
         )
-        proc = self._git("worktree", "add", "-b", branch, str(path), base_branch or "HEAD")
-        if proc.returncode != 0:
-            # NEVER delete a branch this add attempt did not create. Git's atomic decision at
-            # add time is authoritative: "already exists" means the branch is foreign (or left
-            # by an earlier attempt) — deleting it is the data-loss vector. The show-ref probe
-            # is only a fast-path for the pre-existing case.
-            add_out = f"{proc.stderr}\n{proc.stdout}"
-            already_exists = "already exists" in add_out
-            if not branch_existed and not already_exists:
-                # Best-effort only: never let cleanup mask the original add failure (e.g. a
-                # TimeoutExpired from `branch -D` surfacing as WorktreeError).
-                with contextlib.suppress(Exception):
-                    self._delete_managed_branch(branch)
-            raise WorktreeError(f"worktree add failed for {task_id!r}: {proc.stderr.strip()}")
-        return Worktree(task_id=task_id, path=path, branch=branch)
+        if clone.returncode != 0:
+            shutil.rmtree(path, ignore_errors=True)  # a partial clone must not look like a run dir
+            raise WorktreeError(f"clone failed for {task_id!r}: {clone.stderr.strip()}")
+
+        # The clone carries every branch the repo had, so an id whose branch is already taken fails
+        # HERE, inside the run's own clone, and the pre-existing branch is never touched. That is the
+        # same refusal a linked `worktree add -b` gave, minus the leaked-branch cleanup it needed:
+        # nothing outside this directory was created, so tearing the directory down is the whole
+        # rollback.
+        wt = Worktree(task_id=task_id, path=path, branch=branch)
+        checkout = self._git("checkout", "--quiet", "-b", branch, base_commit, cwd=path)
+        if checkout.returncode != 0:
+            shutil.rmtree(path, ignore_errors=True)
+            raise WorktreeError(
+                f"could not start {task_id!r} from {base!r} ({base_commit[:12]}): "
+                f"{checkout.stderr.strip()}"
+            )
+
+        self._inherit_identity(path)
+
+        if self.integrate_run_hooks:
+            _copy_repo_hooks(self.repo_root, path)
+
+        # Published while still empty so the branch exists in the driver's repo from `create`, as it
+        # did when this was a linked worktree. Callers ask about it before the run has committed
+        # anything - `branch_tip`, `has_unmerged_commits` - and a branch that materialised only on
+        # first commit would make those fail rather than answer "no commits yet".
+        self._publish(wt, base_commit)
+        return wt
 
     def setup(
         self,
@@ -462,7 +527,12 @@ class WorktreeManager:
         if add.returncode != 0:
             raise WorktreeError(f"add failed for {wt.task_id!r}: {add.stderr.strip()}")
         if self._git("diff", "--cached", "--quiet", cwd=wt.path).returncode == 0:
-            return None  # nothing staged -> nothing to commit
+            # Nothing of OURS to commit - but the agent may have committed on its own, and those
+            # commits live only in the clone until they are published. Returning here without
+            # publishing is how self-committed work went missing: the branch existed in the repo,
+            # pointing at the base, so the work read as "no changes" rather than as an error.
+            self._publish(wt, "self-committed")
+            return None
         commit_args = ["commit"]
         if not self.integrate_run_hooks:
             commit_args.append("--no-verify")
@@ -470,7 +540,64 @@ class WorktreeManager:
         commit = self._git(*commit_args, cwd=wt.path)
         if commit.returncode != 0:
             raise WorktreeError(f"commit failed for {wt.task_id!r}: {commit.stderr.strip()}")
-        return self._git("rev-parse", "HEAD", cwd=wt.path).stdout.strip()
+        sha = self._git("rev-parse", "HEAD", cwd=wt.path).stdout.strip()
+        self._publish(wt, sha)
+        return sha
+
+    def _inherit_identity(self, clone_path: Path) -> None:
+        """Carry the repo's committer identity into a run's clone.
+
+        A linked worktree read the repo's LOCAL config; a clone does not - `git clone` copies
+        objects and refs, not `.git/config`. So a repo that sets `user.email` per-repo (rather than
+        globally) produced runs whose every commit failed with "Author identity unknown". That is a
+        real setup, not a corner: per-repo identity is how one keeps work and personal commits apart.
+
+        Only the identity is copied, deliberately. Cloning the whole local config would drag along
+        keys that name paths in the operator's repo (`core.hooksPath`, `filter.*`), which is exactly
+        the shared-execution surface this class exists to stop pointing at.
+        """
+        for key in ("user.name", "user.email"):
+            # Read with the repo as cwd so the answer is the EFFECTIVE value - repo-local if set,
+            # otherwise the global the clone would have found anyway. Absent stays absent: git's own
+            # "Author identity unknown" is the right error, and inventing one would forge authorship.
+            value = self._git("config", "--get", key).stdout.strip()
+            if value:
+                self._git("config", key, value, cwd=clone_path)
+
+    def publish(self, wt: Worktree) -> None:
+        """Make the run's branch in the driver's repo match its clone.
+
+        Called before anything READS that branch. A run's commits - including ones the agent made
+        itself, which never pass through `commit_all` - exist only in the clone until this runs.
+        """
+        self._publish(wt, "publish")
+
+    def _publish(self, wt: Worktree, what: str) -> None:
+        """Copy the run's branch out of its clone and into the driver's repo.
+
+        The run works in a clone, so its commits start out reachable from nothing in the main repo -
+        while `merge`, `unmerged_commit_count`, `is_ancestor` and the rest all operate there, on a
+        plain local branch. Publishing here is what keeps that true: the branch is a normal branch by
+        the time anything downstream looks for it, so isolating the run changed where work happens
+        and not how it is integrated.
+
+        Fetched from the clone as a plain object transfer. `--no-tags` because a run has no business
+        adding tags to the driver's repo. The refspec IS forced, because the clone is authoritative
+        for this one branch: an agent that amends or rebases its own commits - normal behaviour -
+        leaves a non-fast-forward update, and refusing it would strand real work behind a stale ref.
+        Forcing is safe here only because the name was proven free in the driver's repo before the
+        run started (see `create`), so this can never overwrite a branch some other run owns.
+        """
+        _ensure_managed_branch(wt.branch, self.branch_prefix)
+        proc = self._git(
+            "fetch", "--no-tags", "--quiet", str(wt.path),
+            f"+refs/heads/{wt.branch}:refs/heads/{wt.branch}",
+        )
+        if proc.returncode != 0:
+            raise WorktreeError(
+                f"could not publish {wt.task_id!r}'s branch ({what[:12]}) to the repo: "
+                f"{proc.stderr.strip()}"
+            )
 
     def current_branch(self) -> str:
         """The branch currently checked out in the main repo (the merge target).
@@ -642,11 +769,19 @@ class WorktreeManager:
         self._git("branch", "-D", branch)
 
     def remove(self, wt: Worktree, delete_branch: bool = True) -> None:
+        """Reclaim a run's directory (and by default its branch).
+
+        A clone is a self-contained directory, so removing it is `rmtree` and nothing else - there
+        is no admin entry in the main repo to unregister, which is precisely the shared state that
+        made a worktree teardown able to leave things behind.
+        """
         _ensure_under_base(wt.path, self.base_dir)
-        _restore_writable_dirs(wt.path)
-        proc = self._git("worktree", "remove", "--force", str(wt.path))
-        if proc.returncode != 0:
-            raise WorktreeError(f"worktree remove failed for {wt.task_id!r}: {proc.stderr.strip()}")
+        if wt.path.exists():
+            _restore_writable_dirs(wt.path)
+            try:
+                shutil.rmtree(wt.path)
+            except OSError as exc:
+                raise WorktreeError(f"could not remove run dir for {wt.task_id!r}: {exc}") from exc
         if delete_branch and wt.branch:
             self._delete_managed_branch(wt.branch)
 
@@ -675,14 +810,34 @@ class WorktreeManager:
         _ensure_under_base(p, self.base_dir)
         if p.exists():
             _restore_writable_dirs(p)
-            rm = self._git("worktree", "remove", "--force", str(p))
-            if rm.returncode != 0 and p.exists():
-                # git refused (corrupt/missing admin entry); the dir is now just a plain directory -
-                # reclaim it directly so the disk isn't stranded under an `errors` entry forever.
-                shutil.rmtree(p, ignore_errors=True)
+            # `ignore_errors` because reclaiming the disk is the whole point: a run dir left
+            # half-readable by a killed agent must not strand under an `errors` entry forever.
+            shutil.rmtree(p, ignore_errors=True)
+        # Still pruned, though a clone registers nothing: a repo that ran an older Marshal can hold
+        # admin entries for LINKED worktrees under this same base dir, and this is what reaps them.
         self.prune()
         if branch:
             self._delete_managed_branch(branch)
+
+
+def _copy_repo_hooks(repo_root: Path, clone_path: Path) -> None:
+    """Copy the repo's hooks into a run's clone. Only called when ``integrate_run_hooks`` is set.
+
+    A clone does not inherit hooks, which is mostly the point - but an operator who explicitly opted
+    into running their hooks on a run's commit means their hooks, and silently not running them
+    would be a gate that reports success without ever having executed. Copied, never linked: the
+    run gets its own copy to execute, so an agent editing it cannot reach back into the repo's.
+    """
+    src = repo_root / ".git" / "hooks"
+    dest = clone_path / ".git" / "hooks"
+    if not src.is_dir():
+        return
+    # `symlinks=False` DEREFERENCES: a hook that is a symlink to a file outside the repo would
+    # otherwise be recreated as that same absolute link inside a directory the agent can write, so
+    # writing "its own" hook would overwrite the operator's real file - and that edit outlives the
+    # run. Copying contents means the run gets something it can only damage for itself.
+    with contextlib.suppress(OSError):
+        shutil.copytree(src, dest, dirs_exist_ok=True, symlinks=False)
 
 
 def _kill_setup_process_group(pgid: int, grace_s: float = 0.5) -> None:
