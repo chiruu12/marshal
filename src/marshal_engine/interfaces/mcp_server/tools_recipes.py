@@ -142,8 +142,11 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                     "and honouring both would review something neither argument describes."
                 )
             # Same workspace `ws_call` will use below, so the PR is resolved against the repo whose
-            # remote actually owns it - not the default one.
-            pr_ref = await offload(registry.get(workspace).resolve_pr, pr)
+            # remote actually owns it - not the default one. `registry.get` is inside the offload,
+            # not an argument to it: resolving a workspace can re-read the registry file and build a
+            # service, and evaluating that on the event loop would stall every other in-flight tool
+            # call (a poll, a status, a cancel) behind this one's disk work.
+            pr_ref = await offload(lambda: registry.get(workspace).resolve_pr(pr))
             base, head = pr_ref.base, pr_ref.head
 
         subject = TeamSubject(

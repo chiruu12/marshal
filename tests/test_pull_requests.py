@@ -113,7 +113,9 @@ def test_falls_back_to_the_local_base_when_no_remote_tracking_ref_exists(tmp_pat
 def test_refuses_when_neither_base_ref_is_present(tmp_path: Path) -> None:
     runner = _Runner({
         "gh pr view": (0, _meta()),
-        "rev-parse": (1, ""),
+        # Only the BASE probes miss; the head object is present, so this isolates the base.
+        "origin/main^{commit}": (1, ""),
+        "main^{commit}": (1, ""),
     })
     with pytest.raises(ConfigError, match="not present locally"):
         resolve_pr(tmp_path, 7, runner=runner)
@@ -196,3 +198,51 @@ def test_every_subprocess_runs_with_stdin_closed_and_a_timeout(tmp_path: Path) -
         assert kw["stdin"] is subprocess.DEVNULL
         assert kw["timeout"] > 0
         assert kw["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_a_base_that_could_not_be_refreshed_is_refused_not_reviewed(tmp_path: Path) -> None:
+    """A stale base produces a plausible, wrong diff - and nothing in the output says so.
+
+    `origin/main` from whenever the driver last fetched still resolves, so tolerating the failed
+    refresh would hand the panel a range the PR never had: widened with commits `main` gained
+    since, or narrowed by ones it lost. Every reviewer would then spend its lens on the wrong code
+    and report confidently. There is no degraded answer worth preferring to an error here.
+    """
+    runner = _Runner({"gh pr view": (0, _meta()), "git fetch --quiet origin main": (1, "network is unreachable")})
+
+    with pytest.raises(ConfigError) as exc:
+        resolve_pr(tmp_path, 7, runner=runner)
+
+    assert "network is unreachable" in str(exc.value)
+    # It failed at the fetch, before deciding on a base - no ref was handed back at all.
+    assert runner.argv_for("rev-parse") is None
+
+
+def test_a_force_push_between_metadata_and_fetch_is_refused(tmp_path: Path) -> None:
+    """`gh` names the head BEFORE the fetch, so the PR can move in between.
+
+    The dangerous case is not the missing commit - it is the one still lying around locally from an
+    earlier fetch, which would let the panel review a superseded revision as though it were the
+    current one. Verifying the object landed catches both.
+    """
+    runner = _Runner({
+        "gh pr view": (0, _meta()),
+        f"{_OID}^{{commit}}": (1, ""),  # the OID gh reported is not present after fetching
+    })
+
+    with pytest.raises(ConfigError) as exc:
+        resolve_pr(tmp_path, 7, runner=runner)
+
+    assert "moved" in str(exc.value)
+    assert _OID[:12] in str(exc.value)
+
+
+def test_the_head_object_is_verified_after_the_fetch_not_before(tmp_path: Path) -> None:
+    """Ordering is the whole point: probing before the fetch would pass on the pre-push commit."""
+    runner = _Runner({"gh pr view": (0, _meta())})
+    resolve_pr(tmp_path, 7, runner=runner)
+
+    joined = [" ".join(c) for c in runner.calls]
+    fetched = next(i for i, c in enumerate(joined) if "pull/7/head" in c)
+    probed = next(i for i, c in enumerate(joined) if f"{_OID}^{{commit}}" in c)
+    assert probed > fetched

@@ -122,9 +122,22 @@ def resolve_pr(
     # Fetch the head COMMIT, not a branch: a fork's head is not in this repo, and pull/N/head is the
     # server's own copy of it, so this works for forks and for a deleted source branch alike.
     _fetch(repo, remote, f"pull/{number}/head", number, runner)
-    # The base branch must also be current, or the merge base is computed against a stale local
-    # copy and the panel reviews a range that never existed.
-    _fetch(repo, remote, base_name, number, runner, required=False)
+    # The base branch must also be current, or the merge base is computed against a stale local copy
+    # and the panel reviews a range that never existed. Required, like the head: a base we could not
+    # refresh may still resolve - `origin/main` from whenever the driver last fetched - and would
+    # then produce a plausible, wrong diff with nothing marking it as wrong. There is no partial
+    # answer here to prefer over an error, because the failure is invisible in the output.
+    _fetch(repo, remote, base_name, number, runner)
+
+    # The head OID came from `gh` BEFORE the fetch, so a force-push in between leaves us naming a
+    # commit the fetch never retrieved. Confirm the object is actually here: otherwise `diff_range`
+    # either errors on an unknown revision, or - worse, if the old commit is still local from an
+    # earlier fetch - reviews the superseded revision as though it were current.
+    if not _has_commit(repo, head_oid, runner):
+        raise ConfigError(
+            f"PR #{number} moved while it was being resolved: head {head_oid[:12]} is not present "
+            "after fetching it (it was most likely force-pushed). Retry."
+        )
 
     base_ref = _resolve_base_ref(repo, remote, base_name, runner)
     state = str(meta.get("state") or "").upper()
@@ -166,21 +179,19 @@ def _fetch_metadata(repo: Path, number: int, runner: Runner) -> dict[str, Any]:
     return data
 
 
-def _fetch(
-    repo: Path,
-    remote: str,
-    refspec: str,
-    number: int,
-    runner: Runner,
-    *,
-    required: bool = True,
-) -> None:
+def _fetch(repo: Path, remote: str, refspec: str, number: int, runner: Runner) -> None:
     proc = _run(["git", "fetch", "--quiet", remote, refspec], repo, runner)
-    if proc.returncode != 0 and required:
+    if proc.returncode != 0:
         raise ConfigError(
             f"cannot fetch PR #{number} ({refspec} from {remote}): "
             f"{(proc.stderr or '').strip() or 'git fetch failed'}"
         )
+
+
+def _has_commit(repo: Path, oid: str, runner: Runner) -> bool:
+    """Is this exact commit object present locally? `oid` is already SHA-shaped, checked by caller."""
+    probe = _run(["git", "rev-parse", "--verify", "--quiet", f"{oid}^{{commit}}"], repo, runner)
+    return probe.returncode == 0
 
 
 def _resolve_base_ref(repo: Path, remote: str, base_name: str, runner: Runner) -> str:
