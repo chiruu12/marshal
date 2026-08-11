@@ -27,9 +27,14 @@ class _Runner:
 
     def __call__(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         self.calls.append(argv)
+        joined = " ".join(argv)
         for key, (code, out) in self.replies.items():
-            if key in " ".join(argv):
+            if key in joined:
                 return subprocess.CompletedProcess(argv, code, out, "" if code == 0 else out)
+        # Default: the happy path. `rev-parse` must answer with an OID, and FETCH_HEAD must agree
+        # with the head `gh` reported, or every test would look like a force-push race.
+        if "rev-parse" in joined:
+            return subprocess.CompletedProcess(argv, 0, f"{_OID}\n", "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     def argv_for(self, needle: str) -> list[str] | None:
@@ -61,7 +66,7 @@ def test_resolves_a_pr_to_remote_base_and_head_sha(tmp_path: Path) -> None:
     runner = _Runner({"gh pr view": (0, _meta())})
     ref = resolve_pr(tmp_path, 7, runner=runner)
 
-    assert ref.base == "origin/main"
+    assert ref.base == "refs/remotes/origin/main"
     assert ref.head == _OID
     assert ref.number == 7
     assert ref.title == "Add a thing"
@@ -94,30 +99,40 @@ def test_fetches_the_pr_head_by_pull_ref_so_forks_work(tmp_path: Path) -> None:
     assert fetch[3] == "origin"
 
 
-def test_prefers_the_remote_tracking_base_over_a_stale_local_branch(tmp_path: Path) -> None:
-    """Diffing against a stale local `main` silently widens the review past the PR's own commits."""
+def test_the_base_is_the_remote_tracking_ref_never_an_ambiguous_short_name(tmp_path: Path) -> None:
+    """A stale local `main` would silently widen the review past the PR's own commits.
+
+    Fully qualified, so the name cannot resolve to anything else: `origin/main` is also a legal
+    LOCAL branch name, and git would prefer that branch over the remote-tracking ref.
+    """
     runner = _Runner({"gh pr view": (0, _meta())})
     ref = resolve_pr(tmp_path, 7, runner=runner)
-    assert ref.base == "origin/main"
+    assert ref.base == "refs/remotes/origin/main"
 
 
-def test_falls_back_to_the_local_base_when_no_remote_tracking_ref_exists(tmp_path: Path) -> None:
+def test_the_base_is_fetched_with_an_explicit_forced_refspec(tmp_path: Path) -> None:
+    """A bare `git fetch origin main` updates the remote-tracking ref only if the remote's fetch
+    mapping happens to cover it.
+
+    A `--single-branch` clone, or a hand-narrowed `remote.origin.fetch`, would let that fetch
+    SUCCEED while leaving `origin/main` exactly as stale as before - a silent wrong diff, which is
+    the failure mode this whole resolver exists to prevent. The explicit mapping does not depend on
+    the config being conventional.
+    """
+    runner = _Runner({"gh pr view": (0, _meta())})
+    resolve_pr(tmp_path, 7, runner=runner)
+
+    argv = runner.argv_for("refs/heads/main")
+    assert argv is not None
+    assert argv[-1] == "+refs/heads/main:refs/remotes/origin/main"
+
+
+def test_refuses_when_the_fetched_base_does_not_resolve_to_a_commit(tmp_path: Path) -> None:
     runner = _Runner({
         "gh pr view": (0, _meta()),
-        "rev-parse --verify --quiet origin/main": (1, ""),
+        "refs/remotes/origin/main^{commit}": (1, ""),
     })
-    ref = resolve_pr(tmp_path, 7, runner=runner)
-    assert ref.base == "main"
-
-
-def test_refuses_when_neither_base_ref_is_present(tmp_path: Path) -> None:
-    runner = _Runner({
-        "gh pr view": (0, _meta()),
-        # Only the BASE probes miss; the head object is present, so this isolates the base.
-        "origin/main^{commit}": (1, ""),
-        "main^{commit}": (1, ""),
-    })
-    with pytest.raises(ConfigError, match="not present locally"):
+    with pytest.raises(ConfigError, match="not a commit"):
         resolve_pr(tmp_path, 7, runner=runner)
 
 
@@ -188,7 +203,7 @@ def test_every_subprocess_runs_with_stdin_closed_and_a_timeout(tmp_path: Path) -
 
     def runner(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         seen.append(kw)
-        out = _meta() if "gh" in argv[0] else ""
+        out = _meta() if "gh" in argv[0] else (_OID if "rev-parse" in argv else "")
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     resolve_pr(tmp_path, 7, runner=runner)
@@ -208,41 +223,57 @@ def test_a_base_that_could_not_be_refreshed_is_refused_not_reviewed(tmp_path: Pa
     since, or narrowed by ones it lost. Every reviewer would then spend its lens on the wrong code
     and report confidently. There is no degraded answer worth preferring to an error here.
     """
-    runner = _Runner({"gh pr view": (0, _meta()), "git fetch --quiet origin main": (1, "network is unreachable")})
-
-    with pytest.raises(ConfigError) as exc:
-        resolve_pr(tmp_path, 7, runner=runner)
-
-    assert "network is unreachable" in str(exc.value)
-    # It failed at the fetch, before deciding on a base - no ref was handed back at all.
-    assert runner.argv_for("rev-parse") is None
-
-
-def test_a_force_push_between_metadata_and_fetch_is_refused(tmp_path: Path) -> None:
-    """`gh` names the head BEFORE the fetch, so the PR can move in between.
-
-    The dangerous case is not the missing commit - it is the one still lying around locally from an
-    earlier fetch, which would let the panel review a superseded revision as though it were the
-    current one. Verifying the object landed catches both.
-    """
     runner = _Runner({
         "gh pr view": (0, _meta()),
-        f"{_OID}^{{commit}}": (1, ""),  # the OID gh reported is not present after fetching
+        "refs/heads/main": (1, "network is unreachable"),
     })
 
     with pytest.raises(ConfigError) as exc:
         resolve_pr(tmp_path, 7, runner=runner)
 
-    assert "moved" in str(exc.value)
-    assert _OID[:12] in str(exc.value)
+    assert "network is unreachable" in str(exc.value)
+    # It failed at the fetch, so no base ref was ever probed, let alone handed back.
+    assert runner.argv_for("refs/remotes/origin/main^{commit}") is None
 
 
-def test_the_head_object_is_verified_after_the_fetch_not_before(tmp_path: Path) -> None:
-    """Ordering is the whole point: probing before the fetch would pass on the pre-push commit."""
+def test_a_force_push_is_caught_even_though_the_old_commit_is_still_local(tmp_path: Path) -> None:
+    """The dangerous force-push is the one where the superseded commit IS still present.
+
+    An earlier fetch of this PR leaves the old head in the object store, so "does this object
+    exist?" answers yes and the panel reviews the revision the author already replaced - a stale
+    review that reads exactly like a current one. Only comparing against what THIS fetch retrieved
+    catches it, which is why the check is an equality against FETCH_HEAD and not an existence probe.
+    """
+    newer = "b" * 40
+    runner = _Runner({
+        "gh pr view": (0, _meta()),
+        "rev-parse --verify --quiet FETCH_HEAD": (0, newer),
+    })
+
+    with pytest.raises(ConfigError) as exc:
+        resolve_pr(tmp_path, 7, runner=runner)
+
+    message = str(exc.value)
+    assert "moved" in message
+    assert _OID[:12] in message and newer[:12] in message
+
+
+def test_a_head_the_fetch_did_not_retrieve_at_all_is_refused(tmp_path: Path) -> None:
+    runner = _Runner({
+        "gh pr view": (0, _meta()),
+        "rev-parse --verify --quiet FETCH_HEAD": (1, ""),
+    })
+
+    with pytest.raises(ConfigError, match="moved"):
+        resolve_pr(tmp_path, 7, runner=runner)
+
+
+def test_the_head_is_checked_against_fetch_head_after_the_fetch_not_before(tmp_path: Path) -> None:
+    """Ordering is the whole point: reading FETCH_HEAD first would report the previous fetch."""
     runner = _Runner({"gh pr view": (0, _meta())})
     resolve_pr(tmp_path, 7, runner=runner)
 
     joined = [" ".join(c) for c in runner.calls]
     fetched = next(i for i, c in enumerate(joined) if "pull/7/head" in c)
-    probed = next(i for i, c in enumerate(joined) if f"{_OID}^{{commit}}" in c)
+    probed = next(i for i, c in enumerate(joined) if "FETCH_HEAD" in c)
     assert probed > fetched

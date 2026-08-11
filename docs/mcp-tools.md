@@ -296,8 +296,12 @@ every existing `target: range` team reviews a PR unchanged.
   the author chose, so that name is attacker-controlled data; a branch called `--output=...` handed
   to git as a revision is an arbitrary file write. Marshal reads `headRefOid` instead, so the
   hostile string never becomes an argument.
-- The base resolves to the **remote-tracking ref** (`origin/main`) in preference to a local branch
-  of the same name, because diffing against a stale local copy silently widens the review.
+- Both endpoints are **refreshed before the diff, and the resolution fails closed if either cannot
+  be**. The base is the fully-qualified remote-tracking ref (`refs/remotes/origin/main`), fetched
+  with an explicit refspec so a narrowed `remote.*.fetch` mapping cannot leave it stale; the head is
+  checked against what the fetch actually retrieved, so a force-push mid-resolve is refused rather
+  than reviewed. Every one of those failures would otherwise produce a plausible, wrong diff that
+  nothing in the output marks as wrong.
 - The reply echoes `pull_request` with the title, URL and `stale` (true for a closed or merged PR).
   Check it names the PR you meant: a panel reporting on the wrong PR reads exactly like one
   reporting on the right PR.

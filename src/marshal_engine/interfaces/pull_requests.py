@@ -122,24 +122,35 @@ def resolve_pr(
     # Fetch the head COMMIT, not a branch: a fork's head is not in this repo, and pull/N/head is the
     # server's own copy of it, so this works for forks and for a deleted source branch alike.
     _fetch(repo, remote, f"pull/{number}/head", number, runner)
-    # The base branch must also be current, or the merge base is computed against a stale local copy
-    # and the panel reviews a range that never existed. Required, like the head: a base we could not
-    # refresh may still resolve - `origin/main` from whenever the driver last fetched - and would
-    # then produce a plausible, wrong diff with nothing marking it as wrong. There is no partial
-    # answer here to prefer over an error, because the failure is invisible in the output.
-    _fetch(repo, remote, base_name, number, runner)
 
     # The head OID came from `gh` BEFORE the fetch, so a force-push in between leaves us naming a
-    # commit the fetch never retrieved. Confirm the object is actually here: otherwise `diff_range`
-    # either errors on an unknown revision, or - worse, if the old commit is still local from an
-    # earlier fetch - reviews the superseded revision as though it were current.
-    if not _has_commit(repo, head_oid, runner):
+    # commit that is no longer the PR's head. Asking merely whether that object EXISTS locally does
+    # not catch it: the superseded commit is usually still lying around from an earlier fetch, and
+    # the panel would then review the old revision as though it were current. So compare against
+    # what this fetch actually retrieved - FETCH_HEAD is the server's answer, `gh`'s was a guess by
+    # the time we used it.
+    fetched = _rev_parse(repo, "FETCH_HEAD", runner)
+    if fetched != head_oid:
         raise ConfigError(
-            f"PR #{number} moved while it was being resolved: head {head_oid[:12]} is not present "
-            "after fetching it (it was most likely force-pushed). Retry."
+            f"PR #{number} moved while it was being resolved: `gh` reported head "
+            f"{head_oid[:12]} but the fetch retrieved {(fetched or 'nothing')[:12]} (it was most "
+            "likely force-pushed). Retry."
         )
 
-    base_ref = _resolve_base_ref(repo, remote, base_name, runner)
+    # The base must also be current, or the merge base is computed against a stale copy and the
+    # panel reviews a range that never existed. Fetched with an EXPLICIT refspec rather than the
+    # bare branch name: a bare `git fetch origin main` only updates `origin/main` if the remote's
+    # configured fetch mapping happens to cover it, and a repo cloned with `--single-branch`, or one
+    # whose `remote.origin.fetch` was narrowed by hand, would report success while leaving the
+    # remote-tracking ref exactly as stale as before. The forced explicit mapping does not depend on
+    # that config being conventional.
+    base_ref = f"refs/remotes/{remote}/{base_name}"
+    _fetch(repo, remote, f"+refs/heads/{base_name}:{base_ref}", number, runner)
+    if _rev_parse(repo, f"{base_ref}^{{commit}}", runner) is None:
+        raise ConfigError(
+            f"base branch {base_name!r} of PR #{number} is not a commit after fetching it; "
+            "review the range by hand with explicit base/head refs"
+        )
     state = str(meta.get("state") or "").upper()
     return PullRequestRef(
         number=number,
@@ -188,31 +199,9 @@ def _fetch(repo: Path, remote: str, refspec: str, number: int, runner: Runner) -
         )
 
 
-def _has_commit(repo: Path, oid: str, runner: Runner) -> bool:
-    """Is this exact commit object present locally? `oid` is already SHA-shaped, checked by caller."""
-    probe = _run(["git", "rev-parse", "--verify", "--quiet", f"{oid}^{{commit}}"], repo, runner)
-    return probe.returncode == 0
-
-
-def _resolve_base_ref(repo: Path, remote: str, base_name: str, runner: Runner) -> str:
-    """Prefer the remote-tracking base (`origin/main`) over the local branch of the same name.
-
-    The local copy is whatever the driver last pulled, and diffing against a stale base silently
-    widens the review to include commits the PR does not contain. The local branch is the fallback
-    only when no remote-tracking ref exists.
-    """
-    remote_ref = f"{remote}/{base_name}"
-    probe = _run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{remote_ref}^{{commit}}"], repo, runner
-    )
-    if probe.returncode == 0:
-        return remote_ref
-    local = _run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{base_name}^{{commit}}"], repo, runner
-    )
-    if local.returncode == 0:
-        return base_name
-    raise ConfigError(
-        f"base branch {base_name!r} is not present locally or as {remote_ref}; "
-        f"fetch it and retry"
-    )
+def _rev_parse(repo: Path, rev: str, runner: Runner) -> str | None:
+    """The object id ``rev`` names, or None if it does not resolve."""
+    probe = _run(["git", "rev-parse", "--verify", "--quiet", rev], repo, runner)
+    if probe.returncode != 0:
+        return None
+    return (probe.stdout or "").strip() or None
