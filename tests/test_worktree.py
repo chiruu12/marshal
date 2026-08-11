@@ -1054,3 +1054,58 @@ def test_a_runs_clone_does_not_inherit_the_repos_local_config_wholesale(repo: Pa
     clone_config = (wt.path / ".git" / "config").read_text()
     assert "hooksPath" not in clone_config
     assert "user" in clone_config  # identity did cross over
+
+
+def test_a_run_cannot_corrupt_the_repos_objects_through_a_shared_inode(repo: Path) -> None:
+    """A hardlinked object store would leave a writable path back into the driver's repo.
+
+    `git clone --local` hardlinks objects by default, and a hardlink is the same inode. Git writes
+    objects read-only, but the agent OWNS the file in its own clone, so it can chmod and write -
+    and the driver's object database changes with it (`git fsck` then reports the damage). Copying
+    is what makes the run's objects the run's own.
+    """
+    m = WorktreeManager(repo)
+    wt = m.create("objects")
+
+    objects = [p for p in (wt.path / ".git" / "objects").rglob("*") if p.is_file()]
+    assert objects, "no objects to check - the clone would not be a useful repo"
+    for obj in objects:
+        assert obj.stat().st_nlink == 1, f"{obj} is hardlinked into the driver's repo"
+
+    # The attack itself: take one object, make it writable, scribble on it.
+    target = objects[0]
+    relative = target.relative_to(wt.path / ".git" / "objects")
+    twin = repo / ".git" / "objects" / relative
+    before = twin.read_bytes()
+    target.chmod(0o644)
+    target.write_bytes(b"CORRUPTED")
+
+    assert twin.read_bytes() == before  # the driver's copy is untouched
+    fsck = subprocess.run(
+        ["git", "-C", str(repo), "fsck"], capture_output=True, text=True
+    )
+    assert "error" not in fsck.stderr.lower()
+
+
+def test_copied_hooks_cannot_be_used_to_overwrite_a_file_outside_the_run(repo: Path) -> None:
+    """A hook that is a symlink must be copied by CONTENT, never recreated as a link.
+
+    Preserving the link would put an agent-writable path inside the run pointing at an operator's
+    file elsewhere on disk - so the agent writing "its own" hook would overwrite the real one, and
+    that edit outlives the run.
+    """
+    outside = repo.parent / "operator_hook.sh"
+    outside.write_text("#!/bin/sh\necho operator\n")
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "pre-commit").symlink_to(outside)
+
+    m = WorktreeManager(repo, integrate_run_hooks=True)
+    wt = m.create("hooklink")
+
+    copied = wt.path / ".git" / "hooks" / "pre-commit"
+    assert copied.exists()
+    assert not copied.is_symlink()
+
+    copied.write_text("#!/bin/sh\necho pwned\n")  # what an agent would do
+    assert outside.read_text() == "#!/bin/sh\necho operator\n"

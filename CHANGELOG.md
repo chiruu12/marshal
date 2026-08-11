@@ -14,8 +14,10 @@ versions may include breaking API changes until 1.0.
   repo's `.git`, so an agent could write a hook or a command-executing config key (`core.hooksPath`,
   `filter.*.smudge`, and others) into shared state and have it execute during a **later, unrelated
   run** - surviving cleanup, because tearing down a worktree never rewrote that state. A clone has
-  its own `.git`, so there is nothing shared to poison. `git clone --local` hardlinks the object
-  store, so a run costs about what it did before.
+  its own `.git`, so there is nothing shared to poison. The object store is copied rather than
+  hardlinked (`--no-hardlinks`): a hardlink is the same inode, so an agent could otherwise chmod an
+  object in its own clone and corrupt the driver's object database through it. A run therefore costs
+  disk proportional to repo history.
 
   A run's branch is published into the driver's repo when it is created and whenever its commits are
   read, so integrate, diffs and ancestry are unchanged. This also fixes work an agent committed

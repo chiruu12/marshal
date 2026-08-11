@@ -129,7 +129,8 @@ class WorktreeManager:
     a hook or a command-executing config key (`core.hooksPath`, `filter.*.smudge`, ...) there and
     have it execute during a LATER, unrelated run - and survive cleanup, because tearing down a
     worktree never rewrites shared git state (#180). A clone has its own `.git`, so there is nothing
-    shared to poison. `--local` hardlinks the object store, so this costs about what a worktree did.
+    shared to poison - including the object store, which is copied rather than hardlinked so a run
+    cannot reach the driver's objects through a shared inode.
 
     A run's commits are published back into the main repo when they are committed, which is what
     keeps every branch operation here (merge, ancestry, unmerged counts) a plain local-branch
@@ -269,12 +270,16 @@ class WorktreeManager:
             )
         base_commit = resolved.stdout.strip()
 
-        # `--local` hardlinks the object store instead of copying it, so a clone of a large repo
-        # costs about what a linked worktree did - the working tree is a real checkout either way,
-        # and that was always the bulk of it. `--no-checkout` because the branch is created below;
-        # checking out the base first would only be thrown away.
+        # `--no-hardlinks` is the security-relevant flag, not an optimisation knob. A plain
+        # `--local` clone HARDLINKS the object store, and a hardlink is the same inode: an agent
+        # that chmods a loose object in its own clone and writes to it corrupts the DRIVER's object
+        # database through the shared inode (verified - `git fsck` on the repo reports the damage
+        # afterwards). Copying costs disk proportional to history, which is the price of the run
+        # being unable to reach back into the repo at all. `--no-checkout` because the branch is
+        # created below; checking out the base first would only be thrown away.
         clone = self._git(
-            "clone", "--local", "--no-checkout", "--quiet", str(self.repo_root), str(path)
+            "clone", "--local", "--no-hardlinks", "--no-checkout", "--quiet",
+            str(self.repo_root), str(path),
         )
         if clone.returncode != 0:
             shutil.rmtree(path, ignore_errors=True)  # a partial clone must not look like a run dir
@@ -827,8 +832,12 @@ def _copy_repo_hooks(repo_root: Path, clone_path: Path) -> None:
     dest = clone_path / ".git" / "hooks"
     if not src.is_dir():
         return
+    # `symlinks=False` DEREFERENCES: a hook that is a symlink to a file outside the repo would
+    # otherwise be recreated as that same absolute link inside a directory the agent can write, so
+    # writing "its own" hook would overwrite the operator's real file - and that edit outlives the
+    # run. Copying contents means the run gets something it can only damage for itself.
     with contextlib.suppress(OSError):
-        shutil.copytree(src, dest, dirs_exist_ok=True, symlinks=True)
+        shutil.copytree(src, dest, dirs_exist_ok=True, symlinks=False)
 
 
 def _kill_setup_process_group(pgid: int, grace_s: float = 0.5) -> None:
