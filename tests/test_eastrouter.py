@@ -271,3 +271,66 @@ def test_retry_picks_up_late_record(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert ext is not None and ext.cost_usd == 0.005
     assert calls["n"] == 2
+
+
+# --- a partial window must never be reported as a measured cost ---------------------------------
+
+
+def _sequential_pages(pages: list[str | None]):
+    """Serve one body per offset, so pagination behaviour can be driven exactly."""
+    def get(url: str, key: str, timeout_s: float) -> str | None:
+        offset = int(re.search(r"offset=(\d+)", url).group(1))
+        limit = int(re.search(r"limit=(\d+)", url).group(1))
+        index = offset // limit
+        return pages[index] if index < len(pages) else _usage()
+    return get
+
+
+def test_a_page_cap_hit_declines_to_attribute_cost() -> None:
+    """Running out of pages means the window was never fully seen.
+
+    Reconciliation does NOT catch this on its own: it tolerates 10% of prompt tokens going missing,
+    so a dropped record under that threshold reconciles while its charge is simply absent - and the
+    result would be tagged `admin-api`, i.e. measured. Short-and-measured is the failure mode the
+    cost invariant exists to prevent, so an unseen remainder means no claim at all.
+    """
+    # Distinct records per page, so the walk really is stopped by the CAP - identical rows would
+    # dedup and end the loop as "the API is repeating itself", which is a different case.
+    def page(n: int) -> str:
+        return _usage(
+            _rec("m", 0.01, 100, 10, f"2026-06-28T12:00:0{n}+00:00"),
+            _rec("m", 0.01, 100, 10, f"2026-06-28T12:00:0{n + 1}+00:00"),
+        )
+
+    getter = _sequential_pages([page(1), page(3), page(5)])
+
+    cost = fetch_run_cost(
+        model="m", start_iso=_START, end_iso=_END, input_tokens=200,
+        api_key="k", http=getter, page_size=2, max_pages=2, attempts=1,
+    )
+    assert cost is None
+
+
+def test_a_later_page_failing_declines_to_attribute_cost() -> None:
+    """A transport failure part-way through leaves a set we know is incomplete."""
+    full_page = _usage(*[_rec("m", 0.01, 100, 10, _START) for _ in range(2)])
+    getter = _sequential_pages([full_page, None])
+
+    cost = fetch_run_cost(
+        model="m", start_iso=_START, end_iso=_END, input_tokens=200,
+        api_key="k", http=getter, page_size=2, max_pages=5, attempts=1,
+    )
+    assert cost is None
+
+
+def test_a_window_that_ends_naturally_still_attributes() -> None:
+    """The guard must not swallow the normal case: a short page IS the end of the window."""
+    getter = _sequential_pages([_usage(_rec("m", 0.01, 200, 10, _START))])
+
+    cost = fetch_run_cost(
+        model="m", start_iso=_START, end_iso=_END, input_tokens=200,
+        api_key="k", http=getter, page_size=2, max_pages=5, attempts=1,
+    )
+    assert cost is not None
+    assert cost.source is UsageSource.ADMIN_API
+    assert cost.cost_usd == pytest.approx(0.01)

@@ -177,7 +177,7 @@ def _collect_window_records(
     *,
     page_size: int,
     max_pages: int,
-) -> list[_Rec] | None:
+) -> "_Window | None":
     """Paginate ``/v1/usage`` (assumed newest-first), collecting records back to the window start.
 
     Stops when a page is short (last page), is entirely older than ``lo`` (paged past the window),
@@ -187,26 +187,54 @@ def _collect_window_records(
     """
     out: list[_Rec] = []
     seen: set[tuple[str, str, float, int, int]] = set()
+    truncated = True  # cleared by whichever break proves we reached the end of the window
     for page in range(max_pages):
         url = f"{base}/usage?limit={page_size}&offset={page * page_size}"
         raw = getter(url, key, timeout_s)
         if raw is None:
-            return None if page == 0 else out
+            # A later page failing leaves a set we KNOW is incomplete; the caller must not read it
+            # as the whole window.
+            return None if page == 0 else _Window(out, truncated=True)
         recs, raw_rows = _parse_records(raw)
         if raw_rows == 0:
+            truncated = False
             break
         fresh = [r for r in recs if _rec_key(r) not in seen]
         if not fresh and recs:
-            break  # the API returned no new records (e.g. ignored offset) - stop, never loop forever
+            # The API returned no new records - it ignored `offset` and is serving the same page.
+            # Stop rather than loop forever. NOT counted as truncation: this is everything the API
+            # will ever hand back, so paging further is not a remainder we gave up on, and the
+            # reconciliation check still has to agree the run's own records add up before any cost
+            # is claimed. Truncation is reserved for a walk cut short by OUR page cap or a transport
+            # error - cases where more data demonstrably exists and we chose not to, or could not,
+            # read it.
+            truncated = False
+            break
         for r in fresh:
             seen.add(_rec_key(r))
             out.append(r)
         if raw_rows < page_size:
+            truncated = False
             break  # a short page is the last page
         newest = max((r.created for r in recs if r.created is not None), default=None)
         if newest is not None and newest < lo:
+            truncated = False
             break  # the whole page is older than the window - no point paging further back
-    return out
+    return _Window(out, truncated=truncated)
+
+
+@dataclass(frozen=True)
+class _Window:
+    """The records gathered for a time window, and whether they are all of them.
+
+    `truncated` is the honest half. Cost attributed from a partial window is short by whatever the
+    unseen records charged, and reconciliation does not catch it: that check tolerates 10% of the
+    prompt tokens going missing, so a dropped record under that threshold reconciles fine while its
+    charge is simply absent. A number that short would still be tagged `admin-api` - measured.
+    """
+
+    records: list[_Rec]
+    truncated: bool
 
 
 def _reconciles(matched_prompt: int, input_tokens: int) -> bool:
@@ -254,10 +282,14 @@ def fetch_run_cost(
 
     tries = max(1, attempts)
     for attempt in range(tries):
-        records = _collect_window_records(
+        window = _collect_window_records(
             getter, base, key, timeout_s, lo, page_size=page_size, max_pages=max_pages
         )
-        if records is not None:
+        # A truncated window cannot support a cost claim: the run's own records may be complete, but
+        # we cannot know that, and "unavailable" (the caller keeps it) is the honest answer where
+        # "measured but short" is not.
+        if window is not None and not window.truncated:
+            records = window.records
             matched = [
                 r
                 for r in records
