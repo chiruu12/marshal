@@ -8,6 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A retried run is billed for every attempt, not just the last one.** The retry loop discarded
+  each failed attempt's result, so its usage never reached the ledger — and a provider can charge
+  for an attempt it then fails (a rate limit part-way through leaves real tokens spent). A
+  three-attempt run reported what its third attempt cost: an undercount presented as a measurement.
+  Tokens and cost from the abandoned attempts are now folded into the run's single ledger line.
+
+  When some attempts reported cost and others did not, the run's cost is `unavailable` rather than
+  the partial sum. A total that looks measured and is short by whatever the silent attempts cost is
+  the failure the cost invariant exists to prevent; "unknown" is not. Tokens still add up — those
+  were reported.
+
 ### Changed
 
 - **Run directories now live outside the repo, at `~/.marshal/worktrees/<repo>-<digest>/` (#175).**

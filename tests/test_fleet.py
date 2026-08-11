@@ -31,6 +31,7 @@ from marshal_engine.core.config import BudgetSpec
 from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
 from marshal_engine.accounting.eastrouter import ExternalCost
+from marshal_engine.accounting.usage import UsageEvent
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
@@ -5672,7 +5673,7 @@ class _FlakyBiller(CodingAgentBackend):
         )
 
 
-def _only_event(fleet: Fleet) -> Any:
+def _only_event(fleet: Fleet) -> UsageEvent:
     events = fleet.usage.events()
     assert len(events) == 1, f"one ledger line per run, got {len(events)}"
     return events[0]
