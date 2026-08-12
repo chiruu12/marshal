@@ -1509,6 +1509,7 @@ def test_clean_poisoned_branch_does_not_destroy_main(repo: Path) -> None:
     listed = subprocess.run(
         ["git", "-C", str(repo), "branch", "--list", "main"],
         capture_output=True, text=True,
+        check=False,
     ).stdout
     assert "main" in listed, "clean must not destroy main via a poisoned run record"
     assert any(
@@ -1547,7 +1548,8 @@ def test_clean_unknown_scope_raises(repo: Path) -> None:
 
 def _branches(repo: Path) -> str:
     return subprocess.run(
-        ["git", "-C", str(repo), "branch", "--list", "marshal/*"], capture_output=True, text=True
+        ["git", "-C", str(repo), "branch", "--list", "marshal/*"], capture_output=True, text=True,
+        check=False,
     ).stdout
 
 
@@ -2326,6 +2328,7 @@ def test_bind_failure_leaves_no_running_record_or_worktree(
         ["git", "-C", str(repo), "branch", "--list", "marshal/*bindfail*"],
         capture_output=True,
         text=True,
+        check=False,
     ).stdout
     assert branches.strip() == "", f"leaked branch(es): {branches!r}"
 
@@ -4787,6 +4790,7 @@ def test_provision_oserror_tears_down_worktree(
         ["git", "-C", str(repo), "branch", "--list", "marshal/*oserr*"],
         capture_output=True,
         text=True,
+        check=False,
     ).stdout
     assert branches.strip() == "", f"leaked branch(es): {branches!r}"
 

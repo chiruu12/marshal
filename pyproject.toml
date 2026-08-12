@@ -91,7 +91,14 @@ target-version = "py311"
 # rules that no one had chosen. Pinning the set means a ruff upgrade changes ruff, and adopting a
 # new rule is its own reviewed commit. These four are the set the codebase was in fact linted
 # against; broadening it is tracked separately.
-select = ["E4", "E7", "E9", "F"]
+select = [
+    "E4", "E7", "E9", "F",
+    # Adopted deliberately (#239), one family at a time rather than by inheriting a default.
+    # PLW1510: `subprocess.run` without an explicit `check=`. This codebase shells out constantly
+    # and every call site here already inspects `returncode`; stating it stops the next one from
+    # relying on a default that differs from what the surrounding code does.
+    "PLW1510",
+]
 
 [tool.mypy]
 python_version = "3.11"
