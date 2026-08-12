@@ -1615,7 +1615,16 @@ class Fleet:
             changed = self.worktrees.changed_files(wt)
         except WorktreeError:
             return RunStatus.EXITED_CLEAN  # can't tell -> don't mislabel a success as empty
-        return RunStatus.EXITED_CLEAN if changed else RunStatus.EMPTY
+        if changed:
+            return RunStatus.EXITED_CLEAN
+        # A clean tree is not proof of an idle agent: one that COMMITS its own work leaves nothing
+        # uncommitted behind it. Stamping EMPTY there put the record at odds with `collect_run`,
+        # which reports those commits - and a driver polling status would discard work that is
+        # sitting on the branch (#250). None = could not tell, which must not read as zero.
+        committed = self.worktrees.agent_commit_count(wt)
+        if committed is None or committed > 0:
+            return RunStatus.EXITED_CLEAN
+        return RunStatus.EMPTY
 
     def _collect_target(self, rec: RunRecord | None = None) -> str:
         """Merge-base reference for a run's committed work.

@@ -5809,3 +5809,58 @@ def test_credential_shaped_names_are_refused_even_inside_the_repo(repo: Path, na
 
     with pytest.raises(ValueError, match="secret-shaped"):
         fleet.run("ctxreader", TaskSpec(id="rp-name", goal="x", read_paths=[str(secret)]))
+
+
+# --- #250: EMPTY must mean the run produced nothing, not that the tree is clean -----------------
+
+
+class _SilentSelfCommitter(_SelfCommitter):
+    """Self-commits and says NOTHING - the shape that actually triggered #250.
+
+    `_SelfCommitter` prints "done", and a non-empty final message short-circuits the EMPTY check
+    before it ever looks at the tree. Only an agent that commits its work *and* returns no text
+    reaches the branch this covers, which is why it needs its own backend rather than a reuse.
+    """
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text="",
+            exit_code=exit_code,
+        )
+
+
+def test_a_self_committed_run_is_not_recorded_as_empty(repo: Path) -> None:
+    """The record and `collect_run` must not describe the same run differently.
+
+    A driver polling `status` (or `wait_for_runs`, which reports what the record says) would see
+    `empty` and reasonably discard work that is sitting on the branch.
+    """
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    rec = fleet.run("selfcommit", TaskSpec(id="sc", goal="x"))
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.commit_count == 1
+    assert collected.produced == "diff"
+
+
+def test_a_run_that_really_did_nothing_is_still_empty(repo: Path) -> None:
+    """The EMPTY signal has to keep meaning something, or it stops being worth reporting."""
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="noop1", goal="x"))
+
+    assert rec.status == RunStatus.EMPTY.value
+
+
+def test_an_undeterminable_commit_count_does_not_read_as_empty(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`None` means "cannot tell" and must not collapse into zero.
+
+    Reporting a run as having produced nothing is the expensive direction to be wrong in: the work
+    exists on the branch either way, but a driver told `empty` stops looking for it.
+    """
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    monkeypatch.setattr(fleet.worktrees, "agent_commit_count", lambda wt: None)
+
+    rec = fleet.run("selfcommit", TaskSpec(id="sc2", goal="x"))
+    assert rec.status == RunStatus.EXITED_CLEAN.value
