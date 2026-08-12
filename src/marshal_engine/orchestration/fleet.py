@@ -667,6 +667,7 @@ class Fleet:
         verify: list[str] | None = None,
         allow_unsafe_commands: bool = False,
         integrate_run_hooks: bool = False,
+        allow_external_read_paths: bool = False,
         retries: RetryPolicy | None = None,
         cost_resolvers: Mapping[str, CostResolver] | None = None,
         run_gate: threading.Semaphore | None = None,
@@ -683,6 +684,9 @@ class Fleet:
         # so the duplicate call is a no-op. MARSHAL_NO_PATH_FIX=1 still opts out.
         merge_user_path()
         self.repo_root = Path(repo_root)
+        # False keeps `read_paths` inside this workspace's repo. The name denylist cannot cover a
+        # host; scope can - and it is what stops a read_path reaching another workspace's ledger.
+        self.allow_external_read_paths = allow_external_read_paths
         base = Path(base_dir) if base_dir is not None else marshal_dir(self.repo_root)
         # Run directories do NOT follow `base_dir`. The ledger, logs and run records under
         # `<repo>/.marshal/` are Marshal-written and belong with the repo; the run's working tree is
@@ -1012,7 +1016,10 @@ class Fleet:
         handle so ``cancel_run`` can SIGTERM the setup process group.
         """
         _require_context_files(wt, req.task.context_files)
-        _provision_read_paths(wt, self.repo_root, req.task.read_paths)
+        _provision_read_paths(
+                wt, self.repo_root, req.task.read_paths,
+                allow_external=self.allow_external_read_paths,
+            )
         provision_run_artifacts(wt, artifacts_dir(self.repo_root), req.task.artifacts_from)
         prepare_artifact_dir(wt)
         on_pid: Callable[[int], None] | None = None

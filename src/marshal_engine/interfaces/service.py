@@ -238,6 +238,7 @@ class MarshalService:
             verify=config.verify,
             allow_unsafe_commands=config.allow_unsafe_commands,
             integrate_run_hooks=config.integrate_run_hooks,
+            allow_external_read_paths=config.allow_external_read_paths,
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
             budgets=config.budgets,

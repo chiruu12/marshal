@@ -8,6 +8,23 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **`read_paths` is limited to the workspace's own repo unless you opt out (#176).** The hatch for
+  handing an agent files to read accepted any absolute path, guarded only by a list of
+  secret-shaped names — which covered `.env`, `*.pem` and `.ssh`, but not `~/.aws/credentials`,
+  `~/.netrc`, kube/docker configs, or `gh`'s token file. A name list is a guess about which files
+  hold credentials and cannot cover a machine; scope can. `allow_external_read_paths: true` permits
+  the old behaviour where a driver is trusted.
+
+  This also closes the cross-workspace read channel: `read_paths` pointing at another workspace's
+  `.marshal/runs` copied that workspace's ledger into this one's worktree, contradicting the
+  tenancy claim that each keeps its own state. Nothing about the name `runs` is secret-shaped, so
+  only scoping catches it.
+
+  The name list is still there and was widened — it is the second layer, for a credential sitting
+  inside the repo itself.
+
 ### Fixed
 
 - **A retried run is billed for every attempt, not just the last one.** The retry loop discarded

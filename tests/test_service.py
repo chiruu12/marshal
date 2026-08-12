@@ -584,8 +584,9 @@ def test_run_many_threads_context_files_per_job(repo: Path) -> None:
 
 def test_run_agent_threads_read_paths_to_the_task(repo: Path) -> None:
     # read_paths is the declared outside-worktree escape hatch; the service must carry it onto
-    # the TaskSpec via the shared `_request_for` builder (#105).
-    outside = repo.parent / "brief.md"
+    # the TaskSpec via the shared `_request_for` builder (#105). Declared INSIDE the repo: this
+    # asserts the threading, and an out-of-repo path is refused by default now (#176).
+    outside = repo / "brief.md"
     outside.write_text("brief")
     backend = _Capture()
     svc = _capture_svc(repo, backend)

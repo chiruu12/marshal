@@ -40,6 +40,16 @@ from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.runtime.worktree import WorktreeError
 
 
+def _ext_fleet(repo: Path, backends: dict, **kw: object) -> Fleet:
+    """A Fleet that may read paths outside its repo.
+
+    `read_paths` is repo-scoped by default; these tests exercise the COPY machinery (TOCTOU guards,
+    exclusion from the diff, permissions) on paths deliberately placed outside, so they opt in the
+    way an operator would. Scope itself is covered separately.
+    """
+    return Fleet(repo, backends, allow_external_read_paths=True, **kw)  # type: ignore[arg-type]
+
+
 class _Talker(CodingAgentBackend):
     """An agent that REPLIES but writes no files - a research or review run."""
 
@@ -3750,7 +3760,7 @@ def test_read_paths_copies_file_readable_inside_worktree(repo: Path) -> None:
     `.marshal-context/` and the agent can read it."""
     outside = repo.parent / "driver-notes.md"
     outside.write_text("secret-to-the-worktree-but-declared")
-    fleet = Fleet(repo, {"ctxreader": _ContextReader("driver-notes.md")})
+    fleet = _ext_fleet(repo, {"ctxreader": _ContextReader("driver-notes.md")})
     rec = fleet.run(
         "ctxreader",
         TaskSpec(id="rp1", goal="use the notes", read_paths=[str(outside)]),
@@ -3778,7 +3788,7 @@ def test_read_paths_relative_to_driver_repo_root(repo: Path) -> None:
         capture_output=True,
     )
 
-    fleet = Fleet(repo, {"ctxreader": _ContextReader("brief.md")})
+    fleet = _ext_fleet(repo, {"ctxreader": _ContextReader("brief.md")})
     rec = fleet.run(
         "ctxreader",
         TaskSpec(id="rp-rel", goal="use brief", read_paths=["scratch/brief.md"]),
@@ -3791,7 +3801,7 @@ def test_read_paths_do_not_pollute_diff_or_changed_files(repo: Path) -> None:
     """CRITICAL (#105): provisioned copies must never appear in the run's diff / changed_files."""
     outside = repo.parent / "ref.md"
     outside.write_text("reference material")
-    fleet = Fleet(repo, {"ctxreader": _ContextReader("ref.md")})
+    fleet = _ext_fleet(repo, {"ctxreader": _ContextReader("ref.md")})
     rec = fleet.run(
         "ctxreader",
         TaskSpec(id="rp-diff", goal="write from ref", read_paths=[str(outside)]),
@@ -3808,7 +3818,7 @@ def test_read_paths_surface_on_the_run_record(repo: Path) -> None:
     """A reviewer must see that the run was allowed to read more than its worktree (#105)."""
     outside = repo.parent / "extra.md"
     outside.write_text("extra")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     declared = [str(outside)]
     rec = fleet.run(
         "writer",
@@ -3828,7 +3838,7 @@ def test_read_paths_refuses_secret_named_files(repo: Path, name: str) -> None:
     """Fail-closed: secret-shaped basenames are never copied into a worktree (#105)."""
     secret = repo.parent / name
     secret.write_text("do-not-copy")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError, match="refuses secret-shaped path"):
         fleet.run(
             "writer",
@@ -3845,7 +3855,7 @@ def test_read_paths_refuses_paths_inside_ssh_directory(repo: Path) -> None:
     ssh_dir.mkdir()
     key = ssh_dir / "config"
     key.write_text("Host *")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError, match="refuses secret-shaped path"):
         fleet.run(
             "writer",
@@ -3856,7 +3866,7 @@ def test_read_paths_refuses_paths_inside_ssh_directory(repo: Path) -> None:
 
 def test_read_paths_missing_path_fails_and_tears_down(repo: Path) -> None:
     """A missing path fails the spawn; the half-made worktree is discarded (#105)."""
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError, match="read_paths not found"):
         fleet.run(
             "writer",
@@ -3872,7 +3882,7 @@ def test_read_paths_copies_are_contained_under_marshal_context(repo: Path) -> No
     outside = repo.parent / "nested" / "doc.md"
     outside.parent.mkdir()
     outside.write_text("nested")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     rec = fleet.run(
         "writer",
         TaskSpec(id="rp-contain", goal="x", read_paths=[str(outside)]),
@@ -3893,7 +3903,7 @@ def test_read_paths_directory_copies_recursively_readonly(repo: Path) -> None:
     sub = src_dir / "sub"
     sub.mkdir()
     (sub / "b.md").write_text("b")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     rec = fleet.run(
         "writer",
         TaskSpec(id="rp-dir", goal="x", read_paths=[str(src_dir)]),
@@ -3920,7 +3930,7 @@ def test_read_paths_directory_worktree_is_reclaimable_on_clean(repo: Path) -> No
     sub = src_dir / "sub"
     sub.mkdir()
     (sub / "b.md").write_text("b")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     rec = fleet.run(
         "writer",
         TaskSpec(id="rp-dir-clean", goal="x", read_paths=[str(src_dir)]),
@@ -3943,7 +3953,7 @@ def test_read_paths_refuses_secret_descendants_in_directory(repo: Path) -> None:
     (sub / "ok.md").write_text("fine")
     secret = sub / ".env"
     secret.write_text("SECRET=1")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError, match=r"refuses secret-shaped path:.*sub/\.env") as excinfo:
         fleet.run(
             "writer",
@@ -3962,7 +3972,7 @@ def test_read_paths_refuses_ssh_descendants_in_directory(repo: Path) -> None:
     ssh.mkdir(parents=True)
     key = ssh / "key"
     key.write_text("-----BEGIN PRIVATE KEY-----")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError, match=r"refuses secret-shaped path:.*\.ssh") as excinfo:
         fleet.run(
             "writer",
@@ -3978,7 +3988,7 @@ def test_read_paths_refuses_fifo_without_hanging(repo: Path) -> None:
     """P1-C (#105): a FIFO read_path is refused immediately (must not block forever)."""
     fifo = repo.parent / "blocker.fifo"
     os.mkfifo(fifo)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4006,7 +4016,7 @@ def test_read_paths_refuses_fifo_descendant_without_hanging(repo: Path) -> None:
     (src_dir / "ok.md").write_text("fine")
     fifo = src_dir / "blocker.fifo"
     os.mkfifo(fifo)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4036,7 +4046,7 @@ def test_read_paths_refuses_innocent_symlink_to_secret(repo: Path) -> None:
     (src_dir / "ok.md").write_text("fine")
     link = src_dir / "notes.md"
     link.symlink_to(secret)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError, match=r"refuses symlink:.*notes\.md") as excinfo:
         fleet.run(
             "writer",
@@ -4060,7 +4070,7 @@ def test_read_paths_refuses_any_symlink_descendant(repo: Path) -> None:
     target.write_text("harmless")
     link = src_dir / "alias.md"
     link.symlink_to(target)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
     with pytest.raises(ValueError, match=r"refuses symlink:.*alias\.md"):
         fleet.run(
             "writer",
@@ -4077,7 +4087,7 @@ def test_read_paths_symlinked_declared_root_still_works(repo: Path) -> None:
     link = repo.parent / "docs-link"
     link.symlink_to(real_docs)
     # ContextReader path is under the resolved basename (`real-docs`), not the link name.
-    fleet = Fleet(repo, {"ctxreader": _ContextReader("real-docs/a.md")})
+    fleet = _ext_fleet(repo, {"ctxreader": _ContextReader("real-docs/a.md")})
     rec = fleet.run(
         "ctxreader",
         TaskSpec(id="rp-sym-root", goal="use docs", read_paths=[str(link)]),
@@ -4104,7 +4114,7 @@ def test_read_paths_refuses_toctou_fifo_swap(
         os.mkfifo(src)
 
     monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_swap_to_fifo)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4199,7 +4209,7 @@ def test_read_paths_refuses_toctou_dir_symlink_swap(
     (outside / "secret.md").write_text(smuggled)
 
     _arm_dir_symlink_swap_after_lstat(monkeypatch, src_dir, outside)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4243,7 +4253,7 @@ def test_read_paths_refuses_toctou_nested_dir_symlink_swap(
     (outside / "leaked.md").write_text(smuggled)
 
     _arm_dir_symlink_swap_after_lstat(monkeypatch, sub, outside)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4351,7 +4361,7 @@ def test_read_paths_refuses_toctou_same_type_dir_swap_env(
         (d / ".env").write_text(smuggled)
 
     _arm_same_type_dir_swap_after_validate(monkeypatch, src_dir, _populate_with_env)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4390,7 +4400,7 @@ def test_read_paths_refuses_toctou_same_type_dir_swap_ssh(
         (ssh / "key").write_text(smuggled)
 
     _arm_same_type_dir_swap_after_validate(monkeypatch, src_dir, _populate_with_ssh)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4430,7 +4440,7 @@ def test_read_paths_refuses_toctou_same_type_subdir_swap_env(
         (d / ".env").write_text(smuggled)
 
     _arm_same_type_dir_swap_after_validate(monkeypatch, sub, _populate_sub_with_env)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4469,7 +4479,7 @@ def test_read_paths_refuses_toctou_same_type_dir_swap_fifo_and_symlink(
         (d / "sneaky.md").symlink_to(link_target)
 
     _arm_same_type_dir_swap_after_validate(monkeypatch, src_dir, _populate_with_fifo_and_symlink)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4544,7 +4554,7 @@ def test_read_paths_refuses_toctou_dir_identity_swap(
         monkeypatch.setattr(provisioning_mod, "_lstat_at", _lstat_at_then_swap)
 
     monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_arm)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4613,7 +4623,7 @@ def test_read_paths_refuses_toctou_file_identity_swap(
         monkeypatch.setattr(provisioning_mod, "_lstat_at", _lstat_at_then_swap)
 
     monkeypatch.setattr(provisioning_mod, "_validate_read_path_tree", _validate_then_arm)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def _run() -> None:
         fleet.run(
@@ -4665,7 +4675,7 @@ def test_read_paths_refuses_tracked_marshal_context_symlink(repo: Path) -> None:
     outside = repo.parent / "driver-notes-ctx-symlink.md"
     smuggled = "SHOULD-NOT-LAND-IN-TRACKED-DOCS"
     outside.write_text(smuggled)
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     with pytest.raises(
         ValueError, match=r"not a plain directory|\.marshal-context.*not a plain directory"
@@ -4759,7 +4769,7 @@ def test_provision_oserror_tears_down_worktree(
     """An OSError mid-copy must discard the worktree+branch, not strand them (M2)."""
     outside = repo.parent / "prov-oserr.md"
     outside.write_text("content")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def boom(*_a: object, **_k: object) -> None:
         raise OSError("injected disk full")
@@ -5077,7 +5087,7 @@ def test_spawn_provision_oserror_terminal_stamps_not_zombie(
     """Spawn-path provision OSError must terminal-stamp FAILED (M2 compose with async setup)."""
     outside = repo.parent / "spawn-prov-oserr.md"
     outside.write_text("content")
-    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet = _ext_fleet(repo, {"writer": _Writer()})
 
     def boom(*_a: object, **_k: object) -> None:
         raise OSError("injected disk full")
@@ -5725,3 +5735,73 @@ def test_a_run_that_never_retried_is_unchanged(repo: Path) -> None:
     assert event.input_tokens == 7
     assert event.cost_usd == pytest.approx(0.005)
     assert event.source == UsageSource.NATIVE.value
+
+
+# --- #176: read_paths is scoped to the workspace's own repo --------------------------------------
+
+
+def test_read_paths_refuses_a_path_outside_the_repo_by_default(repo: Path) -> None:
+    """The denylist is a guess about names; scope is a fact about location.
+
+    `~/.aws/credentials`, `~/.netrc`, a kubeconfig - the original refusal list covered none of
+    them, and no list ever covers a whole machine. Refusing anything outside the repo does.
+    """
+    outside = repo.parent / "notes.md"
+    outside.write_text("host content")
+    fleet = Fleet(repo, {"ctxreader": _ContextReader("notes.md")})
+
+    # Provisioning refusals raise before the run exists - the same contract every other read_paths
+    # refusal follows, so a rejected declaration never looks like a run that merely failed.
+    with pytest.raises(ValueError) as exc:
+        fleet.run("ctxreader", TaskSpec(id="rp-scope", goal="x", read_paths=[str(outside)]))
+
+    assert "outside this workspace's repo" in str(exc.value)
+    assert "allow_external_read_paths" in str(exc.value)  # names the way out
+
+
+def test_read_paths_refuses_another_workspaces_ledger(tmp_path: Path) -> None:
+    """The cross-workspace read channel from #176, closed by scope rather than by name.
+
+    `spawn(workspace="A", read_paths=[".../B/.marshal/runs"])` copied B's ledger into A's worktree,
+    contradicting the tenancy claim that each workspace keeps its own state. Nothing about the name
+    `runs` is secret-shaped, so only scoping catches it.
+    """
+    repo_a = tmp_path / "a"
+    repo_b = tmp_path / "b"
+    for path in (repo_a, repo_b):
+        path.mkdir()
+        _init_repo(path)
+    ledger_b = repo_b / ".marshal" / "runs"
+    ledger_b.mkdir(parents=True)
+    (ledger_b / "r1.json").write_text('{"run_id": "b-private"}')
+
+    fleet = Fleet(repo_a, {"ctxreader": _ContextReader("runs")})
+
+    with pytest.raises(ValueError, match="outside this workspace's repo"):
+        fleet.run("ctxreader", TaskSpec(id="rp-tenancy", goal="x", read_paths=[str(ledger_b)]))
+
+
+def test_read_paths_outside_the_repo_are_allowed_when_opted_in(repo: Path) -> None:
+    """The opt-in has to actually work, or the escape hatch is gone rather than gated."""
+    outside = repo.parent / "brief.md"
+    outside.write_text("declared on purpose")
+    fleet = _ext_fleet(repo, {"ctxreader": _ContextReader("brief.md")})
+
+    rec = fleet.run("ctxreader", TaskSpec(id="rp-optin", goal="x", read_paths=[str(outside)]))
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.text == "declared on purpose"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [".netrc", "credentials", ".npmrc", ".pypirc", "cluster.key", "hosts.yml"],
+)
+def test_credential_shaped_names_are_refused_even_inside_the_repo(repo: Path, name: str) -> None:
+    """Scope handles the host; this list still matters for a secret sitting in the repo itself."""
+    secret = repo / name
+    secret.write_text("token=live")
+    fleet = Fleet(repo, {"ctxreader": _ContextReader(name)})
+
+    with pytest.raises(ValueError, match="secret-shaped"):
+        fleet.run("ctxreader", TaskSpec(id="rp-name", goal="x", read_paths=[str(secret)]))

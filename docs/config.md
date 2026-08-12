@@ -65,6 +65,12 @@ Fleet-wide layered context strings.
 |------|---------|--------------|---------|
 | bool \| omitted | `false` | When `false`, `commit_run` / `integrate` pass `git --no-verify` so prompting pre-commit/pre-merge hooks cannot deadlock a headless driver, and so Marshal does not execute possibly **agent-modified** / repo-controlled hook scripts. Set `true` only when hooks are known **non-interactive** *and* you trust their provenance for your threat model. Prompting hooks can hang until the git timeout (`GIT_TERMINAL_PROMPT=0` + closed stdin + timeout still apply). Prefer `verify:` + human/CI review over hooks when unsure. See `SECURITY.md`. | `integrate_run_hooks: true` |
 
+### `allow_external_read_paths`
+
+| Type | Default | What it does | Example |
+|------|---------|--------------|---------|
+| bool \| omitted | `false` | When `false`, a run's `read_paths` may only name paths **inside this workspace's own repo**. The refusal list for credential-shaped names (dotenv files, private keys, `.netrc`, npm/pypi/docker/gh credential files, and anything under `.ssh` / `.aws` / `.gnupg` / `.kube` / `.docker`) is a guess about which files hold secrets and cannot cover a whole machine — scoping to the repo can. It is also what stops a `read_path` reaching **another registered workspace's ledger**, which no name-based rule would catch. Set `true` only where you trust whatever issues `read_paths`: that is a driver agent, and a prompt-injected one would otherwise be able to read any file you can. See `SECURITY.md`. | `allow_external_read_paths: true` |
+
 ### `retries`
 
 | Type | Default | What it does | Example |
