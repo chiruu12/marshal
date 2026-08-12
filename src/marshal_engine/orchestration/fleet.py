@@ -35,8 +35,9 @@ from ..accounting.budgets import check_budget as check_budget
 from ..accounting.budgets import compute_budget_status as compute_budget_status
 from ..core.config import BudgetSpec
 from ..accounting.eastrouter import CostResolver, default_cost_resolvers
+from ..runtime.git_exclude import try_append_git_exclude
 from ..runtime.env import merge_user_path, redact_secrets
-from ..core.layout import artifacts_dir, budget_gate_path, marshal_dir, run_artifacts_dir
+from ..core.layout import MARSHAL_DIRNAME, artifacts_dir, budget_gate_path, marshal_dir, run_artifacts_dir
 from ..runtime.logs import RunLogStore
 from ..core.retry import RetryPolicy, is_transient_failure
 from ..runtime.state import FleetState, RunRecord
@@ -703,6 +704,12 @@ class Fleet:
             allow_unsafe_commands=allow_unsafe_commands,
             integrate_run_hooks=integrate_run_hooks,
         )
+        # Keep Marshal's own state out of the user's `git status`. Best-effort and local-only
+        # (`.git/info/exclude`, never their tracked `.gitignore`): this is tidiness, so a directory
+        # that is not a repo - or a `.git` we cannot write - must not fail the run that follows.
+        # Placed here rather than in `marshal init` because a driver reaching Marshal over MCP
+        # never runs init, and that is the common case.
+        try_append_git_exclude(self.repo_root, f"{MARSHAL_DIRNAME}/")
         self.state = FleetState(base / "runs")
         self.usage = UsageTracker(base / "usage")
         self.logs = RunLogStore(base / "logs")
