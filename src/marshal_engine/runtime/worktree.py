@@ -212,6 +212,7 @@ class WorktreeManager:
                 # blocked-merge detection in merge()) is stable across locales.
                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
                 timeout=self.git_timeout_s,
+                check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise WorktreeError(
@@ -370,6 +371,7 @@ class WorktreeManager:
                 stdin=subprocess.DEVNULL,
                 env=child_env(),
                 timeout=self.setup_timeout_s,
+                check=False,
             )
             return (
                 ""
@@ -458,6 +460,7 @@ class WorktreeManager:
                 stdin=subprocess.DEVNULL,
                 env=child_env(),
                 timeout=self.setup_timeout_s,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return False, f"verify timed out after {self.setup_timeout_s}s"

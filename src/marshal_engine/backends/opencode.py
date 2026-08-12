@@ -188,6 +188,7 @@ class OpenCodeBackend(CodingAgentBackend):
                 capture_output=True,
                 text=True,
                 timeout=15,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -337,6 +338,7 @@ class OpenCodeBackend(CodingAgentBackend):
                 text=True,
                 timeout=_EXPORT_TIMEOUT_S,
                 stdin=subprocess.DEVNULL,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None

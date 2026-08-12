@@ -52,6 +52,7 @@ def _require_git_work_tree(repo: Path) -> None:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError(f"{repo}: git not runnable") from exc

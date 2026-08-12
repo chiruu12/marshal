@@ -195,6 +195,7 @@ class CursorBackend(CodingAgentBackend):
                 capture_output=True,
                 text=True,
                 timeout=15,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -207,6 +208,7 @@ class CursorBackend(CodingAgentBackend):
                 capture_output=True,
                 text=True,
                 timeout=15,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return {"plan": "logged-in"}

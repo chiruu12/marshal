@@ -211,6 +211,7 @@ def _branch_list(repo: Path, name: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), "branch", "--list", name],
         capture_output=True, text=True,
+        check=False,
     ).stdout
 
 
@@ -290,6 +291,7 @@ def test_setup_failure_tears_down_and_raises(repo: Path) -> None:
         ["git", "-C", str(repo), "branch", "--list", "marshal/setup_fail"],
         capture_output=True,
         text=True,
+        check=False,
     ).stdout
     assert "marshal/setup_fail" not in branches
 
@@ -538,6 +540,7 @@ def test_remove_deletes_worktree_and_branch(repo: Path) -> None:
         ["git", "-C", str(repo), "branch", "--list", "marshal/task4"],
         capture_output=True,
         text=True,
+        check=False,
     ).stdout
     assert "marshal/task4" not in branches
 
@@ -557,6 +560,7 @@ def test_discard_removes_worktree_and_branch(repo: Path) -> None:
     branches = subprocess.run(
         ["git", "-C", str(repo), "branch", "--list", "marshal/disc1"],
         capture_output=True, text=True,
+        check=False,
     ).stdout
     assert "marshal/disc1" not in branches
 
@@ -583,6 +587,7 @@ def test_discard_tolerates_already_gone_worktree(repo: Path) -> None:
     branches = subprocess.run(
         ["git", "-C", str(repo), "branch", "--list", "marshal/disc2"],
         capture_output=True, text=True,
+        check=False,
     ).stdout
     assert "marshal/disc2" not in branches
 
@@ -637,7 +642,8 @@ def test_abort_merge_raises_when_abort_fails(repo: Path, monkeypatch: pytest.Mon
         subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, text=True)
 
     base = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True,
+        check=False,
     ).stdout.strip()
     g("checkout", "-b", "sib")
     (repo / "s.txt").write_text("s")
@@ -782,6 +788,7 @@ def test_setup_oserror_tears_down_and_raises(repo: Path, monkeypatch: pytest.Mon
         ["git", "-C", str(repo), "branch", "--list", "marshal/setup_eacces"],
         capture_output=True,
         text=True,
+        check=False,
     ).stdout
     assert "marshal/setup_eacces" not in branches
 
@@ -863,6 +870,7 @@ def test_a_failed_create_leaves_no_branch_and_the_id_stays_reusable(
     branches = subprocess.run(
         ["git", "-C", str(repo), "branch", "--list", "marshal/leak_branch"],
         capture_output=True, text=True,
+        check=False,
     ).stdout
     assert "marshal/leak_branch" not in branches
     assert not (m.base_dir / "leak_branch").exists()  # no half-built run dir left behind
@@ -1033,6 +1041,7 @@ def test_a_run_can_commit_when_the_identity_is_only_repo_local(
     author = subprocess.run(
         ["git", "-C", str(wt.path), "log", "-1", "--format=%ae"],
         capture_output=True, text=True,
+        check=False,
     ).stdout.strip()
     assert author == "test@example.com"  # the repo's identity, not a fabricated one
 
@@ -1082,7 +1091,8 @@ def test_a_run_cannot_corrupt_the_repos_objects_through_a_shared_inode(repo: Pat
 
     assert twin.read_bytes() == before  # the driver's copy is untouched
     fsck = subprocess.run(
-        ["git", "-C", str(repo), "fsck"], capture_output=True, text=True
+        ["git", "-C", str(repo), "fsck"], capture_output=True, text=True,
+        check=False,
     )
     assert "error" not in fsck.stderr.lower()
 

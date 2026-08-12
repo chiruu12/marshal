@@ -178,7 +178,7 @@ def _binary_version(binary: str, arg: str = "--version", timeout: float = 10.0) 
     if shutil.which(binary) is None:
         return None
     try:
-        proc = subprocess.run([binary, arg], capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run([binary, arg], capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
@@ -194,6 +194,7 @@ def _git_repo_check(repo: Path) -> Check:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return Check("repo", FAIL, f"{repo}: git not runnable", "install git")
@@ -206,6 +207,7 @@ def _git_repo_check(repo: Path) -> Check:
         capture_output=True,
         text=True,
         timeout=10,
+        check=False,
     )
     if head.returncode != 0:
         return Check(

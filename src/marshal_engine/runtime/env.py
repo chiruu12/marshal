@@ -315,6 +315,7 @@ def user_path(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             continue

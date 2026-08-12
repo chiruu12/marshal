@@ -341,6 +341,7 @@ def _pid_start_time(pid: int) -> str | None:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None

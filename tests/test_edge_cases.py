@@ -225,7 +225,8 @@ def repo(tmp_path: Path) -> Path:
 
 def _porcelain(repo: Path) -> str:
     return subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True
+        ["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True,
+        check=False,
     ).stdout.strip()
 
 
@@ -410,6 +411,7 @@ def test_concurrent_integrates_do_not_corrupt_repo(repo: Path) -> None:
     merge_head = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
         capture_output=True, text=True,
+        check=False,
     )
     assert merge_head.returncode != 0, "repo left mid-merge"
     # no conflicted/modified TRACKED files (ignore the engine's own untracked .marshal/ state dir)

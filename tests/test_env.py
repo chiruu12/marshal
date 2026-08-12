@@ -478,6 +478,7 @@ def test_merged_path_reaches_agent_subprocess(
         text=True,
         env=child_env(),
         timeout=10,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     seen = proc.stdout.strip()

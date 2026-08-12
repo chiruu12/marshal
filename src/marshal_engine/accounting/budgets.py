@@ -526,6 +526,7 @@ def _pid_start_time(pid: int) -> str | None:
             text=True,
             timeout=5,
             stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None

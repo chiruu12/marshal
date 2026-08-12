@@ -97,6 +97,7 @@ class CodingAgentBackend(ABC):
                 capture_output=True,
                 text=True,
                 timeout=_VERSION_PROBE_TIMEOUT_S,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return False
@@ -229,7 +230,8 @@ class CodingAgentBackend(ABC):
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
-                stdin=subprocess.DEVNULL,  # headless: an interactive probe must not deadlock
+                stdin=subprocess.DEVNULL,  # headless: an interactive probe must not deadlock,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return ModelCatalog(models=list(static), source=ModelSource.STATIC)

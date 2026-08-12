@@ -167,6 +167,7 @@ class AntigravityBackend(CodingAgentBackend):
                 text=True,
                 timeout=15,
                 stdin=subprocess.DEVNULL,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return False, _DEFAULT_UNAVAILABLE

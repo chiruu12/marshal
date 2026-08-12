@@ -106,6 +106,7 @@ class GooseBackend(CodingAgentBackend):
                 capture_output=True,
                 text=True,
                 timeout=20,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None
