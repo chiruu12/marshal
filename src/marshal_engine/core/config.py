@@ -174,7 +174,14 @@ BUDGET_WINDOWS: frozenset[str] = frozenset({"session", "week", "month"})
 
 
 class BudgetSpec(BaseModel):
-    """A $ cap for a scope (a backend, a client, or the fleet as a whole).
+    """A cap for a scope (a backend, a client, or the fleet as a whole).
+
+    **Two limits, because one number cannot govern both kinds of client.** `limit_usd` governs
+    spend that was actually measured; `limit_runs` governs runs whose cost nobody reported. A fleet
+    of subscription/unmeasurable clients under a dollar cap alone is uncapped in practice - it
+    reports $0 spent forever - and "within budget" there is a statement about what Marshal can see,
+    not about what was consumed. Each limit only ever governs what it can see, and both are
+    reported, so neither number pretends to cover the other. At least one must be set.
 
     By default budgets are **advisory** (`enforce=false`): `Fleet._start` soft-warns on stderr
     when the windowed spend meets the cap, but never blocks the run. Set ``enforce: true`` to
@@ -190,7 +197,11 @@ class BudgetSpec(BaseModel):
     backend: str | None = None
     client: str | None = None
     window: str  # one of BUDGET_WINDOWS - validated by the parser, not pydantic (gives a clean error)
-    limit_usd: float
+    #: Cap on MEASURED spend (ledger cost from a native / admin-api source). None = no dollar cap.
+    limit_usd: float | None = None
+    #: Cap on the number of runs in the window whose cost was NOT measured. None = no run cap.
+    #: This is the only limit that can govern a subscription backend, whose spend is unknowable here.
+    limit_runs: int | None = None
     enforce: bool = False
 
 
@@ -446,7 +457,8 @@ def _parse_budgets(value: Any) -> list[BudgetSpec]:
     """Normalize the optional top-level ``budgets:`` advisory caps. Absent -> ``[]``.
 
     Each entry: optional ``backend`` OR optional ``client`` (not both, not neither), a ``window``
-    in {session, week, month}, and a positive ``limit_usd``. A malformed entry raises
+    in {session, week, month}, and at least one of a positive ``limit_usd`` (measured spend) or a
+    positive ``limit_runs`` (runs whose cost was not measured). A malformed entry raises
     ``ConfigError`` so a typo fails fast at load (same posture as the other config errors),
     instead of silently dropping a budget.
     """
@@ -474,12 +486,31 @@ def _parse_budgets(value: Any) -> list[BudgetSpec]:
                 f"budgets[{i}].window must be one of {valid}, got {window_raw!r}"
             )
         limit_raw = entry.get("limit_usd")
-        if isinstance(limit_raw, bool) or not isinstance(limit_raw, (int, float)):
+        if limit_raw is not None:
+            if isinstance(limit_raw, bool) or not isinstance(limit_raw, (int, float)):
+                raise ConfigError(
+                    f"budgets[{i}].limit_usd must be a positive number, got "
+                    f"{type(limit_raw).__name__}"
+                )
+            if limit_raw <= 0:
+                raise ConfigError(f"budgets[{i}].limit_usd must be > 0, got {limit_raw}")
+        runs_raw = entry.get("limit_runs")
+        if runs_raw is not None:
+            if isinstance(runs_raw, bool) or not isinstance(runs_raw, int):
+                raise ConfigError(
+                    f"budgets[{i}].limit_runs must be a positive integer, got "
+                    f"{type(runs_raw).__name__}"
+                )
+            if runs_raw <= 0:
+                raise ConfigError(f"budgets[{i}].limit_runs must be > 0, got {runs_raw}")
+        if limit_raw is None and runs_raw is None:
+            # A budget that caps nothing is almost certainly a typo, and it would sit in `usage`
+            # looking like a control that is in force. Refuse at load rather than display a lie.
             raise ConfigError(
-                f"budgets[{i}].limit_usd must be a positive number, got {type(limit_raw).__name__}"
+                f"budgets[{i}] must set limit_usd, limit_runs, or both - a budget with neither "
+                f"caps nothing. Use limit_usd for measured spend and limit_runs for clients whose "
+                f"cost cannot be measured."
             )
-        if limit_raw <= 0:
-            raise ConfigError(f"budgets[{i}].limit_usd must be > 0, got {limit_raw}")
         enforce_raw = entry.get("enforce", False)
         if not isinstance(enforce_raw, bool):
             raise ConfigError(
@@ -490,7 +521,8 @@ def _parse_budgets(value: Any) -> list[BudgetSpec]:
                 backend=backend,
                 client=client,
                 window=window_raw,
-                limit_usd=float(limit_raw),
+                limit_usd=float(limit_raw) if limit_raw is not None else None,
+                limit_runs=runs_raw,
                 enforce=enforce_raw,
             )
         )

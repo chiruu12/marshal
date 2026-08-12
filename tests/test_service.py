@@ -1247,6 +1247,7 @@ def test_service_budget_status_passes_config_through_to_fleet(repo: Path) -> Non
             "client": None,
             "window": "week",
             "limit_usd": 1.0,
+            "limit_runs": None,
             "enforce": False,
         },
         {
@@ -1254,6 +1255,7 @@ def test_service_budget_status_passes_config_through_to_fleet(repo: Path) -> Non
             "client": None,
             "window": "month",
             "limit_usd": 5.0,
+            "limit_runs": None,
             "enforce": False,
         },
     ]

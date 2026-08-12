@@ -38,6 +38,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from ..core.config import BudgetSpec
+from ..core.types import UsageSource
 from ..core.layout import budget_gate_path
 from .usage import (
     Bucket,
@@ -83,6 +84,9 @@ class BudgetCheckSnapshot:
 
     cursor: LedgerCursor
     enforce_spent: dict[str, float] = field(default_factory=dict)
+    #: Parallel baseline for `limit_runs`: in-window runs under this scope with no measured cost.
+    #: Carried alongside spend so the under-lock revalidation can extend both from the same tail.
+    enforce_unmeasured: dict[str, int] = field(default_factory=dict)
 
 
 def _budget_window_since(window: str, session_start: datetime, now: datetime) -> datetime:
@@ -160,6 +164,31 @@ def _spend_from_events(
     return total
 
 
+def _unmeasured_runs_from_events(
+    events: list[UsageEvent],
+    budget: BudgetSpec,
+    *,
+    session_start: datetime,
+    now: datetime,
+) -> int:
+    """How many in-window runs under this scope had NO measured cost.
+
+    The complement of `_spend_from_events`: between them every run in the window is accounted for
+    by exactly one limit, which is the point - a run is either something the dollar cap can see or
+    something only the run cap can.
+    """
+    since = _budget_window_since(budget.window, session_start, now)
+    count = 0
+    for e in events:
+        if not _in_window(e, since, None):
+            continue
+        if not _event_matches_budget_scope(e, budget):
+            continue
+        if e.source == UsageSource.UNAVAILABLE.value:
+            count += 1
+    return count
+
+
 def _budget_scope_label(budget: BudgetSpec) -> str:
     """Human-readable scope label for a budget (what the warning / display names)."""
     if budget.client is not None:
@@ -206,13 +235,28 @@ def compute_budget_status(
         except Exception:  # noqa: BLE001 - display never fails a usage query
             spent = 0.0
             spent_known = False  # error => spend unknown, never claim a known $0
+        runs_unmeasured = 0
+        if b.limit_runs is not None:
+            try:
+                runs_unmeasured = _unmeasured_runs_from_events(
+                    tracker.events(), b, session_start=session_start, now=now
+                )
+            except Exception:  # noqa: BLE001 - display never fails a usage query
+                runs_unmeasured = 0
         out.append(
             BudgetStatus(
                 scope=_budget_scope_label(b),
                 window=b.window,
                 spent_usd=spent,
                 limit_usd=b.limit_usd,
-                remaining_usd=max(0.0, b.limit_usd - spent),
+                remaining_usd=(
+                    None if b.limit_usd is None else max(0.0, b.limit_usd - spent)
+                ),
+                runs_unmeasured=runs_unmeasured,
+                limit_runs=b.limit_runs,
+                remaining_runs=(
+                    None if b.limit_runs is None else max(0, b.limit_runs - runs_unmeasured)
+                ),
                 enforce=b.enforce,
                 spent_known=spent_known,
             )
@@ -225,9 +269,14 @@ class BudgetStatus(BaseModel):
 
     scope: str           # "client:<name>" | "backend:<name>" | "global"
     window: str          # session | week | month
-    spent_usd: float     # windowed cost under this scope (0.0 for a scope with no spend)
-    limit_usd: float
-    remaining_usd: float # max(0, limit - spent) - the same floor a $0 spend gives a $0 remaining
+    spent_usd: float     # windowed MEASURED cost under this scope (0.0 for a scope with no spend)
+    limit_usd: float | None = None
+    remaining_usd: float | None = None  # max(0, limit - spent); None when there is no dollar cap
+    #: Runs in the window under this scope whose cost nobody reported. These are precisely the runs
+    #: `spent_usd` cannot see, which is why they get their own cap rather than a guessed price.
+    runs_unmeasured: int = 0
+    limit_runs: int | None = None
+    remaining_runs: int | None = None
     enforce: bool = False
     spent_known: bool = Field(
         default=True,
@@ -285,6 +334,7 @@ def check_budget(
 
     cursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
     enforce_spent: dict[str, float] = {}
+    enforce_unmeasured: dict[str, int] = {}
     events: list[UsageEvent] | None = None
 
     if enforce_budgets:
@@ -300,14 +350,25 @@ def check_budget(
                     events, b, session_start=session_start, now=now
                 )
                 enforce_spent[_enforce_budget_key(b)] = spent
-                if spent < b.limit_usd:
-                    continue
-                raise BudgetExceeded(
-                    f"[marshal] budget: {_budget_scope_label(b)} spent "
-                    f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window}); "
-                    "refusing new spawn (enforce=true). "
-                    "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
+                runs = _unmeasured_runs_from_events(
+                    events, b, session_start=session_start, now=now
                 )
+                enforce_unmeasured[_enforce_budget_key(b)] = runs
+                if b.limit_usd is not None and spent >= b.limit_usd:
+                    raise BudgetExceeded(
+                        f"[marshal] budget: {_budget_scope_label(b)} spent "
+                        f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window}); "
+                        "refusing new spawn (enforce=true). "
+                        "Raise limit_usd, wait for the window to roll, or set enforce: false for "
+                        "soft-warn."
+                    )
+                if b.limit_runs is not None and runs >= b.limit_runs:
+                    raise BudgetExceeded(
+                        f"[marshal] budget: {_budget_scope_label(b)} ran {runs} runs with "
+                        f"unmeasured cost >= cap {b.limit_runs} ({b.window}); refusing new spawn "
+                        "(enforce=true). This cap governs runs whose cost no backend reported - "
+                        "raise limit_runs, wait for the window to roll, or set enforce: false."
+                    )
         except BudgetExceeded:
             raise
         except UnreadableUsageLedgerError as exc:
@@ -333,15 +394,29 @@ def check_budget(
                 )
             except Exception:  # noqa: BLE001
                 continue
-            if spent < b.limit_usd:
-                continue
-            print(
-                f"[marshal] budget: {_budget_scope_label(b)} spent "
-                f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window})",
-                file=sys.stderr,
-            )
+            if b.limit_usd is not None and spent >= b.limit_usd:
+                print(
+                    f"[marshal] budget: {_budget_scope_label(b)} spent "
+                    f"${spent:.4f} >= cap ${b.limit_usd:.4f} ({b.window})",
+                    file=sys.stderr,
+                )
+            if b.limit_runs is not None:
+                try:
+                    runs = _unmeasured_runs_from_events(
+                        events, b, session_start=session_start, now=now
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                if runs >= b.limit_runs:
+                    print(
+                        f"[marshal] budget: {_budget_scope_label(b)} ran {runs} unmeasured-cost "
+                        f"runs >= cap {b.limit_runs} ({b.window})",
+                        file=sys.stderr,
+                    )
 
-    return BudgetCheckSnapshot(cursor=cursor, enforce_spent=enforce_spent)
+    return BudgetCheckSnapshot(
+        cursor=cursor, enforce_spent=enforce_spent, enforce_unmeasured=enforce_unmeasured
+    )
 
 
 def _probe_summary_if_patched(tracker: UsageTracker, *, strict: bool) -> None:
@@ -374,7 +449,7 @@ def _recheck_enforce_from_tail(
 
     Lock-body work is O(new events), normally O(1). A rewritten/truncated/torn tail fails closed.
     """
-    if not snap.enforce_spent:
+    if not snap.enforce_spent and not snap.enforce_unmeasured:
         return
     try:
         new_events = tracker.events_after(snap.cursor, strict=True)
@@ -388,6 +463,7 @@ def _recheck_enforce_from_tail(
 
     now = datetime.now(timezone.utc)
     spent = dict(snap.enforce_spent)
+    unmeasured = dict(snap.enforce_unmeasured)
     matching = [b for b in budgets if b.enforce and _budget_matches(b, req)]
     for e in new_events:
         for b in matching:
@@ -398,18 +474,30 @@ def _recheck_enforce_from_tail(
                 continue
             key = _enforce_budget_key(b)
             spent[key] = spent.get(key, 0.0) + e.cost_usd
+            if e.source == UsageSource.UNAVAILABLE.value:
+                unmeasured[key] = unmeasured.get(key, 0) + 1
 
     for b in matching:
         key = _enforce_budget_key(b)
         cur = spent.get(key, 0.0)
-        if cur < b.limit_usd:
-            continue
-        raise BudgetExceeded(
-            f"[marshal] budget: {_budget_scope_label(b)} spent "
-            f"${cur:.4f} >= cap ${b.limit_usd:.4f} ({b.window}); "
-            "refusing new spawn (enforce=true). "
-            "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
-        )
+        if b.limit_usd is not None and cur >= b.limit_usd:
+            raise BudgetExceeded(
+                f"[marshal] budget: {_budget_scope_label(b)} spent "
+                f"${cur:.4f} >= cap ${b.limit_usd:.4f} ({b.window}); "
+                "refusing new spawn (enforce=true). "
+                "Raise limit_usd, wait for the window to roll, or set enforce: false for soft-warn."
+            )
+        runs = unmeasured.get(key, 0)
+        if b.limit_runs is not None and runs >= b.limit_runs:
+            # The only cap that can govern a client whose spend nobody reports. Counting runs is
+            # not a proxy for dollars and is not presented as one - it bounds exposure in the one
+            # unit that is actually observable here.
+            raise BudgetExceeded(
+                f"[marshal] budget: {_budget_scope_label(b)} ran {runs} runs with unmeasured cost "
+                f">= cap {b.limit_runs} ({b.window}); refusing new spawn (enforce=true). "
+                "This cap governs runs whose cost no backend reported - raise limit_runs, wait for "
+                "the window to roll, or set enforce: false for soft-warn."
+            )
 
 
 def _pid_alive(pid: int) -> bool:

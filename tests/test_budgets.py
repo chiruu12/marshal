@@ -1173,3 +1173,90 @@ out.write_text("admitted", encoding="utf-8")
     outcomes = [p.read_text(encoding="utf-8") for p in outs if p.exists()]
     assert outcomes.count("admitted") == 1, outcomes
     assert outcomes.count("refused") == 1, outcomes
+
+
+# --- two limits: dollars govern measured spend, runs govern what dollars cannot see -------------
+
+
+def _seed_unmeasured(tracker: UsageTracker, *, client: str | None = "worker", n: int = 1) -> None:
+    """Runs a subscription backend produced: real work, no cost anyone reported."""
+    for i in range(n):
+        tracker.record(
+            UsageEvent(
+                ts=datetime.now(timezone.utc).isoformat(),
+                run_id=f"unmeasured.{i}.{time.time_ns()}",
+                backend="cursor",
+                client=client,
+                cost_usd=0.0,
+                status="exited_clean",
+                source="unavailable",
+            )
+        )
+
+
+def test_a_dollar_cap_alone_does_not_govern_unmeasurable_runs(tmp_path: Path) -> None:
+    """The hole the second limit exists to close.
+
+    A subscription client reports no cost, so a dollar cap sees $0 spent however many runs it
+    burns - "within budget" is then a statement about what Marshal can measure, not about what was
+    consumed. The dollar cap is not made to guess a price; a run cap is added that governs exactly
+    the runs the dollar cap cannot see.
+    """
+    tracker = _tracker(tmp_path)
+    _seed_unmeasured(tracker, n=25)
+    usd_only = BudgetSpec(window="month", limit_usd=10.0, enforce=True)
+
+    # Not refused: no measured spend exists to exceed the cap, and inventing one would be a lie.
+    check_budget(tracker, SESSION, [usd_only], _scope(client="worker"))
+
+    status = compute_budget_status(tracker, SESSION, [usd_only], datetime.now(timezone.utc))[0]
+    assert status.spent_usd == 0.0
+    assert status.runs_unmeasured == 0  # not counted: this budget declares no run cap to count for
+
+
+def test_a_run_cap_governs_runs_whose_cost_was_never_measured(tmp_path: Path) -> None:
+    tracker = _tracker(tmp_path)
+    _seed_unmeasured(tracker, n=3)
+    budget = BudgetSpec(window="month", limit_runs=3, enforce=True)
+
+    with pytest.raises(BudgetExceeded) as exc:
+        check_budget(tracker, SESSION, [budget], _scope(client="worker"))
+
+    message = str(exc.value)
+    assert "unmeasured cost" in message
+    assert "limit_runs" in message  # names the knob, like the dollar path does
+
+
+def test_each_limit_only_counts_what_it_can_see(tmp_path: Path) -> None:
+    """The two limits partition the window's runs; neither stands in for the other."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=2.0)          # measured
+    _seed(tracker, cost=3.0)          # measured
+    _seed_unmeasured(tracker, n=4)    # unmeasured
+    budget = BudgetSpec(window="month", limit_usd=100.0, limit_runs=100)
+
+    status = compute_budget_status(tracker, SESSION, [budget], datetime.now(timezone.utc))[0]
+
+    assert status.spent_usd == pytest.approx(5.0)   # only the priced runs
+    assert status.runs_unmeasured == 4              # only the unpriced ones
+    assert status.remaining_usd == pytest.approx(95.0)
+    assert status.remaining_runs == 96
+
+
+def test_a_run_cap_is_not_tripped_by_measured_runs(tmp_path: Path) -> None:
+    """A measured run is already governed by the dollar cap; counting it twice would double-charge."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=0.01)
+    _seed(tracker, cost=0.01)
+    _seed(tracker, cost=0.01)
+    budget = BudgetSpec(window="month", limit_runs=2, enforce=True)
+
+    check_budget(tracker, SESSION, [budget], _scope(client="worker"))  # must not raise
+
+
+def test_a_budget_that_caps_nothing_is_refused_at_config_load() -> None:
+    """A budget with neither limit would sit in `usage` looking like a control that is in force."""
+    from marshal_engine.core.config import ConfigError, _parse_budgets
+
+    with pytest.raises(ConfigError, match="must set limit_usd, limit_runs, or both"):
+        _parse_budgets([{"window": "month"}])
