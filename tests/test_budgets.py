@@ -25,7 +25,11 @@ from marshal_engine.accounting.budgets import (
     compute_budget_status,
 )
 from marshal_engine.core.config import BudgetSpec
-from marshal_engine.accounting.usage import UsageEvent, UsageTracker
+from marshal_engine.accounting.usage import (
+    UnreadableUsageLedgerError,
+    UsageEvent,
+    UsageTracker,
+)
 
 
 def _scope(*, client: str | None = None, backend_name: str = "opencode") -> SimpleNamespace:
@@ -1312,3 +1316,64 @@ def test_the_example_config_budgets_actually_load() -> None:
 
     parsed = yaml.safe_load("\n".join(block))
     _parse_budgets(parsed["budgets"])  # raises ConfigError on a bad window / missing limits
+# --- #164: an unreadable ledger is not an empty one ---------------------------------------------
+
+
+def test_an_unstattable_ledger_does_not_read_as_no_spend(tmp_path: Path, monkeypatch) -> None:
+    """The fail-open that mattered: `exists()` said False for EACCES as well as for "not yet".
+
+    An enforced budget then saw $0 spent and admitted the spawn - the cap failing open in the one
+    mode whose whole job is to refuse. Only "no ledger written yet" may read as empty.
+    """
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=99.0)
+
+    real_stat = Path.stat
+
+    def denied(self, *a, **kw):
+        if self.name == "events.jsonl":
+            raise PermissionError(13, "Permission denied")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", denied)
+
+    with pytest.raises(PermissionError):
+        tracker.read_events(strict=True)
+
+
+def test_a_cold_ledger_still_reads_as_empty(tmp_path: Path) -> None:
+    """The legitimate case must survive the fix, or every first run fails closed on nothing."""
+    tracker = _tracker(tmp_path)
+    events, cursor = tracker.read_events(strict=True)
+    assert events == []
+    assert cursor.size == 0
+
+
+def test_a_tear_inside_a_multibyte_character_still_reports(tmp_path: Path) -> None:
+    """Torn-line tolerance held for ASCII ledgers only.
+
+    A `client` name can be non-ASCII and is not escaped on write, so a crash can tear the final
+    line INSIDE a character. Decoding the whole file strictly made that a hard failure for every
+    reader, including `marshal usage`, which is supposed to degrade rather than die.
+    """
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=1.0, client="wörker")
+    with tracker.events_path.open("ab") as f:
+        # The tear has to land INSIDE a character to exercise this: "ö" is two bytes in UTF-8, so
+        # keeping only its first byte leaves a sequence no strict decode can read.
+        f.write('{"client": "wö'.encode()[:-1])
+
+    events = tracker.events(strict=False)  # must not raise
+    assert len(events) == 1
+    assert events[0].cost_usd == pytest.approx(1.0)
+
+
+def test_enforce_refuses_a_ledger_it_cannot_decode(tmp_path: Path) -> None:
+    """Reporting may patch over a tear; enforce may not - a doubtful ledger caps nothing."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=1.0, client="wörker")
+    with tracker.events_path.open("ab") as f:
+        f.write('{"client": "wö'.encode()[:-1])
+
+    with pytest.raises((UnicodeDecodeError, UnreadableUsageLedgerError)):
+        tracker.read_events(strict=True)

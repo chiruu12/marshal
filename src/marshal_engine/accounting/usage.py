@@ -231,21 +231,41 @@ class UsageTracker:
         """Read the ledger once; return events plus a cursor for later O(tail) re-reads.
 
         ``strict=False`` (reporting): skip malformed lines, stderr-warn with the count.
-        ``strict=True`` (enforce): any skipped line raises ``UnreadableUsageLedgerError``.
-        File-level faults (OSError, whole-file decode failure) always propagate.
+        ``strict=True`` (enforce): any skipped line raises ``UnreadableUsageLedgerError``, and the
+        file must decode as valid UTF-8 - a ledger we cannot read exactly is not one to enforce a
+        cap from. Reporting decodes with replacement so a byte-level tear degrades to a skipped
+        line rather than an unusable `marshal usage`.
+
+        OSErrors propagate in both modes; only ``FileNotFoundError`` (no ledger written yet) is
+        the legitimately-empty case. An unreadable ledger must never present as an empty one -
+        that is spend reported as $0.
 
         Also stamps ``last_events`` / ``last_cursor`` so a caller (e.g. ``check_budget``) can
         window multiple budget scopes against the SAME ledger instant after one read.
         """
-        if not self.events_path.exists():
+        # `exists()` answers False for "no ledger yet" AND for "cannot stat it" - EACCES, a
+        # permission-denied parent, a broken mount. Collapsing those made an unreadable ledger
+        # read as an empty one, so an ENFORCED budget saw $0 spent and admitted the spawn: the
+        # cap failed OPEN, in the one mode whose entire job is to refuse. Cold start is the only
+        # legitimately-empty case, and `stat` is what tells them apart.
+        try:
+            st = self.events_path.stat()
+        except FileNotFoundError:
             cursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
             self.last_cursor = cursor
             self.last_events = []
             return [], cursor
-        st = self.events_path.stat()
+        # Any other OSError propagates: unknown spend must never present as no spend.
         data = self.events_path.read_bytes()
         cursor = LedgerCursor(size=len(data), inode=st.st_ino, mtime_ns=st.st_mtime_ns)
-        text = data.decode("utf-8")  # UnicodeDecodeError propagates (file-level fault)
+        # A crash-torn final line can tear INSIDE a multibyte character - reachable because a
+        # `client` name may be non-ASCII and is not escaped on write. Decoding the whole file
+        # strictly made that a hard failure for every reader, so the torn-line tolerance the
+        # reporting path is supposed to have held for ASCII ledgers only. Reporting replaces the
+        # undecodable bytes and lets per-line parsing skip whatever they broke; enforce still
+        # decodes strictly, because there a doubtful ledger must fail closed rather than be
+        # patched up into something readable.
+        text = data.decode("utf-8") if strict else data.decode("utf-8", errors="replace")
         events = _parse_event_lines(text, path=self.events_path, strict=strict)
         self.last_cursor = cursor
         self.last_events = events

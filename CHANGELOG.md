@@ -23,6 +23,19 @@ versions may include breaking API changes until 1.0.
 
   `limit_usd` is now optional, and a budget with neither limit is refused at config load rather than
   displayed as a control that is in force.
+### Fixed
+
+- **An unreadable usage ledger no longer reads as an empty one (#164).** `exists()` answered False
+  both for "no ledger yet" and for "cannot stat it" (EACCES, an unreadable parent, a broken mount),
+  so an **enforced** budget saw `$0` spent and admitted the spawn — the cap failing open in the one
+  mode whose whole job is to refuse. Only `FileNotFoundError` is the legitimately-empty case now;
+  every other `OSError` propagates.
+- **A ledger torn inside a multibyte character is readable again in reporting mode (#164).** A
+  crash can tear the final line mid-character — reachable because a `client` name may be non-ASCII
+  and is not escaped on write — and decoding the whole file strictly turned that into a hard
+  failure for every reader, so the torn-line tolerance `marshal usage` is supposed to have held for
+  ASCII ledgers only. Reporting now decodes with replacement and skips the broken line; enforce
+  still decodes strictly, because a ledger it cannot read exactly is not one to enforce a cap from.
 
 ### Changed
 
