@@ -126,20 +126,34 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
     if not rows:
         return
     print("\nbudgets")
-    header = ("scope", "window", "spent", "limit", "remaining", "mode")
+    header = ("scope", "window", "spent", "limit", "remaining", "runs", "run cap", "mode")
     table_rows = [
         (
             r.scope,
             r.window,
-            _format_budget_amount(r.spent_usd, known=r.spent_known),
-            f"${r.limit_usd:.4f}",
-            "unavailable" if not r.spent_known else f"${r.remaining_usd:.4f}",
+            # A dollar cap and a run cap are separate controls; a budget may declare either, so
+            # every column here has to render "-" rather than assume its limit exists. A runs-only
+            # budget is the normal shape for a subscription fleet, not an edge case.
+            _format_budget_amount(r.spent_usd, known=r.spent_known) if r.limit_usd is not None else "-",
+            f"${r.limit_usd:.4f}" if r.limit_usd is not None else "-",
+            _format_budget_remaining(r),
+            str(r.runs_unmeasured) if r.limit_runs is not None else "-",
+            str(r.limit_runs) if r.limit_runs is not None else "-",
             "enforce" if r.enforce else "soft-warn",
         )
         for r in rows
     ]
     for line in _align_rows(header, table_rows):
         print(f"  {line}")
+
+
+def _format_budget_remaining(r: BudgetStatus) -> str:
+    """Remaining dollars for this budget, or why there is no figure to show."""
+    if r.limit_usd is None:
+        return "-"                    # runs-only budget: no dollar cap to have a remainder of
+    if not r.spent_known:
+        return "unavailable"          # spend unknown, so remaining is unknown - never a fake number
+    return f"${r.remaining_usd:.4f}" if r.remaining_usd is not None else "-"
 
 
 def _format_integration_rate(cell: RoutingCell) -> str:

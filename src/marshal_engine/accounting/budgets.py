@@ -434,8 +434,13 @@ def _probe_summary_if_patched(tracker: UsageTracker, *, strict: bool) -> None:
 
 
 def _enforce_budget_key(budget: BudgetSpec) -> str:
-    """Stable key for an enforce-budget concurrency slot (scope + window + limit)."""
-    return f"{_budget_scope_label(budget)}|{budget.window}|{budget.limit_usd}"
+    """Stable key for an enforce-budget concurrency slot (scope + window + both limits)."""
+    # Both limits are in the key. Two budgets alike in scope, window and dollar cap but differing
+    # in `limit_runs` are different controls; sharing a reservation slot would let the first one's
+    # in-flight spawn make the second look already held and refuse an admissible run.
+    return (
+        f"{_budget_scope_label(budget)}|{budget.window}|{budget.limit_usd}|{budget.limit_runs}"
+    )
 
 
 def _recheck_enforce_from_tail(

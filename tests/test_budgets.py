@@ -1260,3 +1260,55 @@ def test_a_budget_that_caps_nothing_is_refused_at_config_load() -> None:
 
     with pytest.raises(ConfigError, match="must set limit_usd, limit_runs, or both"):
         _parse_budgets([{"window": "month"}])
+
+
+def test_two_budgets_differing_only_in_run_cap_get_separate_slots() -> None:
+    """Enforced budgets reserve a concurrency slot by key; the key must tell them apart.
+
+    Two budgets identical in scope, window and dollar cap but with different `limit_runs` are
+    different controls. Sharing a slot would let one's in-flight spawn make the other look already
+    held, refusing a run that was admissible under it.
+    """
+    from marshal_engine.accounting.budgets import _enforce_budget_key
+
+    a = BudgetSpec(window="month", limit_usd=10.0, limit_runs=5, enforce=True)
+    b = BudgetSpec(window="month", limit_usd=10.0, limit_runs=50, enforce=True)
+
+    assert _enforce_budget_key(a) != _enforce_budget_key(b)
+
+
+def test_a_runs_only_budget_renders_without_a_dollar_limit() -> None:
+    """The human `usage` table must not assume every budget has a dollar cap.
+
+    A runs-only budget is the normal shape for a subscription fleet - the case this whole feature
+    exists for - so formatting it must not be the thing that crashes the display.
+    """
+    from marshal_engine.interfaces.cli.formatting import _print_budget_table
+
+    status = BudgetStatus(
+        scope="backend:cursor", window="week", spent_usd=0.0,
+        limit_usd=None, remaining_usd=None,
+        runs_unmeasured=7, limit_runs=50, remaining_runs=43,
+        enforce=True, spent_known=True,
+    )
+
+    _print_budget_table([status])  # must not raise
+
+
+def test_the_example_config_budgets_actually_load() -> None:
+    """The shipped example is the first thing a user copies; a bad window there fails at load."""
+    import yaml
+
+    from marshal_engine.core.config import _parse_budgets
+
+    text = Path("fleet.config.example.yaml").read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("# budgets:"))
+    block = [lines[start][2:]]
+    for line in lines[start + 1:]:
+        if not line.startswith("#   "):
+            break                       # end of the budgets block; other commented sections follow
+        block.append(line[2:])
+
+    parsed = yaml.safe_load("\n".join(block))
+    _parse_budgets(parsed["budgets"])  # raises ConfigError on a bad window / missing limits

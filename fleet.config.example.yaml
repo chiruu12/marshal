@@ -100,7 +100,7 @@ retries: 2
 #     limit_usd: 25.0
 #     enforce: true
 #   - backend: cursor          # subscription: spend is unknowable here, so cap the runs
-#     window: day
+#     window: week
 #     limit_runs: 50
 #   - window: session
 #     limit_usd: 10.0
