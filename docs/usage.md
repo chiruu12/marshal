@@ -151,7 +151,9 @@ clients:
   windowed spend meets/exceeds the cap; the run proceeds). Set `enforce: true` to hard-refuse matching
   over-cap spawns (`BudgetExceeded`) and serialize matching in-flight spawns across processes
   (CLI + MCP on one repo; `.marshal/budget_gate.json`). Set at most one of
-  `backend` / `client` per entry (omit both for a global cap); `limit_usd` must be positive; the
+  `backend` / `client` per entry (omit both for a global cap); set at least one of `limit_usd`
+  (measured spend) or `limit_runs` (runs whose cost was never measured — the only cap that governs a
+  subscription backend); the
   scope's `cost_usd` comes from the usage ledger, so subscription / unknown-cost backends (which
   report `$0` / `unavailable`) never trigger a $ cap and show `unavailable` spent when the scope
   has runs with no priced cost (an empty scope still shows `$0.0000`; no fake percentage,

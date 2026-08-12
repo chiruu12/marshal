@@ -87,18 +87,24 @@ retries: 2
 # set enforce: true to refuse matching spawns when spend already meets the cap, and to serialize
 # matching in-flight spawns (one at a time) so parallel fan-out cannot overshoot before spend is
 # recorded. Scope to a backend, a client, or the whole fleet (omit both backend and client).
-# window is session | week | month. Subscription / unknown-cost backends report $0, so a budget
-# on them never triggers.
+# window is session | week | month.
+#
+# TWO limits, because one number cannot govern both kinds of client. `limit_usd` caps spend that
+# was actually measured. `limit_runs` caps runs whose cost nobody reported - a subscription backend
+# contributes $0 to a dollar cap however many runs it burns, so a dollar cap alone leaves it
+# uncapped. Set at least one; set both when a scope mixes measured and unmeasurable clients. Each
+# limit only ever governs what it can see, and `usage` reports both.
 # budgets:
 #   - client: planner
 #     window: week
 #     limit_usd: 25.0
 #     enforce: true
-#   - backend: claude-code
-#     window: month
-#     limit_usd: 100.0
+#   - backend: cursor          # subscription: spend is unknowable here, so cap the runs
+#     window: week
+#     limit_runs: 50
 #   - window: session
 #     limit_usd: 10.0
+#     limit_runs: 100
 
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a

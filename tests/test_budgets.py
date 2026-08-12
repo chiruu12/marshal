@@ -1173,3 +1173,142 @@ out.write_text("admitted", encoding="utf-8")
     outcomes = [p.read_text(encoding="utf-8") for p in outs if p.exists()]
     assert outcomes.count("admitted") == 1, outcomes
     assert outcomes.count("refused") == 1, outcomes
+
+
+# --- two limits: dollars govern measured spend, runs govern what dollars cannot see -------------
+
+
+def _seed_unmeasured(tracker: UsageTracker, *, client: str | None = "worker", n: int = 1) -> None:
+    """Runs a subscription backend produced: real work, no cost anyone reported."""
+    for i in range(n):
+        tracker.record(
+            UsageEvent(
+                ts=datetime.now(timezone.utc).isoformat(),
+                run_id=f"unmeasured.{i}.{time.time_ns()}",
+                backend="cursor",
+                client=client,
+                cost_usd=0.0,
+                status="exited_clean",
+                source="unavailable",
+            )
+        )
+
+
+def test_a_dollar_cap_alone_does_not_govern_unmeasurable_runs(tmp_path: Path) -> None:
+    """The hole the second limit exists to close.
+
+    A subscription client reports no cost, so a dollar cap sees $0 spent however many runs it
+    burns - "within budget" is then a statement about what Marshal can measure, not about what was
+    consumed. The dollar cap is not made to guess a price; a run cap is added that governs exactly
+    the runs the dollar cap cannot see.
+    """
+    tracker = _tracker(tmp_path)
+    _seed_unmeasured(tracker, n=25)
+    usd_only = BudgetSpec(window="month", limit_usd=10.0, enforce=True)
+
+    # Not refused: no measured spend exists to exceed the cap, and inventing one would be a lie.
+    check_budget(tracker, SESSION, [usd_only], _scope(client="worker"))
+
+    status = compute_budget_status(tracker, SESSION, [usd_only], datetime.now(timezone.utc))[0]
+    assert status.spent_usd == 0.0
+    assert status.runs_unmeasured == 0  # not counted: this budget declares no run cap to count for
+
+
+def test_a_run_cap_governs_runs_whose_cost_was_never_measured(tmp_path: Path) -> None:
+    tracker = _tracker(tmp_path)
+    _seed_unmeasured(tracker, n=3)
+    budget = BudgetSpec(window="month", limit_runs=3, enforce=True)
+
+    with pytest.raises(BudgetExceeded) as exc:
+        check_budget(tracker, SESSION, [budget], _scope(client="worker"))
+
+    message = str(exc.value)
+    assert "unmeasured cost" in message
+    assert "limit_runs" in message  # names the knob, like the dollar path does
+
+
+def test_each_limit_only_counts_what_it_can_see(tmp_path: Path) -> None:
+    """The two limits partition the window's runs; neither stands in for the other."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=2.0)          # measured
+    _seed(tracker, cost=3.0)          # measured
+    _seed_unmeasured(tracker, n=4)    # unmeasured
+    budget = BudgetSpec(window="month", limit_usd=100.0, limit_runs=100)
+
+    status = compute_budget_status(tracker, SESSION, [budget], datetime.now(timezone.utc))[0]
+
+    assert status.spent_usd == pytest.approx(5.0)   # only the priced runs
+    assert status.runs_unmeasured == 4              # only the unpriced ones
+    assert status.remaining_usd == pytest.approx(95.0)
+    assert status.remaining_runs == 96
+
+
+def test_a_run_cap_is_not_tripped_by_measured_runs(tmp_path: Path) -> None:
+    """A measured run is already governed by the dollar cap; counting it twice would double-charge."""
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=0.01)
+    _seed(tracker, cost=0.01)
+    _seed(tracker, cost=0.01)
+    budget = BudgetSpec(window="month", limit_runs=2, enforce=True)
+
+    check_budget(tracker, SESSION, [budget], _scope(client="worker"))  # must not raise
+
+
+def test_a_budget_that_caps_nothing_is_refused_at_config_load() -> None:
+    """A budget with neither limit would sit in `usage` looking like a control that is in force."""
+    from marshal_engine.core.config import ConfigError, _parse_budgets
+
+    with pytest.raises(ConfigError, match="must set limit_usd, limit_runs, or both"):
+        _parse_budgets([{"window": "month"}])
+
+
+def test_two_budgets_differing_only_in_run_cap_get_separate_slots() -> None:
+    """Enforced budgets reserve a concurrency slot by key; the key must tell them apart.
+
+    Two budgets identical in scope, window and dollar cap but with different `limit_runs` are
+    different controls. Sharing a slot would let one's in-flight spawn make the other look already
+    held, refusing a run that was admissible under it.
+    """
+    from marshal_engine.accounting.budgets import _enforce_budget_key
+
+    a = BudgetSpec(window="month", limit_usd=10.0, limit_runs=5, enforce=True)
+    b = BudgetSpec(window="month", limit_usd=10.0, limit_runs=50, enforce=True)
+
+    assert _enforce_budget_key(a) != _enforce_budget_key(b)
+
+
+def test_a_runs_only_budget_renders_without_a_dollar_limit() -> None:
+    """The human `usage` table must not assume every budget has a dollar cap.
+
+    A runs-only budget is the normal shape for a subscription fleet - the case this whole feature
+    exists for - so formatting it must not be the thing that crashes the display.
+    """
+    from marshal_engine.interfaces.cli.formatting import _print_budget_table
+
+    status = BudgetStatus(
+        scope="backend:cursor", window="week", spent_usd=0.0,
+        limit_usd=None, remaining_usd=None,
+        runs_unmeasured=7, limit_runs=50, remaining_runs=43,
+        enforce=True, spent_known=True,
+    )
+
+    _print_budget_table([status])  # must not raise
+
+
+def test_the_example_config_budgets_actually_load() -> None:
+    """The shipped example is the first thing a user copies; a bad window there fails at load."""
+    import yaml
+
+    from marshal_engine.core.config import _parse_budgets
+
+    text = Path("fleet.config.example.yaml").read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("# budgets:"))
+    block = [lines[start][2:]]
+    for line in lines[start + 1:]:
+        if not line.startswith("#   "):
+            break                       # end of the budgets block; other commented sections follow
+        block.append(line[2:])
+
+    parsed = yaml.safe_load("\n".join(block))
+    _parse_budgets(parsed["budgets"])  # raises ConfigError on a bad window / missing limits

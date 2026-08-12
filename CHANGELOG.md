@@ -8,6 +8,22 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`budgets` take a second limit, `limit_runs`.** A dollar cap can only govern spend Marshal can
+  measure. A subscription backend reports no cost, so a fleet of them under `limit_usd` alone was
+  uncapped in practice — it showed `$0` spent forever, and "within budget" was a statement about
+  what Marshal could see rather than about what was consumed. `limit_runs` caps runs whose cost
+  nobody reported.
+
+  Each limit governs only what it can see: measured runs count against `limit_usd`, unmeasured ones
+  against `limit_runs`, and neither number stands in for the other. `usage` reports both, with
+  `runs_unmeasured` beside `spent_usd`. A run cap is not a price estimate and is not presented as
+  one — Marshal still never guesses a cost.
+
+  `limit_usd` is now optional, and a budget with neither limit is refused at config load rather than
+  displayed as a control that is in force.
+
 ### Changed
 
 - **`read_paths` is limited to the workspace's own repo unless you opt out (#176).** The hatch for

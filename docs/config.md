@@ -132,8 +132,9 @@ run under the old key does not block a spawn admitted under the new key).
 | `backend` | string \| omitted | `null` | Scope the cap to one backend. Set **at most one** of `backend` or `client`; omit both for a fleet-wide cap. | `backend: claude-code` |
 | `client` | string \| omitted | `null` | Scope the cap to one configured client name. | `client: planner` |
 | `window` | `session` \| `week` \| `month` | *(required)* | Time window for spend aggregation. | `window: week` |
-| `limit_usd` | float (> 0) | *(required)* | Dollar cap for the scope and window. | `limit_usd: 25.0` |
-| `enforce` | bool | `false` | When `true`, refuse new matching spawns once spend ≥ cap, and serialize matching in-flight spawns **within one process** (see the scope note above). When `false`, print a soft warning only. | `enforce: true` |
+| `limit_usd` | float (> 0) \| omitted | `null` | Cap on **measured** spend for the scope and window — ledger cost from a native / admin-api source. A client whose cost nobody reports contributes `$0` here forever, so this limit alone cannot govern one; that is what `limit_runs` is for. | `limit_usd: 25.0` |
+| `limit_runs` | int (> 0) \| omitted | `null` | Cap on the number of runs in the window whose **cost was not measured**. The only limit that can govern a subscription backend. It is not a price estimate and is not presented as one — it bounds exposure in the one unit that is observable. Measured runs are governed by `limit_usd` and never counted here. | `limit_runs: 50` |
+| `enforce` | bool | `false` | When `true`, refuse new matching spawns once **either** limit is met, and serialize matching in-flight spawns **within one process** (see the scope note above). When `false`, print a soft warning only. | `enforce: true` |
 
 ## `<repo>/teams/*.yaml`
 
