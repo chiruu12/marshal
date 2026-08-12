@@ -11,7 +11,10 @@ import os
 import re
 from pathlib import Path
 
-_MARSHAL_DIRNAME = ".marshal"
+#: Name of the per-repo state directory. Public so callers that need the NAME (a git exclude entry,
+#: for one) do not hardcode it beside the paths built from it here.
+MARSHAL_DIRNAME = ".marshal"
+_MARSHAL_DIRNAME = MARSHAL_DIRNAME  # back-compat for existing internal references
 
 
 def marshal_dir(repo: Path | str) -> Path:

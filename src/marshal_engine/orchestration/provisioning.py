@@ -12,10 +12,10 @@ import fnmatch
 import os
 import shutil
 import stat
-import subprocess
 from pathlib import Path
 
 from ..core.ids import validate_run_id
+from ..runtime.git_exclude import GitExcludeError, append_git_exclude
 from ..runtime.worktree import Worktree
 
 def _require_context_files(wt: Worktree, context_files: list[str]) -> None:
@@ -450,29 +450,15 @@ def _make_readonly(path: Path) -> None:
 
 
 def _append_exclude(wt: Worktree, entry: str) -> None:
-    """Append ``entry`` to the worktree's ``info/exclude`` if not already present."""
-    proc = subprocess.run(
-        ["git", "-C", str(wt.path), "rev-parse", "--git-path", "info/exclude"],
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise ValueError(
-            f"could not resolve worktree exclude file: {proc.stderr.strip() or proc.stdout.strip()}"
-        )
-    exclude = Path(proc.stdout.strip())
-    if not exclude.is_absolute():
-        exclude = wt.path / exclude
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    existing = exclude.read_text() if exclude.exists() else ""
-    if entry in existing.splitlines():
-        return
-    with exclude.open("a") as fh:
-        if existing and not existing.endswith("\n"):
-            fh.write("\n")
-        fh.write(f"{entry}\n")
+    """Append ``entry`` to the worktree's ``info/exclude`` if not already present.
+
+    Strict here on purpose: a read_paths copy that is NOT excluded would show up in the run's diff
+    and in `changed_files`, so the caller would report provisioned context as the agent's work.
+    """
+    try:
+        append_git_exclude(wt.path, entry)
+    except GitExcludeError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _ensure_plain_marshal_context_dir(dest_root: Path) -> Path:

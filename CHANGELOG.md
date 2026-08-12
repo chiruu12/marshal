@@ -8,6 +8,17 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Marshal's state directory no longer shows up in your `git status`.** `.marshal/` was never
+  ignored, so every repo running Marshal carried untracked runtime state — noise at best, and a
+  ledger and logs committed by a stray `git add -A` at worst. The entry is written to the
+  per-clone `.git/info/exclude`, never to your tracked `.gitignore`: that file is yours, and
+  editing it would put a diff you did not write into your working tree and a conflict into a
+  shared repo. Written when a `Fleet` is built rather than by `marshal init`, since a driver
+  reaching Marshal over MCP never runs `init`. Best-effort — a directory that is not a repo, or a
+  `.git` that cannot be written, must not fail the run that follows.
+
 ### Added
 
 - **`budgets` take a second limit, `limit_runs`.** A dollar cap can only govern spend Marshal can
