@@ -110,6 +110,10 @@ class Worktree(BaseModel):
     task_id: str
     path: Path
     branch: str
+    #: The commit the run started from. Set by `create`; absent on a Worktree rebuilt from a run
+    #: record (which stores only path + branch), so every reader must tolerate None rather than
+    #: assume it is there.
+    base_commit: str | None = None
 
 
 class MergeResult(BaseModel):
@@ -296,7 +300,7 @@ class WorktreeManager:
         # same refusal a linked `worktree add -b` gave, minus the leaked-branch cleanup it needed:
         # nothing outside this directory was created, so tearing the directory down is the whole
         # rollback.
-        wt = Worktree(task_id=task_id, path=path, branch=branch)
+        wt = Worktree(task_id=task_id, path=path, branch=branch, base_commit=base_commit)
         checkout = self._git("checkout", "--quiet", "-b", branch, base_commit, cwd=path)
         if checkout.returncode != 0:
             shutil.rmtree(path, ignore_errors=True)
@@ -316,6 +320,27 @@ class WorktreeManager:
         # first commit would make those fail rather than answer "no commits yet".
         self._publish(wt, base_commit)
         return wt
+
+    def agent_commit_count(self, wt: Worktree) -> int | None:
+        """Commits the AGENT made in its own checkout, or None when it cannot be determined.
+
+        Counted in the run's clone against the commit it started from - deliberately not via the
+        driver's repo, because this is asked BEFORE the run's branch is published, and before
+        Marshal makes any commit of its own. So what it counts is exactly the work the agent chose
+        to commit, never a Marshal commit that is about to happen.
+
+        None means "cannot tell" (no recorded base, or git failed), which callers must not read as
+        zero: reporting a run as having produced nothing is the expensive direction to be wrong in.
+        """
+        if not wt.base_commit:
+            return None
+        proc = self._git("rev-list", "--count", f"{wt.base_commit}..HEAD", cwd=wt.path)
+        if proc.returncode != 0:
+            return None
+        try:
+            return int(proc.stdout.strip())
+        except ValueError:
+            return None
 
     def setup(
         self,

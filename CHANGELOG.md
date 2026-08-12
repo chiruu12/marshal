@@ -10,6 +10,13 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A run whose agent committed its own work is no longer recorded as `empty` (#250).** The status
+  was decided from the working tree alone, and an agent that commits leaves nothing uncommitted
+  behind it — so a run that produced real code was stamped `empty` while `collect_run` reported its
+  commit and changed files. Two surfaces described the same run differently, and the cheaper one
+  (the record a driver polls, including through `wait_for_runs`) was the wrong one, so work sitting
+  on the branch could be discarded unseen. Commits the agent made are now counted alongside the
+  tree; a count that cannot be determined never reads as zero.
 - **Marshal's state directory no longer shows up in your `git status`.** `.marshal/` was never
   ignored, so every repo running Marshal carried untracked runtime state — noise at best, and a
   ledger and logs committed by a stray `git add -A` at worst. The entry is written to the
