@@ -216,17 +216,23 @@ def test_shims_only_reexport() -> None:
         # `ast.Expr` is allowed ONLY when it is a docstring. A bare `ast.Expr` exclusion also
         # waved through every module-level call - a `print`, a registration hook, any import-time
         # side effect - which is exactly the "shim grew logic" case this test exists to catch.
-        def _is_docstring(n: ast.stmt) -> bool:
+        # Position matters: Python treats only the FIRST statement as the docstring. Accepting a
+        # string expression anywhere would still wave through a bare string mid-module, which is a
+        # statement with no effect - the same "shim grew a body" smell this test exists to catch.
+        module_body = ast.parse(path.read_text(encoding="utf-8")).body
+
+        def _is_docstring(i: int, n: ast.stmt) -> bool:
             return (
-                isinstance(n, ast.Expr)
+                i == 0
+                and isinstance(n, ast.Expr)
                 and isinstance(n.value, ast.Constant)
                 and isinstance(n.value.value, str)
             )
 
         body = [
             n
-            for n in ast.parse(path.read_text(encoding="utf-8")).body
-            if not isinstance(n, (ast.Import, ast.ImportFrom)) and not _is_docstring(n)
+            for i, n in enumerate(module_body)
+            if not isinstance(n, (ast.Import, ast.ImportFrom)) and not _is_docstring(i, n)
         ]
         assert not body, f"shim {name}.py must only re-export, found: {body}"
 

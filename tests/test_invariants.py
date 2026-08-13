@@ -270,16 +270,32 @@ _ALLOWED_SAFE_SOURCES = (
 )
 
 
+#: Inline opt-out for a comparison against another tool's status vocabulary (see the walker below).
+_FOREIGN_STATUS_MARKER = "marshal: foreign-status-vocabulary"
+
+
 def _enum_status_string_literals(path: Path) -> list[tuple[int, str, str]]:
     """Every `== <literal>` / `!= <literal>` / `in (<literals>,)` against a status string."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    # Lines carrying the marker are comparing a FOREIGN vocabulary that happens to share a spelling
+    # with a RunStatus value - an upstream CLI's own "failed"/"error", say. Marking the single line
+    # keeps every other line in the file under the invariant; excluding a whole package would make
+    # it permanently blind there, which is the opposite of what this check is for. Opting out has
+    # to be deliberate, visible at the site, and greppable.
+    # The marker counts on the comparison's own line or the one directly above it, so a long
+    # condition can carry it as a preceding comment instead of overflowing the line limit.
+    marked = {
+        i for i, line in enumerate(source.splitlines(), start=1) if _FOREIGN_STATUS_MARKER in line
+    }
+    exempt = marked | {i + 1 for i in marked}
     out: list[tuple[int, str, str]] = []
     # Walk Compare nodes; capture both `x == "lit"` and `x in ("lit", "lit")` patterns.
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare):
             for op, comp in zip(node.ops, node.comparators, strict=True):
                 if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(comp, ast.Constant) and isinstance(comp.value, str):
-                    if comp.value in _RUNSTATUS_LITERALS:
+                    if comp.value in _RUNSTATUS_LITERALS and node.lineno not in exempt:
                         out.append((node.lineno, op.__class__.__name__, comp.value))
                 # `status in ("running", "queued")` bypasses RunStatus exactly as `==` does. The
                 # docstring always claimed this was covered; only Eq/NotEq were actually walked,
@@ -290,6 +306,7 @@ def _enum_status_string_literals(path: Path) -> list[tuple[int, str, str]]:
                             isinstance(elt, ast.Constant)
                             and isinstance(elt.value, str)
                             and elt.value in _RUNSTATUS_LITERALS
+                            and node.lineno not in exempt
                         ):
                             out.append((node.lineno, op.__class__.__name__, elt.value))
     return out
@@ -305,11 +322,7 @@ def test_engine_status_comparisons_go_through_runstatus() -> None:
     for src_path in _PKG.rglob("*.py"):
         # Skip type re-exports: only the engine modules that own state transitions.
         rel = src_path.relative_to(_PKG)
-        # `backends/` is excluded on purpose: an adapter's job is to parse the UPSTREAM CLI's
-        # vocabulary, which has its own "failed"/"error" strings that are unrelated to RunStatus
-        # and must not be rewritten to it. The invariant is about engine modules that own
-        # Marshal's own state transitions.
-        if rel.parts[0] in {"__pycache__", "data", "backends"}:
+        if rel.parts[0] in {"__pycache__", "data"}:
             continue
         for lineno, op, lit in _enum_status_string_literals(src_path):
             offenders.append(f"{rel}:{lineno}  {op} {lit!r}")
