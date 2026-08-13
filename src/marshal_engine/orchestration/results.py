@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from ..core.types import PermissionMode, TaskSpec
 from ..runtime.state import RunRecord
 
+
 class CollectResult(BaseModel):
     """A run's work surfaced read-only for the driver to review.
 

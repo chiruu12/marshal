@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from ...orchestration.fleet import BudgetStatus
-from ...core.types import UsageSource
 from ...accounting.ledger import RoutingCell, RoutingLedger
 from ...accounting.usage import Bucket
+from ...core.types import UsageSource
+from ...orchestration.fleet import BudgetStatus
+
 
 def _align_rows(header: Sequence[str], rows: Sequence[Sequence[Any]]) -> list[str]:
     """Render a header + rows of strings as column-aligned lines (no border).

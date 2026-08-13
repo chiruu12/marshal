@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ...core._version import __version__
-from ...runtime.env import merge_user_path
 from ...accounting.usage import USAGE_WINDOWS
+from ...core._version import __version__
+from ...core.types import RunOutcome
+from ...runtime.env import merge_user_path
 from .admin import _cmd_clean, _cmd_doctor, _cmd_init, _cmd_workspace
 from .common import _add_run_args, _positive_hours, _positive_int
 from .inspect import (
@@ -19,8 +20,8 @@ from .inspect import (
     _cmd_usage,
 )
 from .recipes import _cmd_team_run, _cmd_teams, _cmd_workflow_run, _cmd_workflows
-from ...core.types import RunOutcome
 from .runs import _cmd_outcome, _cmd_run, _cmd_spawn
+
 
 def main(argv: list[str] | None = None) -> int:
     # Recover the user's interactive PATH if the CLI was launched from a context that didn't

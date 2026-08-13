@@ -9,13 +9,12 @@ from ...core.config import ConfigError
 from ...runtime.state import RunRecord
 from ..waiting import MAX_WAIT_S, wait_for_terminal
 from ..workspaces import WorkspaceRegistry
-
 from .context import ToolContext
 
 if TYPE_CHECKING:  # the mcp SDK is an optional extra; only needed for typing here
     from mcp.server.mcpserver import MCPServer
 from .schema import (
-    Job,
+    _DESC_ARTIFACTS_FROM,
     _DESC_BACKEND,
     _DESC_BASE_BRANCH,
     _DESC_CLIENT,
@@ -24,14 +23,15 @@ from .schema import (
     _DESC_GOAL,
     _DESC_MODEL,
     _DESC_OUTPUT_SCHEMA,
-    _DESC_ARTIFACTS_FROM,
     _DESC_READ_PATHS,
     _DESC_RUN_ID,
     _DESC_TASK_ID,
     _DESC_TASK_KIND,
     _DESC_WORKSPACE,
     _DESC_WS_HINT,
+    Job,
 )
+
 
 def _resolve_all(
     registry: WorkspaceRegistry, run_ids: Sequence[str], workspace: str | None

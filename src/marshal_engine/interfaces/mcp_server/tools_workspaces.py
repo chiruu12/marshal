@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, Annotated, Any
 from pydantic import Field
 
 from ..scaffold import scaffold_fleet_config
-
 from .context import ToolContext
 
 if TYPE_CHECKING:  # the mcp SDK is an optional extra; only needed for typing here
     from mcp.server.mcpserver import MCPServer
 from .schema import _ALLOW_MCP_REGISTRATION_ENV
+
 
 def register(app: "MCPServer", ctx: ToolContext) -> None:
     """Register this group's tools on ``app``."""

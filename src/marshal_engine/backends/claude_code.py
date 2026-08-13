@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.types import (
     AgentResult,
@@ -70,7 +70,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
 
     # Marshal's three tiers -> Claude Code's non-prompting permission modes. `default`/`auto`
     # prompt for approval and would deadlock a stdin-less run, so they are never used.
-    _PERMISSION: dict[PermissionMode, list[str]] = {
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
         PermissionMode.READ_ONLY: ["--permission-mode", "plan"],
         PermissionMode.SAFE_EDIT: ["--permission-mode", "acceptEdits"],
         PermissionMode.YOLO: ["--permission-mode", "bypassPermissions"],

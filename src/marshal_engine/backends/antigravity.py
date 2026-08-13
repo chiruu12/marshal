@@ -63,7 +63,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.types import (
     AgentResult,
@@ -78,7 +78,6 @@ from ..core.types import (
     UsageSource,
 )
 from .base import CodingAgentBackend, parse_jsonl
-
 
 #: Where the agy CLI keeps its user settings (incl. `trustedWorkspaces`). An attribute on the
 #: backend so tests can point it at a temp file instead of the real home.
@@ -118,7 +117,7 @@ class AntigravityBackend(CodingAgentBackend):
     #: process, silently redirecting its edits to the scratch dir. The entry is removed only when
     #: the last user finishes AND Marshal introduced it.
     #: Process-local by design — single Marshal process per host for Antigravity (see docs/usage.md).
-    _trust_added: dict[str, list[object]] = {}
+    _trust_added: ClassVar[dict[str, list[object]]] = {}
     #: Per-thread record of which cwds this run claimed (see `_claimed_cwds`).
     _thread_claims = threading.local()
     settings_path = DEFAULT_SETTINGS_PATH
@@ -132,7 +131,7 @@ class AntigravityBackend(CodingAgentBackend):
     # safe-edit and yolo both map to skip-permissions today: the default preset prompts (which
     # deadlocks headless), and there is no distinct one-shot safe-edit flag. Tighter scoping
     # comes from /config presets via the engine config layer later.
-    _PERMISSION: dict[PermissionMode, list[str]] = {
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
         PermissionMode.SAFE_EDIT: ["--dangerously-skip-permissions"],
         PermissionMode.YOLO: ["--dangerously-skip-permissions"],
     }

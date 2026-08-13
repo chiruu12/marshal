@@ -14,7 +14,6 @@ import pytest
 
 from marshal_engine.core.config import ClientConfig, ConfigError, FleetConfig
 from marshal_engine.orchestration.fleet import CollectResult, IntegrateResult, RunManyJobResult
-from marshal_engine.runtime.state import RunRecord
 from marshal_engine.orchestration.workflow import (
     PhaseSpec,
     WorkflowRunner,
@@ -26,6 +25,7 @@ from marshal_engine.orchestration.workflow import (
     resolve_source,
     validate_workflow,
 )
+from marshal_engine.runtime.state import RunRecord
 
 
 def _config(*names: str) -> FleetConfig:

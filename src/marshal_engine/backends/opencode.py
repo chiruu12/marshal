@@ -45,7 +45,7 @@ import json
 import re
 import shutil
 import subprocess
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.types import (
     AgentResult,
@@ -60,7 +60,6 @@ from ..core.types import (
     UsageSource,
 )
 from .base import CodingAgentBackend, parse_jsonl
-
 
 #: How long to wait for `opencode export` to return the authoritative session JSON. The export
 #: is a sqlite read of opencode's own on-disk session, so it's fast on a healthy install;
@@ -165,7 +164,7 @@ class OpenCodeBackend(CodingAgentBackend):
         permission_fidelity=PermissionFidelity.ENFORCED_DENIES,
     )
 
-    _PERMISSION: dict[PermissionMode, list[str]] = {
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
         PermissionMode.READ_ONLY: ["--agent", "plan"],
         PermissionMode.SAFE_EDIT: ["--dangerously-skip-permissions"],
         PermissionMode.YOLO: ["--dangerously-skip-permissions"],

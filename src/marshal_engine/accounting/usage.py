@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ValidationError, field_validator, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ..core.types import AgentResult, RunStatus, UsageRecord, UsageSource, canonical_status
 

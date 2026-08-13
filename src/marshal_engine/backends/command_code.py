@@ -37,7 +37,7 @@ import json
 import re
 import shutil
 import subprocess
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.types import (
     AgentResult,
@@ -85,7 +85,7 @@ class CommandCodeBackend(CodingAgentBackend):
     # Headless `-p` auto-accept still BLOCKS the write/shell tools (the confirmation has no TTY to
     # answer), so safe-edit maps to --yolo with the git worktree as the enforced boundary (same stance
     # as cursor/opencode). read-only uses plan mode (no edits).
-    _PERMISSION: dict[PermissionMode, list[str]] = {
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
         PermissionMode.READ_ONLY: ["--permission-mode", "plan"],
         PermissionMode.SAFE_EDIT: ["--yolo"],
         PermissionMode.YOLO: ["--yolo"],

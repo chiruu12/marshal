@@ -27,7 +27,6 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from ..backends.base import CodingAgentBackend
-from ..orchestration.teams import discover_teams, validate_team
 from ..core.config import (
     ConfigError,
     FleetConfig,
@@ -35,11 +34,12 @@ from ..core.config import (
     resolve_secret,
     setup_command_refusal,
 )
-from ..runtime.env import is_base_env_var
 from ..core.layout import runs_dir
-from ..orchestration.registry import default_backends, make_backend
-from ..runtime.state import FleetState, RunRecord
 from ..core.types import PermissionFidelity
+from ..orchestration.registry import default_backends, make_backend
+from ..orchestration.teams import discover_teams, validate_team
+from ..runtime.env import is_base_env_var
+from ..runtime.state import FleetState, RunRecord
 
 OK = "ok"
 WARN = "warn"

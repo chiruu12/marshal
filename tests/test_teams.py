@@ -17,8 +17,8 @@ import pytest
 from pydantic import ValidationError
 
 from marshal_engine.core.config import ClientConfig, ConfigError, FleetConfig
+from marshal_engine.core.types import PermissionMode
 from marshal_engine.orchestration.fleet import CollectResult, RunManyJobResult
-from marshal_engine.runtime.state import RunRecord
 from marshal_engine.orchestration.teams import (
     MAX_SUBJECT_CHARS,
     RoleReview,
@@ -38,7 +38,7 @@ from marshal_engine.orchestration.teams import (
     validate_subject,
     validate_team,
 )
-from marshal_engine.core.types import PermissionMode
+from marshal_engine.runtime.state import RunRecord
 from marshal_engine.runtime.worktree import WorktreeError
 
 

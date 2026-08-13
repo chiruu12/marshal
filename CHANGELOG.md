@@ -59,6 +59,13 @@ versions may include breaking API changes until 1.0.
 
 ### Changed
 
+- **Two more ruff families adopted: `RUF012` and `I001`.** `RUF012` — a mutable class attribute is
+  declared `ClassVar`. Every hit was a deliberate class-level table (permission maps, a
+  process-shared registry), so the annotation states intent that was previously only implied, and
+  the next one cannot be an accidental shared default. `I001` — import blocks are sorted, ending a
+  standing source of diff noise where two PRs touching neighbouring imports collide over ordering
+  rather than content. Neither changes behaviour (#239).
+
 - **`PLW1510` adopted: `subprocess.run` states its `check` argument explicitly.** This codebase
   shells out constantly — git, every backend CLI, the doctor probes — so a call whose failure
   handling is implicit is the most load-bearing kind of silence in it. Every existing call site

@@ -54,8 +54,8 @@ from ..core.types import PermissionMode, RunStatus
 from ..runtime.worktree import WorktreeError
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
-    from .results import CollectResult, RunManyJobResult
     from ..runtime.state import RunRecord
+    from .results import CollectResult, RunManyJobResult
 
 TargetKind = Literal["run", "plan", "range", "audit"]
 

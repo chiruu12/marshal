@@ -36,9 +36,8 @@ import json
 import re
 import shutil
 import subprocess
-from typing import Any
+from typing import Any, ClassVar
 
-from ..runtime.env import redact_secrets
 from ..core.types import (
     AgentResult,
     Capabilities,
@@ -52,6 +51,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
+from ..runtime.env import redact_secrets
 from .base import CodingAgentBackend, parse_jsonl
 
 # Goose modes (env GOOSE_MODE). approve/smart_approve hang or fail closed without a TTY.
@@ -82,7 +82,7 @@ class GooseBackend(CodingAgentBackend):
     )
 
     # Permission is env-driven (GOOSE_MODE); argv stays flag-free for these tiers.
-    _PERMISSION: dict[PermissionMode, list[str]] = {
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
         PermissionMode.READ_ONLY: [],
         PermissionMode.SAFE_EDIT: [],
         PermissionMode.YOLO: [],

@@ -30,8 +30,8 @@ from ..core.config import ConfigError, FleetConfig
 from ..core.types import RunStatus
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
-    from .results import CollectResult, IntegrateResult, RunManyJobResult
     from ..runtime.state import RunRecord
+    from .results import CollectResult, IntegrateResult, RunManyJobResult
 
 _GENERATIVE = ("fan_out", "agent")
 

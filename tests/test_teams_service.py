@@ -16,9 +16,16 @@ import pytest
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.core.config import ClientConfig, ConfigError, FleetConfig
 from marshal_engine.core.layout import reports_dir
+from marshal_engine.core.types import (
+    AgentResult,
+    Capabilities,
+    PermissionMode,
+    RunOpts,
+    RunStatus,
+    TaskSpec,
+)
 from marshal_engine.interfaces.service import MarshalService
 from marshal_engine.orchestration.teams import TeamSubject
-from marshal_engine.core.types import AgentResult, Capabilities, PermissionMode, RunOpts, RunStatus, TaskSpec
 
 
 class _Reviewer(CodingAgentBackend):

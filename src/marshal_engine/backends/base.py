@@ -27,7 +27,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from typing import Any, ClassVar
 
-from ..runtime.env import child_env, redact_secrets
 from ..core.types import (
     AgentResult,
     Capabilities,
@@ -39,6 +38,7 @@ from ..core.types import (
     TaskSpec,
     UsageRecord,
 )
+from ..runtime.env import child_env, redact_secrets
 
 _VERSION_PROBE_TIMEOUT_S = 15.0
 
@@ -69,7 +69,7 @@ class CodingAgentBackend(ABC):
     #: feature flags; subclasses set this so the orchestrator can degrade gracefully
     capabilities: Capabilities
     #: normalized permission tier -> native argv flags; subclasses populate this table
-    _PERMISSION: dict[PermissionMode, list[str]] = {}
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {}
     #: Parent env vars this backend may need for CLI auth (API keys). Only this backend's
     #: run forwards them; a cursor child never sees ``ANTHROPIC_API_KEY``. Empty by default.
     credential_env_vars: ClassVar[tuple[str, ...]] = ()

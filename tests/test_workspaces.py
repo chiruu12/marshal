@@ -13,8 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine.core.layout import runs_root
-
 from marshal_engine import (
     AgentResult,
     Capabilities,
@@ -25,12 +23,12 @@ from marshal_engine import (
     UsageRecord,
     UsageSource,
 )
-from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.accounting.budgets import BudgetExceeded, EnforceBudgetGate
-from marshal_engine.core.config import ClientConfig, FleetConfig
-from marshal_engine.interfaces.service import MarshalService
-from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.accounting.usage import UsageEvent
+from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.core.config import ClientConfig, FleetConfig
+from marshal_engine.core.layout import runs_root
+from marshal_engine.interfaces.service import MarshalService
 from marshal_engine.interfaces.workspaces import (
     DEFAULT_MAX_CONCURRENT,
     WorkspaceDef,
@@ -42,7 +40,7 @@ from marshal_engine.interfaces.workspaces import (
     resolve_workspaces,
     scaffold_fleet_config,
 )
-
+from marshal_engine.runtime.state import FleetState, RunRecord
 
 # --- fakes + helpers -------------------------------------------------------------------------
 

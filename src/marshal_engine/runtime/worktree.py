@@ -20,12 +20,12 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from ..core.config import setup_command_refusal
-from .env import child_env, redact_secrets
 from ..core.ids import MAX_TASK_ID_LEN as MAX_TASK_ID_LEN
 from ..core.ids import MAX_WORKTREE_ID_LEN as MAX_WORKTREE_ID_LEN
 from ..core.ids import validate_run_id as validate_run_id
 from ..core.ids import validate_worktree_id as _validate_worktree_id
 from ..core.layout import legacy_worktrees_dir, runs_root
+from .env import child_env, redact_secrets
 
 
 class WorktreeError(RuntimeError):

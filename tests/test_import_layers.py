@@ -24,8 +24,8 @@ from pathlib import Path
 
 import marshal_engine
 from marshal_engine.core.config import KNOWN_BACKEND_NAMES
-from marshal_engine.runtime.env import KNOWN_CREDENTIAL_ENV_VARS
 from marshal_engine.orchestration.registry import backend_names, default_backends
+from marshal_engine.runtime.env import KNOWN_CREDENTIAL_ENV_VARS
 
 _PKG = Path(marshal_engine.__file__).resolve().parent
 _PKG_NAME = "marshal_engine"

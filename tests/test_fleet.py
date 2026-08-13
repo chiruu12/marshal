@@ -25,17 +25,17 @@ from marshal_engine import (
     UsageRecord,
     UsageSource,
 )
+from marshal_engine.accounting.eastrouter import ExternalCost
+from marshal_engine.accounting.usage import UsageEvent
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.core.config import BudgetSpec
 from marshal_engine.core.layout import artifacts_dir, runs_dir
-from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
-from marshal_engine.accounting.eastrouter import ExternalCost
-from marshal_engine.accounting.usage import UsageEvent
+from marshal_engine.core.retry import RetryPolicy
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
-from marshal_engine.core.retry import RetryPolicy
+from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
 from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.runtime.worktree import WorktreeError
 
@@ -1980,6 +1980,7 @@ def test_executor_lazy_init_under_concurrent_first_touch(repo: Path) -> None:
     # build would leak a ThreadPoolExecutor (one of the two would never be shutdown(),
     # holding its workers forever). Locks the safety property Fleet.spawn relies on.
     import threading
+
     from marshal_engine.orchestration.fleet import Fleet as _Fleet  # local alias for clarity
 
     fleet = _Fleet(repo, {"writer": _Writer()})
@@ -5473,7 +5474,10 @@ def test_valid_ref_defs_schema_populates_structured(repo: Path) -> None:
 
 def test_schema_instruction_injection_is_idempotent() -> None:
     """Defense: a future second call site must not double-append the instruction."""
-    from marshal_engine.orchestration.structured import _STRUCTURED_OUTPUT_MARKER, _task_with_schema_instruction
+    from marshal_engine.orchestration.structured import (
+        _STRUCTURED_OUTPUT_MARKER,
+        _task_with_schema_instruction,
+    )
 
     task = TaskSpec(id="so-idem", goal="do it", output_schema=_SCORE_SCHEMA)
     once = _task_with_schema_instruction(task)

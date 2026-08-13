@@ -13,8 +13,6 @@ import marshal_engine.runtime.env as env_mod
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.backends.claude_code import ClaudeCodeBackend
 from marshal_engine.backends.cursor import CursorBackend
-from marshal_engine.runtime.env import child_env, merge_user_path, redact_secrets, user_path
-from marshal_engine.runtime.logs import RunLogStore
 from marshal_engine.core.types import (
     AgentResult,
     Capabilities,
@@ -23,6 +21,8 @@ from marshal_engine.core.types import (
     RunStatus,
     TaskSpec,
 )
+from marshal_engine.runtime.env import child_env, merge_user_path, redact_secrets, user_path
+from marshal_engine.runtime.logs import RunLogStore
 
 
 @pytest.fixture(autouse=True)
