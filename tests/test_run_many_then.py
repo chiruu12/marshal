@@ -11,8 +11,8 @@ import pytest
 from marshal_engine import AgentResult, Capabilities, RunOpts, RunStatus, TaskSpec
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
-from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest
 from marshal_engine.interfaces.service import MarshalService
+from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest
 
 
 class _Writer(CodingAgentBackend):

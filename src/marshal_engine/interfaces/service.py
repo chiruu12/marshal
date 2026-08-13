@@ -6,18 +6,19 @@ injected for tests; in production they come from the registry.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-
 import sys
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from ..accounting.ledger import RoutingLedger
+from ..accounting.usage import UsageSummary, UsageWindow
 from ..backends.base import CodingAgentBackend
 from ..core.config import (
     ClientConfig,
@@ -28,12 +29,17 @@ from ..core.config import (
     resolve_duration,
     resolve_model,
 )
-from .doctor import DoctorReport, doctor_report, run_checks
-from .pull_requests import PullRequestRef, resolve_pr
-from .routing import OutcomeResult, build_routing, record_outcome
-from .waiting import DEFAULT_POLL_INTERVAL_S, WaitResult, wait_for_terminal
-from ..runtime.env import merge_user_path
+from ..core.layout import reports_dir
+from ..core.retry import RetryPolicy
+from ..core.types import (
+    ModelCatalog,
+    RunStatus,
+    TaskSpec,
+    UsageSource,
+    resolve_permission_fidelity,
+)
 from ..orchestration.fleet import BudgetStatus, EnforceBudgetGate, Fleet
+from ..orchestration.registry import make_backend
 from ..orchestration.results import (
     BenchmarkResult,
     CleanResult,
@@ -45,20 +51,6 @@ from ..orchestration.results import (
     RunRequest,
     StrategyResult,
 )
-from ..core.retry import RetryPolicy
-from ..runtime.state import RunRecord
-from ..orchestration.registry import make_backend
-from ..core.types import (
-    ModelCatalog,
-    RunStatus,
-    TaskSpec,
-    UsageSource,
-    resolve_permission_fidelity,
-)
-from ..accounting.ledger import RoutingLedger
-from ..accounting.usage import UsageSummary, UsageWindow
-from ..core.layout import reports_dir
-from ..runtime.worktree import WorktreeError
 from ..orchestration.teams import (
     TeamListing,
     TeamReview,
@@ -80,7 +72,13 @@ from ..orchestration.workflow import (
     find_workflow,
     load_workflow,
 )
-
+from ..runtime.env import merge_user_path
+from ..runtime.state import RunRecord
+from ..runtime.worktree import WorktreeError
+from .doctor import DoctorReport, doctor_report, run_checks
+from .pull_requests import PullRequestRef, resolve_pr
+from .routing import OutcomeResult, build_routing, record_outcome
+from .waiting import DEFAULT_POLL_INTERVAL_S, WaitResult, wait_for_terminal
 
 _WORKER_PREAMBLE = (
     "You are a headless agent in a Marshal fleet, running in an isolated git worktree. "

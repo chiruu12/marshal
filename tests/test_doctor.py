@@ -9,9 +9,7 @@ from pathlib import Path
 import pytest
 
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.interfaces.doctor import FAIL, OK, WARN, run_checks, summarize
 from marshal_engine.core.layout import runs_dir
-from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.core.types import (
     AgentResult,
     Capabilities,
@@ -21,6 +19,8 @@ from marshal_engine.core.types import (
     RunStatus,
     TaskSpec,
 )
+from marshal_engine.interfaces.doctor import FAIL, OK, WARN, run_checks, summarize
+from marshal_engine.runtime.state import FleetState, RunRecord
 
 
 class _FakeBackend(CodingAgentBackend):

@@ -28,19 +28,22 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from ..backends.base import CodingAgentBackend
 from ..accounting.budgets import BudgetStatus as BudgetStatus
 from ..accounting.budgets import EnforceBudgetGate as EnforceBudgetGate
 from ..accounting.budgets import check_budget as check_budget
 from ..accounting.budgets import compute_budget_status as compute_budget_status
-from ..core.config import BudgetSpec
 from ..accounting.eastrouter import CostResolver, default_cost_resolvers
-from ..runtime.git_exclude import try_append_git_exclude
-from ..runtime.env import merge_user_path, redact_secrets
-from ..core.layout import MARSHAL_DIRNAME, artifacts_dir, budget_gate_path, marshal_dir, run_artifacts_dir
-from ..runtime.logs import RunLogStore
+from ..accounting.usage import UsageEvent, UsageTracker, goal_digest
+from ..backends.base import CodingAgentBackend
+from ..core.config import BudgetSpec
+from ..core.layout import (
+    MARSHAL_DIRNAME,
+    artifacts_dir,
+    budget_gate_path,
+    marshal_dir,
+    run_artifacts_dir,
+)
 from ..core.retry import RetryPolicy, is_transient_failure
-from ..runtime.state import FleetState, RunRecord
 from ..core.types import (
     AgentResult,
     PermissionMode,
@@ -51,7 +54,10 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
-from ..accounting.usage import UsageEvent, UsageTracker, goal_digest
+from ..runtime.env import merge_user_path, redact_secrets
+from ..runtime.git_exclude import try_append_git_exclude
+from ..runtime.logs import RunLogStore
+from ..runtime.state import FleetState, RunRecord
 from ..runtime.worktree import Worktree, WorktreeError, WorktreeManager, is_git_object_id
 from .provisioning import (
     _provision_read_paths,

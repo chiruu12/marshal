@@ -10,8 +10,8 @@ import pytest
 from pydantic import ValidationError
 
 import marshal_engine.runtime.state as state_mod
-from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.core.types import RunStatus
+from marshal_engine.runtime.state import FleetState, RunRecord
 
 # Sleep inside the locked RMW (between read and write) long enough that a one-shot wave of
 # concurrent writers all observe the same pre-update record before any write lands. Without

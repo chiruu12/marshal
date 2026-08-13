@@ -24,12 +24,12 @@ from marshal_engine.accounting.budgets import (
     check_budget,
     compute_budget_status,
 )
-from marshal_engine.core.config import BudgetSpec
 from marshal_engine.accounting.usage import (
     UnreadableUsageLedgerError,
     UsageEvent,
     UsageTracker,
 )
+from marshal_engine.core.config import BudgetSpec
 
 
 def _scope(*, client: str | None = None, backend_name: str = "opencode") -> SimpleNamespace:

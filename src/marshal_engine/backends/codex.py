@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.types import (
     AgentResult,
@@ -63,7 +63,7 @@ class CodexBackend(CodingAgentBackend):
         permission_fidelity=PermissionFidelity.ENFORCED_DENIES,
     )
 
-    _PERMISSION: dict[PermissionMode, list[str]] = {
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
         PermissionMode.READ_ONLY: ["--sandbox", "read-only"],
         PermissionMode.SAFE_EDIT: ["--sandbox", "workspace-write"],
         PermissionMode.YOLO: ["--dangerously-bypass-approvals-and-sandbox"],

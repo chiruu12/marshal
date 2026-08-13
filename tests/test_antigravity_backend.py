@@ -14,8 +14,8 @@ import pytest
 from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec, UsageSource
 from marshal_engine.backends import antigravity as agy_mod
 from marshal_engine.backends.antigravity import (
-    AntigravityBackend,
     MIN_AGY_VERSION,
+    AntigravityBackend,
     _parse_agy_version,
     _untrust_workspace,
 )
@@ -406,6 +406,7 @@ def test_trust_workspace_no_temp_leftover_after_concurrent_prepares(
     # no orphaned .tmp files. Catches a regression where a future refactor reintroduces a
     # fixed temp name and a racing crash leaves a stale .tmp behind.
     import threading
+
     from marshal_engine.backends.antigravity import AntigravityBackend as _AB
 
     backend.settings_path = tmp_path / "settings.json"

@@ -8,9 +8,9 @@ import os
 import sys
 from pathlib import Path
 
-from ..doctor import FAIL, OK, WARN, doctor_report, run_checks
-from ...orchestration.fleet import Fleet
 from ...core.layout import marshal_dir
+from ...orchestration.fleet import Fleet
+from ..doctor import FAIL, OK, WARN, doctor_report, run_checks
 from ..scaffold import scaffold_fleet_config
 from ..workspaces import (
     WorkspaceRegistry,
@@ -19,6 +19,7 @@ from ..workspaces import (
     workspaces_file_path,
 )
 from .common import _resolve_repo
+
 
 def _cmd_workspace(args: argparse.Namespace) -> int:
     """Manage the central workspace registry (~/.marshal/workspaces.yaml)."""

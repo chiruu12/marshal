@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-
 from typing import Any
 
 import pytest
@@ -389,9 +388,9 @@ def test_spawn_base_branch_reaches_task_spec_via_mcp(
 
     from marshal_engine.backends.base import CodingAgentBackend
     from marshal_engine.core.config import ClientConfig, FleetConfig, PermissionMode
+    from marshal_engine.core.types import AgentResult, Capabilities, RunOpts, RunStatus, TaskSpec
     from marshal_engine.interfaces.mcp_server import build_app
     from marshal_engine.interfaces.service import MarshalService
-    from marshal_engine.core.types import AgentResult, Capabilities, RunOpts, RunStatus, TaskSpec
 
     class _Capture(CodingAgentBackend):
         name = "capture"
@@ -520,8 +519,8 @@ def test_get_run_log_round_trips_via_call_tool(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.runtime.logs import RunLogStore
     from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.logs import RunLogStore
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
@@ -561,8 +560,8 @@ def test_usage_window_param_is_in_schema(
     pytest.importorskip("mcp")
     import asyncio
 
-    from marshal_engine.interfaces.mcp_server import build_app
     from marshal_engine.accounting.usage import USAGE_WINDOWS
+    from marshal_engine.interfaces.mcp_server import build_app
 
     repo = _repo_with_config(tmp_path)
     monkeypatch.setenv("MARSHAL_REPO", str(repo))

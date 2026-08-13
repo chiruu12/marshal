@@ -18,6 +18,7 @@ from ..core.ids import validate_run_id
 from ..runtime.git_exclude import GitExcludeError, append_git_exclude
 from ..runtime.worktree import Worktree
 
+
 def _require_context_files(wt: Worktree, context_files: list[str]) -> None:
     """Fail the run if a declared context file is not actually in the worktree.
 

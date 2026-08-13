@@ -20,7 +20,6 @@ import pytest
 import marshal_engine
 from marshal_engine.backends.base import CodingAgentBackend
 from marshal_engine.core.config import ClientConfig
-from marshal_engine.orchestration.registry import backend_names, default_backends
 from marshal_engine.core.types import (
     Capabilities,
     PermissionFidelity,
@@ -30,6 +29,7 @@ from marshal_engine.core.types import (
     UsageSource,
     resolve_permission_fidelity,
 )
+from marshal_engine.orchestration.registry import backend_names, default_backends
 
 _PKG = Path(marshal_engine.__file__).resolve().parent
 _REPO_ROOT = _PKG.parents[1]  # .../src/marshal_engine -> .../src -> repo root

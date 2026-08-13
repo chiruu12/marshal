@@ -33,10 +33,9 @@ from marshal_engine.core.config import (
     FleetContext,
     load_config,
 )
-from marshal_engine.interfaces.service import MarshalService
 from marshal_engine.core.layout import runs_dir
+from marshal_engine.interfaces.service import MarshalService, ModelList, ModelSpec
 from marshal_engine.runtime.state import FleetState, RunRecord
-from marshal_engine.interfaces.service import ModelList, ModelSpec
 
 
 class _Echo(CodingAgentBackend):

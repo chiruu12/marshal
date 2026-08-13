@@ -16,6 +16,7 @@ from ...runtime.worktree import WorktreeError
 from ..routing import record_outcome
 from .common import _build_cli_service, _require_git_work_tree, _resolve_repo
 
+
 def _cmd_run_like(args: argparse.Namespace, *, spawn: bool) -> int:
     """Shared body for `run` (blocking) and `spawn` (background)."""
     repo = Path(args.repo or os.environ.get("MARSHAL_REPO", ".")).resolve()

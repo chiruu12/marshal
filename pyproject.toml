@@ -98,6 +98,15 @@ select = [
     # and every call site here already inspects `returncode`; stating it stops the next one from
     # relying on a default that differs from what the surrounding code does.
     "PLW1510",
+    # RUF012: a mutable class attribute needs `ClassVar`. Every hit here was a deliberate
+    # class-level table (permission maps, a process-shared registry), so the annotation states
+    # intent that was previously only implied - and keeps the next one from being an accidental
+    # shared default (#239).
+    "RUF012",
+    # I001: import-block sorting. Pure formatting - adopted because unsorted imports are a standing
+    # source of diff noise, where two PRs touching neighbouring imports collide over ordering rather
+    # than content. Destroys no information, unlike RUF100 (see #239).
+    "I001",
 ]
 
 [tool.mypy]

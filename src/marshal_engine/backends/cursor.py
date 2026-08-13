@@ -41,7 +41,7 @@ import stat
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 from ..core.types import (
     AgentResult,
@@ -93,7 +93,7 @@ class CursorBackend(CodingAgentBackend):
         permission_fidelity=PermissionFidelity.ENFORCED_DENIES,
     )
 
-    _PERMISSION: dict[PermissionMode, list[str]] = {
+    _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
         PermissionMode.READ_ONLY: ["--mode", "plan"],
         PermissionMode.SAFE_EDIT: ["--force"],
         PermissionMode.YOLO: ["--yolo"],

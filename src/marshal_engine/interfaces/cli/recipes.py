@@ -10,9 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from ...core.config import ConfigError, FleetConfig, load_config
-from ..service import MarshalService
 from ...orchestration.teams import TeamSubject, load_team, team_paths, validate_team
-from ...orchestration.workflow import WorkflowRunner, load_workflow, validate_workflow, workflow_paths
+from ...orchestration.workflow import (
+    WorkflowRunner,
+    load_workflow,
+    validate_workflow,
+    workflow_paths,
+)
+from ..service import MarshalService
+
 
 def _workflow_dirs(repo: Path) -> list[Path]:
     """Workflow search order: repo-local recipes shadow the bundled examples."""

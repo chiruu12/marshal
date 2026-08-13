@@ -9,12 +9,12 @@ from ...orchestration.teams import TeamSubject
 from ..workspaces import (
     DEFAULT_WORKSPACE,
 )
-
 from .context import ToolContext
 
 if TYPE_CHECKING:  # the mcp SDK is an optional extra; only needed for typing here
     from mcp.server.mcpserver import MCPServer
 from .schema import _DESC_WORKSPACE
+
 
 def register(app: "MCPServer", ctx: ToolContext) -> None:
     """Register this group's tools on ``app``."""

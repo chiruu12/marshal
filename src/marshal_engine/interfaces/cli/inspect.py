@@ -9,25 +9,26 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ...accounting.usage import UsageTracker, usage_window_since
 from ...core.config import BudgetSpec, ConfigError, load_config
-from ...orchestration.fleet import compute_budget_status
 from ...core.layout import logs_dir, runs_dir, usage_dir
-from ...runtime.logs import RunLogStore
-from ...orchestration.registry import backend_names, default_backends
 from ...core.types import ModelSource
+from ...orchestration.fleet import compute_budget_status
+from ...orchestration.registry import backend_names, default_backends
+from ...runtime.logs import RunLogStore
 from ...runtime.state import FleetState, filter_runs, render_run
 from ..routing import build_routing
-from ...accounting.usage import UsageTracker, usage_window_since
 from .common import _build_cli_service, _resolve_repo
 from .formatting import (
-    _print_routing_table,
     _format_bucket_cost,
     _format_bucket_rate,
     _format_cost_display,
     _format_cost_split,
     _print_bucket_table,
     _print_budget_table,
+    _print_routing_table,
 )
+
 
 def _cmd_backends(args: argparse.Namespace) -> int:
     backends = default_backends()

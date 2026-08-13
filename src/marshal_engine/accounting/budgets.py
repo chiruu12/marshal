@@ -38,8 +38,8 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from ..core.config import BudgetSpec
-from ..core.types import UsageSource
 from ..core.layout import budget_gate_path
+from ..core.types import UsageSource
 from .usage import (
     Bucket,
     LedgerCursor,

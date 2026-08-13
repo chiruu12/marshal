@@ -32,7 +32,6 @@ from marshal_engine.orchestration.fleet import Fleet, RunRequest
 from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.runtime.worktree import WorktreeError, WorktreeManager
 
-
 # --- fakes -----------------------------------------------------------------------------------
 
 

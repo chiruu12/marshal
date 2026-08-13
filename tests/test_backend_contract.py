@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from marshal_engine.backends.base import CodingAgentBackend
-from marshal_engine.orchestration.registry import backend_names, make_backend
 from marshal_engine.core.types import (
     ModelCatalog,
     ModelSource,
@@ -26,6 +25,7 @@ from marshal_engine.core.types import (
     TaskSpec,
     UsageSource,
 )
+from marshal_engine.orchestration.registry import backend_names, make_backend
 
 _BACKEND_NAMES = backend_names()
 

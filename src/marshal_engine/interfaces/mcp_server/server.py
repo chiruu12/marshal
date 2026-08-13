@@ -17,6 +17,9 @@ from ..workspaces import (
     WorkspaceRegistry,
     build_service_for,
 )
+from .context import ToolContext
+from .schema import _ALLOW_MCP_REGISTRATION_ENV, _T
+
 # Imported by module, not `from . import ...`: the latter executes this package's __init__,
 # which imports this module - a cycle the layer guard rejects.
 from .tools_inspect import register as _register_inspect
@@ -24,8 +27,6 @@ from .tools_integrate import register as _register_integrate
 from .tools_recipes import register as _register_recipes
 from .tools_runs import register as _register_runs
 from .tools_workspaces import register as _register_workspaces
-from .context import ToolContext
-from .schema import _ALLOW_MCP_REGISTRATION_ENV, _T
 
 
 def build_service() -> MarshalService:

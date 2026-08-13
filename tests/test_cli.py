@@ -6,15 +6,16 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
+from marshal_engine.accounting.budgets import BudgetExceeded
+from marshal_engine.accounting.usage import Bucket
 from marshal_engine.interfaces import cli
 from marshal_engine.interfaces.cli import formatting as cli_fmt
 from marshal_engine.interfaces.cli import recipes as cli_recipes
 from marshal_engine.interfaces.cli import runs as cli_runs
-from marshal_engine.accounting.budgets import BudgetExceeded
-from marshal_engine.accounting.usage import Bucket
 from marshal_engine.runtime.worktree import WorktreeError
 
 
@@ -79,8 +80,8 @@ def test_usage_defaults_resolve_against_repo_not_cwd(
     # Without --repo (or MARSHAL_REPO), cwd-relative defaults would miss the ledger.
     from datetime import datetime, timezone
 
-    from marshal_engine.core.layout import usage_dir
     from marshal_engine.accounting.usage import UsageEvent
+    from marshal_engine.core.layout import usage_dir
 
     repo = tmp_path / "repo"
     subdir = repo / "src" / "pkg"
@@ -362,7 +363,7 @@ def test_workflows_repo_shadows_example(tmp_path: Path, capsys: pytest.CaptureFi
 class _FakeRunner:
     """Captures the resolved spec instead of executing phases (which would spawn agents)."""
 
-    captured: dict[str, object] = {}
+    captured: ClassVar[dict[str, object]] = {}
 
     def __init__(self, svc: object) -> None:
         pass
@@ -372,8 +373,8 @@ class _FakeRunner:
 
         class _Result:
             status = "completed"
-            phases: list[object] = []
-            next_actions: list[str] = []
+            phases: ClassVar[list[object]] = []
+            next_actions: ClassVar[list[str]] = []
 
             def model_dump(self, mode: str = "json") -> dict[str, object]:
                 return {"status": self.status, "phases": [], "next_actions": []}
