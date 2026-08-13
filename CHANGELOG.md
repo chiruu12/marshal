@@ -183,6 +183,15 @@ versions may include breaking API changes until 1.0.
   Previously only the timed-out command itself was killed, so a `setup:` that had started workers
   of its own left them running — still writing into a worktree Marshal had already given up on.
 
+- **A run record no longer names its exited setup process as the running agent (#256).** The
+  `setup_cmd` process stamped its pid on the record and nothing cleared it when it exited, so for
+  the whole agent phase `pid` pointed at a dead process — and, once the OS recycled the number, at
+  an unrelated live one. Everything that treats `pid` as "the agent" read that: a live run could be
+  judged orphaned and stamped `failed` (discarding its real status, text, and cost while the ledger
+  kept the spend), `cancel_run` could report success having signalled nothing, and `agent_alive`
+  could report `false` for a working agent. The pid is now cleared when setup exits, and only while
+  the record still holds that same pid, so a stamp the agent has already made is never clobbered.
+
 - **A run whose agent committed its own work is no longer recorded as `empty` (#250).** The status
   was decided from the working tree alone, and an agent that commits leaves nothing uncommitted
   behind it — so a run that produced real code was stamped `empty` while `collect_run` reported its
