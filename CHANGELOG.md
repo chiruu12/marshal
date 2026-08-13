@@ -202,7 +202,7 @@ versions may include breaking API changes until 1.0.
 
 ### Documentation
 
-- **Six documentation claims corrected against the code.** An audit found: `docs/config.md` and
+- **Documentation claims corrected against the code.** An audit found: `docs/config.md` and
   `docs/usage.md` still described enforced budgets as binding within **one process** (they hold
   across processes on a repo via an `fcntl.flock` reservation, and `usage.md` had two contradictory
   descriptions spliced together); `fleet.config.example.yaml` said a `fireworks-ai/*` OpenCode model
