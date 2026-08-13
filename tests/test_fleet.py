@@ -5870,3 +5870,92 @@ def test_an_undeterminable_commit_count_does_not_read_as_empty(repo: Path, monke
 
     rec = fleet.run("selfcommit", TaskSpec(id="sc2", goal="x"))
     assert rec.status == RunStatus.EXITED_CLEAN.value
+
+
+class _PidObserver(CodingAgentBackend):
+    """Records what the run record says about `pid` at the moment the AGENT phase begins.
+
+    `build_invocation` runs after setup has exited and before the agent subprocess exists, which is
+    precisely the window `pid` is meant to describe and #256 says it describes wrongly.
+    """
+
+    name = "pidobs"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self, runs: Path) -> None:
+        self._runs = runs
+        self.observed_pid: int | None = None
+        self.observed_alive: bool | None = None
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        for path in sorted(self._runs.glob("*.json")):
+            rec = RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            if rec.task_id == task.id:
+                self.observed_pid = rec.pid
+                self.observed_alive = (
+                    fleet_mod._pid_alive(rec.pid) if rec.pid is not None else None
+                )
+        return [sys.executable, "-c", "pass"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok", exit_code=exit_code)
+
+
+def test_run_record_pid_during_agent_phase_names_a_dead_setup_process(repo: Path) -> None:
+    """#256: after setup_cmd exits, `pid` keeps naming it for the whole agent phase.
+
+    `_on_exit` sets only `handle.exited`; nothing clears the record's `pid`. So between setup
+    exiting and the agent stamping its own pid, the record carries a pid that is dead (or, worse,
+    recycled by the OS onto an unrelated process). Everything that reads `pid` as "the agent" -
+    `_started_within_grace`, the orphan reaper, `cancel_run`, `agent_alive` - is reading a corpse.
+    """
+    backend = _PidObserver(runs_dir(repo))
+    fleet = Fleet(
+        repo,
+        {"pidobs": backend},
+        worktree_setup=[sys.executable, "-c", "pass"],
+    )
+    setup_pids: list[int] = []
+    real_setup = fleet.worktrees.setup
+
+    def _watched_setup(wt: object, **kw: object) -> None:
+        inner = kw.get("on_pid")
+
+        def _tap(pid: int) -> None:
+            setup_pids.append(pid)
+            if inner is not None:
+                inner(pid)  # type: ignore[operator]
+
+        if inner is not None:
+            kw["on_pid"] = _tap
+        return real_setup(wt, **kw)  # type: ignore[arg-type,return-value]
+
+    fleet.worktrees.setup = _watched_setup  # type: ignore[method-assign]
+    try:
+        # spawn, not run: the setup-phase pid hooks are wired only where an in-flight handle
+        # exists, so the synchronous path would never stamp one and the probe would pass vacuously.
+        run_id = fleet.spawn(RunRequest(backend_name="pidobs", task=TaskSpec(id="pidwindow", goal="x")))
+        deadline = time.monotonic() + 15
+        rec = fleet.state.get(run_id)
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == RunStatus.EXITED_CLEAN.value
+    finally:
+        fleet.shutdown()
+
+    # Both halves are required. Without the first, `observed_pid is None` also holds when setup
+    # never stamped anything and the probe never reached the window it claims to test.
+    assert setup_pids, "setup never published a pid; the probe never reached the window under test"
+    assert backend.observed_pid is None, (
+        "the exited setup process must not still be stamped as this run's pid"
+    )

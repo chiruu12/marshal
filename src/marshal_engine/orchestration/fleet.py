@@ -1043,7 +1043,10 @@ class Fleet:
             handle = _inflight_handle(self.state.dir, run_id)
             if handle is not None:
 
+                setup_pid: list[int] = []
+
                 def _on_pid(pid: int) -> None:
+                    setup_pid.append(pid)
                     self.state.update_if(
                         run_id,
                         lambda r: not _is_terminal(r),
@@ -1057,6 +1060,19 @@ class Fleet:
                 def _on_exit() -> None:
                     with _active_runs_guard:
                         handle.exited = True
+                    # Unstamp the setup pid now that it is reaped. Leaving it means the record
+                    # names a dead process for the whole agent phase, and the OS may recycle the
+                    # number onto something unrelated - so `agent_alive`, the orphan reaper's
+                    # "a stamped pid is decidable now" rule, and `cancel_run`'s killpg all read a
+                    # corpse. Cleared only while the record still holds THIS pid, so a stamp the
+                    # agent has already made is never clobbered.
+                    if setup_pid:
+                        self.state.update_if(
+                            run_id,
+                            lambda r: not _is_terminal(r) and r.pid == setup_pid[-1],
+                            pid=None,
+                            pid_start_time=None,
+                        )
 
                 on_pid = _on_pid
                 on_exit = _on_exit
