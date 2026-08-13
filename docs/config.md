@@ -113,12 +113,11 @@ the file when no runs are in flight to repair); soft-warn budgets never read tha
 next matching spawn is refused until the holder finishes (and records spend). Advisory
 budgets do not take a concurrency slot and stay lock-free.
 
-> **Scope: one process.** The concurrency slot is held in memory, so it binds spawns made by a
-> single Marshal process. Two processes against the same repo (a `marshal run` CLI invocation
-> alongside a running MCP server, or two Fleets) each evaluate the same ledger snapshot and can
-> both admit, so the cap can be overshot by roughly the number of processes. Treat `enforce` as a
-> strong guard within one driver, not a distributed lock. Tracked in
-> [#182](https://github.com/chiruu12/marshal/issues/182).
+> **Scope: the repo.** The slot is a durable reservation in `.marshal/budget_gate.json` held under
+> an `fcntl.flock`, so it binds spawns from every Marshal process working on that repo — a
+> `marshal run` CLI invocation alongside a running MCP server included. It does not coordinate
+> across machines or across separate checkouts of the same project, which are different repos to
+> Marshal and keep separate ledgers.
 
 Editing `fleet.config.yaml` hot-reloads budget **specs** (limits, scopes, `enforce`) on the next
 call, but never forks budget **state**: the in-flight guard and the `session` window clock are kept

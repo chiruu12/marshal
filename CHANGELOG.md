@@ -202,6 +202,15 @@ versions may include breaking API changes until 1.0.
 
 ### Documentation
 
+- **Six documentation claims corrected against the code.** An audit found: `docs/config.md` and
+  `docs/usage.md` still described enforced budgets as binding within **one process** (they hold
+  across processes on a repo via an `fcntl.flock` reservation, and `usage.md` had two contradictory
+  descriptions spliced together); `fleet.config.example.yaml` said a `fireworks-ai/*` OpenCode model
+  is *rejected at load* (it is allowed with a stderr warning an MCP driver never sees, so nothing
+  blocks the billing); `README.md` listed the OpenCode model pattern as *required* (it is a default);
+  `README.md` and `SETUP.md` still showed run directories inside the repo; and the example config
+  used the retired status name `succeeded`.
+
 - **`marshal_quickstart` routes among all five run-reading tools.** Three verbs (`get_`, `collect_`,
   `read_`) spell one operation, so nothing in the names says which returns the record, the log, the
   diff, or a file — and `read_run_file`, the least guessable of them, was the one missing from the

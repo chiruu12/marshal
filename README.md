@@ -99,7 +99,7 @@ hello-docstring.codex.d56489fe  codex/gpt-5.6-luna  running  (poll: marshal stat
 
 ```console
 $ marshal status
-hello-docstring.codex.d56489fe  codex        exited_clean  unavailable  .marshal/worktrees/hello-docstring.codex.d56489fe
+hello-docstring.codex.d56489fe  codex        exited_clean  unavailable  ~/.marshal/worktrees/myrepo-a1b2c3d4e5f6/hello-docstring.codex.d56489fe
 ```
 
 **5. Review, then merge.** From a driver agent over MCP: `collect_run("<run_id>")` returns the diff read-only, and `integrate("<run_id>", message="...")` merges it. `exited_clean` means the process exited cleanly. It does **not** mean the code is correct, so the diff review is not optional.
@@ -157,7 +157,7 @@ Model is set per client in `fleet.config.yaml` (or ad-hoc via `--model` / MCP `m
 | Backend | Model flag | Cost provenance |
 |---|---|---|
 | `cursor` | optional (defaults to CLI default) | **unavailable** (individual plans expose no per-run cost) |
-| `opencode` | `opencode-go/*` (required pattern) | **native** (tokens + cost from the CLI) |
+| `opencode` | optional (defaults to `opencode-go/glm-5.2`, the Go subscription) | **native** (tokens + cost from the CLI) |
 | `codex` | provider/model (e.g. `gpt-5.6-luna`) | **admin-api** via EastRouter `usage_api`; else **unavailable** |
 | `claude-code` | `claude-*` (e.g. `claude-sonnet-4-6`) | **native** (`total_cost_usd` + tokens) |
 | `command-code` | provider/model (e.g. `zai-org/GLM-5.2`) | **unavailable** (hosted account, no token/cost in stdout) |

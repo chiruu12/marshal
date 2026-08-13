@@ -231,7 +231,8 @@ print(collected.changed_files)
 service.integrate(record.run_id, cleanup=True)    # merge into your current branch
 ```
 
-Each run lands in its own worktree under `.marshal/worktrees/`; your main branch is untouched
+Each run lands in its own clone under `~/.marshal/worktrees/<repo>-<digest>/` (outside your
+repo); your main branch is untouched
 until you `integrate`. State and usage live under `.marshal/`.
 
 ## Troubleshooting

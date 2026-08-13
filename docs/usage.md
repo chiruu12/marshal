@@ -144,11 +144,6 @@ clients:
 - **`budgets`** (optional, top-level): $ caps per scope (a backend, a client, or the whole fleet)
   and time window (`session` | `week` | `month`). Default is **soft-warn** (stderr when a scope's
   windowed spend meets/exceeds the cap; the run proceeds). Set `enforce: true` to refuse matching
-  over-cap spawns (`BudgetExceeded`) and serialize matching in-flight spawns **within one process**
-  — two processes against the same repo (CLI alongside a running MCP server) each read the same
-  ledger snapshot and can both admit, so treat it as a strong per-driver guard rather than a
-  distributed lock ([#182](https://github.com/chiruu12/marshal/issues/182)). Set at most one of
-  windowed spend meets/exceeds the cap; the run proceeds). Set `enforce: true` to hard-refuse matching
   over-cap spawns (`BudgetExceeded`) and serialize matching in-flight spawns across processes
   (CLI + MCP on one repo; `.marshal/budget_gate.json`). Set at most one of
   `backend` / `client` per entry (omit both for a global cap); set at least one of `limit_usd`
