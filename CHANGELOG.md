@@ -59,6 +59,14 @@ versions may include breaking API changes until 1.0.
 
 ### Changed
 
+- **`list_workflows` now says whether a recipe will write to your branch.** A workflow phase with
+  `auto: true` merges into the caller's current branch with no review — the one place Marshal's
+  "nothing reaches your branch without an explicit integrate" property is deliberately given up, by
+  whoever wrote the recipe. The tool emitted only each phase's name and kind, so a driver told to
+  "read a workflow before running it" could not see it, and no other MCP tool exposed it (the YAML
+  is off-surface). Each phase now carries `auto` and `from_phase`, with `auto_integrates` per
+  workflow.
+
 - **Two more ruff families adopted: `RUF012` and `I001`.** `RUF012` — a mutable class attribute is
   declared `ClassVar`. Every hit was a deliberate class-level table (permission maps, a
   process-shared registry), so the annotation states intent that was previously only implied, and

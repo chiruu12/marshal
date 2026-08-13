@@ -1040,3 +1040,74 @@ def test_wait_for_runs_surfaces_a_broken_workspace_instead_of_calling_the_run_un
 
     with pytest.raises(Exception, match="not parseable"):
         asyncio.run(app.call_tool("wait_for_runs", {"run_ids": ["r-1"], "timeout_s": 1}))
+
+
+def test_list_workflows_exposes_whether_a_recipe_writes_to_your_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`auto: true` is the one place the "nothing reaches your branch unreviewed" property is given up.
+
+    A driver is told to read a workflow before running it, and `list_workflows` is the only MCP
+    surface that can show it - the YAML is off-surface. Emitting name+run alone left the single
+    field that decides whether the driver's branch gets written to invisible. Asserted on the TOOL
+    payload, not the service: the service always had `auto`, so a service-level assertion would
+    have passed without the fix.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    wdir = repo / "workflows"
+    wdir.mkdir()
+    (wdir / "auto.yaml").write_text(
+        "description: merges without review\n"
+        "phases:\n"
+        "  - name: build\n"
+        "    run: agent\n"
+        "    client: worker\n"
+        "    goal: do it\n"
+        "  - run: integrate\n"
+        "    from_phase: build\n"
+        "    auto: true\n"
+    )
+    (wdir / "gated.yaml").write_text(
+        "description: reports candidates for review\n"
+        "phases:\n"
+        "  - name: build\n"
+        "    run: agent\n"
+        "    client: worker\n"
+        "    goal: do it\n"
+        "  - run: integrate\n"
+        "    from_phase: build\n"
+    )
+    # `auto` on a phase the runner never reads it on. Nothing validates it away, so a recipe can
+    # carry it - and it changes nothing, because the runner consults `auto` only when integrating.
+    (wdir / "inert.yaml").write_text(
+        "description: auto set where it does nothing\n"
+        "phases:\n"
+        "  - name: build\n"
+        "    run: agent\n"
+        "    client: worker\n"
+        "    goal: do it\n"
+        "    auto: true\n"
+    )
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+    structured = asyncio.run(app.call_tool("list_workflows", {})).structured_content
+    payload = structured.get("result", structured) if isinstance(structured, dict) else structured
+    by_name = {w["name"]: w for w in payload["workflows"]}
+
+    assert by_name["auto"]["auto_integrates"] is True
+    assert by_name["gated"]["auto_integrates"] is False
+    # The flag answers "will my branch be written to", not "does the word appear in the YAML". A
+    # warning that fires when nothing can happen is one a driver learns to skip past.
+    assert by_name["inert"]["auto_integrates"] is False
+    assert by_name["inert"]["phases"][0]["auto"] is True  # still reported verbatim per phase
+    # per-phase too, so a driver can see WHICH phase merges and what it merges
+    merging = [p for p in by_name["auto"]["phases"] if p["auto"]]
+    assert len(merging) == 1
+    assert merging[0]["run"] == "integrate"
+    assert merging[0]["from_phase"] == "build"

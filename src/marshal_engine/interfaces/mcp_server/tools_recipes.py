@@ -29,6 +29,13 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
     ) -> dict[str, Any]:
         """List declared workflow recipes (name, description, inputs, phase summary) for a workspace.
 
+        Read `auto_integrates` before running one. A phase with `auto: true` merges that phase's work
+        into your CURRENT branch with no review step - the one place Marshal's "nothing reaches your
+        branch without an explicit integrate" property is deliberately given up, by whoever wrote the
+        recipe. It is per-phase, so `auto_integrates` is true when any `run: integrate` phase does
+        it, and each phase carries its own `auto` alongside the `from_phase` it would merge. `auto`
+        set on any other phase kind is inert and does not raise `auto_integrates`.
+
         Malformed recipe files are returned in ``errors`` (filename -> message) so a driver can tell
         a broken recipe from a missing one."""
         svc = await offload(registry.get, workspace)
@@ -40,7 +47,27 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
                         "name": w.name,
                         "description": w.description,
                         "inputs": w.inputs,
-                        "phases": [{"name": p.name, "run": p.run} for p in w.phases],
+                        # `auto` and `from_phase` are part of the summary, not detail: without
+                        # them a driver told to "read a workflow before running it" cannot see the
+                        # only property that decides whether its branch gets written to, and no
+                        # other MCP tool exposes it - the YAML is off-surface.
+                        "phases": [
+                            {
+                                "name": p.name,
+                                "run": p.run,
+                                "auto": p.auto,
+                                "from_phase": p.from_phase,
+                            }
+                            for p in w.phases
+                        ],
+                        # Gated on `run == "integrate"`, not on `auto` alone: the runner reads
+                        # `auto` only when integrating, so `auto: true` on a fan_out or collect
+                        # phase changes nothing. A bare `any(p.auto ...)` would warn of a branch
+                        # write that cannot happen - and a driver that learns this flag overwarns
+                        # stops reading it. Each phase still reports its own `auto` verbatim.
+                        "auto_integrates": any(
+                            p.auto and p.run == "integrate" for p in w.phases
+                        ),
                     }
                     for w in listing.workflows
                 ],
@@ -55,8 +82,12 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         inputs: Annotated[dict[str, Any] | None, Field(description="Inputs the recipe declares.")] = None,
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """Run a workflow recipe by name in `workspace`'s repo. Integration is gated off by default -
-        the result's `next_actions` lists the runs to review and integrate. Validates before any spawn."""
+        """Run a workflow recipe by name in `workspace`'s repo. Validates before any spawn.
+
+        Integration is gated off **by default** - the result's `next_actions` lists the runs to
+        review and integrate yourself. A recipe can opt out per phase with `auto: true`, and that
+        phase merges into your current branch unreviewed. Check `auto_integrates` from
+        `list_workflows` first; this tool will not warn you."""
         return await ws_call(workspace, lambda svc: svc.run_workflow(name, inputs))
 
     @app.tool()
