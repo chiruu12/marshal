@@ -22,10 +22,10 @@ defaults:
 # `allow_unsafe_commands: true`. Basename screen only — not a sandbox for args. See docs/config.md.
 # worktree_setup: uv sync --extra dev --extra mcp
 
-# Optional: a gate command run in the worktree AFTER a run that would otherwise be `succeeded`
+# Optional: a gate command run in the worktree AFTER a run that would otherwise be `exited_clean`
 # and actually changed files (e.g. the repo's full test suite - agents love passing their own
 # narrower subset; text-only replies are never gated). A non-zero exit marks the run
-# `verify_failed` instead of `succeeded`; the worktree and diff are KEPT for review, and the
+# `verify_failed` instead of `exited_clean`; the worktree and diff are KEPT for review, and the
 # command's output tail lands on the run record (`verify_output`). Same string-or-argv shape,
 # env hygiene, and allowlist rules as worktree_setup. Omit to trust the agent's own outcome.
 # verify: uv run pytest -q
@@ -108,7 +108,9 @@ retries: 2
 
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
-  # fireworks-ai/* model is rejected at load so you never burn Fireworks credits.
+  # fireworks-ai/* model is ALLOWED and warned about on stderr - it bills Fireworks credits rather
+  # than the Go subscription, which is sometimes what you want. It is not blocked, so do not rely
+  # on config load to stop it (an MCP driver never sees that stderr warning).
   # Auth: `opencode auth login`.
   implementer:
     backend: opencode
