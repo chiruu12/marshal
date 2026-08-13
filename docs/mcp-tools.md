@@ -240,7 +240,10 @@ Race the same goal through several configured clients.
 
 **Returns:** `{ workflows, errors, workspace }`
 
-- `workflows`: `[{ name, description, inputs, phases: [{ name, run }] }]`
+- `workflows`: `[{ name, description, inputs, auto_integrates, phases: [{ name, run, auto, from_phase }] }]`
+- `auto_integrates`: true when any `run: integrate` phase has `auto: true` — that recipe merges into
+  your current branch with no review step. `auto` on any other phase kind is inert (the runner reads
+  it only when integrating), so it is reported per phase but never raises `auto_integrates`.
 - `errors`: `{ "<filename>": "<message>" }` — malformed recipe files
 
 ### `run_workflow`

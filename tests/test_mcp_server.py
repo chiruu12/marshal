@@ -1082,6 +1082,17 @@ def test_list_workflows_exposes_whether_a_recipe_writes_to_your_branch(
         "  - run: integrate\n"
         "    from_phase: build\n"
     )
+    # `auto` on a phase the runner never reads it on. Nothing validates it away, so a recipe can
+    # carry it - and it changes nothing, because the runner consults `auto` only when integrating.
+    (wdir / "inert.yaml").write_text(
+        "description: auto set where it does nothing\n"
+        "phases:\n"
+        "  - name: build\n"
+        "    run: agent\n"
+        "    client: worker\n"
+        "    goal: do it\n"
+        "    auto: true\n"
+    )
     monkeypatch.setenv("MARSHAL_REPO", str(repo))
     monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
     app = build_app(build_service())
@@ -1091,6 +1102,10 @@ def test_list_workflows_exposes_whether_a_recipe_writes_to_your_branch(
 
     assert by_name["auto"]["auto_integrates"] is True
     assert by_name["gated"]["auto_integrates"] is False
+    # The flag answers "will my branch be written to", not "does the word appear in the YAML". A
+    # warning that fires when nothing can happen is one a driver learns to skip past.
+    assert by_name["inert"]["auto_integrates"] is False
+    assert by_name["inert"]["phases"][0]["auto"] is True  # still reported verbatim per phase
     # per-phase too, so a driver can see WHICH phase merges and what it merges
     merging = [p for p in by_name["auto"]["phases"] if p["auto"]]
     assert len(merging) == 1
