@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -95,8 +96,13 @@ def test_a_fleet_leaves_the_repo_status_clean(tmp_path: Path) -> None:
     assert status.strip() == "", f"expected a clean status, got: {status!r}"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permission bits")
 def test_a_fleet_still_builds_when_the_exclude_cannot_be_written(tmp_path: Path) -> None:
-    """Tidiness must never become a new way for a run to fail."""
+    """Tidiness must never become a new way for a run to fail.
+
+    Skipped as root, where `chmod 0o444` is not enforced: the write would simply succeed, the
+    unwritable case this test names would never arise, and it would pass without testing it.
+    """
     from marshal_engine.orchestration.fleet import Fleet
 
     _init(tmp_path)
@@ -104,6 +110,9 @@ def test_a_fleet_still_builds_when_the_exclude_cannot_be_written(tmp_path: Path)
     exclude.parent.mkdir(parents=True, exist_ok=True)
     exclude.touch()
     exclude.chmod(0o444)  # git init leaves this file present; make it unwritable
+    # Assert the precondition actually holds, so a platform where the chmod is ignored fails
+    # loudly here instead of reporting a pass for a guard it never reached.
+    assert not os.access(exclude, os.W_OK), "precondition: the exclude file must be unwritable"
     try:
         Fleet(tmp_path, {})  # must not raise
     finally:

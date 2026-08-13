@@ -2152,7 +2152,9 @@ def test_check_budget_never_raises_on_ledger_failure(
     def boom(**_kw: object) -> object:
         raise RuntimeError("ledger corrupt")
 
-    monkeypatch.setattr(fleet.usage, "summary", boom)  # type: ignore[method-assign]
+    # `read_events`, not `summary`: the advisory path never calls `summary` (only the enforce
+    # branch probes it), so patching that one left this test asserting nothing about the guard.
+    monkeypatch.setattr(fleet.usage, "read_events", boom)  # type: ignore[method-assign]
     # Must not raise.
     fleet._check_budget(
         RunRequest(backend_name="metered", task=TaskSpec(id="t", goal="x"))

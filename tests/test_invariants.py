@@ -270,17 +270,45 @@ _ALLOWED_SAFE_SOURCES = (
 )
 
 
+#: Inline opt-out for a comparison against another tool's status vocabulary (see the walker below).
+_FOREIGN_STATUS_MARKER = "marshal: foreign-status-vocabulary"
+
+
 def _enum_status_string_literals(path: Path) -> list[tuple[int, str, str]]:
     """Every `== <literal>` / `!= <literal>` / `in (<literals>,)` against a status string."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    # Lines carrying the marker are comparing a FOREIGN vocabulary that happens to share a spelling
+    # with a RunStatus value - an upstream CLI's own "failed"/"error", say. Marking the single line
+    # keeps every other line in the file under the invariant; excluding a whole package would make
+    # it permanently blind there, which is the opposite of what this check is for. Opting out has
+    # to be deliberate, visible at the site, and greppable.
+    # The marker counts on the comparison's own line or the one directly above it, so a long
+    # condition can carry it as a preceding comment instead of overflowing the line limit.
+    marked = {
+        i for i, line in enumerate(source.splitlines(), start=1) if _FOREIGN_STATUS_MARKER in line
+    }
+    exempt = marked | {i + 1 for i in marked}
     out: list[tuple[int, str, str]] = []
     # Walk Compare nodes; capture both `x == "lit"` and `x in ("lit", "lit")` patterns.
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare):
             for op, comp in zip(node.ops, node.comparators, strict=True):
                 if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(comp, ast.Constant) and isinstance(comp.value, str):
-                    if comp.value in _RUNSTATUS_LITERALS:
+                    if comp.value in _RUNSTATUS_LITERALS and node.lineno not in exempt:
                         out.append((node.lineno, op.__class__.__name__, comp.value))
+                # `status in ("running", "queued")` bypasses RunStatus exactly as `==` does. The
+                # docstring always claimed this was covered; only Eq/NotEq were actually walked,
+                # so a membership test against bare literals passed unseen.
+                elif isinstance(op, (ast.In, ast.NotIn)) and isinstance(comp, (ast.Tuple, ast.List, ast.Set)):
+                    for elt in comp.elts:
+                        if (
+                            isinstance(elt, ast.Constant)
+                            and isinstance(elt.value, str)
+                            and elt.value in _RUNSTATUS_LITERALS
+                            and node.lineno not in exempt
+                        ):
+                            out.append((node.lineno, op.__class__.__name__, elt.value))
     return out
 
 

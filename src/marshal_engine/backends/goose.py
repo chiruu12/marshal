@@ -173,6 +173,7 @@ class GooseBackend(CodingAgentBackend):
                 meta: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
                 found_usage = _apply_token_fields(usage, meta) or found_usage
                 status = meta.get("status")
+                # goose's own status field, not a RunStatus.  marshal: foreign-status-vocabulary
                 if isinstance(status, str) and status.lower() in {"failed", "error"}:
                     error_msg = error_msg or f"goose status={status}"
                 continue
