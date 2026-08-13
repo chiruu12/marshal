@@ -1039,14 +1039,15 @@ class Fleet:
         prepare_artifact_dir(wt)
         on_pid: Callable[[int], None] | None = None
         on_exit: Callable[[], None] | None = None
+        # Holds the setup process's pid so it can be unstamped once setup is done. A list because
+        # the hook that learns it is a closure running before this frame resumes.
+        setup_pid_ref: list[int] = []
         if run_id is not None:
             handle = _inflight_handle(self.state.dir, run_id)
             if handle is not None:
 
-                setup_pid: list[int] = []
-
                 def _on_pid(pid: int) -> None:
-                    setup_pid.append(pid)
+                    setup_pid_ref.append(pid)
                     self.state.update_if(
                         run_id,
                         lambda r: not _is_terminal(r),
@@ -1060,19 +1061,6 @@ class Fleet:
                 def _on_exit() -> None:
                     with _active_runs_guard:
                         handle.exited = True
-                    # Unstamp the setup pid now that it is reaped. Leaving it means the record
-                    # names a dead process for the whole agent phase, and the OS may recycle the
-                    # number onto something unrelated - so `agent_alive`, the orphan reaper's
-                    # "a stamped pid is decidable now" rule, and `cancel_run`'s killpg all read a
-                    # corpse. Cleared only while the record still holds THIS pid, so a stamp the
-                    # agent has already made is never clobbered.
-                    if setup_pid:
-                        self.state.update_if(
-                            run_id,
-                            lambda r: not _is_terminal(r) and r.pid == setup_pid[-1],
-                            pid=None,
-                            pid_start_time=None,
-                        )
 
                 on_pid = _on_pid
                 on_exit = _on_exit
@@ -1082,6 +1070,28 @@ class Fleet:
             self.worktrees.setup(wt, on_pid=on_pid, on_exit=on_exit)
         else:
             self.worktrees.setup(wt)
+
+        # Setup is done and the agent phase is next, so unstamp the setup pid: leaving it means the
+        # record names an exited process for the whole agent phase, and once the OS recycles the
+        # number, an unrelated live one. `agent_alive`, the orphan reaper's "a stamped pid is
+        # decidable now" rule, and `cancel_run`'s no-handle path all read that.
+        #
+        # Here rather than in `_on_exit` on purpose. This runs on the task's own thread, after
+        # setup returned, so it never contends with a concurrent terminal stamp for the run's
+        # lock - and a setup FAILURE raises above, skipping it, which is right: the write bought
+        # nothing on a record about to go terminal (the reaper skips terminal records and
+        # `agent_alive` short-circuits on them), and the added teardown work was enough to lose a
+        # documented race in which `clean` correctly refuses a run whose task is still in flight.
+        #
+        # Cleared only while the record still holds THIS pid, so a stamp the agent already made is
+        # never clobbered.
+        if run_id is not None and setup_pid_ref:
+            self.state.update_if(
+                run_id,
+                lambda r: not _is_terminal(r) and r.pid == setup_pid_ref[-1],
+                pid=None,
+                pid_start_time=None,
+            )
 
     def _run_deferred_provisioning(
         self, req: RunRequest, run_id: str, wt: Worktree
