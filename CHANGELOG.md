@@ -191,6 +191,8 @@ versions may include breaking API changes until 1.0.
   kept the spend), `cancel_run` could report success having signalled nothing, and `agent_alive`
   could report `false` for a working agent. The pid is now cleared when setup exits, and only while
   the record still holds that same pid, so a stamp the agent has already made is never clobbered.
+  This covers a cancel landing mid-setup too, which previously left the pid on a `cancelled` record
+  and could keep `clean` from ever reclaiming that worktree.
 
 - **A run whose agent committed its own work is no longer recorded as `empty` (#250).** The status
   was decided from the working tree alone, and an agent that commits leaves nothing uncommitted
