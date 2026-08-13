@@ -1065,33 +1065,36 @@ class Fleet:
                 on_pid = _on_pid
                 on_exit = _on_exit
 
-        # Only pass cancel hooks when wired — keeps `setup(wt)` call shape for spies/tests.
-        if on_pid is not None or on_exit is not None:
-            self.worktrees.setup(wt, on_pid=on_pid, on_exit=on_exit)
-        else:
-            self.worktrees.setup(wt)
-
-        # Setup is done and the agent phase is next, so unstamp the setup pid: leaving it means the
-        # record names an exited process for the whole agent phase, and once the OS recycles the
-        # number, an unrelated live one. `agent_alive`, the orphan reaper's "a stamped pid is
-        # decidable now" rule, and `cancel_run`'s no-handle path all read that.
-        #
-        # Here rather than in `_on_exit` on purpose. This runs on the task's own thread, after
-        # setup returned, so it never contends with a concurrent terminal stamp for the run's
-        # lock - and a setup FAILURE raises above, skipping it, which is right: the write bought
-        # nothing on a record about to go terminal (the reaper skips terminal records and
-        # `agent_alive` short-circuits on them), and the added teardown work was enough to lose a
-        # documented race in which `clean` correctly refuses a run whose task is still in flight.
-        #
-        # Cleared only while the record still holds THIS pid, so a stamp the agent already made is
-        # never clobbered.
-        if run_id is not None and setup_pid_ref:
-            self.state.update_if(
-                run_id,
-                lambda r: not _is_terminal(r) and r.pid == setup_pid_ref[-1],
-                pid=None,
-                pid_start_time=None,
-            )
+        try:
+            # Only pass cancel hooks when wired — keeps `setup(wt)` call shape for spies/tests.
+            if on_pid is not None or on_exit is not None:
+                self.worktrees.setup(wt, on_pid=on_pid, on_exit=on_exit)
+            else:
+                self.worktrees.setup(wt)
+        finally:
+            # Setup is over - it returned, failed, or was killed by a cancel - so its pid names a
+            # process that no longer exists. Leaving it stamped means the record keeps naming a
+            # corpse, and once the OS recycles the number, an unrelated live one: `agent_alive`,
+            # the orphan reaper's "a stamped pid is decidable now" rule, and `clean`'s refusal to
+            # reclaim a worktree whose pid looks alive all read it.
+            #
+            # In a `finally`, and with no terminal-status check, because the cancel path needs
+            # both: `cancel_run` stamps `cancelled` while setup is still running and setup then
+            # raises, so a clear placed after the call - or predicated on the record being
+            # non-terminal - would skip exactly the case that strands a pid on a terminal record.
+            #
+            # On the task's own thread rather than in `_on_exit`, which runs on the callback
+            # thread and contended with the concurrent terminal stamp for this run's lock.
+            #
+            # Matching the exact setup pid is the whole guard: it means this is our process and it
+            # is gone, and it can never clobber a pid the agent has already stamped.
+            if run_id is not None and setup_pid_ref:
+                self.state.update_if(
+                    run_id,
+                    lambda r: r.pid == setup_pid_ref[-1],
+                    pid=None,
+                    pid_start_time=None,
+                )
 
     def _run_deferred_provisioning(
         self, req: RunRequest, run_id: str, wt: Worktree

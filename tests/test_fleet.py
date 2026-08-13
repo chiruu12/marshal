@@ -5959,3 +5959,47 @@ def test_run_record_pid_during_agent_phase_names_a_dead_setup_process(repo: Path
     assert backend.observed_pid is None, (
         "the exited setup process must not still be stamped as this run's pid"
     )
+
+
+def test_cancel_during_setup_leaves_no_pid_on_the_terminal_record(repo: Path) -> None:
+    """A record cancelled during setup must not keep naming the setup process.
+
+    The post-setup clear deliberately skips terminal records, so a cancel landing while setup is
+    still running would otherwise strand the setup pid on a `cancelled` record. `clean` skips any
+    run whose pid still looks alive (`_pid_is_still_ours`), so once the OS recycles that number the
+    worktree is never reclaimed. The setup-phase terminal stamps clear it as part of the same write.
+    """
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        worktree_setup=[sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    try:
+        run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="cancelpid", goal="x")))
+        # Wait until setup has actually stamped a pid: cancelling before that exercises the
+        # pre-pid path instead, and this test would pass without touching the stamp under test.
+        deadline = time.monotonic() + 10
+        stamped = None
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.pid is not None:
+                stamped = rec.pid
+                break
+            time.sleep(0.02)
+        assert stamped is not None, "setup never stamped a pid; the cancel path under test was not reached"
+
+        cancelled = fleet.cancel_run(run_id)
+        assert cancelled.status == RunStatus.CANCELLED.value
+
+        deadline = time.monotonic() + 15
+        rec = fleet.state.get(run_id)
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != RunStatus.RUNNING.value and rec.pid is None:
+                break
+            time.sleep(0.05)
+        assert rec is not None and rec.status == RunStatus.CANCELLED.value
+        assert rec.pid is None, f"cancelled record still names the setup process at pid {rec.pid}"
+        assert rec.pid_start_time is None
+    finally:
+        fleet.shutdown()
