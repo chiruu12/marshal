@@ -481,8 +481,12 @@ def test_merged_path_reaches_agent_subprocess(
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    seen = proc.stdout.strip()
-    assert "/usr/bin" in seen and "/bin" in seen, seen
+    # Split into entries rather than substring-matching the joined string: `"/bin" in seen` is
+    # implied by `"/usr/bin" in seen`, so it asserted nothing, and a stray `/usr/binx` would
+    # satisfy either. Entry membership is what "the dir is on PATH" actually means.
+    seen = proc.stdout.strip().split(os.pathsep)
+    assert "/usr/bin" in seen, seen
+    assert "/bin" in seen, seen
     assert "/opt/homebrew/bin" in seen, seen
     assert "/Users/chiru/.local/bin" in seen, seen
 

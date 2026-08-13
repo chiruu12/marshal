@@ -213,10 +213,20 @@ def test_shims_only_reexport() -> None:
     for name in sorted(_SHIMS):
         path = _PKG / f"{name}.py"
         assert path.exists(), f"missing shim for published path marshal_engine.{name}"
+        # `ast.Expr` is allowed ONLY when it is a docstring. A bare `ast.Expr` exclusion also
+        # waved through every module-level call - a `print`, a registration hook, any import-time
+        # side effect - which is exactly the "shim grew logic" case this test exists to catch.
+        def _is_docstring(n: ast.stmt) -> bool:
+            return (
+                isinstance(n, ast.Expr)
+                and isinstance(n.value, ast.Constant)
+                and isinstance(n.value.value, str)
+            )
+
         body = [
             n
             for n in ast.parse(path.read_text(encoding="utf-8")).body
-            if not isinstance(n, (ast.Import, ast.ImportFrom, ast.Expr))
+            if not isinstance(n, (ast.Import, ast.ImportFrom)) and not _is_docstring(n)
         ]
         assert not body, f"shim {name}.py must only re-export, found: {body}"
 

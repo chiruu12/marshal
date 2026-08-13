@@ -281,6 +281,17 @@ def _enum_status_string_literals(path: Path) -> list[tuple[int, str, str]]:
                 if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(comp, ast.Constant) and isinstance(comp.value, str):
                     if comp.value in _RUNSTATUS_LITERALS:
                         out.append((node.lineno, op.__class__.__name__, comp.value))
+                # `status in ("running", "queued")` bypasses RunStatus exactly as `==` does. The
+                # docstring always claimed this was covered; only Eq/NotEq were actually walked,
+                # so a membership test against bare literals passed unseen.
+                elif isinstance(op, (ast.In, ast.NotIn)) and isinstance(comp, (ast.Tuple, ast.List, ast.Set)):
+                    for elt in comp.elts:
+                        if (
+                            isinstance(elt, ast.Constant)
+                            and isinstance(elt.value, str)
+                            and elt.value in _RUNSTATUS_LITERALS
+                        ):
+                            out.append((node.lineno, op.__class__.__name__, elt.value))
     return out
 
 
@@ -294,7 +305,11 @@ def test_engine_status_comparisons_go_through_runstatus() -> None:
     for src_path in _PKG.rglob("*.py"):
         # Skip type re-exports: only the engine modules that own state transitions.
         rel = src_path.relative_to(_PKG)
-        if rel.parts[0] in {"__pycache__", "data"}:
+        # `backends/` is excluded on purpose: an adapter's job is to parse the UPSTREAM CLI's
+        # vocabulary, which has its own "failed"/"error" strings that are unrelated to RunStatus
+        # and must not be rewritten to it. The invariant is about engine modules that own
+        # Marshal's own state transitions.
+        if rel.parts[0] in {"__pycache__", "data", "backends"}:
             continue
         for lineno, op, lit in _enum_status_string_literals(src_path):
             offenders.append(f"{rel}:{lineno}  {op} {lit!r}")
