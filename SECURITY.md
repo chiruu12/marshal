@@ -32,10 +32,16 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
 - **Worktree isolation is a git-branch boundary, not a filesystem sandbox.** Each run gets its
   own clone on a separate `marshal/<id>` branch, outside your repo. No commits reach
   your branch without an explicit `integrate`. That is the guarantee — not that the agent cannot
-  write elsewhere on disk. Worktrees live inside the repo, and a determined or prompt-injected
-  agent can reach paths outside its checkout (e.g. via `../..`); only point Marshal at repos and
-  backends you trust. Driver-supplied `task_id` / run directory names are validated before any
-  `git worktree` op: charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`),
+  write elsewhere on disk. Run directories live **outside** your repo by default
+  (`~/.marshal/worktrees/<repo>-<digest>/`), and each run is its own clone with its own `.git`, so a
+  relative path from the agent's working directory reaches neither your checkout nor Marshal's
+  ledger, and a run cannot write hooks or command-executing config that a later run would execute.
+  That placement is the operator's to keep: pointing `MARSHAL_HOME` (or a caller's `worktree_base`)
+  inside a repo you run agents against puts the run tree back under it and forfeits the
+  relative-path part of this — the per-run clone still holds.
+  None of that makes it a sandbox: an agent can still write to an **absolute** path anywhere you
+  can, so only point Marshal at repos and backends you trust. Driver-supplied `task_id` / run
+  directory names are validated before any git op: charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`),
   length-capped, and the resolved path must be a strict descendant of the repo's run root
   (`is_relative_to`, equality with the base dir refused so cleanup cannot wipe the shared root).
   Hostile ids fail closed with a clear error — they are never sanitize-rewritten. Cleanup also

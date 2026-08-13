@@ -8,24 +8,6 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
-### Fixed
-
-- **A run whose agent committed its own work is no longer recorded as `empty` (#250).** The status
-  was decided from the working tree alone, and an agent that commits leaves nothing uncommitted
-  behind it — so a run that produced real code was stamped `empty` while `collect_run` reported its
-  commit and changed files. Two surfaces described the same run differently, and the cheaper one
-  (the record a driver polls, including through `wait_for_runs`) was the wrong one, so work sitting
-  on the branch could be discarded unseen. Commits the agent made are now counted alongside the
-  tree; a count that cannot be determined never reads as zero.
-- **Marshal's state directory no longer shows up in your `git status`.** `.marshal/` was never
-  ignored, so every repo running Marshal carried untracked runtime state — noise at best, and a
-  ledger and logs committed by a stray `git add -A` at worst. The entry is written to the
-  per-clone `.git/info/exclude`, never to your tracked `.gitignore`: that file is yours, and
-  editing it would put a diff you did not write into your working tree and a conflict into a
-  shared repo. Written when a `Fleet` is built rather than by `marshal init`, since a driver
-  reaching Marshal over MCP never runs `init`. Best-effort — a directory that is not a repo, or a
-  `.git` that cannot be written, must not fail the run that follows.
-
 ### Added
 
 - **`budgets` take a second limit, `limit_runs`.** A dollar cap can only govern spend Marshal can
@@ -41,94 +23,6 @@ versions may include breaking API changes until 1.0.
 
   `limit_usd` is now optional, and a budget with neither limit is refused at config load rather than
   displayed as a control that is in force.
-### Fixed
-
-- **An unreadable usage ledger no longer reads as an empty one (#164).** `exists()` answered False
-  both for "no ledger yet" and for "cannot stat it" (EACCES, an unreadable parent, a broken mount),
-  so an **enforced** budget saw `$0` spent and admitted the spawn — the cap failing open in the one
-  mode whose whole job is to refuse. Only `FileNotFoundError` is the legitimately-empty case now;
-  every other `OSError` propagates.
-- **A ledger torn inside a multibyte character is readable again in reporting mode (#164).** A
-  crash can tear the final line mid-character — reachable because a `client` name may be non-ASCII
-  and is not escaped on write — and decoding the whole file strictly turned that into a hard
-  failure for every reader, so the torn-line tolerance `marshal usage` is supposed to have held for
-  ASCII ledgers only. Reporting now decodes with replacement and skips the broken line; enforce
-  still decodes strictly, because a ledger it cannot read exactly is not one to enforce a cap from.
-
-### Changed
-
-- **`read_paths` is limited to the workspace's own repo unless you opt out (#176).** The hatch for
-  handing an agent files to read accepted any absolute path, guarded only by a list of
-  secret-shaped names — which covered `.env`, `*.pem` and `.ssh`, but not `~/.aws/credentials`,
-  `~/.netrc`, kube/docker configs, or `gh`'s token file. A name list is a guess about which files
-  hold credentials and cannot cover a machine; scope can. `allow_external_read_paths: true` permits
-  the old behaviour where a driver is trusted.
-
-  This also closes the cross-workspace read channel: `read_paths` pointing at another workspace's
-  `.marshal/runs` copied that workspace's ledger into this one's worktree, contradicting the
-  tenancy claim that each keeps its own state. Nothing about the name `runs` is secret-shaped, so
-  only scoping catches it.
-
-  The name list is still there and was widened — it is the second layer, for a credential sitting
-  inside the repo itself.
-
-### Fixed
-
-- **A retried run is billed for every attempt, not just the last one.** The retry loop discarded
-  each failed attempt's result, so its usage never reached the ledger — and a provider can charge
-  for an attempt it then fails (a rate limit part-way through leaves real tokens spent). A
-  three-attempt run reported what its third attempt cost: an undercount presented as a measurement.
-  Tokens and cost from the abandoned attempts are now folded into the run's single ledger line.
-
-  When some attempts reported cost and others did not, the run's cost is `unavailable` rather than
-  the partial sum. A total that looks measured and is short by whatever the silent attempts cost is
-  the failure the cost invariant exists to prevent; "unknown" is not. Tokens still add up — those
-  were reported.
-- **A truncated EastRouter usage walk no longer yields a cost tagged `admin-api`.** When the page
-  cap was hit or a later page's request failed, the partial set was used as though it were the whole
-  window. Token reconciliation does not catch that on its own — it tolerates 10% of prompt tokens
-  going missing, so a dropped record under that threshold reconciles while its charge is simply
-  absent. Cost now stays `unavailable` when the walk was cut short by Marshal's own page cap or a
-  transport error. An API that ignores `offset` is unchanged: that is everything it will return, not
-  a remainder Marshal gave up on, and reconciliation still has to agree before any cost is claimed.
-
-### Changed
-
-- **Run directories now live outside the repo, at `~/.marshal/worktrees/<repo>-<digest>/` (#175).**
-  While a run worked at `<repo>/.marshal/worktrees/<id>`, a plain `../../..` from the agent's cwd
-  reached the operator's live checkout, their `.git`, and Marshal's own ledger — no exploit needed,
-  just a relative path. The path is keyed by a digest of the resolved repo path, so two checkouts of
-  the same project never share a run tree. `MARSHAL_HOME` relocates it (another disk, or an isolated
-  test run). Runs left by an earlier version stay cleanable in place.
-
-  This narrows the accident; it is not a sandbox. An agent can still write to an absolute path
-  elsewhere on the host — only an OS-level sandbox would change that, and Marshal does not claim one.
-
-### Changed
-
-- **Each run now gets its own clone, not a linked worktree (#180).** Linked worktrees share the main
-  repo's `.git`, so an agent could write a hook or a command-executing config key (`core.hooksPath`,
-  `filter.*.smudge`, and others) into shared state and have it execute during a **later, unrelated
-  run** - surviving cleanup, because tearing down a worktree never rewrote that state. A clone has
-  its own `.git`, so there is nothing shared to poison. The object store is copied rather than
-  hardlinked (`--no-hardlinks`): a hardlink is the same inode, so an agent could otherwise chmod an
-  object in its own clone and corrupt the driver's object database through it. A run therefore costs
-  disk proportional to repo history.
-
-  A run's branch is published into the driver's repo when it is created and whenever its commits are
-  read, so integrate, diffs and ancestry are unchanged. This also fixes work an agent committed
-  *itself* being reported as "no changes". Repo hooks are copied into a run only when
-  `integrate_run_hooks` is set, since that opt-in means the operator's hooks should actually run.
-
-  A run's clone also inherits the repo's committer identity, so a repo that sets `user.email`
-  per-repo rather than globally still commits (a clone does not read `.git/config`). Only the
-  identity crosses over - copying the whole local config would re-point a run at paths in the
-  operator's repo.
-
-  This is isolation of git state, not a filesystem sandbox: nothing stops an agent writing to an
-  absolute path elsewhere on the host (#175 tracks that).
-
-### Added
 
 - **Review a GitHub PR with a team: `run_team(..., pr=<number>)` / `marshal team run --pr N`.**
   Adversarial panels already covered a run's diff, a commit range, a plan and a whole-repo audit,
@@ -165,9 +59,139 @@ versions may include breaking API changes until 1.0.
 
 ### Changed
 
+- **`PLW1510` adopted: `subprocess.run` states its `check` argument explicitly.** This codebase
+  shells out constantly — git, every backend CLI, the doctor probes — so a call whose failure
+  handling is implicit is the most load-bearing kind of silence in it. Every existing call site
+  already inspected the result, so nothing changed behaviourally; the rule is now enforced so a
+  future one cannot quietly rely on a default the surrounding code does not follow (#239).
+
+- **`read_paths` is limited to the workspace's own repo unless you opt out (#176).** The hatch for
+  handing an agent files to read accepted any absolute path, guarded only by a list of
+  secret-shaped names — which covered `.env`, `*.pem` and `.ssh`, but not `~/.aws/credentials`,
+  `~/.netrc`, kube/docker configs, or `gh`'s token file. A name list is a guess about which files
+  hold credentials and cannot cover a machine; scope can. `allow_external_read_paths: true` permits
+  the old behaviour where a driver is trusted.
+
+  This also closes the cross-workspace read channel: `read_paths` pointing at another workspace's
+  `.marshal/runs` copied that workspace's ledger into this one's worktree, contradicting the
+  tenancy claim that each keeps its own state. Nothing about the name `runs` is secret-shaped, so
+  only scoping catches it.
+
+  The name list is still there and was widened — it is the second layer, for a credential sitting
+  inside the repo itself.
+
+
+- **Run directories now live outside the repo, at `~/.marshal/worktrees/<repo>-<digest>/` (#175).**
+  While a run worked at `<repo>/.marshal/worktrees/<id>`, a plain `../../..` from the agent's cwd
+  reached the operator's live checkout, their `.git`, and Marshal's own ledger — no exploit needed,
+  just a relative path. The path is keyed by a digest of the resolved repo path, so two checkouts of
+  the same project never share a run tree. `MARSHAL_HOME` relocates it (another disk, or an isolated
+  test run). Runs left by an earlier version stay cleanable in place.
+
+  This narrows the accident; it is not a sandbox. An agent can still write to an absolute path
+  elsewhere on the host — only an OS-level sandbox would change that, and Marshal does not claim one.
+
+
+- **Each run now gets its own clone, not a linked worktree (#180).** Linked worktrees share the main
+  repo's `.git`, so an agent could write a hook or a command-executing config key (`core.hooksPath`,
+  `filter.*.smudge`, and others) into shared state and have it execute during a **later, unrelated
+  run** - surviving cleanup, because tearing down a worktree never rewrote that state. A clone has
+  its own `.git`, so there is nothing shared to poison. The object store is copied rather than
+  hardlinked (`--no-hardlinks`): a hardlink is the same inode, so an agent could otherwise chmod an
+  object in its own clone and corrupt the driver's object database through it. A run therefore costs
+  disk proportional to repo history.
+
+  A run's branch is published into the driver's repo when it is created and whenever its commits are
+  read, so integrate, diffs and ancestry are unchanged. This also fixes work an agent committed
+  *itself* being reported as "no changes". Repo hooks are copied into a run only when
+  `integrate_run_hooks` is set, since that opt-in means the operator's hooks should actually run.
+
+  A run's clone also inherits the repo's committer identity, so a repo that sets `user.email`
+  per-repo rather than globally still commits (a clone does not read `.git/config`). Only the
+  identity crosses over - copying the whole local config would re-point a run at paths in the
+  operator's repo.
+
+  This is isolation of git state, not a filesystem sandbox: nothing stops an agent writing to an
+  absolute path elsewhere on the host (#175 tracks that).
+
+
 - **The ruff rule set is pinned explicitly (`select = ["E4", "E7", "E9", "F"]`).** It had been
   inherited from ruff's default, which is not a stable contract across ruff releases. Pinning means
   upgrading ruff changes ruff, and adopting a rule is its own reviewed change (#239).
+
+
+- **`status` returns a poll-shaped listing by default.** `compact_run` only ever dropped the two
+  unbounded text fields, so every row still carried ~30 fields — `pid`, `pid_start_time`,
+  `worktree`, `base_commit`, `read_paths`, token counts — and polling is the highest-frequency call
+  a driver makes, so it re-read all of them to watch two. The default now carries `run_id`,
+  `task_id`, `backend`, `client`, `status`, `agent_alive`, `cost_usd`, `source`, `duration_ms`,
+  `outcome`, `ended_at`. **Breaking:** the `full` boolean is replaced by `view`
+  (`poll` | `compact` | `full`) on the MCP tool and `--view` on the CLI; `view="compact"` is the
+  previous default and `view="full"` the previous `full=true`. The reply's `compact` key is now
+  `view`. Every view below `full` still reports `has_text` / `has_verify_output`, so an omitted
+  field never reads as an absent one ([#228](https://github.com/chiruu12/marshal/issues/228)).
+
+### Fixed
+
+- **A run whose agent committed its own work is no longer recorded as `empty` (#250).** The status
+  was decided from the working tree alone, and an agent that commits leaves nothing uncommitted
+  behind it — so a run that produced real code was stamped `empty` while `collect_run` reported its
+  commit and changed files. Two surfaces described the same run differently, and the cheaper one
+  (the record a driver polls, including through `wait_for_runs`) was the wrong one, so work sitting
+  on the branch could be discarded unseen. Commits the agent made are now counted alongside the
+  tree; a count that cannot be determined never reads as zero.
+- **Marshal's state directory no longer shows up in your `git status`.** `.marshal/` was never
+  ignored, so every repo running Marshal carried untracked runtime state — noise at best, and a
+  ledger and logs committed by a stray `git add -A` at worst. The entry is written to the
+  per-clone `.git/info/exclude`, never to your tracked `.gitignore`: that file is yours, and
+  editing it would put a diff you did not write into your working tree and a conflict into a
+  shared repo. Written when a `Fleet` is built rather than by `marshal init`, since a driver
+  reaching Marshal over MCP never runs `init`. Best-effort — a directory that is not a repo, or a
+  `.git` that cannot be written, must not fail the run that follows.
+
+
+- **An unreadable usage ledger no longer reads as an empty one (#164).** `exists()` answered False
+  both for "no ledger yet" and for "cannot stat it" (EACCES, an unreadable parent, a broken mount),
+  so an **enforced** budget saw `$0` spent and admitted the spawn — the cap failing open in the one
+  mode whose whole job is to refuse. Only `FileNotFoundError` is the legitimately-empty case now;
+  every other `OSError` propagates.
+- **A ledger torn inside a multibyte character is readable again in reporting mode (#164).** A
+  crash can tear the final line mid-character — reachable because a `client` name may be non-ASCII
+  and is not escaped on write — and decoding the whole file strictly turned that into a hard
+  failure for every reader, so the torn-line tolerance `marshal usage` is supposed to have held for
+  ASCII ledgers only. Reporting now decodes with replacement and skips the broken line; enforce
+  still decodes strictly, because a ledger it cannot read exactly is not one to enforce a cap from.
+
+
+- **A retried run is billed for every attempt, not just the last one.** The retry loop discarded
+  each failed attempt's result, so its usage never reached the ledger — and a provider can charge
+  for an attempt it then fails (a rate limit part-way through leaves real tokens spent). A
+  three-attempt run reported what its third attempt cost: an undercount presented as a measurement.
+  Tokens and cost from the abandoned attempts are now folded into the run's single ledger line.
+
+  When some attempts reported cost and others did not, the run's cost is `unavailable` rather than
+  the partial sum. A total that looks measured and is short by whatever the silent attempts cost is
+  the failure the cost invariant exists to prevent; "unknown" is not. Tokens still add up — those
+  were reported.
+- **A truncated EastRouter usage walk no longer yields a cost tagged `admin-api`.** When the page
+  cap was hit or a later page's request failed, the partial set was used as though it were the whole
+  window. Token reconciliation does not catch that on its own — it tolerates 10% of prompt tokens
+  going missing, so a dropped record under that threshold reconciles while its charge is simply
+  absent. Cost now stays `unavailable` when the walk was cut short by Marshal's own page cap or a
+  transport error. An API that ignores `offset` is unchanged: that is everything it will return, not
+  a remainder Marshal gave up on, and reconciliation still has to agree before any cost is claimed.
+
+
+- **A run whose cost could not be measured no longer reports `$0`.** `RunRecord.cost_usd` and
+  `StrategyResult.cost_usd` are now `float | None`, and an amount whose `source` is not `native` or
+  `admin-api` serializes as `null`. Backends that expose no spend (Cursor, Codex, Command Code)
+  previously emitted `{"cost_usd": 0.0, "source": "unavailable"}`, and a driver reading the number
+  without the provenance beside it concluded those runs were free — reported from the field after a
+  whole Cursor lane was treated as costing nothing. The human CLI was already honest here
+  (`_format_cost_display` printed `unavailable`); the machine surfaces every driver agent actually
+  consumes were not. A literal `0.0` now means a provider reported a real zero. Records written by
+  earlier versions are normalized on read, so no migration pass is needed
+  ([#227](https://github.com/chiruu12/marshal/issues/227)).
 
 ### Documentation
 
@@ -191,31 +215,6 @@ versions may include breaking API changes until 1.0.
   sat directly above a table where half the rows read `unavailable`; it now describes the honest
   behaviour rather than an ideal one.
 
-### Changed
-
-- **`status` returns a poll-shaped listing by default.** `compact_run` only ever dropped the two
-  unbounded text fields, so every row still carried ~30 fields — `pid`, `pid_start_time`,
-  `worktree`, `base_commit`, `read_paths`, token counts — and polling is the highest-frequency call
-  a driver makes, so it re-read all of them to watch two. The default now carries `run_id`,
-  `task_id`, `backend`, `client`, `status`, `agent_alive`, `cost_usd`, `source`, `duration_ms`,
-  `outcome`, `ended_at`. **Breaking:** the `full` boolean is replaced by `view`
-  (`poll` | `compact` | `full`) on the MCP tool and `--view` on the CLI; `view="compact"` is the
-  previous default and `view="full"` the previous `full=true`. The reply's `compact` key is now
-  `view`. Every view below `full` still reports `has_text` / `has_verify_output`, so an omitted
-  field never reads as an absent one ([#228](https://github.com/chiruu12/marshal/issues/228)).
-
-### Fixed
-
-- **A run whose cost could not be measured no longer reports `$0`.** `RunRecord.cost_usd` and
-  `StrategyResult.cost_usd` are now `float | None`, and an amount whose `source` is not `native` or
-  `admin-api` serializes as `null`. Backends that expose no spend (Cursor, Codex, Command Code)
-  previously emitted `{"cost_usd": 0.0, "source": "unavailable"}`, and a driver reading the number
-  without the provenance beside it concluded those runs were free — reported from the field after a
-  whole Cursor lane was treated as costing nothing. The human CLI was already honest here
-  (`_format_cost_display` printed `unavailable`); the machine surfaces every driver agent actually
-  consumes were not. A literal `0.0` now means a provider reported a real zero. Records written by
-  earlier versions are normalized on read, so no migration pass is needed
-  ([#227](https://github.com/chiruu12/marshal/issues/227)).
 
 ## [0.2.2] - 2026-08-05
 
