@@ -10,6 +10,20 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **`marshal mcp --http` serves MCP over Streamable HTTP.** stdio remains the default and is
+  unchanged: the host spawns one server per session and owns its lifetime. `--http` serves one
+  server at `http://127.0.0.1:8765/mcp` that every session connects to, which fits Marshal better
+  than per-session copies do — a fan-out outlives the driver turn that started it, run state is
+  already on disk behind `fleet.lock`, and startup (including the login-shell PATH probe) is paid
+  once instead of on every session. Point a host at the URL rather than a command. In exchange you
+  own the process: nothing starts it for you.
+
+  **Loopback only, with no override.** Marshal executes arbitrary commands with your credentials and
+  the transport carries no authentication, so an endpoint reachable off this machine is
+  unauthenticated remote code execution. A non-loopback `--host` is refused, before any startup work
+  runs, with the supported alternative in the message (`ssh -L`, so the tunnel authenticates).
+  DNS-rebinding protection is on.
+
 - **`budgets` take a second limit, `limit_runs`.** A dollar cap can only govern spend Marshal can
   measure. A subscription backend reports no cost, so a fleet of them under `limit_usd` alone was
   uncapped in practice — it showed `$0` spent forever, and "within budget" was a statement about

@@ -324,8 +324,31 @@ marshal team run NAME      # run a review panel (--target run|plan|range|audit, 
 marshal workspace list     # show the workspace registry
 marshal workspace add <name> [path]  # register a repo (scaffolds fleet.config.yaml; path defaults to cwd)
 marshal workspace remove <name>      # drop a workspace from the registry
-marshal mcp                # run the MCP server over stdio
+marshal mcp                # run the MCP server over stdio (the host spawns one per session)
+marshal mcp --http         # ...or over Streamable HTTP: one shared server (--host/--port/--path; loopback only)
 ```
+
+### Which MCP transport
+
+**stdio** (default) is what a host expects: it spawns Marshal per session and owns its lifetime.
+Nothing to start, nothing to leave running.
+
+**`--http`** serves Streamable HTTP at `http://127.0.0.1:8765/mcp`, started once and shared by every
+session. It suits Marshal's shape: a fan-out outlives the driver turn that started it, run state is
+already on disk behind `fleet.lock`, and per-session startup (including the login-shell PATH probe)
+is paid once instead of every time a session opens. Point a host at the URL rather than a command:
+
+```json
+{ "mcpServers": { "marshal": { "url": "http://127.0.0.1:8765/mcp" } } }
+```
+
+**It binds loopback only, and that is not configurable.** Marshal runs arbitrary commands — the
+configured `setup:`, the agent CLIs, whatever a driver asks a backend to do — with your credentials,
+and the transport carries no authentication, so an endpoint reachable off this machine is
+unauthenticated remote code execution. A non-loopback `--host` is refused. To reach it from another
+machine, forward the port (`ssh -L 8765:127.0.0.1:8765 <host>`) so the tunnel does the
+authenticating. DNS-rebinding protection is on, so a browser page on another origin cannot drive it
+either.
 
 `usage`, `status`, `logs`, and `models` accept `--repo` (default: `$MARSHAL_REPO` or cwd) to target a
 repo without the MCP workspace registry.

@@ -212,6 +212,26 @@ the server on every session start, which re-resolves the environment before Mars
 Marshal itself leaves the host's session at startup, so it cannot interfere with your terminal — but
 the wrapper is one more process in your host's group for no benefit.
 
+### Option C - one shared server over HTTP
+
+Instead of a server per session, run one and point every session at it:
+
+```bash
+MARSHAL_REPO=/abs/path/to/your/project marshal mcp --http
+```
+
+```json
+{ "mcpServers": { "marshal": { "url": "http://127.0.0.1:8765/mcp" } } }
+```
+
+Startup — including the login-shell PATH probe — is paid once rather than on every session, and a
+fan-out survives the session that started it. The trade is that you own the process: nothing starts
+it for you, and it will not come back after a reboot unless you arrange that.
+
+It binds loopback only and refuses any other `--host`: Marshal executes arbitrary commands, and the
+transport has no authentication of its own. Forward the port (`ssh -L 8765:127.0.0.1:8765 <host>`)
+if you need it from another machine. See [`docs/usage.md`](docs/usage.md) for the full comparison.
+
 ## 6. Your first run
 
 Run agents from the CLI (`marshal run` / `marshal spawn`) or by driving the MCP tools from Claude
