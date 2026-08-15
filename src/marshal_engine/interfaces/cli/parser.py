@@ -7,8 +7,10 @@ import sys
 
 from ...accounting.usage import USAGE_WINDOWS
 from ...core._version import __version__
+from ...core.config import ConfigError
 from ...core.types import RunOutcome
 from ...runtime.env import merge_user_path
+from ..mcp_server.server import DEFAULT_HTTP_PATH, DEFAULT_HTTP_PORT
 from .admin import _cmd_clean, _cmd_doctor, _cmd_init, _cmd_workspace
 from .common import _add_run_args, _positive_hours, _positive_int
 from .inspect import (
@@ -177,7 +179,16 @@ def main(argv: list[str] | None = None) -> int:
     wls.add_argument("--json", action="store_true", help="output JSON")
     wrm = wsub.add_parser("remove", help="remove a workspace from the registry")
     wrm.add_argument("name", help="workspace name to remove")
-    sub.add_parser("mcp", help="run the MCP server over stdio")
+    pmcp = sub.add_parser("mcp", help="run the MCP server (stdio by default, or Streamable HTTP)")
+    pmcp.add_argument(
+        "--http",
+        action="store_true",
+        help="serve over Streamable HTTP instead of stdio: one shared server, started once, "
+        "that every session connects to",
+    )
+    pmcp.add_argument("--host", default="127.0.0.1", help="--http bind address (loopback only)")
+    pmcp.add_argument("--port", type=int, default=DEFAULT_HTTP_PORT, help="--http port")
+    pmcp.add_argument("--path", default=DEFAULT_HTTP_PATH, help="--http endpoint path")
     args = p.parse_args(argv)
 
     if args.version:
@@ -221,7 +232,15 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from ..mcp_server import main as serve
 
-            serve()
+            serve(
+                transport="http" if args.http else "stdio",
+                host=args.host,
+                port=args.port,
+                path=args.path,
+            )
+        except ConfigError as exc:
+            print(f"marshal: {exc}", file=sys.stderr)
+            return 1
         except ImportError:
             print(
                 "marshal mcp needs the optional 'mcp' extra; install it with: uv sync --extra mcp",

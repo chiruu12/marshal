@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -1178,3 +1179,109 @@ def test_detach_from_host_terminal_when_stdin_is_gone(monkeypatch: pytest.Monkey
     monkeypatch.setattr(server_mod.sys, "stdin", None)
     assert server_mod.detach_from_host_terminal() is True
     assert called == [True, True]
+
+
+# --- Streamable HTTP transport ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.5", "::1", "localhost"])
+def test_require_loopback_accepts_only_this_machine(host: str) -> None:
+    server_mod.require_loopback(host)  # must not raise
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["0.0.0.0", "192.168.1.10", "10.0.0.4", "::", "example.com", "localhost.evil.com", ""],
+)
+def test_require_loopback_refuses_anything_reachable_off_box(host: str) -> None:
+    # Marshal runs arbitrary commands, so a reachable endpoint is unauthenticated RCE. A hostname
+    # is refused even when it would resolve to loopback: resolution can change after the check.
+    with pytest.raises(ConfigError) as exc:
+        server_mod.require_loopback(host)
+    assert "ssh -L" in str(exc.value), "the refusal must name the supported way to reach it remotely"
+
+
+def test_loopback_refusal_has_no_override_flag() -> None:
+    # Invariant: binding off-box is refused outright, not gated behind a flag someone can set
+    # once and forget. If that ever becomes a knob, this test should be the thing that argues it.
+    src = inspect.getsource(server_mod.require_loopback) + inspect.getsource(server_mod.main)
+    for escape in ("allow_remote", "allow-remote", "force", "insecure"):
+        assert escape not in src, f"an override named {escape!r} appeared; loopback-only is the contract"
+
+
+def test_http_transport_refuses_before_building_anything(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The bind check must precede the registry and the PATH probe: refusing after a 3s shell probe
+    # and a workspace build wastes the operator's time and spawns children we did not need.
+    def unexpected(*_a: object, **_k: object) -> None:
+        raise AssertionError("startup work ran despite an illegal bind address")
+
+    monkeypatch.setattr(server_mod, "merge_user_path", unexpected)
+    monkeypatch.setattr(server_mod.WorkspaceRegistry, "from_env", unexpected)
+    with pytest.raises(ConfigError):
+        server_mod.main(transport="http", host="0.0.0.0")
+
+
+def test_http_transport_does_not_leave_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Detaching is a stdio-only concern: an HTTP server is nobody's child and has no host session.
+    # Calling setsid anyway would take a foreground server out of its shell's job control.
+    monkeypatch.setattr(
+        server_mod, "detach_from_host_terminal",
+        lambda: (_ for _ in ()).throw(AssertionError("http must not detach")),
+    )
+    monkeypatch.setattr(server_mod, "merge_user_path", lambda: False)
+    monkeypatch.setattr(server_mod.WorkspaceRegistry, "from_env", lambda: _StubRegistry())
+    ran: list[tuple[object, ...]] = []
+    monkeypatch.setattr(server_mod, "build_app", lambda _r: _StubApp(ran))
+    server_mod.main(transport="http", host="127.0.0.1", port=9999, path="/mcp")
+    assert ran == [("streamable-http", {"host": "127.0.0.1", "port": 9999, "streamable_http_path": "/mcp"})]
+
+
+def test_stdio_transport_still_detaches(monkeypatch: pytest.MonkeyPatch) -> None:
+    detached: list[bool] = []
+    monkeypatch.setattr(server_mod, "detach_from_host_terminal", lambda: detached.append(True))
+    monkeypatch.setattr(server_mod, "merge_user_path", lambda: False)
+    monkeypatch.setattr(server_mod.WorkspaceRegistry, "from_env", lambda: _StubRegistry())
+    ran: list[tuple[object, ...]] = []
+    monkeypatch.setattr(server_mod, "build_app", lambda _r: _StubApp(ran))
+    server_mod.main()
+    assert detached == [True]
+    assert ran == [((), {})], "stdio must run the default transport, with no HTTP kwargs"
+
+
+class _StubRegistry:
+    def get(self, _name: str) -> object:
+        return object()
+
+
+class _StubApp:
+    def __init__(self, sink: list[tuple[object, ...]]) -> None:
+        self._sink = sink
+
+    def run(self, *args: object, **kwargs: object) -> None:
+        self._sink.append((args[0] if args else (), kwargs))
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("127.0.0.1", "http://127.0.0.1:8765/mcp"),
+        ("localhost", "http://localhost:8765/mcp"),
+        # Bracketed: without them the address's colons are indistinguishable from the port
+        # separator, and the URL an operator copies into a client config does not resolve.
+        ("::1", "http://[::1]:8765/mcp"),
+    ],
+)
+def test_endpoint_url_is_a_usable_url(host: str, expected: str) -> None:
+    url = server_mod.endpoint_url(host, 8765, "/mcp")
+    assert url == expected
+    parsed = urllib.parse.urlparse(url)
+    assert parsed.port == 8765, f"{url} does not parse back to the port we bound"
+    assert parsed.hostname == host.strip("[]")
+
+
+def test_announced_url_goes_through_endpoint_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The banner is the one string an operator copies. Building it inline again is how the IPv6
+    # form drifts back out of sync with the helper that gets it right.
+    src = inspect.getsource(server_mod.main)
+    assert "endpoint_url(host, port, path)" in src
+    assert "http://{host}" not in src

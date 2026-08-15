@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 from collections.abc import Callable
@@ -10,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ...core._version import __version__
+from ...core.config import ConfigError
 from ...runtime.env import merge_user_path
 from ..service import MarshalService
 from ..workspaces import (
@@ -155,8 +157,74 @@ def detach_from_host_terminal() -> bool:
     return True
 
 
-def main() -> None:
-    detach_from_host_terminal()
+#: Default port for `marshal mcp --http`. Not the SDK's 8000, which is the first port anything
+#: local grabs; a collision here reads as "Marshal is broken" rather than "that port is taken".
+DEFAULT_HTTP_PORT = 8765
+
+#: Default path the Streamable HTTP endpoint is served at (the transport's conventional mount).
+DEFAULT_HTTP_PATH = "/mcp"
+
+
+def require_loopback(host: str) -> None:
+    """Refuse to bind anywhere a machine other than this one can reach.
+
+    Marshal runs arbitrary commands — the configured `setup:`, the agent CLIs, whatever a driver
+    asks a backend to do — in real repos, with whatever credentials this user has. An MCP endpoint
+    that answers off-box is therefore unauthenticated remote code execution, and the transport ships
+    no authentication of its own. There is deliberately no flag to override this: to reach the
+    server from elsewhere, forward the port over SSH (`ssh -L 8765:127.0.0.1:8765 host`), which
+    authenticates the *tunnel* rather than leaving the endpoint open.
+    """
+    if host == "localhost":
+        return
+    try:
+        # Literal addresses only. A hostname is not resolved and not trusted: what it points at can
+        # change after this check, and "it resolved to loopback once" is not a binding guarantee.
+        if ipaddress.ip_address(host).is_loopback:
+            return
+    except ValueError:
+        pass
+    raise ConfigError(
+        f"refusing to serve MCP on {host!r}: Marshal executes arbitrary commands, so an endpoint "
+        "reachable off this machine is unauthenticated remote code execution. Bind 127.0.0.1 (the "
+        f"default) and forward the port instead: ssh -L {DEFAULT_HTTP_PORT}:127.0.0.1:"
+        f"{DEFAULT_HTTP_PORT} <host>"
+    )
+
+
+def endpoint_url(host: str, port: int, path: str) -> str:
+    """The URL a client should be pointed at, with an IPv6 literal bracketed.
+
+    ``http://::1:8765/mcp`` is not a URL - the colons in the address are indistinguishable from the
+    port separator, so RFC 3986 requires an IPv6 literal to be wrapped in brackets. This string is
+    the one thing an operator copies into a client config, so getting it wrong hands them an address
+    that simply does not resolve.
+    """
+    authority = f"[{host}]" if ":" in host else host
+    return f"http://{authority}:{port}{path}"
+
+
+def main(
+    *,
+    transport: str = "stdio",
+    host: str = "127.0.0.1",
+    port: int = DEFAULT_HTTP_PORT,
+    path: str = DEFAULT_HTTP_PATH,
+) -> None:
+    """Serve MCP over stdio (the default) or Streamable HTTP.
+
+    The two differ in who owns the process. Over stdio the host spawns one server per session and
+    owns its lifetime; over HTTP the server is started once, independently, and every session
+    connects to the same one. The HTTP shape suits Marshal: a fan-out outlives the driver turn that
+    started it, run state is already on disk behind `fleet.lock`, and one shared supervisor is a
+    better match for that than N per-session copies of it.
+    """
+    if transport == "http":
+        require_loopback(host)
+    else:
+        # Only meaningful for stdio, where a host spawned us over a pipe and we are inside its
+        # process group. An HTTP server is nobody's child and has no host session to leave.
+        detach_from_host_terminal()
     # The MCP host (Claude Code, Cursor, ...) often spawns us with a stripped PATH that lacks the
     # user's zshrc-managed directories (Homebrew, ~/.local/bin, npm-global). Backend CLIs installed
     # there then look missing to shutil.which and `marshal doctor` falsely FAILs them. Augment PATH
@@ -167,7 +235,17 @@ def main() -> None:
     # Build the default workspace eagerly so the connect-time config message + warnings still fire at
     # startup (named workspaces build lazily on first touch).
     registry.get(DEFAULT_WORKSPACE)
-    build_app(registry).run()
+    app = build_app(registry)
+    if transport == "http":
+        # Announced on stderr, not stdout: stdout is the protocol stream under stdio, and the two
+        # paths must not differ in what they are safe to write.
+        print(
+            f"[marshal] MCP over Streamable HTTP: {endpoint_url(host, port, path)}",
+            file=sys.stderr,
+        )
+        app.run("streamable-http", host=host, port=port, streamable_http_path=path)
+        return
+    app.run()
 
 
 if __name__ == "__main__":
