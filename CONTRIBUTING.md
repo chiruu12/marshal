@@ -17,8 +17,8 @@ uv sync --extra mcp --extra dev
 ```
 
 The import package is `marshal_engine` (a top-level package named `marshal` would shadow the stdlib
-builtin). The PyPI distribution name is `marshal` — so the install name and the import name differ
-on purpose, and the mismatch is not a bug to fix.
+builtin). The PyPI distribution name is `marshal-agents` — `marshal` itself is refused by PyPI as a
+stdlib module name, so install name and import name differ on purpose.
 
 Useful commands:
 
@@ -155,20 +155,20 @@ From a clean checkout of the release commit:
 
 ```bash
 uv build
-unzip -l dist/marshal-*-py3-none-any.whl | grep -E 'marshal_engine/(py\.typed|data/prices\.yaml)'
+unzip -l dist/marshal_agents-*-py3-none-any.whl | grep -E 'marshal_engine/(py\.typed|data/prices\.yaml)'
 # Wheel must NOT contain tests/, .marshal/, teams/, or fleet.config.yaml
-tar -tzf dist/marshal-*.tar.gz | head   # sdist must include src/, tests/, pyproject.toml, README, LICENSE
+tar -tzf dist/marshal_agents-*.tar.gz | head   # sdist must include src/, tests/, pyproject.toml, README, LICENSE
 
 TMP=$(mktemp -d)
 uv venv "$TMP/venv"
-uv pip install --python "$TMP/venv/bin/python" dist/marshal-*-py3-none-any.whl
+uv pip install --python "$TMP/venv/bin/python" dist/marshal_agents-*-py3-none-any.whl
 "$TMP/venv/bin/marshal" --version   # expect: marshal <version>
 rm -rf "$TMP"
 ```
 
 ### Publish
 
-1. The PyPI project is **`marshal`** and `[project].name` must match it exactly — PyPI normalises
+1. The PyPI project is **`marshal-agents`** and `[project].name` must match it exactly — PyPI normalises
    case and `-`/`_`, but a different name is rejected at upload. `core/_version.py` looks the
    distribution up by that same name, so the two move together or `marshal --version` reports
    `0.0.0+unknown`.

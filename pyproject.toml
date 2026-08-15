@@ -1,5 +1,5 @@
 [project]
-name = "marshal"
+name = "marshal-agents"
 version = "0.3.0"
 description = "Orchestration engine for driving a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver via MCP + Skills"
 readme = "README.md"
