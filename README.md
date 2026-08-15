@@ -52,6 +52,10 @@ pipx install "marshal-agents[mcp]"
 The `[mcp]` extra is what makes `marshal mcp` work. Without it the server exits before a host can
 connect.
 
+`marshal mcp` serves over stdio, which is what a host expects. `marshal mcp --http` instead serves
+one shared Streamable HTTP server that every session connects to — loopback only, since Marshal runs
+arbitrary commands. See [`docs/usage.md`](docs/usage.md#which-mcp-transport).
+
 To track unreleased work on `main`:
 
 ```bash
