@@ -8,6 +8,19 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-15
+
+### Changed
+
+- **The PyPI distribution is now `marshal`** (was `MarshalFleet`): `uv tool install "marshal[mcp]"`.
+  Nothing about the code changes — the import package is still `marshal_engine` and the console
+  script is still `marshal`. Note that the install name and the import name differ on purpose: a
+  top-level `marshal` package would shadow the stdlib module of that name.
+
+  `MarshalFleet` keeps its published history (0.2.0, 0.2.1, 0.2.3) and receives one final release
+  pointing here. Existing installs keep working; there is no automatic migration, so switch with
+  `uv tool uninstall MarshalFleet && uv tool install "marshal[mcp]"`.
+
 ## [0.2.3] - 2026-08-15
 
 ### Added
@@ -1598,7 +1611,8 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
   present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
-[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/chiruu12/marshal/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/chiruu12/marshal/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/chiruu12/marshal/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/chiruu12/marshal/compare/v0.2.0...v0.2.1
