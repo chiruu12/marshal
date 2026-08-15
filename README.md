@@ -1,3 +1,16 @@
+> # This package has moved
+>
+> **`MarshalFleet` is now published as [`marshal-agents`](https://pypi.org/project/marshal-agents/).**
+>
+> ```bash
+> uv tool uninstall MarshalFleet
+> uv tool install "marshal-agents[mcp]"
+> ```
+>
+> Only the PyPI distribution name changed. The import package is still `marshal_engine` and the
+> command is still `marshal`. `MarshalFleet` stops at 0.2.4 and receives no further releases;
+> everything after 0.2.3 ships under the new name.
+
 <p align="center">
   <img src="assets/wordmark.png" alt="Marshal" width="420">
 </p>

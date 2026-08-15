@@ -1,7 +1,7 @@
 [project]
 name = "MarshalFleet"
-version = "0.2.3"
-description = "Orchestration engine for driving a fleet of headless coding agents (Cursor, OpenCode, Codex, Antigravity, Claude Code) from one driver via MCP + Skills"
+version = "0.2.4"
+description = "RENAMED: this project is now published as marshal-agents. Install that instead; MarshalFleet receives no further releases."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
