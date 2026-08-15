@@ -26,6 +26,30 @@ import shutil
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Final
+
+# Spawn kwargs every child in Marshal must be started with. Splat as ``**DETACHED_STDIO``.
+#
+# Marshal usually runs as a *stdio* MCP server: it is a child of the host (Claude Code, Cursor),
+# it shares the host's process group and controlling terminal, and its own stdin is the JSON-RPC
+# pipe. Both of those are inherited by default, and both are hazards:
+#
+#   stdin=DEVNULL         a child that reads stdin would consume JSON-RPC bytes addressed to us,
+#                         corrupting the protocol stream - or block forever waiting on a pipe
+#                         that only ever carries someone else's traffic.
+#   start_new_session     a child sharing the controlling terminal can do job control on it
+#                         (an interactive shell does this unconditionally). tcsetpgrp/tcsetattr
+#                         from a process group that is not the terminal's foreground group raises
+#                         SIGTTOU, and SIGTTIN/SIGTTOU are delivered to the *whole process group* -
+#                         which includes the MCP host. The host is then suspended (ps STAT ``T``)
+#                         with no crash and no stderr. setsid gives the child no controlling
+#                         terminal at all, so the failure is structurally unreachable.
+#
+# Enforced for every spawn site under ``src/`` by ``tests/test_invariants.py``.
+DETACHED_STDIO: Final[Mapping[str, Any]] = MappingProxyType(
+    {"stdin": subprocess.DEVNULL, "start_new_session": True}
+)
 
 # Vars that pin a child to the driver's Python install; never inherited from the parent (``extra``
 # may still set them deliberately). PATH is intentionally allowlisted - uv/git/the backend CLIs
@@ -310,12 +334,17 @@ def user_path(
         if not shell or shutil.which(shell) is None:
             continue
         try:
+            # ``-i`` is what makes this probe worth running - most users export PATH from
+            # .zshrc, which a non-interactive shell never sources - and also what makes it
+            # dangerous: an interactive shell takes control of its terminal. DETACHED_STDIO
+            # leaves it no terminal to take. Do not drop those kwargs from this call.
             proc = subprocess.run(
                 [shell, "-ilc", "echo $PATH"],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             continue

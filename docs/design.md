@@ -448,18 +448,19 @@ objections - lives in the `marshal-adversarial-review` Skill. Discover/validate 
 ## 8. Edge-case hardening checklist (MUST defend - from real GitHub/forum issues)
 
 1. **External timeout + kill on EVERY run.** Both Cursor (`-p` hang, version-gated) and OpenCode (hangs on API error/429 with no exit code; hangs after tool calls) hang. Treat absence of stdout as a hang.
-2. **No-stdin deadlock is the #1 footgun.** Never default to a prompting permission mode. Default `safe-edit` (non-prompting). OpenCode: set `question: deny`.
-3. **OpenCode stream drops final `step_finish`** → read final cost/tokens from on-disk store / `export`, not the stream.
-4. **OpenCode `serve`+`attach` hangs if any permission is `ask`** → all `allow` + `question: deny` (engine stamps via `OPENCODE_CONFIG_CONTENT` on write-tier runs).
-5. **OpenCode rate-limit = immediate exit, no auto-retry** → implement orchestrator backoff/retry.
-6. **Cursor: pin & assert version** at startup (hang/race/terminal-release fixes are version-gated). Parse stdout JSON **only on exit 0**; on failure there's no JSON, only stderr.
-7. **Cursor wants a TTY** → run under pseudo-tty (`script -q /dev/null`) or `--print`, stdin from `/dev/null`, **clean shell** (a heavy `.zshrc` causes completion-detection hangs).
-8. **Cursor concurrent launches:** stagger ~100ms + use worktrees (file-lock race, fixed but stagger anyway).
-9. **Cursor workspace trust:** `--trust` / pre-seed trusted config - esp. required for MCP in headless.
-10. **Worktree lifecycle:** spec creation, naming, owner-tracking, orphan detection, `git worktree prune` on crash. Track which run owns which worktree in the usage log. **Id validation is Marshal-owned** (charset + length + `is_relative_to(base_dir)` containment on create/remove/discard) — not git-accidental; see `SECURITY.md`.
-11. **Concurrency caps:** each CLI is 150-400 MB RAM → cap parallel runs per fleet and per client or a fan-out OOMs the host.
-12. **Secrets by reference** (`env:VAR`/file), validate presence at load, fail fast with a clear message. Never inline.
-13. **Durable per-run logs are best-effort.** `RunLogStore.write` is atomic (unique temp + `os.replace`, same idiom as `FleetState`), so a torn read never sees partial content; but a *write failure* (disk full, permission) must never break a finished run — `Fleet._execute` wraps the write in `try/except` and stderr-logs the cause. A run that predates log storage simply has no file (the CLI returns non-zero, the MCP tool returns `log=null`).
+2. **Never inherit the host's stdin or controlling terminal.** As a stdio MCP server Marshal is a child of its host, so its stdin is the JSON-RPC pipe and its process group is the host's. A child inheriting the first eats protocol bytes; a child inheriting the second can raise SIGTTIN/SIGTTOU, which stops the **whole group** — the host is suspended (`ps` STAT `T`) with no crash and no stderr. Every spawn site splats `runtime.env.DETACHED_STDIO` (`stdin=DEVNULL` + `start_new_session=True`), enforced over the AST by `tests/test_invariants.py`; the server itself `setsid`s at startup unless stdin is a tty. Highest-risk child is the PATH probe — an *interactive* login shell running arbitrary user rc files.
+3. **No-stdin deadlock is the #1 footgun.** Never default to a prompting permission mode. Default `safe-edit` (non-prompting). OpenCode: set `question: deny`.
+4. **OpenCode stream drops final `step_finish`** → read final cost/tokens from on-disk store / `export`, not the stream.
+5. **OpenCode `serve`+`attach` hangs if any permission is `ask`** → all `allow` + `question: deny` (engine stamps via `OPENCODE_CONFIG_CONTENT` on write-tier runs).
+6. **OpenCode rate-limit = immediate exit, no auto-retry** → implement orchestrator backoff/retry.
+7. **Cursor: pin & assert version** at startup (hang/race/terminal-release fixes are version-gated). Parse stdout JSON **only on exit 0**; on failure there's no JSON, only stderr.
+8. **Cursor wants a TTY** → run under pseudo-tty (`script -q /dev/null`) or `--print`, stdin from `/dev/null`, **clean shell** (a heavy `.zshrc` causes completion-detection hangs).
+9. **Cursor concurrent launches:** stagger ~100ms + use worktrees (file-lock race, fixed but stagger anyway).
+10. **Cursor workspace trust:** `--trust` / pre-seed trusted config - esp. required for MCP in headless.
+11. **Worktree lifecycle:** spec creation, naming, owner-tracking, orphan detection, `git worktree prune` on crash. Track which run owns which worktree in the usage log. **Id validation is Marshal-owned** (charset + length + `is_relative_to(base_dir)` containment on create/remove/discard) — not git-accidental; see `SECURITY.md`.
+12. **Concurrency caps:** each CLI is 150-400 MB RAM → cap parallel runs per fleet and per client or a fan-out OOMs the host.
+13. **Secrets by reference** (`env:VAR`/file), validate presence at load, fail fast with a clear message. Never inline.
+14. **Durable per-run logs are best-effort.** `RunLogStore.write` is atomic (unique temp + `os.replace`, same idiom as `FleetState`), so a torn read never sees partial content; but a *write failure* (disk full, permission) must never break a finished run — `Fleet._execute` wraps the write in `try/except` and stderr-logs the cause. A run that predates log storage simply has no file (the CLI returns non-zero, the MCP tool returns `log=null`).
 
 ---
 

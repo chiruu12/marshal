@@ -54,7 +54,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
-from ..runtime.env import merge_user_path, redact_secrets
+from ..runtime.env import DETACHED_STDIO, merge_user_path, redact_secrets
 from ..runtime.git_exclude import try_append_git_exclude
 from ..runtime.logs import RunLogStore
 from ..runtime.state import FleetState, RunRecord
@@ -347,8 +347,9 @@ def _pid_start_time(pid: int) -> str | None:
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=5,
             check=False,
+            **DETACHED_STDIO,
         )
     except (OSError, subprocess.SubprocessError):
         return None

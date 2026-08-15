@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -772,15 +775,17 @@ def test_setup_oserror_tears_down_and_raises(repo: Path, monkeypatch: pytest.Mon
         setup_cmd=[sys.executable, "-c", "pass"],
     )
     wt = m.create("setup_eacces")
-    real_run = subprocess.run
+    # Patched on Popen, not run: setup/verify spawn through `_run_group` so a timeout can kill the
+    # child's whole process group, and `subprocess.run` is no longer on that path at all.
+    real_popen = subprocess.Popen
 
-    def boom(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def boom(*args: object, **kwargs: object) -> "subprocess.Popen[str]":
         cmd = args[0] if args else kwargs.get("args")
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == sys.executable:
             raise PermissionError("injected EACCES")
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+        return real_popen(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(subprocess, "Popen", boom)
     with pytest.raises(WorktreeError, match="could not run"):
         m.setup(wt)
     assert not (m.base_dir / "setup_eacces").exists()
@@ -800,15 +805,17 @@ def test_verify_oserror_reports_not_raises(repo: Path, monkeypatch: pytest.Monke
         verify_cmd=[sys.executable, "-c", "pass"],
     )
     wt = m.create("verify_eacces")
-    real_run = subprocess.run
+    # Patched on Popen, not run: setup/verify spawn through `_run_group` so a timeout can kill the
+    # child's whole process group, and `subprocess.run` is no longer on that path at all.
+    real_popen = subprocess.Popen
 
-    def boom(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def boom(*args: object, **kwargs: object) -> "subprocess.Popen[str]":
         cmd = args[0] if args else kwargs.get("args")
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == sys.executable:
             raise PermissionError("injected EACCES")
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+        return real_popen(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(subprocess, "Popen", boom)
     ok, output = m.verify(wt)
     assert ok is False
     assert "could not run" in output
@@ -1214,3 +1221,39 @@ def test_cleanup_still_refuses_a_path_under_neither_base(repo: Path, tmp_path: P
     with pytest.raises(WorktreeError, match="outside base dir"):
         m.discard(elsewhere, None)
     assert (elsewhere / "keep").exists()
+
+
+def test_setup_timeout_kills_the_whole_process_group(
+    repo: Path, tmp_path: Path
+) -> None:
+    # Greptile #261: with start_new_session=True, subprocess.run's timeout would kill only the
+    # group leader and leave its children writing into a worktree Marshal has given up on. Spawn a
+    # grandchild that outlives its parent, then assert it is gone after the timeout.
+    marker = tmp_path / "grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(p.pid))\n"
+        "time.sleep(60)\n"
+    )
+    m = WorktreeManager(
+        repo,
+        setup_cmd=[sys.executable, "-c", script],
+        setup_timeout_s=2.0,
+    )
+    wt = m.create("group_kill")
+    with pytest.raises(WorktreeError, match="timed out"):
+        m.setup(wt)
+
+    assert marker.exists(), "the setup command never spawned its grandchild; the test proved nothing"
+    pid = int(marker.read_text())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail(f"grandchild {pid} survived the setup timeout; the process group was not killed")

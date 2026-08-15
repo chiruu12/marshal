@@ -77,6 +77,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
+from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend, parse_jsonl
 
 #: Where the agy CLI keeps its user settings (incl. `trustedWorkspaces`). An attribute on the
@@ -165,8 +166,8 @@ class AntigravityBackend(CodingAgentBackend):
                 capture_output=True,
                 text=True,
                 timeout=15,
-                stdin=subprocess.DEVNULL,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return False, _DEFAULT_UNAVAILABLE

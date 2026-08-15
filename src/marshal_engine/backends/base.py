@@ -38,7 +38,7 @@ from ..core.types import (
     TaskSpec,
     UsageRecord,
 )
-from ..runtime.env import child_env, redact_secrets
+from ..runtime.env import DETACHED_STDIO, child_env, redact_secrets
 
 _VERSION_PROBE_TIMEOUT_S = 15.0
 
@@ -98,6 +98,7 @@ class CodingAgentBackend(ABC):
                 text=True,
                 timeout=_VERSION_PROBE_TIMEOUT_S,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return False
@@ -230,8 +231,8 @@ class CodingAgentBackend(ABC):
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
-                stdin=subprocess.DEVNULL,  # headless: an interactive probe must not deadlock,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return ModelCatalog(models=list(static), source=ModelSource.STATIC)
@@ -307,11 +308,12 @@ class CodingAgentBackend(ABC):
                 argv,
                 cwd=str(opts.cwd),
                 env=env,
-                stdin=subprocess.DEVNULL,     # headless: never wait on stdin
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                start_new_session=True,        # own process group so a timeout can kill the tree
+                # Carries the process-group split the timeout kill depends on: `_kill_tree`
+                # killpg's this pid, which is the group leader only because of setsid.
+                **DETACHED_STDIO,
             )
         except OSError as exc:
             # FileNotFoundError, PermissionError (EACCES), ETXTBSY, etc. — never escape run().

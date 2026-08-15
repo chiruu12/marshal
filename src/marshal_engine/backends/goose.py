@@ -51,7 +51,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
-from ..runtime.env import redact_secrets
+from ..runtime.env import DETACHED_STDIO, redact_secrets
 from .base import CodingAgentBackend, parse_jsonl
 
 # Goose modes (env GOOSE_MODE). approve/smart_approve hang or fail closed without a TTY.
@@ -107,6 +107,7 @@ class GooseBackend(CodingAgentBackend):
                 text=True,
                 timeout=20,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return None

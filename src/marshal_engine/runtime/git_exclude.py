@@ -15,6 +15,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from .env import DETACHED_STDIO
+
 
 class GitExcludeError(RuntimeError):
     """The checkout's exclude file could not be located."""
@@ -32,8 +34,8 @@ def append_git_exclude(checkout: Path, entry: str) -> None:
         ["git", "-C", str(checkout), "rev-parse", "--git-path", "info/exclude"],
         capture_output=True,
         text=True,
-        stdin=subprocess.DEVNULL,
         check=False,
+        **DETACHED_STDIO,
     )
     if proc.returncode != 0:
         raise GitExcludeError(

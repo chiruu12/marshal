@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from ...core.config import DURATION_PRESETS
+from ...runtime.env import DETACHED_STDIO
 from ..service import MarshalService
 from ..workspaces import (
     DEFAULT_WORKSPACE,
@@ -54,6 +55,7 @@ def _require_git_work_tree(repo: Path) -> None:
             text=True,
             timeout=10,
             check=False,
+            **DETACHED_STDIO,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError(f"{repo}: git not runnable") from exc

@@ -43,6 +43,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
+from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend, parse_jsonl
 
 #: Static list — Codex has no headless ``models`` probe (``codex models`` needs a TTY).
@@ -86,6 +87,7 @@ class CodexBackend(CodingAgentBackend):
                 text=True,
                 timeout=15,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return None

@@ -38,7 +38,7 @@ from ..core.layout import runs_dir
 from ..core.types import PermissionFidelity
 from ..orchestration.registry import default_backends, make_backend
 from ..orchestration.teams import discover_teams, validate_team
-from ..runtime.env import is_base_env_var
+from ..runtime.env import DETACHED_STDIO, is_base_env_var
 from ..runtime.state import FleetState, RunRecord
 
 OK = "ok"
@@ -178,7 +178,7 @@ def _binary_version(binary: str, arg: str = "--version", timeout: float = 10.0) 
     if shutil.which(binary) is None:
         return None
     try:
-        proc = subprocess.run([binary, arg], capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run([binary, arg], capture_output=True, text=True, timeout=timeout, check=False, **DETACHED_STDIO)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
@@ -195,6 +195,7 @@ def _git_repo_check(repo: Path) -> Check:
             text=True,
             timeout=10,
             check=False,
+            **DETACHED_STDIO,
         )
     except (OSError, subprocess.SubprocessError):
         return Check("repo", FAIL, f"{repo}: git not runnable", "install git")
@@ -208,6 +209,7 @@ def _git_repo_check(repo: Path) -> Check:
         text=True,
         timeout=10,
         check=False,
+        **DETACHED_STDIO,
     )
     if head.returncode != 0:
         return Check(

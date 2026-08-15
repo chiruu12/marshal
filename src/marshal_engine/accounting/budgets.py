@@ -525,7 +525,11 @@ def _pid_start_time(pid: int) -> str | None:
             capture_output=True,
             text=True,
             timeout=5,
+            # Spelled out rather than splatting runtime.env.DETACHED_STDIO: accounting and runtime
+            # are sibling layers and must not import each other. Same contract, same reasons -
+            # see that constant's docstring before changing either kwarg.
             stdin=subprocess.DEVNULL,
+            start_new_session=True,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):

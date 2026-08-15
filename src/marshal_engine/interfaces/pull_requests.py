@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from ..core.config import ConfigError
+from ..runtime.env import DETACHED_STDIO
 
 #: A git ref name we are willing to pass to git as a revision. Deliberately narrower than git's own
 #: rules: this is the *base* branch of a PR, which in practice is `main`/`master`/`release/x`, and a
@@ -66,7 +67,9 @@ def _run(argv: Sequence[str], cwd: Path, runner: Runner) -> subprocess.Completed
         # Closed stdin + a hard timeout, for the same reason every other subprocess here has them:
         # `gh` prompts for auth and `git fetch` prompts for credentials, and a prompt with no stdin
         # hangs forever. GIT_TERMINAL_PROMPT=0 turns the credential prompt into an error instead.
-        stdin=subprocess.DEVNULL,
+        # The setsid half of DETACHED_STDIO matters here too: `gh` is terminal-aware and will reach
+        # for one if it inherits it.
+        **DETACHED_STDIO,
         env={"GIT_TERMINAL_PROMPT": "0", **_inherit_env()},
         timeout=NETWORK_TIMEOUT_S,
     )
