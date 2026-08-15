@@ -35,9 +35,9 @@ You only need the backends your `fleet.config.yaml` references. One is enough to
 **From PyPI** (recommended):
 
 ```bash
-uv tool install "marshal[mcp]"
+uv tool install "marshal-agents[mcp]"
 # or
-pipx install "marshal[mcp]"
+pipx install "marshal-agents[mcp]"
 ```
 
 The `[mcp]` extra is what makes `marshal mcp` work. Without it the server exits before a host can
@@ -46,7 +46,7 @@ connect.
 **From GitHub** (to track unreleased work on `main`):
 
 ```bash
-uv tool install "marshal[mcp] @ git+https://github.com/chiruu12/marshal"
+uv tool install "marshal-agents[mcp] @ git+https://github.com/chiruu12/marshal"
 ```
 
 **Clone from source** (for development):

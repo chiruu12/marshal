@@ -12,14 +12,17 @@ versions may include breaking API changes until 1.0.
 
 ### Changed
 
-- **The PyPI distribution is now `marshal`** (was `MarshalFleet`): `uv tool install "marshal[mcp]"`.
-  Nothing about the code changes — the import package is still `marshal_engine` and the console
-  script is still `marshal`. Note that the install name and the import name differ on purpose: a
-  top-level `marshal` package would shadow the stdlib module of that name.
+- **The PyPI distribution is now `marshal-agents`** (was `MarshalFleet`):
+  `uv tool install "marshal-agents[mcp]"`. Nothing about the code changes — the import package is
+  still `marshal_engine` and the console script is still `marshal`.
+
+  A bare `marshal` is not an option: PyPI refuses it as a Python standard-library module name. That
+  is also why the import package has always been `marshal_engine`, so the install name and the
+  import name differ on purpose.
 
   `MarshalFleet` keeps its published history (0.2.0, 0.2.1, 0.2.3) and receives one final release
   pointing here. Existing installs keep working; there is no automatic migration, so switch with
-  `uv tool uninstall MarshalFleet && uv tool install "marshal[mcp]"`.
+  `uv tool uninstall MarshalFleet && uv tool install "marshal-agents[mcp]"`.
 
 ## [0.2.3] - 2026-08-15
 

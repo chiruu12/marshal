@@ -37,9 +37,9 @@ teams do so.
 ## Install
 
 ```bash
-uv tool install "marshal[mcp]"
+uv tool install "marshal-agents[mcp]"
 # or
-pipx install "marshal[mcp]"
+pipx install "marshal-agents[mcp]"
 ```
 
 The `[mcp]` extra is what makes `marshal mcp` work. Without it the server exits before a host can
