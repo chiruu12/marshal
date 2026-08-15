@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import marshal_engine.interfaces.mcp_server.server as server_mod
 from marshal_engine.core.config import ConfigError
 from marshal_engine.interfaces.mcp_server import build_service
 from marshal_engine.orchestration.workflow import WorkflowRunner
@@ -1111,3 +1113,68 @@ def test_list_workflows_exposes_whether_a_recipe_writes_to_your_branch(
     assert len(merging) == 1
     assert merging[0]["run"] == "integrate"
     assert merging[0]["from_phase"] == "build"
+
+
+# --- leaving the host's session (the suspended-host bug) --------------------------------------
+
+
+def test_detach_from_host_terminal_leaves_the_session_when_spawned_over_a_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A stdio host spawns us with stdin on a pipe. Staying in the host's process group is what lets
+    # a terminal-touching descendant SIGTTOU the host into STAT=T, so we must leave the session.
+    called: list[bool] = []
+    monkeypatch.setattr(server_mod.sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(server_mod.os, "setsid", lambda: called.append(True))
+    assert server_mod.detach_from_host_terminal() is True
+    assert called == [True], "setsid was never called; nothing detached us from the host"
+
+
+def test_detach_from_host_terminal_is_skipped_on_a_real_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Run by hand from a shell, detaching would take us out of the shell's job and break Ctrl-C.
+    # The tty check is the whole discriminator, so assert setsid is not merely tolerated but unused.
+    def boom() -> int:
+        raise AssertionError("setsid must not run when stdin is a terminal")
+
+    monkeypatch.setattr(server_mod.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(server_mod.os, "setsid", boom)
+    assert server_mod.detach_from_host_terminal() is False
+
+
+def test_detach_from_host_terminal_survives_setsid_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # EPERM means we already lead our process group - there is no host session to leave. Startup
+    # must continue: a server that refuses to boot here is worse than one sharing a group.
+    def eperm() -> int:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(server_mod.sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(server_mod.os, "setsid", eperm)
+    assert server_mod.detach_from_host_terminal() is False
+
+
+def test_main_detaches_before_spawning_any_child() -> None:
+    # Ordering is the invariant: merge_user_path() spawns an interactive login shell, and doing that
+    # while still in the host's session is precisely the exposure detaching removes.
+    src = inspect.getsource(server_mod.main)
+    assert "detach_from_host_terminal()" in src
+    assert src.index("detach_from_host_terminal()") < src.index("merge_user_path()")
+
+
+def test_detach_from_host_terminal_when_stdin_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A closed or detached stdin is not a terminal, and probing it must not abort startup.
+    class _Detached:
+        def isatty(self) -> bool:
+            raise ValueError("I/O operation on closed file")
+
+    called: list[bool] = []
+    monkeypatch.setattr(server_mod.sys, "stdin", _Detached())
+    monkeypatch.setattr(server_mod.os, "setsid", lambda: called.append(True))
+    assert server_mod.detach_from_host_terminal() is True
+
+    monkeypatch.setattr(server_mod.sys, "stdin", None)
+    assert server_mod.detach_from_host_terminal() is True
+    assert called == [True, True]

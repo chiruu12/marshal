@@ -207,6 +207,11 @@ absolute path to your Marshal checkout:
 (Prefer a bare `"command": "marshal"`? Run `uv tool install /abs/path/to/marshal` first to put it
 on your PATH.)
 
+A bare `"command": "marshal"` is worth the one-time install: `uv run` leaves a `uv` process wrapping
+the server on every session start, which re-resolves the environment before Marshal is reachable.
+Marshal itself leaves the host's session at startup, so it cannot interfere with your terminal — but
+the wrapper is one more process in your host's group for no benefit.
+
 ## 6. Your first run
 
 Run agents from the CLI (`marshal run` / `marshal spawn`) or by driving the MCP tools from Claude
@@ -248,6 +253,7 @@ until you `integrate`. State and usage live under `.marshal/`.
 | OpenCode model rejected at load | a `fireworks-ai/*` model bills Fireworks credits | use an `opencode-go/*` model |
 | a backend run shows cost `unavailable` | the backend reports no native cost and no `usage_api` backfill | configure `usage_api: eastrouter` for Codex via EastRouter, or use a native-cost backend |
 | `integrate` refuses with detached HEAD | no branch checked out in `MARSHAL_REPO` | `git checkout <branch>` |
+| your MCP host froze or "crashed" on a keystroke, with no error | a stdio MCP server's children can share the host's terminal and stop its whole process group | check `ps -eo pid,ppid,stat,comm \| awk '$3 ~ /T/'` — `T` means *suspended*, not crashed; recover with `kill -CONT <pid>` (`kill -TERM` does not land on a stopped process). Marshal no longer holds or passes on the host's terminal; if it recurs, the culprit is another stdio server |
 
 For how to drive a fleet, see [`docs/usage.md`](docs/usage.md); for architecture, see
 [`docs/design.md`](docs/design.md); for what's verified, see [`docs/status.md`](docs/status.md).

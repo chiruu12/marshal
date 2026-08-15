@@ -148,6 +148,25 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **Marshal no longer shares its MCP host's terminal, which could suspend the host.** Running as a
+  stdio server makes Marshal a child of its host (Claude Code, Cursor, …): it inherits the host's
+  stdin — the JSON-RPC pipe — and the host's process group and controlling terminal. Both were being
+  passed on to every child Marshal spawned. A child that reads stdin consumes protocol bytes
+  addressed to Marshal; a child that touches the terminal from outside its foreground group raises
+  SIGTTIN/SIGTTOU, and those are delivered to the **whole process group**, so the host is stopped
+  (`ps` STAT `T`) with no crash, no exit code and nothing on stderr. Marshal's PATH probe made this
+  reachable in the worst way: it runs an *interactive* login shell, which sources arbitrary user rc
+  files, at server startup.
+
+  Every child is now spawned with stdin closed and in its own session (`start_new_session`), and the
+  stdio server leaves the host's session before spawning anything. Detaching is skipped when stdin
+  is a terminal, so `marshal mcp` run by hand still responds to Ctrl-C. A test walks every spawn
+  site under `src/` and fails on one that inherits either.
+
+  Setup, verify, and git commands now also kill the **whole** process group when they time out.
+  Previously only the timed-out command itself was killed, so a `setup:` that had started workers
+  of its own left them running — still writing into a worktree Marshal had already given up on.
+
 - **A run whose agent committed its own work is no longer recorded as `empty` (#250).** The status
   was decided from the working tree alone, and an agent that commits leaves nothing uncommitted
   behind it — so a run that produced real code was stamped `empty` while `collect_run` reported its

@@ -55,6 +55,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
+from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend, parse_jsonl
 
 #: Curated deny tokens for ``safe-edit`` (deny beats allow). Destructive shell, secrets,
@@ -196,6 +197,7 @@ class CursorBackend(CodingAgentBackend):
                 text=True,
                 timeout=15,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -209,6 +211,7 @@ class CursorBackend(CodingAgentBackend):
                 text=True,
                 timeout=15,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return {"plan": "logged-in"}

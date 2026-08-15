@@ -44,6 +44,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
+from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend
 
 #: Static list — ``claude`` has no dedicated headless models subcommand.
@@ -92,6 +93,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
                 text=True,
                 timeout=15,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return None

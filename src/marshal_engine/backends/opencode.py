@@ -59,6 +59,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
+from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend, parse_jsonl
 
 #: How long to wait for `opencode export` to return the authoritative session JSON. The export
@@ -188,6 +189,7 @@ class OpenCodeBackend(CodingAgentBackend):
                 text=True,
                 timeout=15,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -336,8 +338,8 @@ class OpenCodeBackend(CodingAgentBackend):
                 capture_output=True,
                 text=True,
                 timeout=_EXPORT_TIMEOUT_S,
-                stdin=subprocess.DEVNULL,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return None

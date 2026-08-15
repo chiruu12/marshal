@@ -14,7 +14,7 @@ import shutil
 import signal
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -25,7 +25,7 @@ from ..core.ids import MAX_WORKTREE_ID_LEN as MAX_WORKTREE_ID_LEN
 from ..core.ids import validate_run_id as validate_run_id
 from ..core.ids import validate_worktree_id as _validate_worktree_id
 from ..core.layout import legacy_worktrees_dir, runs_root
-from .env import child_env, redact_secrets
+from .env import DETACHED_STDIO, child_env, redact_secrets
 
 
 class WorktreeError(RuntimeError):
@@ -207,16 +207,13 @@ class WorktreeManager:
         # prompt fails fast instead of hanging the driver. GIT_TERMINAL_PROMPT=0 turns an auth
         # prompt into an error rather than a wait.
         try:
-            return subprocess.run(
+            return _run_group(
                 ["git", "-C", str(cwd or self.repo_root), *args],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
+                cwd=cwd or self.repo_root,
                 # LC_ALL=C keeps git's messages in English so stderr matching (e.g. the
                 # blocked-merge detection in merge()) is stable across locales.
                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
                 timeout=self.git_timeout_s,
-                check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise WorktreeError(
@@ -388,15 +385,11 @@ class WorktreeManager:
         """Run ``setup_cmd`` via ``subprocess.run`` (no cancel hooks)."""
         assert self.setup_cmd is not None
         try:
-            proc = subprocess.run(
+            proc = _run_group(
                 self.setup_cmd,
-                cwd=str(wt.path),
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
+                cwd=wt.path,
                 env=child_env(),
                 timeout=self.setup_timeout_s,
-                check=False,
             )
             return (
                 ""
@@ -428,9 +421,8 @@ class WorktreeManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                stdin=subprocess.DEVNULL,
                 env=child_env(),
-                start_new_session=True,
+                **DETACHED_STDIO,
             )
         except FileNotFoundError:
             return f"command not found: {self.setup_cmd[0]!r}"
@@ -477,15 +469,11 @@ class WorktreeManager:
         if refused:
             return False, f"verify refused: {refused}"
         try:
-            proc = subprocess.run(
+            proc = _run_group(
                 self.verify_cmd,
-                cwd=str(wt.path),
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
+                cwd=wt.path,
                 env=child_env(),
                 timeout=self.setup_timeout_s,
-                check=False,
             )
         except subprocess.TimeoutExpired:
             return False, f"verify timed out after {self.setup_timeout_s}s"
@@ -885,6 +873,51 @@ def _copy_repo_hooks(repo_root: Path, clone_path: Path) -> None:
     # run. Copying contents means the run gets something it can only damage for itself.
     with contextlib.suppress(OSError):
         shutil.copytree(src, dest, dirs_exist_ok=True, symlinks=False)
+
+
+def _run_group(
+    argv: Sequence[str],
+    *,
+    cwd: Path | str,
+    env: Mapping[str, str],
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """``subprocess.run``'s contract, except a timeout kills the child's whole process group.
+
+    ``subprocess.run`` kills only the direct child on timeout. Every child here is a session leader
+    (``DETACHED_STDIO``), so its descendants sit in a group of their own that nothing would reap - a
+    timed-out ``npm install`` would keep writing into a worktree Marshal has already given up on.
+    Being a group leader is what makes the group addressable, so the same setsid that creates the
+    exposure is what closes it.
+
+    Raises ``TimeoutExpired`` after the kill, so callers keep the ``subprocess.run`` except-clauses
+    they already had.
+    """
+    proc = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(env),
+        **DETACHED_STDIO,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_setup_process_group(proc.pid)
+        # Bounded: reap the leader we just killed. A descendant that escaped into a session of its
+        # own can still hold the pipe, so do not block on a full drain here.
+        try:
+            out, err = proc.communicate(timeout=_GROUP_DRAIN_S)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        raise subprocess.TimeoutExpired(list(argv), timeout, output=out, stderr=err) from None
+    return subprocess.CompletedProcess(list(argv), proc.returncode, out, err)
+
+
+#: Seconds to wait on a killed group's pipes after the kill. Short: this is reaping, not waiting.
+_GROUP_DRAIN_S = 2.0
 
 
 def _kill_setup_process_group(pgid: int, grace_s: float = 0.5) -> None:

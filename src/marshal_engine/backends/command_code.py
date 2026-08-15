@@ -51,6 +51,7 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
+from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend, parse_jsonl
 
 #: Agent-loop turn cap. The runner's wall-clock timeout is the real bound; this guards a runaway.
@@ -108,6 +109,7 @@ class CommandCodeBackend(CodingAgentBackend):
                 text=True,
                 timeout=15,
                 check=False,
+                **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
             return None

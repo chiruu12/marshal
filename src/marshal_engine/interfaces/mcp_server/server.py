@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -120,7 +121,42 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     return app
 
 
+def detach_from_host_terminal() -> bool:
+    """Leave the host's session when we were spawned as a stdio server. Returns True if we did.
+
+    A stdio MCP server is a child of its host, so by default it shares the host's process group and
+    controlling terminal. Anything in that group that touches the terminal from outside the
+    foreground group raises SIGTTIN/SIGTTOU, and those are delivered to the *whole group* - the host
+    is suspended (ps STAT ``T``) with no crash, no exit code, and nothing on stderr. Marshal spawns
+    a lot of children, including an interactive login shell that sources the user's rc files, so it
+    is in a position to do this to its host. ``DETACHED_STDIO`` stops each child from inheriting a
+    terminal; this stops *us* from holding one at all, which closes the class rather than the
+    instances.
+
+    Gated on stdin not being a tty, which is exactly the "a host spawned me over a pipe" case. Run
+    by hand in a terminal we stay in the shell's job, so Ctrl-C still works. Failures are ignored:
+    ``setsid`` raises EPERM when we are already a process-group leader, which means there is no
+    host session to leave.
+    """
+    if not hasattr(os, "setsid"):
+        return False
+    try:
+        # sys.stdin is None when stdin was closed outright, and isatty() raises on a detached
+        # stream. Neither is a terminal, so both mean "detach"; neither may abort startup.
+        on_a_terminal = sys.stdin is not None and sys.stdin.isatty()
+    except (OSError, ValueError):
+        on_a_terminal = False
+    if on_a_terminal:
+        return False
+    try:
+        os.setsid()
+    except OSError:
+        return False
+    return True
+
+
 def main() -> None:
+    detach_from_host_terminal()
     # The MCP host (Claude Code, Cursor, ...) often spawns us with a stripped PATH that lacks the
     # user's zshrc-managed directories (Homebrew, ~/.local/bin, npm-global). Backend CLIs installed
     # there then look missing to shutil.which and `marshal doctor` falsely FAILs them. Augment PATH

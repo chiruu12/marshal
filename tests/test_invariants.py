@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ from marshal_engine.core.types import (
     resolve_permission_fidelity,
 )
 from marshal_engine.orchestration.registry import backend_names, default_backends
+from marshal_engine.runtime.env import DETACHED_STDIO, user_path
 
 _PKG = Path(marshal_engine.__file__).resolve().parent
 _REPO_ROOT = _PKG.parents[1]  # .../src/marshal_engine -> .../src -> repo root
@@ -242,13 +244,91 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
     # close stdin, start its own session/group, enforce opts.timeout_s, and kill the whole group
     # on timeout. Asserted on source so a refactor that drops any of these trips here.
     src = inspect.getsource(CodingAgentBackend.run)
-    assert "stdin=subprocess.DEVNULL" in src
-    assert "start_new_session=True" in src
+    # Both footguns are carried by DETACHED_STDIO now; assert the constant still means what the
+    # splat here relies on, so emptying it out cannot pass this test.
+    assert "**DETACHED_STDIO" in src
+    assert DETACHED_STDIO["stdin"] == subprocess.DEVNULL
+    assert DETACHED_STDIO["start_new_session"] is True
     assert "communicate(timeout=opts.timeout_s)" in src
     assert "_kill_process_group" in src
     # ordering: spawn the process before the timed wait; kill in the timeout branch.
     assert src.index("subprocess.Popen") < src.index("communicate(timeout=")
     assert src.index("TimeoutExpired") < src.index("_kill_process_group")
+
+
+# --- every child process is detached from our stdin and our controlling terminal --------------
+
+
+def _spawn_calls(tree: ast.AST) -> list[ast.Call]:
+    """Every call that starts a child process.
+
+    Two shapes, because matching only ``subprocess.run``/``Popen`` misses the indirect ones: teams'
+    PR resolution spawns through an injected ``Runner`` (``runner(...)``, defaulted to
+    ``subprocess.run`` so tests can substitute it), and that call inherits exactly the same fds. So
+    a call also counts when it passes ``capture_output`` - in this codebase nothing but a spawn
+    does, and a new indirection has to keep passing it to get output back.
+    """
+    out: list[ast.Call] = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        direct = (
+            isinstance(n.func, ast.Attribute)
+            and n.func.attr in {"run", "Popen"}
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "subprocess"
+        )
+        if direct or any(k.arg == "capture_output" for k in n.keywords):
+            out.append(n)
+    return out
+
+
+def _is_detached(call: ast.Call) -> bool:
+    """True when the call splats DETACHED_STDIO, or spells out both kwargs it stands for."""
+    if any(
+        k.arg is None and isinstance(k.value, ast.Name) and k.value.id == "DETACHED_STDIO"
+        for k in call.keywords
+    ):
+        return True
+    named = {k.arg: k.value for k in call.keywords}
+    stdin, session = named.get("stdin"), named.get("start_new_session")
+    return (
+        isinstance(stdin, ast.Attribute)
+        and stdin.attr == "DEVNULL"
+        and isinstance(session, ast.Constant)
+        and session.value is True
+    )
+
+
+def test_every_child_process_is_spawned_detached() -> None:
+    # Invariant: Marshal usually runs as a stdio MCP server, so its stdin is the JSON-RPC pipe and
+    # it shares the host's process group and controlling terminal. A child that inherits either can
+    # eat protocol bytes or SIGTTOU the whole group - suspending the host with no crash and no
+    # stderr. Every spawn site must therefore pass stdin=DEVNULL and start_new_session=True,
+    # normally by splatting runtime.env.DETACHED_STDIO. There is no allowlist: a genuinely
+    # interactive child would be a bug in a headless engine.
+    offenders: list[str] = []
+    checked = 0
+    for src_path in _PKG.rglob("*.py"):
+        tree = ast.parse(src_path.read_text(encoding="utf-8"))
+        for call in _spawn_calls(tree):
+            checked += 1
+            if not _is_detached(call):
+                offenders.append(f"{src_path.relative_to(_PKG)}:{call.lineno}")
+    assert checked >= 20, f"spawn-site walker found only {checked} calls; it stopped matching"
+    assert not offenders, (
+        "these spawn sites inherit our stdin and controlling terminal - splat **DETACHED_STDIO: "
+        + ", ".join(sorted(offenders))
+    )
+
+
+def test_user_path_probe_runs_an_interactive_shell_detached() -> None:
+    # Invariant: the PATH probe is the one child that is *deliberately* interactive (``-i``, so it
+    # sources .zshrc where users export PATH). An interactive shell does job control on its
+    # controlling terminal unconditionally, so this call in particular must never inherit one.
+    src = inspect.getsource(user_path)
+    assert '"-ilc"' in src, "probe no longer interactive; this guard needs rewording"
+    assert "**DETACHED_STDIO" in src
 
 
 # --- status comparisons always go through RunStatus (never raw string literals) ---------------

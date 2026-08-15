@@ -128,6 +128,10 @@ Linux (py3.11-3.13) + macOS (py3.12, for the POSIX process-group paths). Check c
 
 - **Every agent run gets an external timeout + kill.** Both Cursor and OpenCode hang in the wild.
 - **Headless = no stdin = never use a prompting permission mode** (it deadlocks). Default `safe-edit`.
+- **Every child process is spawned detached** — `**DETACHED_STDIO` (`runtime/env.py`), i.e.
+  `stdin=DEVNULL` + `start_new_session=True`. As a stdio MCP server our stdin is the JSON-RPC pipe
+  and our process group is the host's; a child inheriting either can eat protocol bytes or SIGTTOU
+  the host into `STAT=T`. Enforced over the AST by `tests/test_invariants.py`; no allowlist.
 - **Backend is a per-call parameter**, never a global, never encoded in tool/skill names.
 - **`build_invocation` and `map_permission` are pure functions** returning argv - unit-testable
   without spawning processes. Every backend ships contract tests.
