@@ -8,6 +8,8 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-15
+
 ### Added
 
 - **`marshal mcp --http` serves MCP over Streamable HTTP.** stdio remains the default and is
@@ -1585,7 +1587,8 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
   present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
-[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/chiruu12/marshal/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/chiruu12/marshal/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/chiruu12/marshal/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/chiruu12/marshal/compare/v0.1.0...v0.2.0
