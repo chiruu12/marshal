@@ -1039,11 +1039,15 @@ class Fleet:
         prepare_artifact_dir(wt)
         on_pid: Callable[[int], None] | None = None
         on_exit: Callable[[], None] | None = None
+        # Holds the setup process's pid so it can be unstamped once setup is done. A list because
+        # the hook that learns it is a closure running before this frame resumes.
+        setup_pid_ref: list[int] = []
         if run_id is not None:
             handle = _inflight_handle(self.state.dir, run_id)
             if handle is not None:
 
                 def _on_pid(pid: int) -> None:
+                    setup_pid_ref.append(pid)
                     self.state.update_if(
                         run_id,
                         lambda r: not _is_terminal(r),
@@ -1061,11 +1065,36 @@ class Fleet:
                 on_pid = _on_pid
                 on_exit = _on_exit
 
-        # Only pass cancel hooks when wired — keeps `setup(wt)` call shape for spies/tests.
-        if on_pid is not None or on_exit is not None:
-            self.worktrees.setup(wt, on_pid=on_pid, on_exit=on_exit)
-        else:
-            self.worktrees.setup(wt)
+        try:
+            # Only pass cancel hooks when wired — keeps `setup(wt)` call shape for spies/tests.
+            if on_pid is not None or on_exit is not None:
+                self.worktrees.setup(wt, on_pid=on_pid, on_exit=on_exit)
+            else:
+                self.worktrees.setup(wt)
+        finally:
+            # Setup is over - it returned, failed, or was killed by a cancel - so its pid names a
+            # process that no longer exists. Leaving it stamped means the record keeps naming a
+            # corpse, and once the OS recycles the number, an unrelated live one: `agent_alive`,
+            # the orphan reaper's "a stamped pid is decidable now" rule, and `clean`'s refusal to
+            # reclaim a worktree whose pid looks alive all read it.
+            #
+            # In a `finally`, and with no terminal-status check, because the cancel path needs
+            # both: `cancel_run` stamps `cancelled` while setup is still running and setup then
+            # raises, so a clear placed after the call - or predicated on the record being
+            # non-terminal - would skip exactly the case that strands a pid on a terminal record.
+            #
+            # On the task's own thread rather than in `_on_exit`, which runs on the callback
+            # thread and contended with the concurrent terminal stamp for this run's lock.
+            #
+            # Matching the exact setup pid is the whole guard: it means this is our process and it
+            # is gone, and it can never clobber a pid the agent has already stamped.
+            if run_id is not None and setup_pid_ref:
+                self.state.update_if(
+                    run_id,
+                    lambda r: r.pid == setup_pid_ref[-1],
+                    pid=None,
+                    pid_start_time=None,
+                )
 
     def _run_deferred_provisioning(
         self, req: RunRequest, run_id: str, wt: Worktree
