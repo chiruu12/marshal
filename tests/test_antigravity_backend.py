@@ -66,7 +66,8 @@ def test_build_invocation_model(backend: AntigravityBackend) -> None:
         "json",
         "--add-dir",
         "/tmp/wt",
-        "-m",
+        # Long form only — `agy` dropped the `-m` alias by 1.1.13 and its parser rejects it.
+        "--model",
         "gemini-3.1-pro",
         "-p",
         "x",

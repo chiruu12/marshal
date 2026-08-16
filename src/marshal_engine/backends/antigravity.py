@@ -220,7 +220,10 @@ class AntigravityBackend(CodingAgentBackend):
         # this makes edits land in cwd instead of agy's scratch dir.
         argv += ["--add-dir", str(opts.cwd)]
         if opts.model:
-            argv += ["-m", opts.model]
+            # Long form only: agy dropped the `-m` short alias by 1.1.13, and its Go flag parser
+            # rejects an unknown flag by printing usage and exiting non-zero — so a model-pinned
+            # run failed with the CLI's help text instead of ever reaching the model.
+            argv += ["--model", opts.model]
         if opts.session_id:
             argv += ["--conversation", opts.session_id]
         # -p must come last with the prompt as its trailing argument.

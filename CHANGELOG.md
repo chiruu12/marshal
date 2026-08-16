@@ -8,6 +8,13 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Antigravity runs with a pinned model no longer fail with the CLI's help text.** `agy` dropped
+  the `-m` short alias (gone by 1.1.13) and its Go flag parser rejects an unknown flag by printing
+  usage and exiting non-zero — so every model-pinned Antigravity run died before reaching the model.
+  The adapter now passes `--model`.
+
 ### Added
 
 - **ZCode backend (`zcode`) — Z.ai's GLM coding agent joins the fleet.** Select it per call like any
