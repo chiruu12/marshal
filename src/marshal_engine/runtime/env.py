@@ -78,6 +78,7 @@ KNOWN_CREDENTIAL_ENV_VARS: frozenset[str] = frozenset(
         "ANTHROPIC_API_KEY",
         "GOOSE_PROVIDER",
         "GOOSE_MODEL",
+        "ZCODE_API_KEY",
     }
 )
 

@@ -68,7 +68,12 @@ def test_build_invocation_is_pure(
     first = backend.build_invocation(task, opts)
     second = backend.build_invocation(task, opts)
     assert first == second
-    assert first and first[0] == backend.binary
+    # argv must start with the prefix this backend says it launches. For a normal PATH CLI that
+    # is just `binary`; ZCode's headless entry point is a Node bundle inside the desktop app, so
+    # its prefix is ["node", ".../zcode.cjs"]. Comparing against resolve_launcher() keeps the
+    # real invariant (a backend launches *itself*) without assuming every CLI is on PATH.
+    launcher = backend.resolve_launcher()
+    assert first[: len(launcher)] == launcher
     assert all(isinstance(x, str) for x in first)
 
 

@@ -8,6 +8,29 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **ZCode backend (`zcode`) — Z.ai's GLM coding agent joins the fleet.** Select it per call like any
+  other backend (`backend: zcode`). Three permission tiers map to ZCode's non-prompting modes
+  (`plan` / `edit` / `yolo`); its `build` and `auto` modes ask for approval per change and are never
+  used, because a headless run has no stdin to answer them with.
+
+  **ZCode ships no PATH binary.** Its headless CLI is a Node bundle inside the desktop app, so the
+  adapter resolves a launcher instead of assuming a command: `ZCODE_BIN` in a client's `env:` block,
+  then `MARSHAL_ZCODE_BIN`, then a `zcode` shim on PATH, then the known app-bundle paths. When none
+  resolve, `marshal doctor` says so instead of reporting a generic "not on PATH". The new
+  `CodingAgentBackend.resolve_launcher()` hook is what lets argv construction and availability
+  probing agree on one answer; every other backend inherits the default (`[binary]`) unchanged.
+
+  **Model routing rides the environment, not a flag.** ZCode has no `--model`, so `prepare()` stamps
+  `ZCODE_MODEL` (`model` or `provider/model`) per run — routing stays per-run and isolated, with no
+  shared config file written. Note that zcode 0.16.3's `--help` advertises `--settings`,
+  `--max-turns`, and `--allowed-tools`, all of which its parser rejects; the adapter emits none of
+  them and its contract tests pin that.
+
+  **Usage is tokens-only.** ZCode reports token counts but never a price, so runs land real tokens
+  with `source=unavailable` rather than a fabricated `$0` (OpenCode/Goose parity).
+
 ## [0.2.3] - 2026-08-15
 
 ### Added

@@ -176,6 +176,7 @@ Model is set per client in `fleet.config.yaml` (or ad-hoc via `--model` / MCP `m
 | `command-code` | provider/model (e.g. `zai-org/GLM-5.2`) | **unavailable** (hosted account, no token/cost in stdout) |
 | `goose` | `provider/model` or bare model (e.g. `cursor-agent/auto`) | **native** when the provider reports positive cost; else **unavailable** (best-effort stream-json) |
 | `antigravity` *(experimental)* | `gemini-*`, `claude-*`, etc. | **unavailable** (text-only output) |
+| `zcode` | `glm-*` bare or `provider/model`, via `ZCODE_MODEL` (no `--model` flag) | **unavailable** (tokens only, no price reported) |
 
 Routing playbook: [`docs/model-playbook.md`](docs/model-playbook.md). Verification matrix: [`docs/status.md`](docs/status.md).
 

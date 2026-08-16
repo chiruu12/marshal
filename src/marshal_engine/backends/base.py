@@ -104,6 +104,19 @@ class CodingAgentBackend(ABC):
             return False
         return proc.returncode == 0
 
+    def resolve_launcher(self, client_env: dict[str, str] | None = None) -> list[str]:
+        """Argv prefix that launches this backend's CLI - what ``build_invocation`` starts with.
+
+        Default is the single PATH executable ``binary``, which is every backend whose CLI is
+        installed as a normal command. Backends whose entry point is not a PATH executable
+        override this: ZCode ships its headless CLI as a Node bundle *inside the desktop app*, so
+        its prefix is ``["node", ".../zcode.cjs"]``. Overriding here (rather than open-coding the
+        path in ``build_invocation``) keeps argv construction and availability probing agreeing on
+        one answer. ``client_env`` is the per-client ``env:`` block, for adapters that let a
+        client point at an explicit install.
+        """
+        return [self.binary]
+
     def unavailable_detail(self) -> str:
         """Doctor/CLI detail when ``check_available()`` is False.
 

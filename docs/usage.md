@@ -26,7 +26,7 @@ teams do so.
 | Term | What it is |
 |------|------------|
 | **driver** | The agent (e.g. Claude Code) that plans the work and calls Marshal. It keeps the expensive reasoning. |
-| **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, goose, antigravity). Chosen per call, never global. |
+| **backend** | A CLI adapter (cursor, opencode, codex, claude-code, command-code, goose, antigravity, zcode). Chosen per call, never global. |
 | **client** | A named worker in `fleet.config.yaml` pinning a backend + model + permission. You route tasks to clients by name. |
 | **run** | One execution of a client on a task; ends `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`. |
 | **worktree** | The isolated git checkout **one run** works in — its own clone, under `~/.marshal/worktrees/<repo>-<digest>/` (outside your repo; set `MARSHAL_HOME` to relocate). The safety boundary — main is untouched until you integrate. |
@@ -195,7 +195,7 @@ clients:
 | Value | Meaning |
 |-------|---------|
 | `enforced-denies` | This tier installs a restriction beyond the worktree (curated denies, workspace sandbox, or plan/read-only mode). Not a true process sandbox. On backends: Cursor, OpenCode, Codex safe-edit. |
-| `boundary-only` | No Marshal deny layer; treat the worktree + explicit integrate as the boundary. On backends: Command Code, Goose, Antigravity, Claude Code. |
+| `boundary-only` | No Marshal deny layer; treat the worktree + explicit integrate as the boundary. On backends: Command Code, Goose, Antigravity, Claude Code, ZCode. |
 | `unrestricted` | Client-only: `permission: yolo` — deny/sandbox overlay dropped by design. Never claim `enforced-denies` for these. |
 
 `marshal backends` prints `fidelity=…` (and JSON `permission_fidelity`); `list_clients` includes the
@@ -435,7 +435,7 @@ or `plan:goose` with the configured provider + model after `goose info --check` 
 **fails closed** when a `verifies_auth` backend is present but unauthenticated: Cursor
 (`status`/`isAuthenticated` — not bare `about`/`model: Auto`), Goose, Claude Code, Command Code
 (`status --json`, not config.json alone), OpenCode (`auth list`), and Codex (`login status`).
-Antigravity stays path-only (no cheap auth probe). Doctor is preflight only — it does not hard-block
+Antigravity and ZCode stay path-only (no cheap auth probe). Doctor is preflight only — it does not hard-block
 spawn. For every config key see [`config.md`](config.md).
 
 ## Use it as a library
@@ -555,6 +555,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 | Antigravity | yes | no | `permission_fidelity=boundary-only`. Worktree writes work (the run's worktree is pre-registered in trustedWorkspaces and passed via `--add-dir`); supports `safe-edit`/`yolo` (no `read-only`). Doctor is path-only (no cheap auth/status probe). PTY wrapper still TODO. **Single Marshal process per host** when using this backend — see note below. |
 | Claude Code | yes | yes (tokens + cost) | `permission_fidelity=boundary-only`. Native `acceptEdits` for safe-edit with **no Marshal deny layer**; cost is native (no estimation). Doctor auth via `claude auth status`. |
 | Goose | yes | best-effort | `permission_fidelity=boundary-only`. Headless via `GOOSE_MODE=auto` (Marshal sets it). Pin Cursor with model `cursor-agent/auto` (needs `cursor-agent login` and Goose `active_provider: cursor-agent`). Form is `provider/model` or a bare model; empty sides (`cursor-agent/`, `/auto`) fail fast. Doctor probes auth via `goose info --check` (fails closed if not configured / not logged in). Example client name in `fleet.config.example.yaml`: `goose-cursor`. Stream-json tokens when the provider reports them; cost is `native` only when positive — `cost: 0` / tokens-only stay `unavailable`. |
+| ZCode | yes | no | `permission_fidelity=boundary-only`. **Ships no PATH binary** — the headless CLI is a Node bundle inside the ZCode desktop app; set `ZCODE_BIN` (client `env:`) or `MARSHAL_ZCODE_BIN`, or let the adapter autodetect the app bundle. Model is routed via the `ZCODE_MODEL` env var (`model` or `provider/model`) — ZCode has no `--model` flag. Tiers map to `--mode plan|edit|yolo`; its prompting `build`/`auto` modes are never used. Reports tokens but **no cost**, so usage stays `unavailable`. Doctor is launcher-presence only (`zcode login` is interactive OAuth). |
 
 ### Antigravity: one Marshal process per host
 
