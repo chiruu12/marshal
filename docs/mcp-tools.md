@@ -444,7 +444,14 @@ Read one file out of a run's worktree — how one agent's output reaches the nex
 | `path` | string | *(required)* | Path **relative to that run's worktree root**. Absolute paths and `..` are refused — `Path(wt) / "/etc/passwd"` is `/etc/passwd`, so the containment check is the same one `context_files` applies. |
 | `workspace` | string \| null | `null` | Workspace hint. |
 
-**Returns:** `{ run_id, path, content, truncated, size_bytes }`.
+**Returns:** `{ run_id, path, content, truncated, size_bytes, status, error }`.
+
+**Check `status` before `content`.** Only `ok` carries content. The rest say *why* there is none,
+and they call for opposite reactions: `gone` (the worktree was cleaned — the run finished, so
+re-running it is wasted), `not_found` (the worktree is right there and the agent never wrote that
+path — possibly worth another run), `refused` (the path escapes the worktree), `unreadable` (the
+file exists but could not be read). These used to arrive as one indistinguishable `ValueError`.
+An unknown `run_id` still raises — that is a bad identifier, not a state the run is in.
 
 **Check `truncated`.** Large files are clipped and `size_bytes` reports the real size; acting on a
 prefix while believing it is whole is the mistake this flag exists to prevent.

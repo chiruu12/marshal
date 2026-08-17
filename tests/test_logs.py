@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -92,3 +93,33 @@ def test_write_cleans_temp_file_on_replace_failure(
 
     temps = [p for p in (tmp_path / "logs").iterdir() if p.name.startswith("r1.log.") and p.name.endswith(".tmp")]
     assert temps == []  # cleanup branch ran and unlinked the temp
+
+
+def test_a_retried_run_keeps_every_attempts_output(tmp_path: Path) -> None:
+    """REGRESSION (#257.5): `write` overwrote per run, so a record showing `attempts: 3` paired
+    with a log of attempt 3 alone. A driver diagnosing a flaky backend read a clean log and
+    concluded the failures were phantom - the retried-away attempts are the evidence being
+    looked for."""
+    store = RunLogStore(tmp_path)
+    store.write_attempts(
+        "flaky.writer.abcd1234",
+        [("first try", "rate limited"), ("second try", "still bad"), ("final", "")],
+    )
+    log = store.read("flaky.writer.abcd1234")
+    assert log is not None
+    for fragment in ("first try", "rate limited", "second try", "still bad", "final"):
+        assert fragment in log, f"{fragment!r} was dropped from the log"
+    assert "--- attempt 1/3 ---" in log
+    assert "--- attempt 3/3 ---" in log
+
+
+def test_a_single_attempt_log_keeps_its_original_shape(tmp_path: Path) -> None:
+    """The overwhelming majority of runs are one attempt; they must not grow attempt headers."""
+    store = RunLogStore(tmp_path)
+    store.write("plain.writer.abcd1234", "out", "err")
+    log = store.read("plain.writer.abcd1234")
+    assert log is not None
+    assert "--- attempt" not in log
+    assert log.startswith("=== run plain.writer.abcd1234 ===")
+    assert "--- stdout ---" in log and "out" in log
+    assert "--- stderr ---" in log and "err" in log

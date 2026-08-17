@@ -1626,8 +1626,10 @@ def test_read_run_file_reports_a_mid_read_clean_as_the_cleaned_worktree_error(
         return real_stat(self, *a, **kw)  # type: ignore[arg-type]
 
     monkeypatch.setattr(Path, "stat", stat_but_clean_first)
-    with pytest.raises(ValueError, match="worktree is gone"):
-        svc.read_run_file(rec.run_id, "REPORT.md")
+    got = svc.read_run_file(rec.run_id, "REPORT.md")
+    assert got.status == "gone"
+    assert "worktree is gone" in (got.error or "")
+    assert got.content == ""
 
 
 def test_read_run_file_refuses_a_path_outside_the_worktree(repo: Path) -> None:
@@ -1636,8 +1638,10 @@ def test_read_run_file_refuses_a_path_outside_the_worktree(repo: Path) -> None:
     svc = _svc(repo)
     rec = svc.run_agent("worker", "x")
     for bad in ("/etc/hosts", "../../escape.txt"):
-        with pytest.raises(ValueError, match="outside"):
-            svc.read_run_file(rec.run_id, bad)
+        got = svc.read_run_file(rec.run_id, bad)
+        assert got.status == "refused", bad
+        assert "outside" in (got.error or "")
+        assert got.content == "", "a refused path must never return content"
 
 
 def test_read_run_file_says_when_it_truncated(repo: Path) -> None:
@@ -1692,12 +1696,21 @@ def test_read_run_file_never_loads_more_than_it_returns(repo: Path) -> None:
 
 
 def test_read_run_file_on_a_cleaned_worktree_says_so(repo: Path) -> None:
-    """"The worktree is gone" and "the file is not there" are different problems."""
+    """"The worktree is gone" and "the file is not there" are different problems, and they call for
+    opposite reactions: a cleaned worktree means the run FINISHED and re-running it is wasted,
+    while a missing path means the agent never wrote it. They used to arrive as the same bare
+    ValueError, so the likely response to both was re-spawning finished work."""
     svc = _svc(repo)
     rec = svc.run_agent("worker", "x")
+
+    present = svc.read_run_file(rec.run_id, "never-written.md")
+    assert present.status == "not_found", "the worktree is right there; the file simply is not"
+
     svc.clean(scope="all")
-    with pytest.raises(ValueError, match="gone"):
-        svc.read_run_file(rec.run_id, "anything.md")
+    gone = svc.read_run_file(rec.run_id, "anything.md")
+    assert gone.status == "gone"
+    assert "gone" in (gone.error or "")
+    assert gone.status != present.status, "the two states must not be one shape to a driver"
 
 
 def test_get_run_and_status_return_liveness_enriched_records(repo: Path) -> None:

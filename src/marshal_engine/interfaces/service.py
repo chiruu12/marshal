@@ -127,6 +127,13 @@ class RunFile(BaseModel):
 
     `truncated` is never implicit: a driver acting on a prefix of a report while believing it had
     the whole thing is the failure this field exists to prevent.
+
+    `status` names *why* a read produced no content, because the answers call for opposite
+    reactions. `gone` means the worktree was cleaned — the run finished and its files are simply
+    no longer on disk, so re-running the work is wasted. `not_found` means the worktree is right
+    there and the agent never wrote that path — which may well be worth another run. These used to
+    arrive as the same bare `ValueError`, so the likely response to both was re-spawning finished
+    work. Only `ok` carries content.
     """
 
     run_id: str
@@ -134,6 +141,11 @@ class RunFile(BaseModel):
     content: str
     truncated: bool
     size_bytes: int
+    #: "ok" | "gone" (worktree cleaned/absent) | "not_found" (worktree present, path is not a file)
+    #: | "refused" (path escapes the worktree) | "unreadable" (the file exists but could not be read)
+    status: str = "ok"
+    #: Human-readable reason. None when `status == "ok"`.
+    error: str | None = None
 
 
 class ClientList(BaseModel):
@@ -712,8 +724,9 @@ class MarshalService:
 
         Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
         a clear `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---`
-        section - the FULL streams, not the truncated `text` on the run record. None when no log
-        exists (e.g. a run predating log storage, or a backend that crashed before producing one).
+        section - the FULL streams, not the truncated `text` on the run record. A run that was
+        retried carries EVERY attempt, each under `--- attempt N/M ---`. None when no log exists
+        (e.g. a run predating log storage, or a backend that crashed before producing one).
         """
         return self.fleet.logs.read(run_id)
 
@@ -732,32 +745,48 @@ class MarshalService:
 
         Containment is enforced the same way as `context_files`: an absolute path or one that
         escapes via `..` is refused, because `Path(wt) / "/etc/passwd"` is `/etc/passwd`.
+
+        Run-STATE failures come back as a `RunFile` with a `status` (see that model) rather than an
+        exception, so a driver can tell "the worktree was cleaned" from "the agent never wrote
+        that file" and react differently. An unknown `run_id` still raises: that is a bad
+        identifier rather than a state this run is in, and it raises from `collect_run` /
+        `commit_run` / `get_run_log` too - one rule across the surface.
         """
         rec = self.fleet.state.get(run_id)
         if rec is None:
             raise ValueError(f"no such run: {run_id!r}")
+
+        def _problem(status: str, message: str) -> RunFile:
+            return RunFile(
+                run_id=run_id,
+                path=path,
+                content="",
+                truncated=False,
+                size_bytes=0,
+                status=status,
+                error=message,
+            )
+
+        _GONE = f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
         if not rec.worktree:
-            raise ValueError(f"run {run_id!r} has no worktree to read from")
+            return _problem("gone", f"run {run_id!r} has no worktree to read from")
         base = Path(rec.worktree).resolve()
         if not base.exists():
-            raise ValueError(
-                f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
-            )
+            return _problem("gone", _GONE)
         target = (base / path).resolve()
         if target != base and base not in target.parents:
-            raise ValueError(
+            return _problem(
+                "refused",
                 f"path {path!r} resolves outside run {run_id!r}'s worktree - it must be relative "
-                f"to the worktree root and stay inside it"
+                f"to the worktree root and stay inside it",
             )
         if not target.is_file():
             # Re-check the worktree: a `clean` landing between the guard above and here makes every
             # path inside it "not a file", which would blame the caller's path for the worktree
             # being gone. Same state, same diagnostic, whenever the caller arrived.
             if not base.exists():
-                raise ValueError(
-                    f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
-                )
-            raise ValueError(f"{path!r} is not a file in run {run_id!r}'s worktree")
+                return _problem("gone", _GONE)
+            return _problem("not_found", f"{path!r} is not a file in run {run_id!r}'s worktree")
         # Read only what we will return (+1 byte to detect truncation), never the whole file.
         # `read_bytes()` would load an agent-produced artifact of ANY size into the MCP server's
         # memory before slicing it - the caller picks the path, so the size is not ours to assume.
@@ -772,10 +801,10 @@ class MarshalService:
                 raw = stream.read(max_bytes + 1)
         except OSError as exc:
             if not base.exists():
-                raise ValueError(
-                    f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
-                ) from exc
-            raise ValueError(f"cannot read {path!r} in run {run_id!r}'s worktree: {exc}") from exc
+                return _problem("gone", _GONE)
+            return _problem(
+                "unreadable", f"cannot read {path!r} in run {run_id!r}'s worktree: {exc}"
+            )
         # Truncate rather than hand back something unbounded - and SAY SO, because silently
         # returning a prefix would let a driver act on a partial report believing it was whole.
         truncated = len(raw) > max_bytes

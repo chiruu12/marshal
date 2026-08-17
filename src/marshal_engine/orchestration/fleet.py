@@ -713,6 +713,9 @@ class Fleet:
         """Execute suffix: run the backend, price + classify, persist the terminal record."""
         backend = self.backends[req.backend_name]
         result: AgentResult | None = None
+        # Every attempt the retry loop threw away. Bound before the try so the `finally` log write
+        # can reach it even when the run died before the loop ran.
+        abandoned: list[AgentResult] = []
         record: RunRecord | None = None
         try:
             if deferred_provisioning:
@@ -856,14 +859,21 @@ class Fleet:
             # driver can inspect what the agent actually did after the fact. Best-effort: a logging
             # failure (disk full, permission, ...) must never break a finished run; stderr the cause
             # for visibility. Skipped when no AgentResult was produced (e.g. the backend crashed
-            # before parse_output returned - there is nothing to log). On a retried run this is the
-            # final attempt's output.
+            # before parse_output returned - there is nothing to log).
+            #
+            # EVERY attempt is written, not just the last. A record showing `attempts: 3` used to
+            # pair with a log of attempt 3 alone, so a driver diagnosing a flaky backend read a
+            # clean log and concluded the failures were phantom - the retried-away attempts are
+            # exactly the evidence being looked for. Same reasoning as the cost ledger, which
+            # already folds in what the abandoned attempts spent.
             if result is not None:
                 try:
-                    self.logs.write(
+                    self.logs.write_attempts(
                         run_id,
-                        result.raw_stdout or "",
-                        result.raw_stderr or "",
+                        [
+                            (r.raw_stdout or "", r.raw_stderr or "")
+                            for r in (*abandoned, result)
+                        ],
                     )
                 except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
                     print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
@@ -1328,7 +1338,16 @@ class Fleet:
                 message=_worktree_gone_message(rec),
             )
         if not wt.branch:
-            raise ValueError(f"run {run_id!r} has no branch to commit")
+            # A status, not an exception. `CommitResult` has an `error` status built for exactly
+            # this, and every other failure on this path already returns one - a lone raise made
+            # "this run has no branch" arrive in a different shape from "the worktree is gone",
+            # so a driver handling one still crashed on the other.
+            return CommitResult(
+                run_id=run_id,
+                status="error",
+                branch=None,
+                message=f"run {run_id!r} has no branch to commit",
+            )
         try:
             sha = self.worktrees.commit_all(wt, message or f"marshal: {run_id}")
             tip = self.worktrees.branch_tip(wt.branch)

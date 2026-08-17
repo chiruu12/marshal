@@ -10,6 +10,11 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **`commit_run` returns a status instead of raising when a run has no branch** (#257.7). Every
+  other failure on that path already returned a structured `CommitResult`, so a driver that
+  handled the torn-down-worktree case still crashed on this one — for a condition
+  `CommitResult.status == "error"` exists to carry.
+
 - **`collect_run`'s diff could silently omit a new file's contents** (#257.6). The per-untracked-file
   `git diff --no-index` return code was never checked, unlike the tracked `git diff HEAD` beside it.
   A genuine failure (file gone after the listing, unreadable, refused by git) produced empty stdout,
@@ -19,6 +24,20 @@ versions may include breaking API changes until 1.0.
   now raises, naming the file.
 
 ### Added
+
+- **`get_run_log` now returns every attempt of a retried run** (#257.5). `RunLogStore.write`
+  overwrote per run, so a record showing `attempts: 3` paired with a log containing attempt 3
+  alone — a driver diagnosing a flaky backend read a clean log and concluded the failures were
+  phantom, when the retried-away attempts were the evidence being looked for. The retry loop
+  already returned each abandoned attempt (the cost ledger folds them in); the log write now uses
+  them too, under `--- attempt N/M ---` headers. A single-attempt log keeps exactly its old shape.
+
+- **`read_run_file` reports run-state failures as a payload, not an exception** (#257.7). Every
+  failure was a bare `ValueError`, so "the worktree was cleaned" and "the agent never wrote that
+  file" arrived in one indistinguishable shape — and the likely reaction to both was re-spawning
+  finished work. `RunFile` now carries `status` (`ok` / `gone` / `not_found` / `refused` /
+  `unreadable`) and `error`. An unknown `run_id` still raises: that is a bad identifier rather
+  than a state the run is in, and it raises from `collect_run` / `commit_run` too.
 
 - **Driver-facing payloads can now tell "nothing" from "unknown"** (#257, parts 1/2/4) — the rule
   Marshal already applied to `cost_usd`, extended to its neighbours:

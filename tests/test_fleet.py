@@ -6055,3 +6055,53 @@ def test_an_uncapped_final_message_is_not_flagged(repo: Path) -> None:
     assert rec.text_truncated is False
     assert rec.text_full_len is None
     assert fleet.collect_run(rec.run_id).text_truncated is False
+
+
+def test_commit_run_reports_a_missing_branch_as_a_status_not_an_exception(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (#257.7): every other failure on this path returns a structured `CommitResult`,
+    but "no branch to commit" raised. A driver that handled the torn-down-worktree error still
+    crashed on this one, for a condition `CommitResult.status == "error"` exists to carry."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="nobranch", goal="x"))
+
+    real = fleet._worktree_for
+    monkeypatch.setattr(
+        fleet, "_worktree_for", lambda rid: real(rid).model_copy(update={"branch": ""})
+    )
+    got = fleet.commit_run(rec.run_id)
+    assert got.status == "error"
+    assert "no branch to commit" in got.message
+    assert got.run_id == rec.run_id
+
+
+def test_a_real_retried_run_logs_every_attempt(repo: Path) -> None:
+    """End-to-end companion to the log-store unit test: proves the Fleet actually HANDS every
+    attempt to the store. Testing the store alone would leave the wiring unverified - the run
+    record would still say `attempts: 3` while the log held only the last one."""
+
+    class _FlakyWithOutput(_Flaky):
+        """Stamps distinguishable raw stdout/stderr per attempt, as a real backend would."""
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+            n = self.calls + 1
+            result = super().run(task, opts)
+            result.raw_stdout = f"stdout-of-attempt-{n}"
+            result.raw_stderr = f"stderr-of-attempt-{n}"
+            return result
+
+    fleet = Fleet(
+        repo,
+        {"flaky": _FlakyWithOutput(["opencode: database is locked"] * 2)},
+        retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0),
+    )
+    rec = fleet.run("flaky", TaskSpec(id="retrylog", goal="x"))
+    assert rec.attempts == 3, "the run must actually have retried for this test to mean anything"
+
+    log = fleet.logs.read(rec.run_id)
+    assert log is not None
+    for n in (1, 2, 3):
+        assert f"stdout-of-attempt-{n}" in log, f"attempt {n}'s stdout was dropped"
+        assert f"stderr-of-attempt-{n}" in log, f"attempt {n}'s stderr was dropped"
+    assert "--- attempt 1/3 ---" in log and "--- attempt 3/3 ---" in log
