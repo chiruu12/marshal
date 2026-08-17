@@ -8,6 +8,180 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-17
+
+### Fixed
+
+- **A ZCode client configured only through `env.ZCODE_BIN` was skipped as unavailable.** The
+  availability probe resolved its launcher without the client's `env:` block, so on a machine with
+  no `zcode` shim on PATH and no app bundle at a known path, the one thing that named the install
+  was ignored — the client was dropped before `build_invocation`, which would have launched it,
+  ever ran. A probe that resolves a different launcher than the invocation defeats the reason
+  `resolve_launcher` exists.
+
+  Fixed with a new `CodingAgentBackend.available_for_client(client_env)` hook. It is deliberately
+  **separate from `check_available()` rather than a parameter added to it**: that hook is widely
+  overridden, and widening its signature would break every existing adapter and subclass for a
+  need only one backend has. The default delegates to `check_available()`, so nothing else
+  changes. `MarshalService` only re-probes clients that actually declare `env:`, so a healthy
+  fleet pays nothing. A declared `env:` is never short-circuited by the backend-wide answer,
+  because it cuts both ways — it can name the only working launcher on a host with no shim, and a
+  broken one on a host that has a good shim. Every path that decides whether a client is usable
+  now shares that rule: construction, the skip list and its reasons, and `client_available()`. `client_available()` — what workflow phases and team
+  panels gate on — goes through the same hook, so a client is not admitted for direct runs while
+  being dropped from fan-outs.
+
+- **`commit_run` returns a status instead of raising when a run has no branch** (#257.7). Every
+  other failure on that path already returned a structured `CommitResult`, so a driver that
+  handled the torn-down-worktree case still crashed on this one — for a condition
+  `CommitResult.status == "error"` exists to carry.
+
+- **`collect_run`'s diff could silently omit a new file's contents** (#257.6). The per-untracked-file
+  `git diff --no-index` return code was never checked, unlike the tracked `git diff HEAD` beside it.
+  A genuine failure (file gone after the listing, unreadable, refused by git) produced empty stdout,
+  so the file still appeared in `changed_files` while contributing **no hunk to the diff** — a driver
+  reviewing a filename with no content either integrates it unread or rejects the run for producing
+  an empty file. Exit 1 remains normal (a file always differs from `/dev/null`); anything above it
+  now raises, naming the file.
+
+### Added
+
+- **`wait_for_runs` takes a `view`** (#257.8) — the same `poll` / `compact` / `full` shapes
+  `status` uses, through the same `render_run` builder, and it now **defaults to `poll`**.
+  It previously dumped whole records: up to 16 000 characters of `text` each, times a fan-out's
+  worth of runs, in the tool the quickstart steers drivers to *from* `status` — which
+  deliberately avoids exactly that. Pass `view="full"` for the old shape. The trimmed views carry
+  `has_text` / `has_verify_output`, so an omitted field is never misread as an empty one, and the
+  reply echoes `view`.
+
+- **`get_run_log` now returns every attempt of a retried run** (#257.5). `RunLogStore.write`
+  overwrote per run, so a record showing `attempts: 3` paired with a log containing attempt 3
+  alone — a driver diagnosing a flaky backend read a clean log and concluded the failures were
+  phantom, when the retried-away attempts were the evidence being looked for. The retry loop
+  already returned each abandoned attempt (the cost ledger folds them in); the log write now uses
+  them too, under `--- attempt N/M ---` headers. A single-attempt log keeps exactly its old shape.
+
+- **`read_run_file` reports run-state failures as a payload, not an exception** (#257.7). Every
+  failure was a bare `ValueError`, so "the worktree was cleaned" and "the agent never wrote that
+  file" arrived in one indistinguishable shape — and the likely reaction to both was re-spawning
+  finished work. `RunFile` now carries `status` (`ok` / `gone` / `not_found` / `refused` /
+  `unreadable`) and `error`. An unknown `run_id` still raises: that is a bad identifier rather
+  than a state the run is in, and it raises from `collect_run` / `commit_run` too.
+
+- **Token counts and duration can now say "unmeasured"** (#257.3). `input_tokens`,
+  `output_tokens`, and `duration_ms` were non-optional ints defaulting to `0`, sitting directly
+  below the `cost_usd: float | None` field whose comment explains why `0`-means-unmeasured is
+  unacceptable. They are the **fallback ranking metric precisely when cost is `null`**, so a
+  driver comparing lanes on tokens-per-outcome ranked the *unmeasurable* backend as the most
+  efficient one and routed future work to it. All three are now `int | None` on the run record and
+  on `benchmark`'s strategy rows.
+
+  Tokens could not reuse the `cost_usd` rule, which keys off `source`: a backend can report real
+  token counts with no price at all (Codex, ZCode, Copilot all do), so `unavailable` provenance is
+  not evidence the tokens are unknown. The write site decides instead — `null` when the backend
+  handed back no usage record, a number when it did. The immutable ledger (`usage/events.jsonl`)
+  keeps plain ints: it is the facts layer and carries `source` in its own column.
+
+- **Driver-facing payloads can now tell "nothing" from "unknown"** (#257, parts 1/2/4) — the rule
+  Marshal already applied to `cost_usd`, extended to its neighbours:
+
+  - `produced: "unavailable"` is new on `collect_run`, split out of `"nothing"`. A torn-down
+    worktree and a mid-collect git failure used to report the same value as a genuinely idle run,
+    so a driver branching on `produced` could `set_outcome(rejected)` a run whose diff merely could
+    not be read — and `routing` then held that rejection against a client that had succeeded.
+    `unavailable_reason` says which way it was unreadable.
+  - `text_truncated` / `text_full_len` on the run record and on `collect_run`. The agent's final
+    message is capped at 16 000 characters on write and nothing recorded the cut, so for a research
+    or review run — where the message *is* the product — a driver read a report that stopped
+    mid-sentence, treated it as complete, and passed truncated conclusions into the next agent's
+    goal.
+  - `collect_run.commit_count` is now `int | null`, `null` when the count was never taken (no
+    branch, or unreadable work). It was initialised to `0` and only computed inside `if wt.branch:`,
+    so "nobody counted" was indistinguishable from "the agent made no commits".
+
+### Changed
+
+- **The orchestrator no longer owns run-ownership and orphan recovery.** `orchestration/fleet.py`
+  had grown to 2257 lines, ~580 of which were module-level helpers with nothing to do with the run
+  loop. They now live in four modules named for the question each answers, and `fleet.py` is down
+  to 1762 lines (943 → 707 statements):
+
+  - `liveness.py` — pid identity (a pid paired with its OS start time), liveness probes, and the
+    per-repo fleet lock. Documents the two deliberately opposite biases in one place: reaping fails
+    *open*, naming a pid in a `kill` instruction fails *closed*.
+  - `inflight.py` — runs this process owns: the in-memory registry and the cross-process
+    `.creating` claim.
+  - `reaping.py` — the orphan sweep and the single `_is_reapable` decision behind it.
+  - `diagnostics.py` — the driver-facing explanations (base-branch drift, orphaned base, torn-down
+    worktree).
+
+  Behaviour is unchanged; `marshal_engine.orchestration.liveness.with_liveness` is the new home of
+  a symbol previously reached through `fleet`. Six tests that monkeypatched moved helpers through
+  `fleet`'s namespace were retargeted at the module that now owns each call, so they still exercise
+  the code they name rather than silently patching nothing.
+
+### Removed
+
+- **`_NON_TERMINAL_STATUSES`**, an unused constant in `fleet.py` whose docstring claimed it was a
+  pre-filter used by `_reap_orphaned_runs`. It had no readers anywhere in the tree.
+
+### Fixed
+
+- **Antigravity runs with a pinned model no longer fail with the CLI's help text.** `agy` dropped
+  the `-m` short alias (gone by 1.1.13) and its Go flag parser rejects an unknown flag by printing
+  usage and exiting non-zero — so every model-pinned Antigravity run died before reaching the model.
+  The adapter now passes `--model`.
+
+### Added
+
+- **GitHub Copilot CLI backend (`copilot`) joins the fleet.** Select it per call like any other
+  backend (`backend: copilot`). Runs headless via `copilot -p` with `--output-format json`, and is
+  the fourth backend to earn `permission_fidelity=enforced-denies` — both claims verified against
+  the shipped CLI rather than its docs:
+
+  **Permission tiers really enforce.** `read-only` maps to `--mode plan`, which refuses a write with
+  `{"success":false,"error":{"code":"denied"}}` even alongside `--allow-all-tools`. `safe-edit` adds
+  a curated `--deny-tool` overlay (destructive shell, `.env` writes, `git push`, `gh`) — Copilot
+  documents that deny rules beat allow rules "even `--allow-all-tools`", and a live probe confirms
+  it. `yolo` maps to `--allow-all` and intentionally drops the overlay.
+
+  **Every run is fenced to the worktree.** `--disable-builtin-mcps` stops the CLI auto-connecting
+  `github-mcp-server` with the user's token (which could open PRs and issues *outside* the
+  worktree), `--no-remote` stops an unattended session being remote-controlled from GitHub
+  web/mobile mid-run, and `--no-auto-update` keeps a background upgrade from changing the binary
+  mid-fleet.
+
+  **Model pinning is plan-gated.** `copilot help config` lists the binary's catalog, not the
+  account's entitlements: a Copilot **Free** plan rejects every pinned id (`Model "..." is not
+  available`) and accepts only `auto`, which routes to models costing `premiumRequests: 0`.
+  `marshal models copilot` reads that catalog live and leads with `auto`.
+
+  **Usage is output-tokens-only.** Copilot reports `outputTokens` per message and `premiumRequests`
+  (a quota unit, not money) — never a USD cost and never an input-token count — so runs land honest
+  output tokens with cost `unavailable`. Auth is a GitHub token
+  (`COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, or a stored `copilot login` credential);
+  there is no cheap authenticated status probe, so doctor reports CLI presence only.
+
+- **ZCode backend (`zcode`) — Z.ai's GLM coding agent joins the fleet.** Select it per call like any
+  other backend (`backend: zcode`). Three permission tiers map to ZCode's non-prompting modes
+  (`plan` / `edit` / `yolo`); its `build` and `auto` modes ask for approval per change and are never
+  used, because a headless run has no stdin to answer them with.
+
+  **ZCode ships no PATH binary.** Its headless CLI is a Node bundle inside the desktop app, so the
+  adapter resolves a launcher instead of assuming a command: `ZCODE_BIN` in a client's `env:` block,
+  then `MARSHAL_ZCODE_BIN`, then a `zcode` shim on PATH, then the known app-bundle paths. When none
+  resolve, `marshal doctor` says so instead of reporting a generic "not on PATH". The new
+  `CodingAgentBackend.resolve_launcher()` hook is what lets argv construction and availability
+  probing agree on one answer; every other backend inherits the default (`[binary]`) unchanged.
+
+  **Model routing rides the environment, not a flag.** ZCode has no `--model`, so `prepare()` stamps
+  `ZCODE_MODEL` (`model` or `provider/model`) per run — routing stays per-run and isolated, with no
+  shared config file written. Note that zcode 0.16.3's `--help` advertises `--settings`,
+  `--max-turns`, and `--allowed-tools`, all of which its parser rejects; the adapter emits none of
+  them and its contract tests pin that.
+
+  **Usage is tokens-only.** ZCode reports token counts but never a price, so runs land real tokens
+  with `source=unavailable` rather than a fabricated `$0` (OpenCode/Goose parity).
 ## [0.3.0] - 2026-08-15
 
 ### Changed

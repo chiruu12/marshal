@@ -190,11 +190,14 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
     ) -> dict[str, Any] | None:
         """Reads ONE RUN'S WHOLE RECORD by id, across all workspaces (or via the `workspace` hint).
 
-        status is one of: exited_clean | empty (exited 0 with neither text nor file changes - an
-        outcome, not a fault; nothing to integrate) | failed | timed_out | cancelled |
-        verify_failed (had file changes but the workspace's `verify:` gate rejected them - review
-        the diff and `verify_output` before deciding). Only `exited_clean` runs with a diff are
-        integration candidates; for text-only work read `text` (or collect_run)."""
+        status is one of: queued | running (NOT terminal - the run is still in flight, which is the
+        common state during a fan-out; wait_for_runs rather than judging it) | exited_clean |
+        empty (exited 0 with neither text nor file changes - an outcome, not a fault; nothing to
+        integrate) | failed | timed_out | cancelled | verify_failed (had file changes but the
+        workspace's `verify:` gate rejected them - review the diff and `verify_output` before
+        deciding). Only `exited_clean` runs with a diff are integration candidates; for text-only
+        work read `text` (or collect_run) - and check `text_truncated` before treating `text` as a
+        finished product."""
         resolved = await offload(registry.resolve_run, run_id, workspace)
         if resolved is None:
             return None
@@ -211,7 +214,8 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
 
         Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
         a `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---` section -
-        the FULL streams, not the 16KB-truncated `text` on the run record. `log` is null when no
+        the FULL streams, not the 16KB-truncated `text` on the run record - including EVERY attempt of
+        a retried run, each under `--- attempt N/M ---`. `log` is null when no
         log exists (a run that pre-dates log storage, or a backend that crashed before producing
         one). The owning workspace is resolved by the same scan as `get_run`, with the same
         `workspace` hint."""

@@ -530,8 +530,19 @@ class WorktreeManager:
         for path in listing.stdout.split("\0"):
             if not path:
                 continue
-            # `git diff --no-index` exits 1 when files differ (always, vs /dev/null) - not an error.
+            # `git diff --no-index` exits 1 when files differ (always, vs /dev/null) - not an
+            # error. Anything ABOVE 1 is: the file vanished after the listing, is unreadable, or
+            # git refused it. That must raise, exactly as the tracked `git diff HEAD` above does.
+            # Left unchecked it appended an empty stdout, so the file still showed up in
+            # `changed_files` while contributing no hunk - a driver then reviews a filename with
+            # no content and either integrates it unread or rejects the run for producing an
+            # empty file. A diff that is silently incomplete is worse than one that fails loudly.
             added = self._git("diff", "--no-index", "--", "/dev/null", path, cwd=wt.path)
+            if added.returncode > 1:
+                raise WorktreeError(
+                    f"diff failed for {wt.task_id!r} on new file {path!r}: "
+                    f"{added.stderr.strip()}"
+                )
             parts.append(added.stdout)
         return "".join(parts)
 

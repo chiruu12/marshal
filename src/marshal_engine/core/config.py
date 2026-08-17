@@ -76,9 +76,11 @@ KNOWN_BACKEND_NAMES: frozenset[str] = frozenset(
         "opencode",
         "codex",
         "command-code",
+        "copilot",
         "antigravity",
         "claude-code",
         "goose",
+        "zcode",
     }
 )
 

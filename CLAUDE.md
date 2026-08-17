@@ -37,6 +37,7 @@ marshal/
 │   │   ├── codex.py         # OpenAI Codex (codex exec)
 │   │   ├── antigravity.py   # Google Antigravity (agy)
 │   │   ├── command_code.py  # Command Code CLI - safe-edit maps to --yolo (headless auto-accept blocks writes)
+│   │   ├── copilot.py       # GitHub Copilot CLI (copilot -p) - enforced denies via --deny-tool; free tier needs model: auto
 │   │   ├── claude_code.py   # Claude Code (claude -p) - native cost
 │   │   └── goose.py         # Goose (goose run) - safe-edit/yolo → GOOSE_MODE=auto (worktree boundary)
 │   ├── runtime/             # the execution boundary - processes, git, disk
@@ -50,6 +51,10 @@ marshal/
 │   │   └── budgets.py       # budget caps (soft-warn default; optional enforce: true)
 │   ├── orchestration/       # the fleet loop and everything sequenced on top of it
 │   │   ├── fleet.py         # orchestrator: worktree → run backend → record usage → persist
+│   │   ├── liveness.py      # pid identity (pid + OS start time), liveness probes, the per-repo fleet lock
+│   │   ├── inflight.py      # runs this process owns: in-memory registry + the cross-process .creating claim
+│   │   ├── reaping.py       # declare abandoned runs dead: the orphan sweep and its one reap decision
+│   │   ├── diagnostics.py   # driver-facing explanations (base drift, orphaned base, torn-down worktree)
 │   │   ├── provisioning.py  # copy declared context_files / read_paths into a worktree, fail-closed (symlink/special-file/TOCTOU refusals)
 │   │   ├── structured.py    # output_schema: prompt instruction, JSON extraction, schema validation, redaction
 │   │   ├── results.py       # the Pydantic result/request DTOs the service, CLI, and MCP all serialize

@@ -49,11 +49,29 @@ class RunRecord(BaseModel):
     # taking the number without the provenance beside it concluded the run was free. `0.0` here now
     # means an actually-measured zero. See `_null_unmeasured_cost` for the rule.
     cost_usd: float | None = None
-    input_tokens: int = 0
-    output_tokens: int = 0
-    duration_ms: int = 0
+    # None when nothing was measured - NOT 0, for the same reason as `cost_usd` directly above.
+    # These are the FALLBACK metric precisely when cost is null, so a driver comparing lanes on
+    # tokens-per-outcome would rank the *unmeasurable* backend as the most efficient one and route
+    # future work to it. Tokens cannot key off `source` the way cost does: a backend can report
+    # real token counts with no price at all (Codex, ZCode, Copilot all do), so `unavailable`
+    # provenance is not evidence the tokens are unknown. The write site decides instead - None
+    # when the backend handed back no usage record at all; a reported `0` is a measured zero.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    # None until the run actually ran. `base.run()` stamps wall-clock around every invocation, so a
+    # run that reached a backend always has one; a run that died in provisioning never did, and
+    # `0` there would claim it completed instantaneously.
+    duration_ms: int | None = None
     source: str | None = None  # cost provenance: native | admin-api | unavailable | ...
     text: str = ""             # the agent's final message (file edits live in the worktree diff)
+    # `text` is capped on write, and a reader cannot see the cut from the string alone. For a
+    # research or review run - where the final message IS the product - a driver would read a
+    # report that stops mid-sentence, treat it as complete, and paste truncated conclusions into
+    # the next agent's goal. Same rule as `cost_usd`: say what is missing rather than let a
+    # prefix pass as the whole. `text_full_len` is the pre-truncation length; None on records
+    # written before these fields existed, and on runs whose text was never capped.
+    text_truncated: bool = False
+    text_full_len: int | None = None
     # Schema-validated JSON object when the task requested output_schema and the final message
     # conformed. Absent/None on records written before this field existed, and on runs that did
     # not request a schema (or failed validation - see error).

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Sequence
 from pydantic import BaseModel, Field
 
 from ...core.config import ConfigError
-from ...runtime.state import RunRecord
+from ...runtime.state import RunRecord, RunView, render_run
 from ..waiting import MAX_WAIT_S, wait_for_terminal
 from ..workspaces import WorkspaceRegistry
 from .context import ToolContext
@@ -193,6 +193,14 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
             "pending."
         ))] = 60.0,
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
+        view: Annotated[RunView, Field(description=(
+            "How much of each settled/pending run to return - the same three shapes `status` "
+            "uses. 'poll' (default) answers whether it finished and whether it was any good. "
+            "'compact' adds the rest of the record (worktree, branch, tokens, artifacts...) minus "
+            "the unbounded text. 'full' adds the agent's final message and verify output - "
+            "unbounded, and with a fan-out's worth of runs it dominates the reply, so prefer "
+            "`get_run` or `collect_run` for the one run whose text you actually want."
+        ))] = "poll",
     ) -> dict[str, Any]:
         """Block until these runs finish (or `timeout_s`) - so you don't spend a turn per poll.
 
@@ -201,10 +209,15 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         tick to learn "not yet". Here the polling happens server-side, where a tick is a few file
         reads.
 
-        Returns `{settled, pending, unknown, timed_out, waited_ms}`. `settled` is every run that
-        reached a terminal state - which includes FAILED, TIMED_OUT and CANCELLED: settled means
-        finished, never succeeded, so branch on each record's `status` exactly as after a poll.
-        `unknown` is ids with no record anywhere; they are reported at once and never waited on.
+        Returns `{settled, pending, unknown, timed_out, waited_ms, view}`. `settled` is every run
+        that reached a terminal state - which includes FAILED, TIMED_OUT and CANCELLED: settled
+        means finished, never succeeded, so branch on each record's `status` exactly as after a
+        poll. `unknown` is ids with no record anywhere; they are reported at once and never waited
+        on.
+
+        Runs come back in the `poll` shape by default, like `status`. The trimmed views replace
+        `text` / `verify_output` with `has_text` / `has_verify_output`, so an omitted field is
+        never misread as an empty one; pass `view` to widen.
 
         On expiry this returns normally with `timed_out: true` and the unfinished runs in
         `pending` - re-call with just those ids. It reports; it does not act: no implicit
@@ -223,13 +236,16 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
             wait_for_terminal, _fetch, list(resolved), timeout_s=timeout_s,
         )
         payload = result.model_dump(mode="json")
-        # Records come back tagged with the workspace that owns them, since a single wait may span
-        # several and an untagged record is not addressable afterwards.
-        for key in ("settled", "pending"):
+        # Render from the RECORDS, not the dumped dicts, so this goes through the same
+        # `render_run` builder `status` uses - one shape vocabulary across both tools. Records come
+        # back tagged with the workspace that owns them, since a single wait may span several and
+        # an untagged record is not addressable afterwards.
+        for key, records in (("settled", result.settled), ("pending", result.pending)):
             payload[key] = [
-                tag(rec, resolved[rec["run_id"]][0]) for rec in payload[key]
+                tag(render_run(rec, view), resolved[rec.run_id][0]) for rec in records
             ]
         payload["unknown"] = unknown
+        payload["view"] = view
         return payload
 
     @app.tool()

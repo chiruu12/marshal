@@ -1257,3 +1257,40 @@ def test_setup_timeout_kills_the_whole_process_group(
     else:
         os.kill(pid, signal.SIGKILL)
         pytest.fail(f"grandchild {pid} survived the setup timeout; the process group was not killed")
+
+
+def test_diff_raises_when_a_new_files_content_cannot_be_read(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (#257.6): the per-untracked-file `git diff --no-index` return code was never
+    checked, unlike the tracked `git diff HEAD` three lines above it. A real failure yields empty
+    stdout, so the file still appeared in `changed_files` while contributing no hunk - a driver
+    then reviews a filename with no content and either integrates it unread or rejects the run for
+    producing an empty file. Exit 1 stays normal (files always differ against /dev/null); only
+    ABOVE 1 is an error."""
+    m = WorktreeManager(repo)
+    wt = m.create("task_diff_broken")
+    (wt.path / "new.txt").write_text("brand new\n")
+
+    real_git = m._git
+
+    def flaky_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if "--no-index" in args:
+            return subprocess.CompletedProcess(
+                args=list(args), returncode=128, stdout="", stderr="fatal: cannot read 'new.txt'"
+            )
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", flaky_git)
+    with pytest.raises(WorktreeError) as exc:
+        m.diff(wt)
+    assert "new.txt" in str(exc.value), "the failure must name the file whose content is missing"
+
+
+def test_diff_still_accepts_the_normal_exit_1_from_no_index(repo: Path) -> None:
+    """The guard must not break the happy path: `--no-index` exits 1 whenever the files differ,
+    which against /dev/null is always, so 1 can never be treated as a failure."""
+    m = WorktreeManager(repo)
+    wt = m.create("task_diff_exit1")
+    (wt.path / "new.txt").write_text("brand new\n")
+    assert "brand new" in m.diff(wt)

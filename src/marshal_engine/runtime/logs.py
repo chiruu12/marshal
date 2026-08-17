@@ -4,7 +4,9 @@ The driver (or MCP server) needs to inspect what an agent actually did after the
 engine stamps a 16KB-truncated `text` on the run record, but the *full* subprocess output (the
 whole stdout/stderr stream, not the parsed final message) lives only on the AgentResult and is
 discarded. This module keeps it: one file per run under `<base>/<run_id>.log` with a clear header
-(`=== run <run_id> ===`, `--- stdout ---` / content, `--- stderr ---` / content). Writes are atomic
+(`=== run <run_id> ===`, `--- stdout ---` / content, `--- stderr ---` / content). A run that was
+retried carries EVERY attempt, each under `--- attempt N/M ---` - the retried-away attempts are
+precisely what someone diagnosing a flaky backend is looking for. Writes are atomic
 (unique temp + `os.replace`, same idiom as FleetState) so a torn read never sees partial content;
 the Fleet guards them defensively (a log write failure must never break a run).
 
@@ -18,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 from .env import redact_secrets
@@ -41,25 +44,43 @@ class RunLogStore:
         return self._path(run_id)
 
     def write(self, run_id: str, stdout: str, stderr: str) -> None:
-        """Persist the run's stdout and stderr as a single, headed file (atomic).
+        """Persist one attempt's stdout and stderr as a single, headed file (atomic).
 
         Credential values present in the parent environment are redacted before the write.
         Overwrites any prior log for the same run_id - the run has a new outcome to record.
         """
+        self.write_attempts(run_id, [(stdout, stderr)])
+
+    def write_attempts(self, run_id: str, attempts: Sequence[tuple[str, str]]) -> None:
+        """Persist EVERY attempt's stdout/stderr for a run as one headed file (atomic).
+
+        A retried run has more than one attempt, and the retried-away ones are the whole point of
+        reading the log: a record showing ``attempts: 3`` used to pair with a log containing only
+        attempt 3, so a driver diagnosing a flaky backend saw a clean log and concluded the
+        failures were phantom. Attempts are written in the order they ran, each under its own
+        ``--- attempt N/M ---`` header when there is more than one, so the single-attempt file
+        (the overwhelming majority) keeps exactly the shape it always had.
+
+        Credential values are redacted before the write. Overwrites any prior log for this run.
+        """
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._path(run_id)
-        safe_out = redact_secrets(stdout)
-        safe_err = redact_secrets(stderr)
+        total = len(attempts)
         # A UNIQUE temp in the same dir, so two concurrent writes to the same run_id can't
         # remove each other's temp and crash the os.replace.
         fd, tmp = tempfile.mkstemp(dir=str(self.dir), prefix=f"{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(f"=== run {run_id} ===\n")
-                fh.write("--- stdout ---\n")
-                fh.write(safe_out)
-                fh.write("\n--- stderr ---\n")
-                fh.write(safe_err)
+                for index, (stdout, stderr) in enumerate(attempts, start=1):
+                    if total > 1:
+                        fh.write(f"--- attempt {index}/{total} ---\n")
+                    fh.write("--- stdout ---\n")
+                    fh.write(redact_secrets(stdout))
+                    fh.write("\n--- stderr ---\n")
+                    fh.write(redact_secrets(stderr))
+                    if total > 1 and index < total:
+                        fh.write("\n")
             os.replace(tmp, path)  # atomic: a reader sees either the old file or the whole new one
         except BaseException:
             with contextlib.suppress(OSError):

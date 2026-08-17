@@ -127,6 +127,13 @@ class RunFile(BaseModel):
 
     `truncated` is never implicit: a driver acting on a prefix of a report while believing it had
     the whole thing is the failure this field exists to prevent.
+
+    `status` names *why* a read produced no content, because the answers call for opposite
+    reactions. `gone` means the worktree was cleaned — the run finished and its files are simply
+    no longer on disk, so re-running the work is wasted. `not_found` means the worktree is right
+    there and the agent never wrote that path — which may well be worth another run. These used to
+    arrive as the same bare `ValueError`, so the likely response to both was re-spawning finished
+    work. Only `ok` carries content.
     """
 
     run_id: str
@@ -134,6 +141,11 @@ class RunFile(BaseModel):
     content: str
     truncated: bool
     size_bytes: int
+    #: "ok" | "gone" (worktree cleaned/absent) | "not_found" (worktree present, path is not a file)
+    #: | "refused" (path escapes the worktree) | "unreadable" (the file exists but could not be read)
+    status: str = "ok"
+    #: Human-readable reason. None when `status == "ok"`.
+    error: str | None = None
 
 
 class ClientList(BaseModel):
@@ -201,13 +213,37 @@ class MarshalService:
         # ones whose CLI is currently unavailable). Partition clients by availability so a missing
         # CLI skips that client instead of failing mid-run.
         avail = {name: be.check_available() for name, be in backends.items()}
+
+        def _client_available(c: ClientConfig) -> bool:
+            """Availability for ONE client, honouring a launcher its own `env:` block names.
+
+            The per-backend probe above is the fast path and answers for almost everything. But a
+            client can be the only thing that knows where its CLI lives (ZCode's `ZCODE_BIN`, when
+            there is no PATH shim and no app bundle at a known path). Probing without that block
+            resolves a different launcher than the run would use, so a perfectly runnable client
+            was skipped as "unavailable". Only re-probed for clients that actually declare `env:`,
+            so a healthy fleet pays nothing.
+            """
+            be = backends.get(c.backend) if backends else None
+            if be is None:
+                return False
+            if c.env:
+                # A declared `env:` is asked about directly, never short-circuited by the
+                # backend-wide answer. It cuts BOTH ways: it can name the only working launcher
+                # on a host with no shim, and it can name a broken one on a host that has a
+                # perfectly good shim. Trusting the global probe in the second case admits a
+                # client whose runs then fail on its own override — and disagrees with
+                # `client_available`, which does ask.
+                return be.available_for_client(c.env)
+            return avail.get(c.backend, False)
+
         self._clients: dict[str, ClientConfig] = {
-            n: c for n, c in config.clients.items() if avail.get(c.backend, False)
+            n: c for n, c in config.clients.items() if _client_available(c)
         }
         # (client, model) pairs already warned about as metered - see _warn_if_metered.
         self._metered_warned: set[tuple[str, str]] = set()
         self.skipped_clients: list[str] = [
-            n for n, c in config.clients.items() if not avail.get(c.backend, False)
+            n for n, c in config.clients.items() if not _client_available(c)
         ]
         # Same facts, keyed for the driver: which client, on which backend, and why it is missing.
         # `avail` is False both for a known backend whose CLI is absent and for a name that is not
@@ -223,10 +259,10 @@ class MarshalService:
                 ),
             )
             for n, c in config.clients.items()
-            if not avail.get(c.backend, False)
+            if not _client_available(c)
         }
         for n, c in config.clients.items():
-            if not avail.get(c.backend, False):
+            if not _client_available(c):
                 print(f"marshal: skipping client {n!r} (backend {c.backend!r} CLI unavailable)", file=sys.stderr)
         self.fleet = Fleet(
             repo_root,
@@ -307,11 +343,18 @@ class MarshalService:
         )
 
     def client_available(self, client_name: str) -> bool:
+        """Whether this named client can run right now (workflows and teams gate on this).
+
+        Goes through ``available_for_client`` with the client's own ``env:``, the same rule
+        construction uses. Probing without it would admit a client whose `env:` names its launcher
+        for direct runs while dropping it from workflow fan-outs and team reviews - one client,
+        two answers, depending on which door it came through.
+        """
         client = self.config.clients.get(client_name)
         if client is None:
             return False
         backend = self.fleet.backends.get(client.backend)
-        return backend.check_available() if backend is not None else False
+        return backend.available_for_client(client.env) if backend is not None else False
 
     def _compose_goal(self, goal: str) -> str:
         # Layered context: the worker preamble + the fleet's `worker` context prefix the user's
@@ -525,7 +568,7 @@ class MarshalService:
                     be = self._ensure_backend_locked(client.backend)
                 except ValueError:
                     continue
-                if be.check_available():
+                if be.available_for_client(client.env):
                     self._clients[n] = client
                     healed.append(n)
             if healed:
@@ -696,8 +739,15 @@ class MarshalService:
             and r.cost_usd is not None
         ]
         cheapest = min(priced, key=lambda r: r.cost_usd or 0.0).client if priced else None
-        timed = [r for r in rows if r.status == RunStatus.EXITED_CLEAN.value and r.duration_ms > 0]
-        fastest = min(timed, key=lambda r: r.duration_ms).client if timed else None
+        # `duration_ms is None` is the explicit "never measured"; the `> 0` that used to stand in
+        # for it is kept because a stamped zero would still not be a comparable timing.
+        timed = [
+            r for r in rows
+            if r.status == RunStatus.EXITED_CLEAN.value
+            and r.duration_ms is not None
+            and r.duration_ms > 0
+        ]
+        fastest = min(timed, key=lambda r: r.duration_ms or 0).client if timed else None
         return BenchmarkResult(
             task_id=task_id, goal=goal, strategies=rows, cheapest=cheapest, fastest=fastest
         )
@@ -712,8 +762,9 @@ class MarshalService:
 
         Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
         a clear `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---`
-        section - the FULL streams, not the truncated `text` on the run record. None when no log
-        exists (e.g. a run predating log storage, or a backend that crashed before producing one).
+        section - the FULL streams, not the truncated `text` on the run record. A run that was
+        retried carries EVERY attempt, each under `--- attempt N/M ---`. None when no log exists
+        (e.g. a run predating log storage, or a backend that crashed before producing one).
         """
         return self.fleet.logs.read(run_id)
 
@@ -732,32 +783,48 @@ class MarshalService:
 
         Containment is enforced the same way as `context_files`: an absolute path or one that
         escapes via `..` is refused, because `Path(wt) / "/etc/passwd"` is `/etc/passwd`.
+
+        Run-STATE failures come back as a `RunFile` with a `status` (see that model) rather than an
+        exception, so a driver can tell "the worktree was cleaned" from "the agent never wrote
+        that file" and react differently. An unknown `run_id` still raises: that is a bad
+        identifier rather than a state this run is in, and it raises from `collect_run` /
+        `commit_run` / `get_run_log` too - one rule across the surface.
         """
         rec = self.fleet.state.get(run_id)
         if rec is None:
             raise ValueError(f"no such run: {run_id!r}")
+
+        def _problem(status: str, message: str) -> RunFile:
+            return RunFile(
+                run_id=run_id,
+                path=path,
+                content="",
+                truncated=False,
+                size_bytes=0,
+                status=status,
+                error=message,
+            )
+
+        _GONE = f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
         if not rec.worktree:
-            raise ValueError(f"run {run_id!r} has no worktree to read from")
+            return _problem("gone", f"run {run_id!r} has no worktree to read from")
         base = Path(rec.worktree).resolve()
         if not base.exists():
-            raise ValueError(
-                f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
-            )
+            return _problem("gone", _GONE)
         target = (base / path).resolve()
         if target != base and base not in target.parents:
-            raise ValueError(
+            return _problem(
+                "refused",
                 f"path {path!r} resolves outside run {run_id!r}'s worktree - it must be relative "
-                f"to the worktree root and stay inside it"
+                f"to the worktree root and stay inside it",
             )
         if not target.is_file():
             # Re-check the worktree: a `clean` landing between the guard above and here makes every
             # path inside it "not a file", which would blame the caller's path for the worktree
             # being gone. Same state, same diagnostic, whenever the caller arrived.
             if not base.exists():
-                raise ValueError(
-                    f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
-                )
-            raise ValueError(f"{path!r} is not a file in run {run_id!r}'s worktree")
+                return _problem("gone", _GONE)
+            return _problem("not_found", f"{path!r} is not a file in run {run_id!r}'s worktree")
         # Read only what we will return (+1 byte to detect truncation), never the whole file.
         # `read_bytes()` would load an agent-produced artifact of ANY size into the MCP server's
         # memory before slicing it - the caller picks the path, so the size is not ours to assume.
@@ -772,10 +839,10 @@ class MarshalService:
                 raw = stream.read(max_bytes + 1)
         except OSError as exc:
             if not base.exists():
-                raise ValueError(
-                    f"run {run_id!r}'s worktree is gone (cleaned); its files cannot be read"
-                ) from exc
-            raise ValueError(f"cannot read {path!r} in run {run_id!r}'s worktree: {exc}") from exc
+                return _problem("gone", _GONE)
+            return _problem(
+                "unreadable", f"cannot read {path!r} in run {run_id!r}'s worktree: {exc}"
+            )
         # Truncate rather than hand back something unbounded - and SAY SO, because silently
         # returning a prefix would let a driver act on a partial report believing it was whole.
         truncated = len(raw) > max_bytes

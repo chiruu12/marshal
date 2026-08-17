@@ -34,6 +34,7 @@ from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.core.retry import RetryPolicy
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
+from marshal_engine.orchestration import reaping as reaping_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
 from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
 from marshal_engine.runtime.state import FleetState, RunRecord
@@ -3352,7 +3353,7 @@ def test_a_deferred_orphan_is_reconciled_on_a_later_read(repo: Path) -> None:
     young at startup stayed RUNNING for the whole life of a long-running server."""
     from datetime import datetime, timedelta, timezone
 
-    from marshal_engine.orchestration.fleet import _REAP_GRACE_S
+    from marshal_engine.orchestration.reaping import _REAP_GRACE_S
 
     _write_run_record(
         repo,
@@ -3378,11 +3379,9 @@ def test_an_orphan_whose_agent_dies_later_is_still_reaped(repo: Path) -> None:
     """REGRESSION: a record skipped because its agent was still alive was not put on the re-check
     list, so when that agent later exited nothing noticed - the run read RUNNING for the whole life
     of the server. 'Alive right now' is a snapshot, not a verdict."""
-    import marshal_engine.orchestration.fleet as fleet_mod
-
     alive = {"yes": True}
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod, "_pid_is_still_ours", lambda rec: alive["yes"])
+    monkey.setattr(reaping_mod, "_pid_is_still_ours", lambda rec: alive["yes"])
     try:
         _write_run_record(
             repo,
@@ -3447,8 +3446,6 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
     'still non-terminal'. A pid stamped in that gap - the record's own process finally reporting -
     was overwritten anyway, which is the original production bug at a narrower window. The commit
     now re-runs the full reap decision under the run's lock."""
-    import marshal_engine.orchestration.fleet as fleet_mod
-
     run_id = "toctou.writer.x"
     _write_run_record(
         repo,
@@ -3463,7 +3460,7 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
     state = FleetState(repo / ".marshal" / "runs")
 
     # The record gains a live pid after the scan decides but before the write commits.
-    real = fleet_mod._is_reapable
+    real = reaping_mod._is_reapable
     calls = {"n": 0}
 
     def racing(rec: RunRecord, runs_dir: Path) -> bool:
@@ -3474,7 +3471,7 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
         return real(rec, runs_dir)  # the commit-time re-check sees the pid
 
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod, "_is_reapable", racing)
+    monkey.setattr(reaping_mod, "_is_reapable", racing)
     try:
         Fleet(repo, {"writer": _Writer()})
     finally:
@@ -3521,7 +3518,7 @@ def test_a_recycled_lock_pid_does_not_block_reaping_forever(repo: Path) -> None:
     RUNNING until that unrelated process happened to exit."""
     import json as _json
 
-    from marshal_engine.orchestration.fleet import _another_fleet_active
+    from marshal_engine.orchestration.liveness import _another_fleet_active
 
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -3557,7 +3554,7 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
     unprobeable pid read as *verified*, so cancel would hand an operator a `kill` command for what
     might be a recycled process group. Verification must mean a real comparison, not the absence of
     a contradiction."""
-    import marshal_engine.orchestration.fleet as fleet_mod
+    import marshal_engine.orchestration.liveness as liveness_mod
 
     rec = RunRecord(
         run_id="probe.writer.x",
@@ -3568,11 +3565,11 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
         pid_start_time="Mon Jan  1 00:00:00 2026",
     )
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod, "_pid_alive", lambda pid: True)  # the process exists...
-    monkey.setattr(fleet_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
+    monkey.setattr(liveness_mod, "_pid_alive", lambda pid: True)  # the process exists...
+    monkey.setattr(liveness_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
     try:
-        assert fleet_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
-        assert fleet_mod._pid_is_verifiably_ours(rec) is False
+        assert liveness_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
+        assert liveness_mod._pid_is_verifiably_ours(rec) is False
     finally:
         monkey.undo()
 
@@ -5001,7 +4998,7 @@ def test_reaper_leaves_mid_provisioning_record_alone(
     fleet.worktrees.setup = gated_setup  # type: ignore[method-assign]
     # Simulate the reaper running in ANOTHER process: its in-flight registry is empty, so the
     # same-process protection does not apply and only the grace/pid-identity rules decide.
-    monkeypatch.setattr(fleet_mod, "_inflight_in_this_process", lambda *_a: False)
+    monkeypatch.setattr(reaping_mod, "_inflight_in_this_process", lambda *_a: False)
     try:
         run_id = fleet.spawn(
             RunRequest(backend_name="writer", task=TaskSpec(id="reapgrace", goal="x"))
@@ -5044,7 +5041,11 @@ def test_integrate_and_collect_on_setup_failed_run(repo: Path) -> None:
         assert rec is not None and rec.status == "failed"
 
         collected = fleet.collect_run(run_id)
-        assert collected.produced == "nothing"
+        # "unavailable", not "nothing": the work could not be read, which is not evidence the run
+        # produced none. A driver branching on `produced` must not reject this as an idle run.
+        assert collected.produced == "unavailable"
+        assert collected.unavailable_reason
+        assert collected.commit_count is None, "a count nobody took must not read as zero"
         assert collected.changed_files == []
         assert collected.diff == ""
         assert rec.error and rec.error in collected.text
@@ -5249,7 +5250,8 @@ def test_collect_run_worktree_error_mid_op_is_structured(
 
     monkeypatch.setattr(fleet.worktrees, "changed_files", boom)
     got = fleet.collect_run(rec.run_id)
-    assert got.produced == "nothing"
+    assert got.produced == "unavailable", "an unreadable worktree is not an idle run"
+    assert "vanished mid-collect" in (got.unavailable_reason or "")
     assert got.changed_files == []
     assert got.diff == ""
     assert "vanished mid-collect" in got.text
@@ -6003,3 +6005,137 @@ def test_cancel_during_setup_leaves_no_pid_on_the_terminal_record(repo: Path) ->
         assert rec.pid_start_time is None
     finally:
         fleet.shutdown()
+
+
+# --- #257: unknown must never read as zero / nothing -------------------------------------------
+
+
+def test_a_genuinely_idle_run_still_says_nothing(repo: Path) -> None:
+    """The `unavailable` split must not swallow the honest `nothing`. A run that really produced
+    neither a diff nor prose is still `nothing` - otherwise the new value would just move the
+    conflation instead of removing it."""
+    fleet = Fleet(repo, {"silent": _Talker("")})
+    rec = fleet.run("silent", TaskSpec(id="stillquiet", goal="x"))
+    got = fleet.collect_run(rec.run_id)
+    assert got.produced == "nothing"
+    assert got.unavailable_reason is None
+
+
+def test_collect_reports_a_real_commit_count_when_it_took_one(repo: Path) -> None:
+    """The None default must not hide a genuine zero: a run with a branch IS counted, so the count
+    is an int - `None` has to mean "nobody counted", not "we stopped bothering"."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="counted", goal="x"))
+    got = fleet.collect_run(rec.run_id)
+    assert got.commit_count == 0, "a branch was present, so the count was taken and is really zero"
+
+
+def test_a_capped_final_message_says_it_was_capped(repo: Path) -> None:
+    """REGRESSION (#257.1): `text` was cut at 16k with nothing recording the cut, so a driver read
+    a report that stopped mid-sentence, treated it as complete, and passed truncated conclusions
+    into the next agent's goal."""
+    long_text = "x" * 20_000
+    fleet = Fleet(repo, {"chatty": _Talker(long_text)})
+    rec = fleet.run("chatty", TaskSpec(id="capped", goal="x"))
+
+    assert rec.text_truncated is True
+    assert rec.text_full_len == 20_000
+    assert len(rec.text) == 16_000
+
+    got = fleet.collect_run(rec.run_id)
+    assert got.produced == "text"
+    assert got.text_truncated is True, "collect handed over a prefix without saying so"
+    assert got.text_full_len == 20_000
+
+
+def test_an_uncapped_final_message_is_not_flagged(repo: Path) -> None:
+    """The flag must mean something: a message that fit is not truncated, and reports no length."""
+    fleet = Fleet(repo, {"chatty": _Talker("short and complete")})
+    rec = fleet.run("chatty", TaskSpec(id="uncapped", goal="x"))
+    assert rec.text_truncated is False
+    assert rec.text_full_len is None
+    assert fleet.collect_run(rec.run_id).text_truncated is False
+
+
+def test_commit_run_reports_a_missing_branch_as_a_status_not_an_exception(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (#257.7): every other failure on this path returns a structured `CommitResult`,
+    but "no branch to commit" raised. A driver that handled the torn-down-worktree error still
+    crashed on this one, for a condition `CommitResult.status == "error"` exists to carry."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="nobranch", goal="x"))
+
+    real = fleet._worktree_for
+    monkeypatch.setattr(
+        fleet, "_worktree_for", lambda rid: real(rid).model_copy(update={"branch": ""})
+    )
+    got = fleet.commit_run(rec.run_id)
+    assert got.status == "error"
+    assert "no branch to commit" in got.message
+    assert got.run_id == rec.run_id
+
+
+def test_a_real_retried_run_logs_every_attempt(repo: Path) -> None:
+    """End-to-end companion to the log-store unit test: proves the Fleet actually HANDS every
+    attempt to the store. Testing the store alone would leave the wiring unverified - the run
+    record would still say `attempts: 3` while the log held only the last one."""
+
+    class _FlakyWithOutput(_Flaky):
+        """Stamps distinguishable raw stdout/stderr per attempt, as a real backend would."""
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+            n = self.calls + 1
+            result = super().run(task, opts)
+            result.raw_stdout = f"stdout-of-attempt-{n}"
+            result.raw_stderr = f"stderr-of-attempt-{n}"
+            return result
+
+    fleet = Fleet(
+        repo,
+        {"flaky": _FlakyWithOutput(["opencode: database is locked"] * 2)},
+        retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0),
+    )
+    rec = fleet.run("flaky", TaskSpec(id="retrylog", goal="x"))
+    assert rec.attempts == 3, "the run must actually have retried for this test to mean anything"
+
+    log = fleet.logs.read(rec.run_id)
+    assert log is not None
+    for n in (1, 2, 3):
+        assert f"stdout-of-attempt-{n}" in log, f"attempt {n}'s stdout was dropped"
+        assert f"stderr-of-attempt-{n}" in log, f"attempt {n}'s stderr was dropped"
+    assert "--- attempt 1/3 ---" in log and "--- attempt 3/3 ---" in log
+
+
+def test_a_backend_that_reports_no_usage_records_null_tokens_not_zero(repo: Path) -> None:
+    """REGRESSION (#257.3): `input_tokens`/`output_tokens` defaulted to 0, directly below the
+    `cost_usd: float | None` field whose comment explains why 0-means-unmeasured is unacceptable.
+    Tokens-per-outcome is the FALLBACK metric precisely when cost is null, so a backend that
+    measures nothing ranked as the most efficient lane and drew future work to it."""
+
+    class _NoUsage(_Writer):
+        """A backend that reports no usage at all - Command Code's `-p` prints text and nothing else."""
+
+        name = "nousage"
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            result = super().parse_output(raw_stdout, raw_stderr, exit_code)
+            result.usage = None
+            return result
+
+    fleet = Fleet(repo, {"nousage": _NoUsage()})
+    rec = fleet.run("nousage", TaskSpec(id="untokened", goal="x"))
+
+    assert rec.input_tokens is None, "a count nobody took must not read as zero"
+    assert rec.output_tokens is None
+    assert rec.cost_usd is None
+
+
+def test_a_backend_that_reports_tokens_keeps_the_real_numbers(repo: Path) -> None:
+    """The None default must not swallow real measurements - otherwise the fix would just move the
+    ambiguity instead of removing it."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="tokened", goal="x"))
+    assert rec.input_tokens == 5
+    assert rec.output_tokens == 1
+    assert rec.duration_ms is not None and rec.duration_ms >= 0

@@ -1,3 +1,16 @@
+> # This package has moved
+>
+> **`MarshalFleet` is now published as [`marshal-agents`](https://pypi.org/project/marshal-agents/).**
+>
+> ```bash
+> uv tool uninstall MarshalFleet
+> uv tool install "marshal-agents[mcp]"
+> ```
+>
+> Only the PyPI distribution name changed. The import package is still `marshal_engine` and the
+> command is still `marshal`. `MarshalFleet` stops at 0.2.4 and receives no further releases;
+> everything after 0.2.3 ships under the new name.
+
 <p align="center">
   <img src="assets/wordmark.png" alt="Marshal" width="420">
 </p>
@@ -167,6 +180,8 @@ Model is set per client in `fleet.config.yaml` (or ad-hoc via `--model` / MCP `m
 | `command-code` | provider/model (e.g. `zai-org/GLM-5.2`) | **unavailable** (hosted account, no token/cost in stdout) |
 | `goose` | `provider/model` or bare model (e.g. `cursor-agent/auto`) | **native** when the provider reports positive cost; else **unavailable** (best-effort stream-json) |
 | `antigravity` *(experimental)* | `gemini-*`, `claude-*`, etc. | **unavailable** (text-only output) |
+| `zcode` | `glm-*` bare or `provider/model`, via `ZCODE_MODEL` (no `--model` flag) | **unavailable** (tokens only, no price reported) |
+| `copilot` | `auto` (the only id a Copilot **Free** plan accepts); paid plans pin `claude-*` / `gpt-*` from the CLI catalog | **unavailable** (output tokens only; `premiumRequests` is quota, not money) |
 
 Routing playbook: [`docs/model-playbook.md`](docs/model-playbook.md). Verification matrix: [`docs/status.md`](docs/status.md).
 

@@ -121,9 +121,9 @@ def test_capabilities_agree_with_map_permission(name: str) -> None:
 
 
 #: Built-in backends that install a safe-edit restriction beyond the worktree.
-_ENFORCED_DENIES = frozenset({"cursor", "opencode", "codex"})
+_ENFORCED_DENIES = frozenset({"cursor", "opencode", "codex", "copilot"})
 #: Built-in backends where Marshal cannot promise a deny layer (worktree is the boundary).
-_BOUNDARY_ONLY = frozenset({"command-code", "goose", "antigravity", "claude-code"})
+_BOUNDARY_ONLY = frozenset({"command-code", "goose", "antigravity", "claude-code", "zcode"})
 
 
 def test_capabilities_default_permission_fidelity_is_boundary_only() -> None:

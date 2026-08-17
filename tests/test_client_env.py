@@ -163,3 +163,99 @@ def test_load_config_env_reaches_child_via_service(
     )
     rec = svc.run_agent("router", goal="x", task_id="CODEX_HOME")
     assert rec.text == expected
+
+
+def test_a_client_env_launcher_is_honoured_on_every_availability_path(tmp_path: Path) -> None:
+    """REGRESSION: `client_available` (what workflows and teams gate on) probed without the
+    client's `env:`, while construction honoured it. A client whose `env:` was the only thing
+    naming its launcher therefore worked for direct runs but vanished from workflow fan-outs and
+    team reviews — one client, two answers, depending on which door it came through."""
+    seen: list[dict[str, str] | None] = []
+
+    class _EnvLauncher(CodingAgentBackend):
+        """Runnable ONLY when the client's env names it — like ZCode with no shim or bundle."""
+
+        name = "envlauncher"
+        binary = "envlauncher"
+        capabilities = Capabilities()
+
+        def check_available(self) -> bool:
+            return self.available_for_client(None)
+
+        def available_for_client(self, client_env: dict[str, str] | None = None) -> bool:
+            seen.append(client_env)
+            return bool((client_env or {}).get("LAUNCHER"))
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return []
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(status=RunStatus.EXITED_CLEAN)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    config = FleetConfig(
+        clients={
+            "pinned": ClientConfig(
+                name="pinned", backend="envlauncher", env={"LAUNCHER": "/opt/x/bin"}
+            )
+        }
+    )
+    svc = MarshalService(repo, config, backends={"envlauncher": _EnvLauncher()})
+
+    assert "pinned" not in svc.skipped_clients, "construction dropped a runnable client"
+    assert svc.client_available("pinned") is True, (
+        "workflows and teams would have skipped a client that direct runs accept"
+    )
+    assert {"LAUNCHER": "/opt/x/bin"} in seen, "the client's env never reached the probe"
+
+
+def test_a_broken_client_env_launcher_is_not_admitted_by_the_global_probe(tmp_path: Path) -> None:
+    """The inverse of the case above, and the reason the backend-wide answer must not short-circuit
+    a client that declares `env:`. When the backend IS globally available but the client's own
+    override names a broken launcher, admitting it on the global answer gives a client whose runs
+    fail on its own override — and disagrees with `client_available`, which does ask."""
+
+    class _EnvLauncher(CodingAgentBackend):
+        name = "envlauncher"
+        binary = "envlauncher"
+        capabilities = Capabilities()
+
+        def check_available(self) -> bool:
+            return True  # a shim/bundle exists: the backend is globally fine
+
+        def available_for_client(self, client_env: dict[str, str] | None = None) -> bool:
+            override = (client_env or {}).get("LAUNCHER")
+            return override != "/broken/path"
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return []
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(status=RunStatus.EXITED_CLEAN)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    config = FleetConfig(
+        clients={
+            "broken": ClientConfig(
+                name="broken", backend="envlauncher", env={"LAUNCHER": "/broken/path"}
+            ),
+            "plain": ClientConfig(name="plain", backend="envlauncher"),
+        }
+    )
+    svc = MarshalService(repo, config, backends={"envlauncher": _EnvLauncher()})
+
+    assert "broken" in svc.skipped_clients, "a client with a broken override was admitted"
+    assert svc.client_available("broken") is False
+    # A client declaring no env still rides the cheap backend-wide answer.
+    assert "plain" not in svc.skipped_clients
+    assert svc.client_available("plain") is True

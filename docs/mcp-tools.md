@@ -370,7 +370,12 @@ Full persisted stdout/stderr for a run (not the truncated `text` on the record).
 ### `collect_run`
 
 Collect what a run produced: diff/changed files and/or final text via `produced` (read-only;
-nothing is merged). Branch on `produced` (`diff` | `text` | `nothing`).
+nothing is merged). Branch on `produced` (`diff` | `text` | `nothing` | `unavailable`).
+
+`unavailable` is **not** `nothing`: it means the work could not be read (worktree torn down, a
+git operation failed mid-collect), which is no evidence the run produced none. Do not
+`set_outcome(rejected)` on it — `routing` would hold that rejection against a client that may well
+have succeeded. Read `unavailable_reason`, and re-run or inspect rather than judging the work.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -388,9 +393,12 @@ nothing is merged). Branch on `produced` (`diff` | `text` | `nothing`).
 | `diff` | string | Unified diff of uncommitted work (working tree vs HEAD). |
 | `committed_changed_files` | list[string] | Files changed in commits on the run branch since the run's **own** base (`base_commit`, falling back to `base_branch`, then — for records predating both — the current branch, or the checked-out commit `HEAD` when the repo is in detached HEAD) — deliberately not the currently checked-out branch, which may have moved since the run started. |
 | `committed_diff` | string | Unified diff of those commits (`base...branch`). |
-| `commit_count` | integer | Number of commits on the run branch not reachable from that base. |
-| `produced` | string | `diff` (files changed) \| `text` (no files, but the agent replied) \| `nothing` (neither). **Branch on this** rather than inferring intent from which container is empty — guessing from emptiness is what made research runs read as failures. |
-| `text` | string | The agent's final message — populated **only** when `produced == "text"`. When there is a diff, the diff is the artifact and repeating the message would bloat every reply. |
+| `commit_count` | integer \| null | Number of commits on the run branch not reachable from that base. **`null` when the count was never taken** (no branch, or the work could not be read) — never read it as zero. |
+| `produced` | string | `diff` (files changed) \| `text` (no files, but the agent replied) \| `nothing` (the run genuinely produced neither) \| `unavailable` (the work could not be read — see `unavailable_reason`). **Branch on this** rather than inferring intent from which container is empty — guessing from emptiness is what made research runs read as failures. |
+| `unavailable_reason` | string \| null | Why the work could not be read. Set only when `produced == "unavailable"`. |
+| `text` | string | The agent's final message — populated when `produced == "text"`, and on the `unavailable` path where the record's message may be the only surviving account of the run. When there is a diff, the diff is the artifact and repeating the message would bloat every reply. |
+| `text_truncated` | bool | True when `text` was cut on write. **Check this before treating `text` as a finished product** — a truncated report stops mid-sentence and reads as complete. Full stream: `get_run_log`. |
+| `text_full_len` | integer \| null | Pre-truncation character count; `null` when nothing was cut. |
 
 ### `status`
 
@@ -436,7 +444,14 @@ Read one file out of a run's worktree — how one agent's output reaches the nex
 | `path` | string | *(required)* | Path **relative to that run's worktree root**. Absolute paths and `..` are refused — `Path(wt) / "/etc/passwd"` is `/etc/passwd`, so the containment check is the same one `context_files` applies. |
 | `workspace` | string \| null | `null` | Workspace hint. |
 
-**Returns:** `{ run_id, path, content, truncated, size_bytes }`.
+**Returns:** `{ run_id, path, content, truncated, size_bytes, status, error }`.
+
+**Check `status` before `content`.** Only `ok` carries content. The rest say *why* there is none,
+and they call for opposite reactions: `gone` (the worktree was cleaned — the run finished, so
+re-running it is wasted), `not_found` (the worktree is right there and the agent never wrote that
+path — possibly worth another run), `refused` (the path escapes the worktree), `unreadable` (the
+file exists but could not be read). These used to arrive as one indistinguishable `ValueError`.
+An unknown `run_id` still raises — that is a bad identifier, not a state the run is in.
 
 **Check `truncated`.** Large files are clipped and `size_bytes` reports the real size; acting on a
 prefix while believing it is whole is the mistake this flag exists to prevent.
@@ -464,7 +479,13 @@ MCP has no server-initiated push, so "notify me when done" can only be a blockin
 still a poll loop; the point is that it runs server-side, where a tick costs a few file reads rather
 than a turn of context.
 
-Returns `{settled, pending, unknown, timed_out, waited_ms}`. Every requested id appears in exactly
+Runs come back in the `poll` shape by default — the same three shapes `status` uses, selected with
+`view` (`poll` | `compact` | `full`). It previously dumped whole records, which with a fan-out's
+worth of runs meant up to 16k of `text` each. The trimmed views replace `text` / `verify_output`
+with `has_text` / `has_verify_output`, so an omitted field is never misread as an empty one; reach
+for `get_run` or `collect_run` when you want one run's actual text.
+
+Returns `{settled, pending, unknown, timed_out, waited_ms, view}`. Every requested id appears in exactly
 one of the three lists.
 
 - **`settled` means finished, never succeeded.** `failed`, `timed_out`, `cancelled`, `verify_failed`
@@ -725,12 +746,14 @@ Judgment about the work is not on this line: it arrives later, so successful `in
 | `branch` | string \| null | Worktree branch. |
 | `base_branch` | string \| null | Branch the worktree was cut from at spawn time. |
 | `base_commit` | string \| null | The commit that branch pointed at when the run was spawned, read from the created worktree. A branch name is mutable; this is what the run actually branched from, and what `collect_run` compares against. |
-| `cost_usd` | float | Recorded cost. |
-| `input_tokens` | int | |
-| `output_tokens` | int | |
-| `duration_ms` | int | |
+| `cost_usd` | float \| null | Recorded cost. **`null` = nothing was measured** (read `source`); `0.0` is a measured zero. |
+| `input_tokens` | int \| null | **`null` = the backend reported no usage at all**; a number is a real count, and `0` a measured zero. Same rule as `cost_usd` — and these are the fallback ranking metric precisely when cost is `null`, so treating `null` as `0` ranks the *unmeasurable* backend as the most efficient one. |
+| `output_tokens` | int \| null | As `input_tokens`. |
+| `duration_ms` | int \| null | Wall-clock around the backend invocation. **`null` = the run never reached a backend** (e.g. it failed in provisioning), which is not the same as finishing instantly. |
 | `source` | string \| null | Cost provenance (`native`, `admin-api`, `unavailable`, …). |
-| `text` | string | Agent's final message (truncated). |
+| `text` | string | Agent's final message, capped on write — read `text_truncated` before treating it as whole. |
+| `text_truncated` | bool | True when the cap fired. A truncated report stops mid-sentence and otherwise reads as complete; get the full stream from `get_run_log`. |
+| `text_full_len` | integer \| null | Pre-truncation character count; `null` when nothing was cut. |
 | `started_at` | string \| null | ISO-8601. |
 | `ended_at` | string \| null | ISO-8601. |
 | `error` | string \| null | Failure detail. |

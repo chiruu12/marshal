@@ -80,6 +80,21 @@ class CodingAgentBackend(ABC):
 
     # --- hooks subclasses must implement -------------------------------------------------
 
+    def available_for_client(self, client_env: dict[str, str] | None = None) -> bool:
+        """Availability for ONE client, whose ``env:`` block may be what names the launcher.
+
+        Default delegates to ``check_available()``, which is the right answer for every backend
+        whose CLI is a normal PATH executable. ZCode overrides it: a client's ``ZCODE_BIN`` can be
+        the only thing pointing at the install, and a probe that resolves a DIFFERENT launcher
+        than ``build_invocation`` would is how a perfectly runnable client gets skipped as
+        "unavailable" - which defeats the point of ``resolve_launcher`` existing at all.
+
+        Kept separate from ``check_available`` rather than added to it as a parameter: that hook
+        is widely overridden (every adapter and every test double may define it), and widening its
+        signature would break each one for a need only one backend has.
+        """
+        return self.check_available()
+
     def check_available(self) -> bool:
         """Return True if ``binary`` is on PATH and responds to ``--version``.
 
@@ -103,6 +118,19 @@ class CodingAgentBackend(ABC):
         except (OSError, subprocess.SubprocessError):
             return False
         return proc.returncode == 0
+
+    def resolve_launcher(self, client_env: dict[str, str] | None = None) -> list[str]:
+        """Argv prefix that launches this backend's CLI - what ``build_invocation`` starts with.
+
+        Default is the single PATH executable ``binary``, which is every backend whose CLI is
+        installed as a normal command. Backends whose entry point is not a PATH executable
+        override this: ZCode ships its headless CLI as a Node bundle *inside the desktop app*, so
+        its prefix is ``["node", ".../zcode.cjs"]``. Overriding here (rather than open-coding the
+        path in ``build_invocation``) keeps argv construction and availability probing agreeing on
+        one answer. ``client_env`` is the per-client ``env:`` block, for adapters that let a
+        client point at an explicit install.
+        """
+        return [self.binary]
 
     def unavailable_detail(self) -> str:
         """Doctor/CLI detail when ``check_available()`` is False.
