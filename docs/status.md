@@ -17,6 +17,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `eastrouter.py` | Read real per-run cost from EastRouter `/v1/usage` (the `ADMIN_API` path) | done |
 | `state.py` | Persistent fleet state (one `runs/<run_id>.json` per run) | done |
 | `fleet.py` | Orchestrator: worktree → run → price → record → persist | done |
+| `liveness.py` · `inflight.py` · `reaping.py` · `diagnostics.py` | Run-ownership and orphan-recovery split out of the orchestrator | done |
 | `registry.py` | Construct backends by name | done |
 | `config.py` | `fleet.config.yaml` → clients, metered-provider advisory | done |
 | `retry.py` | Transient-failure classifier + backoff for run retries | done |

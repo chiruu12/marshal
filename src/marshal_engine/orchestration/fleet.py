@@ -9,15 +9,11 @@ testable without real CLIs; the MCP/CLI layer supplies real ones via the registr
 from __future__ import annotations
 
 import contextlib
-import fcntl
-import json
 import logging
 import os
 import shlex
 import signal
-import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -54,11 +50,38 @@ from ..core.types import (
     UsageRecord,
     UsageSource,
 )
-from ..runtime.env import DETACHED_STDIO, merge_user_path, redact_secrets
+from ..runtime.env import merge_user_path, redact_secrets
 from ..runtime.git_exclude import try_append_git_exclude
 from ..runtime.logs import RunLogStore
 from ..runtime.state import FleetState, RunRecord
 from ..runtime.worktree import Worktree, WorktreeError, WorktreeManager, is_git_object_id
+from .diagnostics import (
+    _base_branch_drift_warning,
+    _deferred_provision_error,
+    _orphaned_base_diagnosis,
+    _worktree_gone_message,
+)
+from .inflight import (
+    _active_runs_guard,
+    _clear_creating_claim,
+    _creating_claim_held,
+    _inflight_handle,
+    _inflight_in_this_process,
+    _publish_pid,
+    _register_inflight_run,
+    _unregister_inflight_run,
+    _write_creating_claim,
+)
+from .liveness import (
+    _claim_fleet_lock,
+    _is_terminal,
+    _now,
+    _pid_alive,
+    _pid_is_still_ours,
+    _pid_is_verifiably_ours,
+    _pid_start_time,
+    with_liveness,
+)
 from .provisioning import (
     _provision_read_paths,
     _require_context_files,
@@ -66,6 +89,7 @@ from .provisioning import (
     prepare_artifact_dir,
     provision_run_artifacts,
 )
+from .reaping import _TMP_REAP_AGE_S, _reap_orphaned_runs
 from .results import (
     CleanResult,
     CollectResult,
@@ -83,13 +107,6 @@ from .structured import (
 
 logger = logging.getLogger(__name__)
 
-# Process-wide in-flight run ids keyed by ``<repo>/.marshal`` (resolved). A replacement Fleet
-# constructed in the same MCP server process (config hot-reload) shares this map with the evicted
-# Fleet's background pool, so startup reaping must not touch those runs even when they have no pid
-# yet (e.g. a test backend that overrides run() without spawning).
-_active_runs_guard = threading.Lock()
-_active_runs: dict[str, dict[str, "_RunHandle"]] = {}
-
 #: Test-only seam: called after cancel snapshots the handle and before it re-checks/signals.
 #: Production leaves this ``None``. Tests assign a callback to force the copy→reap window.
 _cancel_after_handle_snapshot: Callable[[], None] | None = None
@@ -97,154 +114,6 @@ _cancel_after_handle_snapshot: Callable[[], None] | None = None
 #: Test-only seam: called after the RUNNING record's ``os.replace`` and before the creating claim
 #: is cleared. Production leaves this ``None``.
 _after_creating_record_published: Callable[[], None] | None = None
-
-#: Sidecar written before ``worktrees.create`` and cleared only after the RUNNING record's
-#: ``os.replace`` publishes, so a concurrent ``clean`` always sees the claim and/or the record
-#: (the create→add gap has no record; the add→clear handoff must not open a second gap).
-_CREATING_SUFFIX = ".creating"
-
-
-class _RunHandle:
-    """Live state for a run started by THIS process, used to cancel it safely.
-
-    A pid alone is not safe to signal: the OS recycles pids. A child's pid is held until its parent
-    reaps it, so signalling is safe exactly while the run loop is between spawn and reap - which is
-    what ``exited`` tracks. ``pid_start_time`` pairs with ``pid`` so a reaped-then-recycled number
-    is not signalled if ``exited`` has not been set yet. ``cancel_requested`` covers the other end:
-    a cancel that arrives before the pid is known is applied as soon as it is.
-    """
-
-    __slots__ = ("pid", "pid_start_time", "exited", "cancel_requested")
-
-    def __init__(self) -> None:
-        self.pid: int | None = None
-        self.pid_start_time: str | None = None
-        self.exited = False
-        self.cancel_requested = False
-
-
-def _marshal_base_key(runs_dir: Path) -> str:
-    return str(runs_dir.resolve().parent)
-
-
-def _register_inflight_run(runs_dir: Path, run_id: str) -> "_RunHandle":
-    key = _marshal_base_key(runs_dir)
-    with _active_runs_guard:
-        handle = _RunHandle()
-        _active_runs.setdefault(key, {})[run_id] = handle
-        return handle
-
-
-def _unregister_inflight_run(runs_dir: Path, run_id: str) -> None:
-    key = _marshal_base_key(runs_dir)
-    with _active_runs_guard:
-        active = _active_runs.get(key)
-        if active is not None:
-            active.pop(run_id, None)
-            if not active:
-                del _active_runs[key]
-
-
-def _publish_pid(handle: "_RunHandle", pid: int) -> bool:
-    """Record a newly spawned child's pid on ``handle``; True if a cancel is already pending.
-
-    Clears ``exited``: a published pid means a LIVE child. The handle is reused across retries, so
-    an exit recorded by a previous attempt would otherwise make cancel skip signalling the retry.
-    Stamps ``pid_start_time`` so cancel can refuse a recycled pid if reap races the signal.
-    """
-    started = _pid_start_time(pid)
-    with _active_runs_guard:
-        handle.pid = pid
-        handle.pid_start_time = started
-        handle.exited = False
-        return handle.cancel_requested
-
-
-def _inflight_handle(runs_dir: Path, run_id: str) -> "_RunHandle | None":
-    key = _marshal_base_key(runs_dir)
-    with _active_runs_guard:
-        return _active_runs.get(key, {}).get(run_id)
-
-
-def _inflight_in_this_process(runs_dir: Path, run_id: str) -> bool:
-    return _inflight_handle(runs_dir, run_id) is not None
-
-
-def _creating_claim_path(runs_dir: Path, run_id: str) -> Path:
-    return runs_dir / f"{run_id}{_CREATING_SUFFIX}"
-
-
-def _write_creating_claim(runs_dir: Path, run_id: str) -> None:
-    """Durably mark ``run_id`` as mid-create so a cross-process orphan sweep will spare it."""
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    path = _creating_claim_path(runs_dir, run_id)
-    payload = json.dumps({"pid": os.getpid(), "pid_start_time": _pid_start_time(os.getpid())})
-    fd, tmp_str = tempfile.mkstemp(
-        dir=str(runs_dir), prefix=f"{run_id}.creating.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
-        os.replace(tmp_str, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_str)
-        raise
-
-
-def _clear_creating_claim(runs_dir: Path, run_id: str) -> None:
-    with contextlib.suppress(OSError):
-        _creating_claim_path(runs_dir, run_id).unlink()
-
-
-def _creating_claim_held(runs_dir: Path, run_id: str) -> bool:
-    """True when a live process holds a creating claim for ``run_id`` (cross-process).
-
-    Same pid + start-time identity as ``fleet.lock``. A dead/reused holder does not shield a
-    crash leftover; a corrupt claim is treated as absent so genuine orphans stay reclaimable.
-    """
-    path = _creating_claim_path(runs_dir, run_id)
-    if not path.exists():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        pid = int(data["pid"])
-    except (OSError, ValueError, KeyError, json.JSONDecodeError, TypeError):
-        return False
-    if not _pid_alive(pid):
-        return False
-    recorded = data.get("pid_start_time")
-    if not isinstance(recorded, str) or not recorded:
-        return True  # older/unreadable stamp: assume held while the pid lives
-    now = _pid_start_time(pid)
-    if now is None:
-        return True  # cannot probe: spare rather than delete a possibly-live create
-    return now == recorded
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def with_liveness(rec: RunRecord) -> RunRecord:
-    """Return ``rec`` with ``agent_alive`` filled in for the moment of this call.
-
-    Answers the one question a status read cannot: is the agent still working, or has it finished
-    without the outcome being written yet? Terminal records get None - the run is over, so liveness
-    is not meaningful - as does a record whose pid identity cannot be established, because "some
-    process exists at that number" is not evidence our agent does.
-
-    A module-level function, not a Fleet method, because probing a pid needs nothing but the record.
-    Tying it to a Fleet meant a workspace whose service had not been built yet - a fresh server, or
-    any workspace not touched this session - reported `null` for a verifiably live agent, which is
-    exactly the "cannot tell active work from a finished one" the field is for. Reconciliation is
-    different: it MUTATES the ledger, so it is rightly gated on owning the fleet lock.
-    """
-    if _is_terminal(rec):
-        return rec
-    if rec.pid is None or not rec.pid_start_time:
-        return rec  # nothing to probe, or nothing to verify a probe against
-    return rec.model_copy(update={"agent_alive": _pid_is_verifiably_ours(rec)})
 
 
 def _still_running(rec: RunRecord) -> bool:
@@ -265,367 +134,6 @@ _CLEANABLE_NONSUCCESS = frozenset(
         RunStatus.VERIFY_FAILED.value,
     }
 )
-
-
-#: Raw status strings that mean "not finished". Used as a cheap text pre-filter over run records
-#: before paying for model validation (see `_reap_orphaned_runs`).
-_NON_TERMINAL_STATUSES = (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
-
-
-def _is_terminal(rec: RunRecord) -> bool:
-    """True once a run has stopped - i.e. it is neither queued nor still running."""
-    return rec.status not in (RunStatus.RUNNING.value, RunStatus.QUEUED.value)
-
-
-#: How long a PID-LESS non-terminal record is protected from reaping. A run is persisted RUNNING a
-#: moment before its pid is stamped, so a short-lived CLI can otherwise reap a long-lived server's
-#: just-started run, which has no pid yet to protect it. Observed in practice: two live agents
-#: stamped ``failed`` seconds after spawning, one still running when the record said it had died.
-#: A record that DOES carry a pid is never graced - `_pid_is_still_ours` answers definitively, so
-#: waiting would only delay the truth. A graced record is re-examined later (see
-#: `Fleet.reconcile_orphans`), never skipped permanently.
-_REAP_GRACE_S = 180.0
-
-#: Age gate for reaping orphaned ``*.tmp`` files left by a crash between ``mkstemp`` and
-#: ``os.replace`` in state/logs writers. A concurrent ``clean`` must not unlink a LIVE temp
-#: mid-write (that loses terminal state/logs); only temps older than this are abandoned.
-_TMP_REAP_AGE_S = 300.0
-
-
-#: Stale non-terminal runs reaped at Fleet startup are stamped ``failed``: the supervising process
-#: vanished before Marshal recorded an outcome, so we cannot honestly claim success, cancellation,
-#: or timeout. ``error`` carries the reap reason; ``pid`` is cleared so ``cancel_run`` can never
-#: signal a reused OS pid.
-_ORPHAN_REAP_ERROR = (
-    "fleet: run orphaned at startup (supervising process exited before run completed)"
-)
-
-
-def _started_within_grace(rec: RunRecord, *, now: datetime | None = None) -> bool:
-    """True when ``rec`` has no pid yet and started too recently to be judged orphaned.
-
-    A record with no parseable ``started_at`` is treated as young (do not reap): an unreadable
-    timestamp is not evidence that the run is dead.
-    """
-    if rec.pid is not None:
-        return False  # a stamped pid is decidable now; grace would only defer the answer
-    if not rec.started_at:
-        return True
-    try:
-        started = datetime.fromisoformat(rec.started_at)
-    except ValueError:
-        return True
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    reference = now or datetime.now(timezone.utc)
-    return (reference - started).total_seconds() < _REAP_GRACE_S
-
-
-def _pid_alive(pid: int) -> bool:
-    """True when ``pid`` still names a live process (signal 0 probe).
-
-    Liveness only - it says nothing about WHOSE process it is. See ``_pid_is_still_ours``.
-    """
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        # Permission denied or other ambiguity: assume alive so we never reap a live run.
-        return True
-
-
-def _pid_start_time(pid: int) -> str | None:
-    """The OS-reported start time of ``pid``, or None when it cannot be determined.
-
-    A pid alone is not an identity: the OS reuses pids, so "something is alive at pid 4242" does
-    not mean "our agent is alive". Pairing the pid with its start time makes the identity
-    verifiable. POSIX-only via ``ps``; None on any failure, and callers must treat None as
-    "unverifiable", never as "different".
-    """
-    try:
-        proc = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=5,
-            check=False,
-            **DETACHED_STDIO,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    started = proc.stdout.strip()
-    return started or None
-
-
-def _pid_is_still_ours(rec: RunRecord) -> bool:
-    """Whether ``rec.pid`` still names the agent this run started.
-
-    Fails OPEN (True = "assume it is ours, do not reap") whenever identity cannot be established:
-    no recorded start time (an older record), or the probe is unavailable. That direction is
-    deliberate. Falsely reaping a LIVE run is destructive and silent - the record is stamped
-    failed, its pid cleared so it can never be cancelled, and its real outcome is never recorded
-    because the terminal stamp is guarded on the status still being running. Failing to reap a
-    stale record only leaves it visible as running until someone explicitly calls ``cancel_run``,
-    and only then can a wrong process be signalled.
-    """
-    if rec.pid is None or not _pid_alive(rec.pid):
-        return False
-    if not rec.pid_start_time:
-        return True  # unverifiable (record predates the field) - fail open
-    now = _pid_start_time(rec.pid)
-    if now is None:
-        return True  # probe unavailable (non-POSIX, permission) - fail open
-    return now == rec.pid_start_time
-
-
-def _another_fleet_active(lock_path: Path) -> bool:
-    """True when another Marshal Fleet process holds ``base/fleet.lock`` and is still alive.
-
-    Checks the pid AND its recorded start time, the same identity the run records use. A bare pid
-    would let a recycled one impersonate a dead holder forever: every later Fleet would see "a live
-    supervisor" and decline to reap, so stale runs would read RUNNING until that unrelated process
-    happened to exit. A holder written by an older version has no start time recorded - it is
-    treated as held while alive, so an upgrade never causes a takeover it should not make.
-    """
-    if not lock_path.exists():
-        return False
-    try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
-        pid = int(data["pid"])
-    except (OSError, ValueError, KeyError, json.JSONDecodeError):
-        return False  # corrupt/stale lock - treat as inactive; this Fleet will reclaim it
-    if pid == os.getpid():
-        return False
-    if not _pid_alive(pid):
-        return False
-    recorded = data.get("pid_start_time")
-    if not isinstance(recorded, str) or not recorded:
-        return True  # older lock, or start time unreadable when written: assume still held
-    now = _pid_start_time(pid)
-    if now is None:
-        return True  # cannot probe: assume held rather than steal a live supervisor's lock
-    return now == recorded
-
-
-def _pid_is_verifiably_ours(rec: RunRecord) -> bool:
-    """Like ``_pid_is_still_ours`` but fails CLOSED: True only on proof, never on ambiguity.
-
-    ``_pid_is_still_ours`` assumes ours when identity cannot be checked, because there the wrong
-    answer reaps a live run. The opposite bias is needed wherever we act on the pid as an identity -
-    naming it in a `kill` instruction, or refusing to clean a worktree because of it. An
-    unverifiable pid may be a recycled one belonging to something else entirely, and pointing a
-    human at it would be worse than saying nothing.
-    """
-    # Compares the start times DIRECTLY rather than delegating to `_pid_is_still_ours`: that helper
-    # returns True when the probe is unavailable, which is the fail-open answer. Inheriting it here
-    # would let an unprobeable pid count as "verified" and put a recycled process group into a
-    # `kill` instruction - the exact outcome this function exists to prevent.
-    if not rec.pid or not rec.pid_start_time:
-        return False
-    return _pid_start_time(rec.pid) == rec.pid_start_time
-
-
-def _is_reapable(rec: RunRecord, runs_dir: Path) -> bool:
-    """Whether ``rec`` can be declared orphaned right now. The ONE place that decision is made.
-
-    Used twice per record on purpose: once to scan, and again inside ``update_if`` under the run's
-    own lock. Two callers, one rule - a reap can never be authorized by one test and committed
-    against another.
-    """
-    if _inflight_in_this_process(runs_dir, rec.run_id):
-        return False  # a Fleet in this process still owns it (config hot-reload)
-    if _started_within_grace(rec):
-        return False  # no pid stamped yet and too young to judge
-    return not _pid_is_still_ours(rec)
-
-
-def _reap_orphaned_runs(state: FleetState) -> bool:
-    """Terminal-stamp persisted ``running``/``queued`` runs left by a prior Fleet instance.
-
-    Returns True when at least one record was left undecided on evidence that will go stale - it
-    was inside the pid-less grace window, or its agent was still alive at this instant. Both are
-    snapshots, not verdicts, so the caller must run this again later (see
-    ``Fleet.reconcile_orphans``); otherwise such a record reads RUNNING for the whole life of a
-    server that never constructs another Fleet.
-
-    A record with no parseable ``started_at`` and no pid is the one case nothing here can decide:
-    there is no evidence either way, and inventing an outcome is worse than showing an honest
-    stale record. It is reported as deferred, so the re-check keeps looking at it, but only a
-    ``cancel_run`` (or a hand edit) will actually settle it.
-
-    Callers MUST have established that no other live Fleet supervises this repo (see the
-    ``fleet.lock`` check in ``Fleet.__init__``) - this function does not re-check.
-
-    A new Fleet's in-process pool starts empty, so any non-terminal record on disk is orphaned
-    unless the agent subprocess is still running (per-record ``pid`` probe) or another Fleet in
-    THIS process still owns it (config hot-reload). Reaping clears ``pid`` so a later
-    ``cancel_run`` can never ``killpg`` a reused pid. Corrupt records are skipped with a warning.
-    """
-    deferred = False
-    if not state.dir.exists():
-        return deferred
-    for path in sorted(state.dir.glob("*.json")):
-        try:
-            rec = RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
-        except (ValidationError, OSError, ValueError) as exc:
-            print(f"[marshal] skipping unreadable run record {path.name}: {exc}", file=sys.stderr)
-            continue
-        if _is_terminal(rec):
-            continue
-        if not _is_reapable(rec, state.dir):
-            # Left undecided on evidence that goes stale - inside the grace window, or its agent
-            # was alive at this instant. Both are snapshots, so keep it on the re-check list.
-            deferred = True
-            continue
-        try:
-            # Re-decide inside update_if, not just "still non-terminal". The scan above read the
-            # record without a lock, so between deciding and committing a pid can be stamped, or a
-            # pid-less record can be the one another process just started. Re-running the SAME
-            # predicate under the per-run lock is what makes the decision and the write atomic.
-            state.update_if(
-                rec.run_id,
-                lambda r: not _is_terminal(r) and _is_reapable(r, state.dir),
-                status=RunStatus.FAILED.value,
-                pid=None,
-                ended_at=_now(),
-                error=_ORPHAN_REAP_ERROR,
-            )
-        except Exception as exc:  # noqa: BLE001 - startup reaping must never crash Fleet construction
-            print(f"[marshal] failed to reap orphaned run {rec.run_id}: {exc}", file=sys.stderr)
-    return deferred
-
-
-def _claim_fleet_lock(lock_path: Path) -> bool:
-    """Atomically become this repo's Fleet supervisor. True only if THIS process won the claim.
-
-    The whole decision - read the holder, judge liveness, take over - runs under an advisory
-    ``flock`` on a sibling guard file, so it is one critical section rather than three steps other
-    processes can interleave with.
-
-    Two earlier attempts were not enough, and both failure modes are worth remembering:
-    ``O_CREAT | O_EXCL`` then writing the pid leaves the lock EMPTY for a moment, and a competing
-    process reading it in that window saw an unparseable file, concluded "no live holder", and took
-    over. Publishing by hard-link fixed that, but the stale-lock path still did unlink-then-create:
-    two processes that both found a dead holder could both unlink - the second deleting the FIRST's
-    freshly published lock - and both end up believing they won.
-
-    ``flock`` is released by the OS when the process exits, so a crash mid-decision cannot wedge
-    it. The lock file itself is never released: a long-lived server keeps it, and a short-lived CLI
-    leaves a dead pid the next process takes over.
-    """
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        print(f"[marshal] failed to create fleet lock dir: {exc}", file=sys.stderr)
-        return False
-
-    guard_path = lock_path.with_name(lock_path.name + ".guard")
-    try:
-        guard = open(guard_path, "a+")  # noqa: SIM115 - closed explicitly below
-    except OSError as exc:
-        print(f"[marshal] failed to open fleet lock guard: {exc}", file=sys.stderr)
-        return False
-    try:
-        try:
-            fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            # Another process is deciding right now. Whoever it is will reconcile; we stand down
-            # rather than racing it.
-            return False
-        if _another_fleet_active(lock_path):
-            return False
-        try:
-            _write_lock_payload(lock_path)
-        except OSError as exc:
-            print(f"[marshal] failed to write fleet lock: {exc}", file=sys.stderr)
-            return False
-        return True
-    finally:
-        guard.close()  # releases the flock
-
-
-def _write_lock_payload(lock_path: Path) -> None:
-    """Write this process's pid to the lock atomically (temp + replace, never half-written)."""
-    fd, tmp_str = tempfile.mkstemp(dir=str(lock_path.parent), prefix="fleet.lock.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            # Stamp the start time alongside the pid: a bare pid is not an identity here either,
-            # and a recycled one would make every later Fleet believe a live supervisor exists.
-            f.write(json.dumps({"pid": os.getpid(), "pid_start_time": _pid_start_time(os.getpid())}))
-        os.replace(tmp_str, lock_path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_str)
-        raise
-
-
-def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool, str]:
-    """Warn when integrate's target differs from the branch the run was spawned from."""
-    if rec is None or rec.base_branch is None or rec.base_branch == target:
-        return False, ""
-    return True, f"warning: run was based on {rec.base_branch!r}, merging into {target!r}"
-
-
-def _orphaned_base_diagnosis(
-    worktrees: WorktreeManager, rec: RunRecord | None, target: str
-) -> str:
-    """Explain a conflict whose real cause is that the run's base is reachable from nothing.
-
-    Rewriting history (amend, squash, soft-reset-and-recommit) while an agent works leaves its
-    branch hanging off a commit no longer reachable from anything. Every file then reads as changed
-    on both sides, so git reports conflicts in files the agent never touched - and the conflict list
-    actively misleads, because the real cause is not in it.
-
-    Two conditions, and BOTH are required:
-
-    1. the base is not reachable from the merge target - otherwise there is no base problem at all;
-    2. no surviving ref reaches it either. A run spawned with `base_branch` onto another branch
-       also fails (1) while being entirely healthy, so testing only (1) would announce a problem
-       for a supported flow and misdirect the very conflict this exists to explain.
-
-    The message REPORTS the observation and OFFERS the likely causes rather than asserting one.
-    `base_branch` is passed through verbatim, so it may be a tag, a raw sha, or a branch since
-    deleted - all of which reach this state with no rewrite involved. Naming a rewrite as fact
-    would put a confident wrong cause where a vague right one belongs, which is the failure this
-    whole diagnosis exists to remove. What is *measured* - nothing reaches this base - holds in
-    every one of those cases, and so does the remedy, which is why the message leads with it.
-
-    Reachability, not existence: the reflog keeps an orphaned commit alive as an object for a good
-    while, so an existence check answers "fine" exactly when the diagnosis is most needed.
-    """
-    if rec is None or not rec.base_commit:
-        return ""
-    try:
-        if worktrees.is_ancestor(rec.base_commit, target):
-            return ""
-        if worktrees.any_user_ref_contains(rec.base_commit):
-            return ""
-    except WorktreeError:
-        return ""
-    return (
-        f"the commit this run was based on ({rec.base_commit[:12]}) is reachable from no branch or "
-        "tag, so git is merging against a base that is no longer in history and the conflicting "
-        "files above are probably not the real cause. Usually this means history was rewritten "
-        "(amend / squash / reset) while the run was in flight; a deleted base branch, or a "
-        "`base_branch` naming a commit that was never on one, do it too. Re-run the task on the "
-        "current branch, or cherry-pick the run's own commits onto it."
-    )
-
-
-def _deferred_provision_error(exc: BaseException) -> str:
-    """Phase-named error for a spawn-path provision/setup failure (never a bare str(exc))."""
-    msg = str(exc)
-    if isinstance(exc, WorktreeError) and "worktree setup" in msg:
-        return f"fleet: setup: {exc}"
-    return f"fleet: provision: {exc}"
-
-
-def _worktree_gone_message(rec: RunRecord) -> str:
-    """Driver-facing reason when collect/integrate/commit hit a torn-down worktree."""
-    if rec.error:
-        return rec.error
-    path = rec.worktree or ""
-    return f"worktree for run {rec.run_id!r} no longer exists: {path}"
 
 
 def _in_clean_scope(rec: RunRecord, scope: str) -> bool:
@@ -658,9 +166,6 @@ def _ended_before(rec: RunRecord, cutoff: datetime | None) -> bool:
     if ended.tzinfo is None:
         ended = ended.replace(tzinfo=timezone.utc)
     return ended <= cutoff
-
-
-
 
 
 

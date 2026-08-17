@@ -34,6 +34,7 @@ from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.core.retry import RetryPolicy
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
+from marshal_engine.orchestration import reaping as reaping_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
 from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
 from marshal_engine.runtime.state import FleetState, RunRecord
@@ -3352,7 +3353,7 @@ def test_a_deferred_orphan_is_reconciled_on_a_later_read(repo: Path) -> None:
     young at startup stayed RUNNING for the whole life of a long-running server."""
     from datetime import datetime, timedelta, timezone
 
-    from marshal_engine.orchestration.fleet import _REAP_GRACE_S
+    from marshal_engine.orchestration.reaping import _REAP_GRACE_S
 
     _write_run_record(
         repo,
@@ -3378,11 +3379,9 @@ def test_an_orphan_whose_agent_dies_later_is_still_reaped(repo: Path) -> None:
     """REGRESSION: a record skipped because its agent was still alive was not put on the re-check
     list, so when that agent later exited nothing noticed - the run read RUNNING for the whole life
     of the server. 'Alive right now' is a snapshot, not a verdict."""
-    import marshal_engine.orchestration.fleet as fleet_mod
-
     alive = {"yes": True}
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod, "_pid_is_still_ours", lambda rec: alive["yes"])
+    monkey.setattr(reaping_mod, "_pid_is_still_ours", lambda rec: alive["yes"])
     try:
         _write_run_record(
             repo,
@@ -3447,8 +3446,6 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
     'still non-terminal'. A pid stamped in that gap - the record's own process finally reporting -
     was overwritten anyway, which is the original production bug at a narrower window. The commit
     now re-runs the full reap decision under the run's lock."""
-    import marshal_engine.orchestration.fleet as fleet_mod
-
     run_id = "toctou.writer.x"
     _write_run_record(
         repo,
@@ -3463,7 +3460,7 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
     state = FleetState(repo / ".marshal" / "runs")
 
     # The record gains a live pid after the scan decides but before the write commits.
-    real = fleet_mod._is_reapable
+    real = reaping_mod._is_reapable
     calls = {"n": 0}
 
     def racing(rec: RunRecord, runs_dir: Path) -> bool:
@@ -3474,7 +3471,7 @@ def test_a_pid_landing_mid_reap_cancels_the_reap(repo: Path) -> None:
         return real(rec, runs_dir)  # the commit-time re-check sees the pid
 
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod, "_is_reapable", racing)
+    monkey.setattr(reaping_mod, "_is_reapable", racing)
     try:
         Fleet(repo, {"writer": _Writer()})
     finally:
@@ -3521,7 +3518,7 @@ def test_a_recycled_lock_pid_does_not_block_reaping_forever(repo: Path) -> None:
     RUNNING until that unrelated process happened to exit."""
     import json as _json
 
-    from marshal_engine.orchestration.fleet import _another_fleet_active
+    from marshal_engine.orchestration.liveness import _another_fleet_active
 
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -3557,7 +3554,7 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
     unprobeable pid read as *verified*, so cancel would hand an operator a `kill` command for what
     might be a recycled process group. Verification must mean a real comparison, not the absence of
     a contradiction."""
-    import marshal_engine.orchestration.fleet as fleet_mod
+    import marshal_engine.orchestration.liveness as liveness_mod
 
     rec = RunRecord(
         run_id="probe.writer.x",
@@ -3568,11 +3565,11 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
         pid_start_time="Mon Jan  1 00:00:00 2026",
     )
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(fleet_mod, "_pid_alive", lambda pid: True)  # the process exists...
-    monkey.setattr(fleet_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
+    monkey.setattr(liveness_mod, "_pid_alive", lambda pid: True)  # the process exists...
+    monkey.setattr(liveness_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
     try:
-        assert fleet_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
-        assert fleet_mod._pid_is_verifiably_ours(rec) is False
+        assert liveness_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
+        assert liveness_mod._pid_is_verifiably_ours(rec) is False
     finally:
         monkey.undo()
 
@@ -5001,7 +4998,7 @@ def test_reaper_leaves_mid_provisioning_record_alone(
     fleet.worktrees.setup = gated_setup  # type: ignore[method-assign]
     # Simulate the reaper running in ANOTHER process: its in-flight registry is empty, so the
     # same-process protection does not apply and only the grace/pid-identity rules decide.
-    monkeypatch.setattr(fleet_mod, "_inflight_in_this_process", lambda *_a: False)
+    monkeypatch.setattr(reaping_mod, "_inflight_in_this_process", lambda *_a: False)
     try:
         run_id = fleet.spawn(
             RunRequest(backend_name="writer", task=TaskSpec(id="reapgrace", goal="x"))

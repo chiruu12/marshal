@@ -8,6 +8,32 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **The orchestrator no longer owns run-ownership and orphan recovery.** `orchestration/fleet.py`
+  had grown to 2257 lines, ~580 of which were module-level helpers with nothing to do with the run
+  loop. They now live in four modules named for the question each answers, and `fleet.py` is down
+  to 1762 lines (943 → 707 statements):
+
+  - `liveness.py` — pid identity (a pid paired with its OS start time), liveness probes, and the
+    per-repo fleet lock. Documents the two deliberately opposite biases in one place: reaping fails
+    *open*, naming a pid in a `kill` instruction fails *closed*.
+  - `inflight.py` — runs this process owns: the in-memory registry and the cross-process
+    `.creating` claim.
+  - `reaping.py` — the orphan sweep and the single `_is_reapable` decision behind it.
+  - `diagnostics.py` — the driver-facing explanations (base-branch drift, orphaned base, torn-down
+    worktree).
+
+  Behaviour is unchanged; `marshal_engine.orchestration.liveness.with_liveness` is the new home of
+  a symbol previously reached through `fleet`. Six tests that monkeypatched moved helpers through
+  `fleet`'s namespace were retargeted at the module that now owns each call, so they still exercise
+  the code they name rather than silently patching nothing.
+
+### Removed
+
+- **`_NON_TERMINAL_STATUSES`**, an unused constant in `fleet.py` whose docstring claimed it was a
+  pre-filter used by `_reap_orphaned_runs`. It had no readers anywhere in the tree.
+
 ### Fixed
 
 - **Antigravity runs with a pinned model no longer fail with the CLI's help text.** `agy` dropped

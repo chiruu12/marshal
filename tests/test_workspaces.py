@@ -423,7 +423,7 @@ def test_a_deferred_orphan_reaches_failed_through_a_real_ledger_read(tmp_path: P
     """End-to-end companion to the stubbed hook test: a REAL Fleet defers a young orphan, and a
     later real `ledger_runs()` (what MCP status calls) is what finally stamps it `failed`. The stub
     test proves the hook fires; this proves the hook does something."""
-    from marshal_engine.orchestration.fleet import _REAP_GRACE_S
+    from marshal_engine.orchestration.reaping import _REAP_GRACE_S
 
     repo = tmp_path / "repo"
     repo.mkdir()

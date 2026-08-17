@@ -55,7 +55,7 @@ status, cost_usd, source, duration_ms, input_tokens, output_tokens}]` plus deriv
 `fastest` labels. `cost_usd` is **null when nothing was measured** (read `source` for why); a
 literal `0.0` means a provider reported a real zero, so summing the column never invents spend for
 a fleet whose backends cannot report any. See [`examples/benchmark-output.md`](../examples/benchmark-output.md) and
-`src/marshal_engine/fleet.py`.
+`src/marshal_engine/orchestration/fleet.py`.
 
 ## Cost-provenance taxonomy
 

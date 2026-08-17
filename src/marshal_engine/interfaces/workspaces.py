@@ -44,7 +44,7 @@ import yaml
 from ..accounting.budgets import EnforceBudgetGate
 from ..core.config import ConfigError, FleetConfig, load_config, validate
 from ..core.layout import runs_dir
-from ..orchestration.fleet import with_liveness
+from ..orchestration.liveness import with_liveness
 from ..orchestration.results import RunManyJobResult
 from ..runtime.state import FleetState, RunRecord
 from ..runtime.worktree import validate_run_id
