@@ -335,11 +335,18 @@ class MarshalService:
         )
 
     def client_available(self, client_name: str) -> bool:
+        """Whether this named client can run right now (workflows and teams gate on this).
+
+        Goes through ``available_for_client`` with the client's own ``env:``, the same rule
+        construction uses. Probing without it would admit a client whose `env:` names its launcher
+        for direct runs while dropping it from workflow fan-outs and team reviews - one client,
+        two answers, depending on which door it came through.
+        """
         client = self.config.clients.get(client_name)
         if client is None:
             return False
         backend = self.fleet.backends.get(client.backend)
-        return backend.check_available() if backend is not None else False
+        return backend.available_for_client(client.env) if backend is not None else False
 
     def _compose_goal(self, goal: str) -> str:
         # Layered context: the worker preamble + the fleet's `worker` context prefix the user's

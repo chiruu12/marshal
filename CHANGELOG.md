@@ -25,7 +25,9 @@ versions may include breaking API changes until 1.0.
   need only one backend has. The default delegates to `check_available()`, so nothing else
   changes. `MarshalService` only re-probes clients that actually declare `env:`, so a healthy
   fleet pays nothing, and the three places that report a client as skipped now share one predicate
-  with the place that decides it is usable.
+  with the place that decides it is usable. `client_available()` — what workflow phases and team
+  panels gate on — goes through the same hook, so a client is not admitted for direct runs while
+  being dropped from fan-outs.
 
 - **`commit_run` returns a status instead of raising when a run has no branch** (#257.7). Every
   other failure on that path already returned a structured `CommitResult`, so a driver that

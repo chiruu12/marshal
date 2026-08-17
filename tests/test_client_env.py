@@ -163,3 +163,52 @@ def test_load_config_env_reaches_child_via_service(
     )
     rec = svc.run_agent("router", goal="x", task_id="CODEX_HOME")
     assert rec.text == expected
+
+
+def test_a_client_env_launcher_is_honoured_on_every_availability_path(tmp_path: Path) -> None:
+    """REGRESSION: `client_available` (what workflows and teams gate on) probed without the
+    client's `env:`, while construction honoured it. A client whose `env:` was the only thing
+    naming its launcher therefore worked for direct runs but vanished from workflow fan-outs and
+    team reviews — one client, two answers, depending on which door it came through."""
+    seen: list[dict[str, str] | None] = []
+
+    class _EnvLauncher(CodingAgentBackend):
+        """Runnable ONLY when the client's env names it — like ZCode with no shim or bundle."""
+
+        name = "envlauncher"
+        binary = "envlauncher"
+        capabilities = Capabilities()
+
+        def check_available(self) -> bool:
+            return self.available_for_client(None)
+
+        def available_for_client(self, client_env: dict[str, str] | None = None) -> bool:
+            seen.append(client_env)
+            return bool((client_env or {}).get("LAUNCHER"))
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return []
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(status=RunStatus.EXITED_CLEAN)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    config = FleetConfig(
+        clients={
+            "pinned": ClientConfig(
+                name="pinned", backend="envlauncher", env={"LAUNCHER": "/opt/x/bin"}
+            )
+        }
+    )
+    svc = MarshalService(repo, config, backends={"envlauncher": _EnvLauncher()})
+
+    assert "pinned" not in svc.skipped_clients, "construction dropped a runnable client"
+    assert svc.client_available("pinned") is True, (
+        "workflows and teams would have skipped a client that direct runs accept"
+    )
+    assert {"LAUNCHER": "/opt/x/bin"} in seen, "the client's env never reached the probe"
