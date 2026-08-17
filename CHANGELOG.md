@@ -25,6 +25,14 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **`wait_for_runs` takes a `view`** (#257.8) — the same `poll` / `compact` / `full` shapes
+  `status` uses, through the same `render_run` builder, and it now **defaults to `poll`**.
+  It previously dumped whole records: up to 16 000 characters of `text` each, times a fan-out's
+  worth of runs, in the tool the quickstart steers drivers to *from* `status` — which
+  deliberately avoids exactly that. Pass `view="full"` for the old shape. The trimmed views carry
+  `has_text` / `has_verify_output`, so an omitted field is never misread as an empty one, and the
+  reply echoes `view`.
+
 - **`get_run_log` now returns every attempt of a retried run** (#257.5). `RunLogStore.write`
   overwrote per run, so a record showing `attempts: 3` paired with a log containing attempt 3
   alone — a driver diagnosing a flaky backend read a clean log and concluded the failures were
@@ -38,6 +46,20 @@ versions may include breaking API changes until 1.0.
   finished work. `RunFile` now carries `status` (`ok` / `gone` / `not_found` / `refused` /
   `unreadable`) and `error`. An unknown `run_id` still raises: that is a bad identifier rather
   than a state the run is in, and it raises from `collect_run` / `commit_run` too.
+
+- **Token counts and duration can now say "unmeasured"** (#257.3). `input_tokens`,
+  `output_tokens`, and `duration_ms` were non-optional ints defaulting to `0`, sitting directly
+  below the `cost_usd: float | None` field whose comment explains why `0`-means-unmeasured is
+  unacceptable. They are the **fallback ranking metric precisely when cost is `null`**, so a
+  driver comparing lanes on tokens-per-outcome ranked the *unmeasurable* backend as the most
+  efficient one and routed future work to it. All three are now `int | None` on the run record and
+  on `benchmark`'s strategy rows.
+
+  Tokens could not reuse the `cost_usd` rule, which keys off `source`: a backend can report real
+  token counts with no price at all (Codex, ZCode, Copilot all do), so `unavailable` provenance is
+  not evidence the tokens are unknown. The write site decides instead — `null` when the backend
+  handed back no usage record, a number when it did. The immutable ledger (`usage/events.jsonl`)
+  keeps plain ints: it is the facts layer and carries `source` in its own column.
 
 - **Driver-facing payloads can now tell "nothing" from "unknown"** (#257, parts 1/2/4) — the rule
   Marshal already applied to `cost_usd`, extended to its neighbours:

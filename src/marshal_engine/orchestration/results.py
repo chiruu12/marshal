@@ -139,9 +139,12 @@ class StrategyResult(BaseModel):
     status: str
     cost_usd: float | None  # None = unmeasured (see `source`); 0.0 = a measured zero
     source: str | None
-    duration_ms: int
-    input_tokens: int
-    output_tokens: int
+    # None = never measured; a number is a real measurement. Same rule as `cost_usd`: this table
+    # is read to RANK strategies, and a zero standing in for "unknown" ranks the backend that
+    # measures nothing at the top of every column it appears in.
+    duration_ms: int | None
+    input_tokens: int | None
+    output_tokens: int | None
 
 
 class BenchmarkResult(BaseModel):

@@ -708,8 +708,15 @@ class MarshalService:
             and r.cost_usd is not None
         ]
         cheapest = min(priced, key=lambda r: r.cost_usd or 0.0).client if priced else None
-        timed = [r for r in rows if r.status == RunStatus.EXITED_CLEAN.value and r.duration_ms > 0]
-        fastest = min(timed, key=lambda r: r.duration_ms).client if timed else None
+        # `duration_ms is None` is the explicit "never measured"; the `> 0` that used to stand in
+        # for it is kept because a stamped zero would still not be a comparable timing.
+        timed = [
+            r for r in rows
+            if r.status == RunStatus.EXITED_CLEAN.value
+            and r.duration_ms is not None
+            and r.duration_ms > 0
+        ]
+        fastest = min(timed, key=lambda r: r.duration_ms or 0).client if timed else None
         return BenchmarkResult(
             task_id=task_id, goal=goal, strategies=rows, cheapest=cheapest, fastest=fastest
         )

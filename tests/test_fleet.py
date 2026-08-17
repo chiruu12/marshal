@@ -6105,3 +6105,37 @@ def test_a_real_retried_run_logs_every_attempt(repo: Path) -> None:
         assert f"stdout-of-attempt-{n}" in log, f"attempt {n}'s stdout was dropped"
         assert f"stderr-of-attempt-{n}" in log, f"attempt {n}'s stderr was dropped"
     assert "--- attempt 1/3 ---" in log and "--- attempt 3/3 ---" in log
+
+
+def test_a_backend_that_reports_no_usage_records_null_tokens_not_zero(repo: Path) -> None:
+    """REGRESSION (#257.3): `input_tokens`/`output_tokens` defaulted to 0, directly below the
+    `cost_usd: float | None` field whose comment explains why 0-means-unmeasured is unacceptable.
+    Tokens-per-outcome is the FALLBACK metric precisely when cost is null, so a backend that
+    measures nothing ranked as the most efficient lane and drew future work to it."""
+
+    class _NoUsage(_Writer):
+        """A backend that reports no usage at all - Command Code's `-p` prints text and nothing else."""
+
+        name = "nousage"
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            result = super().parse_output(raw_stdout, raw_stderr, exit_code)
+            result.usage = None
+            return result
+
+    fleet = Fleet(repo, {"nousage": _NoUsage()})
+    rec = fleet.run("nousage", TaskSpec(id="untokened", goal="x"))
+
+    assert rec.input_tokens is None, "a count nobody took must not read as zero"
+    assert rec.output_tokens is None
+    assert rec.cost_usd is None
+
+
+def test_a_backend_that_reports_tokens_keeps_the_real_numbers(repo: Path) -> None:
+    """The None default must not swallow real measurements - otherwise the fix would just move the
+    ambiguity instead of removing it."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="tokened", goal="x"))
+    assert rec.input_tokens == 5
+    assert rec.output_tokens == 1
+    assert rec.duration_ms is not None and rec.duration_ms >= 0

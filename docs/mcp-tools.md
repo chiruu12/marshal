@@ -479,7 +479,13 @@ MCP has no server-initiated push, so "notify me when done" can only be a blockin
 still a poll loop; the point is that it runs server-side, where a tick costs a few file reads rather
 than a turn of context.
 
-Returns `{settled, pending, unknown, timed_out, waited_ms}`. Every requested id appears in exactly
+Runs come back in the `poll` shape by default — the same three shapes `status` uses, selected with
+`view` (`poll` | `compact` | `full`). It previously dumped whole records, which with a fan-out's
+worth of runs meant up to 16k of `text` each. The trimmed views replace `text` / `verify_output`
+with `has_text` / `has_verify_output`, so an omitted field is never misread as an empty one; reach
+for `get_run` or `collect_run` when you want one run's actual text.
+
+Returns `{settled, pending, unknown, timed_out, waited_ms, view}`. Every requested id appears in exactly
 one of the three lists.
 
 - **`settled` means finished, never succeeded.** `failed`, `timed_out`, `cancelled`, `verify_failed`
@@ -740,10 +746,10 @@ Judgment about the work is not on this line: it arrives later, so successful `in
 | `branch` | string \| null | Worktree branch. |
 | `base_branch` | string \| null | Branch the worktree was cut from at spawn time. |
 | `base_commit` | string \| null | The commit that branch pointed at when the run was spawned, read from the created worktree. A branch name is mutable; this is what the run actually branched from, and what `collect_run` compares against. |
-| `cost_usd` | float | Recorded cost. |
-| `input_tokens` | int | |
-| `output_tokens` | int | |
-| `duration_ms` | int | |
+| `cost_usd` | float \| null | Recorded cost. **`null` = nothing was measured** (read `source`); `0.0` is a measured zero. |
+| `input_tokens` | int \| null | **`null` = the backend reported no usage at all**; a number is a real count, and `0` a measured zero. Same rule as `cost_usd` — and these are the fallback ranking metric precisely when cost is `null`, so treating `null` as `0` ranks the *unmeasurable* backend as the most efficient one. |
+| `output_tokens` | int \| null | As `input_tokens`. |
+| `duration_ms` | int \| null | Wall-clock around the backend invocation. **`null` = the run never reached a backend** (e.g. it failed in provisioning), which is not the same as finishing instantly. |
 | `source` | string \| null | Cost provenance (`native`, `admin-api`, `unavailable`, …). |
 | `text` | string | Agent's final message, capped on write — read `text_truncated` before treating it as whole. |
 | `text_truncated` | bool | True when the cap fired. A truncated report stops mid-sentence and otherwise reads as complete; get the full stream from `get_run_log`. |

@@ -1285,3 +1285,46 @@ def test_announced_url_goes_through_endpoint_url(monkeypatch: pytest.MonkeyPatch
     src = inspect.getsource(server_mod.main)
     assert "endpoint_url(host, port, path)" in src
     assert "http://{host}" not in src
+
+
+def test_wait_for_runs_defaults_to_the_poll_shape_and_honours_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (#257.8): wait_for_runs dumped whole records - up to 16k of `text` each, times a
+    fan-out's worth of runs - while `status` deliberately avoids exactly that, and the quickstart
+    steers drivers from `status` to here. It now shares `status`' three shapes, defaulting to
+    `poll`, and the trimmed views carry `has_text` so an omission never reads as an absence."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.runtime.state import FleetState, RunRecord
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    state = FleetState(repo / ".marshal" / "runs")
+    state.add(
+        RunRecord(
+            run_id="r-wordy", task_id="t", backend="echo", status="exited_clean",
+            text="x" * 5000,
+        )
+    )
+    app = build_app(build_service())
+
+    def _wait(**kw: object) -> dict:
+        got = asyncio.run(
+            app.call_tool("wait_for_runs", {"run_ids": ["r-wordy"], "timeout_s": 1, **kw})
+        ).structured_content
+        assert got is not None
+        return got
+
+    default = _wait()
+    assert default["view"] == "poll"
+    settled = default["settled"][0]
+    assert "text" not in settled, "the polling default still dumped the unbounded message"
+    assert settled["has_text"] is True, "an omitted field must not read as an empty one"
+
+    full = _wait(view="full")
+    assert full["view"] == "full"
+    assert full["settled"][0]["text"] == "x" * 5000, "view='full' must still give the whole text"

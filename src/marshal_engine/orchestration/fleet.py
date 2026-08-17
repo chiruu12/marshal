@@ -822,8 +822,12 @@ class Fleet:
                 status=status.value,
                 artifacts=artifacts,
                 cost_usd=event.cost_usd,
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
+                # From the usage RECORD, not the ledger event: the event defaults absent counts to
+                # 0 (it is the facts ledger, and its `source` column carries the provenance), while
+                # the run record must be able to say "nobody counted". No usage record at all means
+                # the backend reported nothing; a record with 0 in it is a measured zero.
+                input_tokens=usage.input_tokens if usage is not None else None,
+                output_tokens=usage.output_tokens if usage is not None else None,
                 duration_ms=result.duration_ms,
                 source=event.source,
                 # Redact before the 16KB cut: value-based scrub needs the whole secret present.
