@@ -24,8 +24,10 @@ versions may include breaking API changes until 1.0.
   overridden, and widening its signature would break every existing adapter and subclass for a
   need only one backend has. The default delegates to `check_available()`, so nothing else
   changes. `MarshalService` only re-probes clients that actually declare `env:`, so a healthy
-  fleet pays nothing, and the three places that report a client as skipped now share one predicate
-  with the place that decides it is usable. `client_available()` — what workflow phases and team
+  fleet pays nothing. A declared `env:` is never short-circuited by the backend-wide answer,
+  because it cuts both ways — it can name the only working launcher on a host with no shim, and a
+  broken one on a host that has a good shim. Every path that decides whether a client is usable
+  now shares that rule: construction, the skip list and its reasons, and `client_available()`. `client_available()` — what workflow phases and team
   panels gate on — goes through the same hook, so a client is not admitted for direct runs while
   being dropped from fan-outs.
 

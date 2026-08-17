@@ -224,10 +224,18 @@ class MarshalService:
             was skipped as "unavailable". Only re-probed for clients that actually declare `env:`,
             so a healthy fleet pays nothing.
             """
-            if avail.get(c.backend, False):
-                return True
             be = backends.get(c.backend) if backends else None
-            return be is not None and bool(c.env) and be.available_for_client(c.env)
+            if be is None:
+                return False
+            if c.env:
+                # A declared `env:` is asked about directly, never short-circuited by the
+                # backend-wide answer. It cuts BOTH ways: it can name the only working launcher
+                # on a host with no shim, and it can name a broken one on a host that has a
+                # perfectly good shim. Trusting the global probe in the second case admits a
+                # client whose runs then fail on its own override — and disagrees with
+                # `client_available`, which does ask.
+                return be.available_for_client(c.env)
+            return avail.get(c.backend, False)
 
         self._clients: dict[str, ClientConfig] = {
             n: c for n, c in config.clients.items() if _client_available(c)
