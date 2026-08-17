@@ -255,3 +255,47 @@ def test_parse_output_salvages_object_after_preamble(backend: ZCodeBackend) -> N
     res = backend.parse_output("warning: something\n" + _result(), "", 0)
     assert res.status is RunStatus.EXITED_CLEAN
     assert res.text == "done the thing"
+
+
+def test_check_available_honours_a_client_supplied_launcher(
+    backend: ZCodeBackend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """REGRESSION: the probe called `resolve_launcher()` with no client env, so a client whose
+    `env.ZCODE_BIN` was the ONLY thing naming the install (no PATH shim, no app bundle) was
+    reported unavailable and skipped - while the invocation it was skipped in favour of would have
+    launched fine. A probe that resolves a different launcher than `build_invocation` defeats the
+    entire point of having `resolve_launcher`."""
+    monkeypatch.delenv("MARSHAL_ZCODE_BIN", raising=False)
+    monkeypatch.setattr("marshal_engine.backends.zcode.shutil.which", lambda _b: None)
+    # Neutralize the app-bundle fallback too, or this asserts nothing on a machine that happens
+    # to have ZCode installed at a known path.
+    monkeypatch.setattr("marshal_engine.backends.zcode._BUNDLE_CANDIDATES", ())
+
+    fake = tmp_path / "zcode"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+
+    assert backend.available_for_client() is False, "no shim and no bundle: genuinely unavailable"
+    assert backend.available_for_client({"ZCODE_BIN": str(fake)}) is True, (
+        "the client named a runnable launcher and the probe ignored it"
+    )
+
+
+def test_check_available_and_build_invocation_agree_on_the_launcher(
+    backend: ZCodeBackend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The two must resolve the SAME entry point for a given client env - that agreement is the
+    stated reason `resolve_launcher` exists rather than a path open-coded in build_invocation."""
+    monkeypatch.delenv("MARSHAL_ZCODE_BIN", raising=False)
+    monkeypatch.setattr("marshal_engine.backends.zcode.shutil.which", lambda _b: None)
+    monkeypatch.setattr("marshal_engine.backends.zcode._BUNDLE_CANDIDATES", ())
+    fake = tmp_path / "zcode"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    client_env = {"ZCODE_BIN": str(fake)}
+
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="go"), _opts(client_env=client_env)
+    )
+    assert argv[0] == str(fake)
+    assert backend.available_for_client(client_env) is True

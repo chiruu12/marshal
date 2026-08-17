@@ -80,6 +80,21 @@ class CodingAgentBackend(ABC):
 
     # --- hooks subclasses must implement -------------------------------------------------
 
+    def available_for_client(self, client_env: dict[str, str] | None = None) -> bool:
+        """Availability for ONE client, whose ``env:`` block may be what names the launcher.
+
+        Default delegates to ``check_available()``, which is the right answer for every backend
+        whose CLI is a normal PATH executable. ZCode overrides it: a client's ``ZCODE_BIN`` can be
+        the only thing pointing at the install, and a probe that resolves a DIFFERENT launcher
+        than ``build_invocation`` would is how a perfectly runnable client gets skipped as
+        "unavailable" - which defeats the point of ``resolve_launcher`` existing at all.
+
+        Kept separate from ``check_available`` rather than added to it as a parameter: that hook
+        is widely overridden (every adapter and every test double may define it), and widening its
+        signature would break each one for a need only one backend has.
+        """
+        return self.check_available()
+
     def check_available(self) -> bool:
         """Return True if ``binary`` is on PATH and responds to ``--version``.
 

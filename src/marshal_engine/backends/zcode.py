@@ -153,11 +153,21 @@ class ZCodeBackend(CodingAgentBackend):
     # --- hooks ---------------------------------------------------------------------------
 
     def check_available(self) -> bool:
+        """The no-client case of ``available_for_client`` - one implementation, not two."""
+        return self.available_for_client(None)
+
+    def available_for_client(self, client_env: dict[str, str] | None = None) -> bool:
         """Probe the resolved launcher, not ``shutil.which(binary)``.
 
         The base implementation assumes the backend is a PATH executable, which ZCode is not.
+
+        ``client_env`` is threaded through so the probe resolves the SAME launcher
+        ``build_invocation`` will use. Without it, a client whose ``env.ZCODE_BIN`` is the only
+        thing naming the install (no PATH shim, no app bundle at a known path) was reported
+        unavailable and skipped - while the invocation it was skipped in favour of would have
+        launched perfectly.
         """
-        launcher = self.resolve_launcher()
+        launcher = self.resolve_launcher(client_env)
         if launcher == [self.binary] and shutil.which(self.binary) is None:
             return False
         try:

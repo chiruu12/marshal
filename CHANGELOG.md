@@ -12,6 +12,21 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A ZCode client configured only through `env.ZCODE_BIN` was skipped as unavailable.** The
+  availability probe resolved its launcher without the client's `env:` block, so on a machine with
+  no `zcode` shim on PATH and no app bundle at a known path, the one thing that named the install
+  was ignored — the client was dropped before `build_invocation`, which would have launched it,
+  ever ran. A probe that resolves a different launcher than the invocation defeats the reason
+  `resolve_launcher` exists.
+
+  Fixed with a new `CodingAgentBackend.available_for_client(client_env)` hook. It is deliberately
+  **separate from `check_available()` rather than a parameter added to it**: that hook is widely
+  overridden, and widening its signature would break every existing adapter and subclass for a
+  need only one backend has. The default delegates to `check_available()`, so nothing else
+  changes. `MarshalService` only re-probes clients that actually declare `env:`, so a healthy
+  fleet pays nothing, and the three places that report a client as skipped now share one predicate
+  with the place that decides it is usable.
+
 - **`commit_run` returns a status instead of raising when a run has no branch** (#257.7). Every
   other failure on that path already returned a structured `CommitResult`, so a driver that
   handled the torn-down-worktree case still crashed on this one — for a condition

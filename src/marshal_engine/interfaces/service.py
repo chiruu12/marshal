@@ -213,13 +213,29 @@ class MarshalService:
         # ones whose CLI is currently unavailable). Partition clients by availability so a missing
         # CLI skips that client instead of failing mid-run.
         avail = {name: be.check_available() for name, be in backends.items()}
+
+        def _client_available(c: ClientConfig) -> bool:
+            """Availability for ONE client, honouring a launcher its own `env:` block names.
+
+            The per-backend probe above is the fast path and answers for almost everything. But a
+            client can be the only thing that knows where its CLI lives (ZCode's `ZCODE_BIN`, when
+            there is no PATH shim and no app bundle at a known path). Probing without that block
+            resolves a different launcher than the run would use, so a perfectly runnable client
+            was skipped as "unavailable". Only re-probed for clients that actually declare `env:`,
+            so a healthy fleet pays nothing.
+            """
+            if avail.get(c.backend, False):
+                return True
+            be = backends.get(c.backend) if backends else None
+            return be is not None and bool(c.env) and be.available_for_client(c.env)
+
         self._clients: dict[str, ClientConfig] = {
-            n: c for n, c in config.clients.items() if avail.get(c.backend, False)
+            n: c for n, c in config.clients.items() if _client_available(c)
         }
         # (client, model) pairs already warned about as metered - see _warn_if_metered.
         self._metered_warned: set[tuple[str, str]] = set()
         self.skipped_clients: list[str] = [
-            n for n, c in config.clients.items() if not avail.get(c.backend, False)
+            n for n, c in config.clients.items() if not _client_available(c)
         ]
         # Same facts, keyed for the driver: which client, on which backend, and why it is missing.
         # `avail` is False both for a known backend whose CLI is absent and for a name that is not
@@ -235,10 +251,10 @@ class MarshalService:
                 ),
             )
             for n, c in config.clients.items()
-            if not avail.get(c.backend, False)
+            if not _client_available(c)
         }
         for n, c in config.clients.items():
-            if not avail.get(c.backend, False):
+            if not _client_available(c):
                 print(f"marshal: skipping client {n!r} (backend {c.backend!r} CLI unavailable)", file=sys.stderr)
         self.fleet = Fleet(
             repo_root,
@@ -537,7 +553,7 @@ class MarshalService:
                     be = self._ensure_backend_locked(client.backend)
                 except ValueError:
                     continue
-                if be.check_available():
+                if be.available_for_client(client.env):
                     self._clients[n] = client
                     healed.append(n)
             if healed:
