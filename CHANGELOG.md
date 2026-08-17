@@ -8,6 +8,8 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-17
+
 ### Fixed
 
 - **`commit_run` returns a status instead of raising when a run has no branch** (#257.7). Every
