@@ -544,8 +544,8 @@ wheels = [
 ]
 
 [[package]]
-name = "marshalfleet"
-version = "0.2.4"
+name = "marshal-agents"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },

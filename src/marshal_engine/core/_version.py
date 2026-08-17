@@ -13,6 +13,6 @@ from importlib.metadata import version as _pkg_version
 # [project].version). A hardcoded literal here silently drifts: the wheel says one version and
 # `marshal --version` says another, which then lands in every bug report.
 try:
-    __version__ = _pkg_version("MarshalFleet")
+    __version__ = _pkg_version("marshal-agents")
 except PackageNotFoundError:  # running from a source tree that was never installed
     __version__ = "0.0.0+unknown"

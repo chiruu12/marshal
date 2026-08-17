@@ -72,7 +72,7 @@ marshal/
 │   │   │   ├── schema.py    # parameter descriptions + the shared Job/ThenJob input models
 │   │   │   └── tools_*.py   # one module per tool group: inspect, runs, integrate, recipes, workspaces
 
-│   │   └── cli/             # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/workflows/teams/team/workspace/clean/mcp)
+│   │   └── cli/             # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/routing/outcome/workflows/teams/team/workspace/clean/mcp)
 │   │       ├── parser.py    # argparse wiring + dispatch; `main` is re-exported from __init__
 │   │       ├── inspect.py   # read-only views: backends, models, usage, status, logs
 │   │       ├── runs.py      # dispatch work: run, spawn
@@ -104,7 +104,9 @@ strict models there would reject on an unexpected upstream field. MCP server via
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`init` · `doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` · `logs` · `workflows` · `workflow` · `workspace` · `clean` · `mcp`)
+- Run CLI: `uv run marshal` (`init` · `doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` ·
+  `logs` · `routing` · `outcome` · `workflows` · `workflow` · `teams` · `team` · `workspace` · `clean` ·
+  `mcp` [`--http` for a shared Streamable HTTP server; loopback only])
 - Test: `uv run pytest`
 - Lint: `uv run ruff check src tests && uv run mypy`
 - Add deps: `uv add <pkg>` (never edit pyproject.toml deps by hand)

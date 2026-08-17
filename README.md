@@ -23,7 +23,7 @@
 [![CI](https://github.com/chiruu12/marshal/actions/workflows/ci.yml/badge.svg)](https://github.com/chiruu12/marshal/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
-[![PyPI version](https://img.shields.io/pypi/v/MarshalFleet)](https://pypi.org/project/MarshalFleet/)
+[![PyPI version](https://img.shields.io/pypi/v/marshal-agents)](https://pypi.org/project/marshal-agents/)
 
 ## Proof
 
@@ -57,18 +57,22 @@ that path too.)
 **From PyPI**, for the CLI and the Python library:
 
 ```bash
-uv tool install "MarshalFleet[mcp]"
+uv tool install "marshal-agents[mcp]"
 # or
-pipx install "MarshalFleet[mcp]"
+pipx install "marshal-agents[mcp]"
 ```
 
 The `[mcp]` extra is what makes `marshal mcp` work. Without it the server exits before a host can
 connect.
 
+`marshal mcp` serves over stdio, which is what a host expects. `marshal mcp --http` instead serves
+one shared Streamable HTTP server that every session connects to — loopback only, since Marshal runs
+arbitrary commands. See [`docs/usage.md`](docs/usage.md#which-mcp-transport).
+
 To track unreleased work on `main`:
 
 ```bash
-uv tool install "marshalfleet[mcp] @ git+https://github.com/chiruu12/marshal"
+uv tool install "marshal-agents[mcp] @ git+https://github.com/chiruu12/marshal"
 ```
 
 Backend CLI auth and MCP wiring: **[`SETUP.md`](SETUP.md)**.

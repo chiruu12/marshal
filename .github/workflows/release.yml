@@ -13,7 +13,7 @@ name: Release
 #    Environment protection is the only gate that lives outside the ref being built.
 # 2. On https://pypi.org/manage/account/publishing/ (or the project’s Publishing
 #    settings once it exists), add a Trusted Publisher:
-#      PyPI project name: MarshalFleet   # must equal [project].name in pyproject.toml
+#      PyPI project name: marshal-agents # must equal [project].name in pyproject.toml
 #      Owner:             chiruu12
 #      Repository:        marshal
 #      Workflow:          release.yml
@@ -45,7 +45,7 @@ jobs:
       # silently resolves to a different (non-existent) environment, so its protection rules would
       # not apply and its secrets would not be in scope. The configured environment is `PYPI`.
       name: PYPI
-      url: https://pypi.org/p/MarshalFleet
+      url: https://pypi.org/p/marshal-agents
     steps:
       # Every action in this job is pinned by commit SHA. The job holds `id-token: write`, so any
       # step in it can reach the publishing credential - a mutable tag anywhere here is a way in.
