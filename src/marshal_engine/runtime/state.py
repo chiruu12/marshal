@@ -54,6 +54,14 @@ class RunRecord(BaseModel):
     duration_ms: int = 0
     source: str | None = None  # cost provenance: native | admin-api | unavailable | ...
     text: str = ""             # the agent's final message (file edits live in the worktree diff)
+    # `text` is capped on write, and a reader cannot see the cut from the string alone. For a
+    # research or review run - where the final message IS the product - a driver would read a
+    # report that stops mid-sentence, treat it as complete, and paste truncated conclusions into
+    # the next agent's goal. Same rule as `cost_usd`: say what is missing rather than let a
+    # prefix pass as the whole. `text_full_len` is the pre-truncation length; None on records
+    # written before these fields existed, and on runs whose text was never capped.
+    text_truncated: bool = False
+    text_full_len: int | None = None
     # Schema-validated JSON object when the task requested output_schema and the final message
     # conformed. Absent/None on records written before this field existed, and on runs that did
     # not request a schema (or failed validation - see error).

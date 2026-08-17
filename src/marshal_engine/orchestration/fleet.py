@@ -116,6 +116,23 @@ _cancel_after_handle_snapshot: Callable[[], None] | None = None
 _after_creating_record_published: Callable[[], None] | None = None
 
 
+#: Cap on the agent's final message as persisted in the run record. `text` is read back by every
+#: status/collect call, so an unbounded field costs every reader of the record - but the cut has to
+#: be *disclosed*, not silent (see RunRecord.text_truncated). The full stream stays in the run log.
+_TEXT_CAP = 16000
+
+
+def _cap_text(text: str) -> tuple[str, bool, int | None]:
+    """Cap `text` for persistence. Returns (capped, was_truncated, full_len_if_truncated).
+
+    `full_len` is None when nothing was cut, so the field means "this many characters existed"
+    rather than doubling as a length readout that a caller could mistake for the stored length.
+    """
+    if len(text) <= _TEXT_CAP:
+        return text, False, None
+    return text[:_TEXT_CAP], True, len(text)
+
+
 def _still_running(rec: RunRecord) -> bool:
     """update_if predicate: stamp a terminal status only if the run hasn't already reached one
     (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
@@ -791,6 +808,11 @@ class Fleet:
             # already marked it `cancelled` (the common cancel-wins-first race) is preserved rather
             # than clobbered by this thread returning from the SIGTERM-killed subprocess. The usage
             # event above is the immutable spend record regardless; this is the lifecycle status.
+            # Redact first (value-based scrub needs the whole secret present), then cap - and
+            # record that the cap fired. A driver reading `text` as a finished product cannot see
+            # the cut from the string alone; see RunRecord.text_truncated.
+            _redacted_text = redact_secrets(result.text)
+            _capped_text, _text_truncated, _text_full_len = _cap_text(_redacted_text)
             record = self.state.update_if(
                 run_id,
                 _still_running,
@@ -802,7 +824,9 @@ class Fleet:
                 duration_ms=result.duration_ms,
                 source=event.source,
                 # Redact before the 16KB cut: value-based scrub needs the whole secret present.
-                text=redact_secrets(result.text)[:16000],
+                text=_capped_text,
+                text_truncated=_text_truncated,
+                text_full_len=_text_full_len,
                 structured=_redact_structured(result.structured),
                 ended_at=_now(),
                 error=redact_secrets(result.error) if result.error else result.error,
@@ -1192,10 +1216,14 @@ class Fleet:
     def collect_run(self, run_id: str) -> CollectResult:
         """Surface a run's diff + changed files. Read-only - nothing is merged.
 
-        A setup-failed (or otherwise torn-down) run has no worktree: returns ``produced="nothing"``
-        with ``text`` set to the record's error so the driver sees why, not a crash. A worktree
-        that vanishes mid-op (provisioning discard racing collect) is the same structured path —
-        never an uncaught ``WorktreeError``.
+        A setup-failed (or otherwise torn-down) run has no worktree: returns
+        ``produced="unavailable"`` with ``text`` set to the record's error so the driver sees why,
+        not a crash. A worktree that vanishes mid-op (provisioning discard racing collect) is the
+        same structured path — never an uncaught ``WorktreeError``.
+
+        ``unavailable`` is deliberately NOT ``nothing``: the work could not be read, which is not
+        evidence the run produced none. Reporting both as ``nothing`` let a driver reject a run
+        that had actually succeeded, and ``routing`` then held that rejection against its client.
         """
         rec = self.state.get(run_id)
         if rec is None:
@@ -1211,8 +1239,13 @@ class Fleet:
                 worktree=rec.worktree or None,
                 changed_files=[],
                 diff="",
-                produced="nothing",
+                produced="unavailable",
+                unavailable_reason=text,
+                # commit_count stays None: nothing was counted, and 0 would read as "the agent
+                # made no commits" for a run whose commits simply could not be reached.
                 text=text,
+                text_truncated=rec.text_truncated,
+                text_full_len=rec.text_full_len,
                 structured=rec.structured,
             )
 
@@ -1225,7 +1258,9 @@ class Fleet:
             diff = self.worktrees.diff(wt)
             committed_changed_files: list[str] = []
             committed_diff = ""
-            commit_count = 0
+            # None, not 0, until the count is actually taken - a run with no branch was never
+            # counted, and 0 would assert the agent committed nothing.
+            commit_count: int | None = None
             if wt.branch:
                 # The run works in its own clone, so commits the AGENT made are not in the driver's
                 # repo yet - and every branch read below happens there. Without this, self-committed
@@ -1253,6 +1288,10 @@ class Fleet:
             diff=diff,
             produced=produced,
             text=final_text,
+            # Only meaningful alongside the text we actually returned; a diff-producing run gets
+            # the honest default rather than a flag about a message it is not carrying.
+            text_truncated=rec.text_truncated if final_text else False,
+            text_full_len=rec.text_full_len if final_text else None,
             committed_changed_files=committed_changed_files,
             committed_diff=committed_diff,
             commit_count=commit_count,

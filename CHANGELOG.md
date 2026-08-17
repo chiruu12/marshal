@@ -8,6 +8,35 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`collect_run`'s diff could silently omit a new file's contents** (#257.6). The per-untracked-file
+  `git diff --no-index` return code was never checked, unlike the tracked `git diff HEAD` beside it.
+  A genuine failure (file gone after the listing, unreadable, refused by git) produced empty stdout,
+  so the file still appeared in `changed_files` while contributing **no hunk to the diff** — a driver
+  reviewing a filename with no content either integrates it unread or rejects the run for producing
+  an empty file. Exit 1 remains normal (a file always differs from `/dev/null`); anything above it
+  now raises, naming the file.
+
+### Added
+
+- **Driver-facing payloads can now tell "nothing" from "unknown"** (#257, parts 1/2/4) — the rule
+  Marshal already applied to `cost_usd`, extended to its neighbours:
+
+  - `produced: "unavailable"` is new on `collect_run`, split out of `"nothing"`. A torn-down
+    worktree and a mid-collect git failure used to report the same value as a genuinely idle run,
+    so a driver branching on `produced` could `set_outcome(rejected)` a run whose diff merely could
+    not be read — and `routing` then held that rejection against a client that had succeeded.
+    `unavailable_reason` says which way it was unreadable.
+  - `text_truncated` / `text_full_len` on the run record and on `collect_run`. The agent's final
+    message is capped at 16 000 characters on write and nothing recorded the cut, so for a research
+    or review run — where the message *is* the product — a driver read a report that stopped
+    mid-sentence, treated it as complete, and passed truncated conclusions into the next agent's
+    goal.
+  - `collect_run.commit_count` is now `int | null`, `null` when the count was never taken (no
+    branch, or unreadable work). It was initialised to `0` and only computed inside `if wt.branch:`,
+    so "nobody counted" was indistinguishable from "the agent made no commits".
+
 ### Changed
 
 - **The orchestrator no longer owns run-ownership and orphan recovery.** `orchestration/fleet.py`

@@ -30,6 +30,12 @@ class CollectResult(BaseModel):
 
     ``structured`` is the schema-validated JSON object when the run requested ``output_schema`` and
     validation succeeded — a field, not an inference from ``text``.
+
+    ``produced`` distinguishes "this run did nothing" (``nothing``) from "I cannot tell you what
+    this run did" (``unavailable``). Collapsing those was a real hazard: a driver told to branch on
+    ``produced`` would ``set_outcome(rejected)`` a run whose diff merely could not be read, and
+    ``routing`` then records a permanent rejection against a client that had actually succeeded.
+    ``unavailable_reason`` says which way it was unreadable.
     """
 
     run_id: str
@@ -39,12 +45,25 @@ class CollectResult(BaseModel):
     diff: str
     committed_changed_files: list[str] = []
     committed_diff: str = ""
-    commit_count: int = 0
-    #: "diff" (files changed) | "text" (no files, but the agent replied) | "nothing" (neither).
+    #: None when the count was never taken (no branch, or the work could not be read) - NOT 0.
+    #: Same rule as `cost_usd` and `RunRecord.agent_commit_count`: a reader must be able to tell
+    #: "the agent made no commits" from "nobody counted".
+    commit_count: int | None = None
+    #: "diff" (files changed) | "text" (no files, but the agent replied) | "nothing" (the run
+    #: genuinely produced neither) | "unavailable" (the work could not be read - see
+    #: `unavailable_reason`; NOT evidence the run produced nothing).
     produced: str = "diff"
-    #: The agent's final message. Populated ONLY when `produced == "text"` - when there IS a diff,
-    #: the diff is the artifact and duplicating the message here would just bloat the reply.
+    #: Why the work could not be read. Set only when `produced == "unavailable"`.
+    unavailable_reason: str | None = None
+    #: The agent's final message. Populated when `produced == "text"` - when there IS a diff, the
+    #: diff is the artifact and duplicating the message here would just bloat the reply. It is
+    #: also populated on the `unavailable` path, where the record's message may be the only
+    #: surviving account of the run.
     text: str = ""
+    #: True when `text` was cut on write, so a caller never reads a prefix as the whole product.
+    #: The full stream is in `get_run_log`. `text_full_len` is the pre-truncation length.
+    text_truncated: bool = False
+    text_full_len: int | None = None
     #: Schema-validated object when the run produced one; None otherwise (field, not inference).
     structured: dict[str, Any] | None = None
 

@@ -5041,7 +5041,11 @@ def test_integrate_and_collect_on_setup_failed_run(repo: Path) -> None:
         assert rec is not None and rec.status == "failed"
 
         collected = fleet.collect_run(run_id)
-        assert collected.produced == "nothing"
+        # "unavailable", not "nothing": the work could not be read, which is not evidence the run
+        # produced none. A driver branching on `produced` must not reject this as an idle run.
+        assert collected.produced == "unavailable"
+        assert collected.unavailable_reason
+        assert collected.commit_count is None, "a count nobody took must not read as zero"
         assert collected.changed_files == []
         assert collected.diff == ""
         assert rec.error and rec.error in collected.text
@@ -5246,7 +5250,8 @@ def test_collect_run_worktree_error_mid_op_is_structured(
 
     monkeypatch.setattr(fleet.worktrees, "changed_files", boom)
     got = fleet.collect_run(rec.run_id)
-    assert got.produced == "nothing"
+    assert got.produced == "unavailable", "an unreadable worktree is not an idle run"
+    assert "vanished mid-collect" in (got.unavailable_reason or "")
     assert got.changed_files == []
     assert got.diff == ""
     assert "vanished mid-collect" in got.text
@@ -6000,3 +6005,53 @@ def test_cancel_during_setup_leaves_no_pid_on_the_terminal_record(repo: Path) ->
         assert rec.pid_start_time is None
     finally:
         fleet.shutdown()
+
+
+# --- #257: unknown must never read as zero / nothing -------------------------------------------
+
+
+def test_a_genuinely_idle_run_still_says_nothing(repo: Path) -> None:
+    """The `unavailable` split must not swallow the honest `nothing`. A run that really produced
+    neither a diff nor prose is still `nothing` - otherwise the new value would just move the
+    conflation instead of removing it."""
+    fleet = Fleet(repo, {"silent": _Talker("")})
+    rec = fleet.run("silent", TaskSpec(id="stillquiet", goal="x"))
+    got = fleet.collect_run(rec.run_id)
+    assert got.produced == "nothing"
+    assert got.unavailable_reason is None
+
+
+def test_collect_reports_a_real_commit_count_when_it_took_one(repo: Path) -> None:
+    """The None default must not hide a genuine zero: a run with a branch IS counted, so the count
+    is an int - `None` has to mean "nobody counted", not "we stopped bothering"."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="counted", goal="x"))
+    got = fleet.collect_run(rec.run_id)
+    assert got.commit_count == 0, "a branch was present, so the count was taken and is really zero"
+
+
+def test_a_capped_final_message_says_it_was_capped(repo: Path) -> None:
+    """REGRESSION (#257.1): `text` was cut at 16k with nothing recording the cut, so a driver read
+    a report that stopped mid-sentence, treated it as complete, and passed truncated conclusions
+    into the next agent's goal."""
+    long_text = "x" * 20_000
+    fleet = Fleet(repo, {"chatty": _Talker(long_text)})
+    rec = fleet.run("chatty", TaskSpec(id="capped", goal="x"))
+
+    assert rec.text_truncated is True
+    assert rec.text_full_len == 20_000
+    assert len(rec.text) == 16_000
+
+    got = fleet.collect_run(rec.run_id)
+    assert got.produced == "text"
+    assert got.text_truncated is True, "collect handed over a prefix without saying so"
+    assert got.text_full_len == 20_000
+
+
+def test_an_uncapped_final_message_is_not_flagged(repo: Path) -> None:
+    """The flag must mean something: a message that fit is not truncated, and reports no length."""
+    fleet = Fleet(repo, {"chatty": _Talker("short and complete")})
+    rec = fleet.run("chatty", TaskSpec(id="uncapped", goal="x"))
+    assert rec.text_truncated is False
+    assert rec.text_full_len is None
+    assert fleet.collect_run(rec.run_id).text_truncated is False
