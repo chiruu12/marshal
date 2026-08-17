@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -279,8 +280,140 @@ def test_parse_output_malformed_json_ignored(backend: GooseBackend) -> None:
 # --- account_info / verifies_auth (goose info -v --check) --------------------------------------
 
 
-def test_verifies_auth_true(backend: GooseBackend) -> None:
+def test_unavailable_detail(backend: GooseBackend) -> None:
+    assert backend.unavailable_detail() == "binary not found in PATH"
+
+
+def test_verifies_auth_missing_executable(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("marshal_engine.backends.goose.shutil.which", lambda _b: None)
+    assert backend.verifies_auth() is False
+
+
+def test_verifies_auth_valid_authenticated(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "Provider Check:\n  Auth:                     OK\n"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr("marshal_engine.backends.goose.subprocess.run", _run)
     assert backend.verifies_auth() is True
+    assert any(c[:4] == ["goose", "info", "-v", "--check"] for c in calls)
+
+
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        "no provider configured",
+        "not logged in",
+        "authentication required",
+        "invalid api key",
+        "error: configure",
+        "Auth: FAILED",
+        "error: provider check failed",
+    ],
+)
+def test_verifies_auth_unconfigured_output(
+    error_text: str, backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = f"Provider Check:\n  {error_text}\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.subprocess.run", lambda *a, **k: _Proc()
+    )
+    assert backend.verifies_auth() is False
+
+
+def test_verifies_auth_nonzero_exit(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "error: failed to start"
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.subprocess.run", lambda *a, **k: _Proc()
+    )
+    assert backend.verifies_auth() is False
+
+
+def test_verifies_auth_subprocess_timeout(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _run(argv: list[str], **_kw: object):
+        if "--version" in argv:
+            class _VersionProc:
+                returncode = 0
+                stdout = "goose 1.43.0"
+                stderr = ""
+            return _VersionProc()
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=3.0)
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr("marshal_engine.backends.goose.subprocess.run", _run)
+    assert backend.verifies_auth() is False
+
+
+def test_verifies_auth_os_error(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _run(argv: list[str], **_kw: object):
+        if "--version" in argv:
+            class _VersionProc:
+                returncode = 0
+                stdout = "goose 1.43.0"
+                stderr = ""
+            return _VersionProc()
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr("marshal_engine.backends.goose.subprocess.run", _run)
+    assert backend.verifies_auth() is False
+
+
+def test_verifies_auth_subprocess_error(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _run(argv: list[str], **_kw: object):
+        if "--version" in argv:
+            class _VersionProc:
+                returncode = 0
+                stdout = "goose 1.43.0"
+                stderr = ""
+            return _VersionProc()
+        raise subprocess.SubprocessError("Process failed")
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr("marshal_engine.backends.goose.subprocess.run", _run)
+    assert backend.verifies_auth() is False
 
 
 def test_parse_info_check_success_verbose() -> None:
@@ -356,7 +489,25 @@ def test_account_info_uses_info_check(
     )
     monkeypatch.setattr("marshal_engine.backends.goose.subprocess.run", _run)
     assert backend.account_info() == {"plan": "anthropic", "model": "claude-sonnet"}
-    assert calls and calls[0][:4] == ["goose", "info", "-v", "--check"]
+    assert any(c[:4] == ["goose", "info", "-v", "--check"] for c in calls)
+
+
+def test_account_info_fallback_authenticated(
+    backend: GooseBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "Provider Check:\n  Auth: OK\n"
+        stderr = ""
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        return _Proc()
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.goose.shutil.which", lambda _b: "/usr/bin/goose"
+    )
+    monkeypatch.setattr("marshal_engine.backends.goose.subprocess.run", _run)
+    assert backend.account_info() == {"plan": "configured"}
 
 
 def test_account_info_none_when_check_fails(
@@ -382,6 +533,7 @@ def test_account_info_none_when_binary_missing(
 ) -> None:
     monkeypatch.setattr("marshal_engine.backends.goose.shutil.which", lambda _b: None)
     assert backend.account_info() is None
+
 
 
 def test_available_models_static_playbook(backend: GooseBackend) -> None:

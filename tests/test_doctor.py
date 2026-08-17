@@ -35,6 +35,7 @@ class _FakeBackend(CodingAgentBackend):
         verifies_auth: bool = False,
         permission_fidelity: PermissionFidelity = PermissionFidelity.BOUNDARY_ONLY,
         credential_env_vars: tuple[str, ...] = (),
+        unavailable_detail: str = "CLI not on PATH / not runnable",
     ) -> None:
         self.name = name
         self.binary = name
@@ -43,9 +44,15 @@ class _FakeBackend(CodingAgentBackend):
         self._available = available
         self._account = account
         self._verifies_auth = verifies_auth
+        self._unavailable_detail = (
+            "binary not found in PATH" if name == "goose" else unavailable_detail
+        )
 
     def check_available(self) -> bool:
         return self._available
+
+    def unavailable_detail(self) -> str:
+        return self._unavailable_detail
 
     def account_info(self) -> dict[str, str] | None:
         return self._account
@@ -422,6 +429,48 @@ def test_no_auth_probe_backend_stays_available_without_account(tmp_path: Path) -
     cfg = _write_config(tmp_path / "fleet.config.yaml", _CONFIG)
     checks = run_checks(repo, cfg, backends={"opencode": _FakeBackend("opencode", available=True)})
     assert _by_name(checks, "backend:opencode").status == OK
+
+
+_GOOSE_CONFIG = """
+clients:
+  impl:
+    backend: goose
+    model: cursor-agent/auto
+"""
+
+
+def test_doctor_goose_unavailable_fails_with_binary_not_found(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _GOOSE_CONFIG)
+    backend = _FakeBackend("goose", available=False)
+    checks = run_checks(repo, cfg, backends={"goose": backend})
+    b = _by_name(checks, "backend:goose")
+    assert b.status == FAIL
+    assert b.detail == "binary not found in PATH"
+
+
+def test_doctor_goose_available_unauthenticated_warns(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _GOOSE_CONFIG)
+    backend = _FakeBackend("goose", available=True, verifies_auth=False)
+    checks = run_checks(repo, cfg, backends={"goose": backend})
+    b = _by_name(checks, "backend:goose")
+    assert b.status == WARN
+    assert "available (authentication missing / run 'goose configure')" in b.detail
+
+
+def test_doctor_goose_available_and_authenticated_is_ok(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _write_config(tmp_path / "fleet.config.yaml", _GOOSE_CONFIG)
+    backend = _FakeBackend(
+        "goose", available=True, account={"plan": "anthropic", "model": "claude-sonnet"}, verifies_auth=True
+    )
+    checks = run_checks(repo, cfg, backends={"goose": backend})
+    b = _by_name(checks, "backend:goose")
+    assert b.status == OK
+    assert b.detail == "available & authenticated"
+    assert _by_name(checks, "plan:goose").detail == "anthropic (model claude-sonnet)"
+
 
 
 def test_only_referenced_backends_are_probed(tmp_path: Path) -> None:

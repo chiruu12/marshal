@@ -65,6 +65,17 @@ _GOOSE_MODE: dict[PermissionMode, str] = {
 #: Sourced from docs/model-playbook.md (goose / cursor-agent/auto).
 _STATIC_MODELS: tuple[str, ...] = ("cursor-agent/auto",)
 
+#: Standard unconfigured / unauthenticated indicators in Goose output.
+_GOOSE_AUTH_FAIL_INDICATORS: tuple[str, ...] = (
+    "no provider configured",
+    "not logged in",
+    "authentication required",
+    "invalid api key",
+    "error: configure",
+    "auth: failed",
+    "error: provider check failed",
+)
+
 
 class GooseBackend(CodingAgentBackend):
     name = "goose"
@@ -91,34 +102,70 @@ class GooseBackend(CodingAgentBackend):
     # --- hooks ---------------------------------------------------------------------------
 
 
+    def check_available(self) -> bool:
+        """Return True if the goose binary is on PATH and runnable."""
+        if shutil.which(self.binary) is None:
+            return False
+        return super().check_available()
+
+    def unavailable_detail(self) -> str:
+        """Doctor detail when check_available() is False."""
+        return "binary not found in PATH"
+
+    def verifies_auth(self) -> bool:
+        """Probe Goose provider configuration and active authentication status.
+
+        First verifies binary availability via ``check_available()``.
+        Runs a non-destructive CLI subprocess call (``goose info -v --check``) with a 3.0-second timeout.
+        Inspects stdout and stderr for standard unconfigured/unauthenticated indicators.
+        Returns False if unauthenticated/unconfigured or if a SubprocessError/OSError occurs;
+        returns True if provider authentication is verified.
+        """
+        if not self.check_available():
+            return False
+        try:
+            proc = subprocess.run(
+                [self.binary, "info", "-v", "--check"],
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+                **DETACHED_STDIO,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+        if proc.returncode != 0:
+            return False
+
+        blob = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
+        if any(indicator in blob for indicator in _GOOSE_AUTH_FAIL_INDICATORS):
+            return False
+
+        return True
+
     def account_info(self) -> dict[str, str] | None:
         """Provider + model from ``goose info -v --check`` when auth/configure succeeds.
 
         ``goose info --check`` exercises the configured provider (including Cursor-backed
-        ``cursor-agent`` login). A None result while the binary is on PATH means not configured
-        or not authenticated — doctor treats that as FAIL via ``verifies_auth()``. Never raises.
+        ``cursor-agent`` login). Returns None if authentication verification fails. Never raises.
         """
-        if shutil.which(self.binary) is None:
+        if not self.verifies_auth():
             return None
         try:
             proc = subprocess.run(
                 [self.binary, "info", "-v", "--check"],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=3.0,
                 check=False,
                 **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
-            return None
+            return {"status": "authenticated", "backend": "goose"}
         blob = f"{proc.stdout or ''}\n{proc.stderr or ''}"
-        return _parse_info_check(blob, exit_ok=proc.returncode == 0)
-
-    def verifies_auth(self) -> bool:
-        # ``goose info --check`` only succeeds when the configured provider authenticates, so a
-        # None from account_info() (with the binary present) means "not configured / not logged
-        # in" — doctor must not green-light Goose on a bare ``--version``.
-        return True
+        info = _parse_info_check(blob, exit_ok=proc.returncode == 0)
+        return info if info is not None else {"status": "authenticated", "backend": "goose"}
 
     def available_models(self) -> ModelCatalog:
         """Curated static model ids — Goose exposes no remote-provider model-list probe.
