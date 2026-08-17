@@ -37,6 +37,7 @@ marshal/
 │   │   ├── codex.py         # OpenAI Codex (codex exec)
 │   │   ├── antigravity.py   # Google Antigravity (agy)
 │   │   ├── command_code.py  # Command Code CLI - safe-edit maps to --yolo (headless auto-accept blocks writes)
+│   │   ├── copilot.py       # GitHub Copilot CLI (copilot -p) - enforced denies via --deny-tool; free tier needs model: auto
 │   │   ├── claude_code.py   # Claude Code (claude -p) - native cost
 │   │   └── goose.py         # Goose (goose run) - safe-edit/yolo → GOOSE_MODE=auto (worktree boundary)
 │   ├── runtime/             # the execution boundary - processes, git, disk

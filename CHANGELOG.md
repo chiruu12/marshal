@@ -17,6 +17,34 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **GitHub Copilot CLI backend (`copilot`) joins the fleet.** Select it per call like any other
+  backend (`backend: copilot`). Runs headless via `copilot -p` with `--output-format json`, and is
+  the fourth backend to earn `permission_fidelity=enforced-denies` — both claims verified against
+  the shipped CLI rather than its docs:
+
+  **Permission tiers really enforce.** `read-only` maps to `--mode plan`, which refuses a write with
+  `{"success":false,"error":{"code":"denied"}}` even alongside `--allow-all-tools`. `safe-edit` adds
+  a curated `--deny-tool` overlay (destructive shell, `.env` writes, `git push`, `gh`) — Copilot
+  documents that deny rules beat allow rules "even `--allow-all-tools`", and a live probe confirms
+  it. `yolo` maps to `--allow-all` and intentionally drops the overlay.
+
+  **Every run is fenced to the worktree.** `--disable-builtin-mcps` stops the CLI auto-connecting
+  `github-mcp-server` with the user's token (which could open PRs and issues *outside* the
+  worktree), `--no-remote` stops an unattended session being remote-controlled from GitHub
+  web/mobile mid-run, and `--no-auto-update` keeps a background upgrade from changing the binary
+  mid-fleet.
+
+  **Model pinning is plan-gated.** `copilot help config` lists the binary's catalog, not the
+  account's entitlements: a Copilot **Free** plan rejects every pinned id (`Model "..." is not
+  available`) and accepts only `auto`, which routes to models costing `premiumRequests: 0`.
+  `marshal models copilot` reads that catalog live and leads with `auto`.
+
+  **Usage is output-tokens-only.** Copilot reports `outputTokens` per message and `premiumRequests`
+  (a quota unit, not money) — never a USD cost and never an input-token count — so runs land honest
+  output tokens with cost `unavailable`. Auth is a GitHub token
+  (`COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, or a stored `copilot login` credential);
+  there is no cheap authenticated status probe, so doctor reports CLI presence only.
+
 - **ZCode backend (`zcode`) — Z.ai's GLM coding agent joins the fleet.** Select it per call like any
   other backend (`backend: zcode`). Three permission tiers map to ZCode's non-prompting modes
   (`plan` / `edit` / `yolo`); its `build` and `auto` modes ask for approval per change and are never

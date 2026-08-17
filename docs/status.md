@@ -11,7 +11,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 |--------|----------------|-------|
 | `types.py` | Shared Pydantic models + enums | done |
 | `backends/base.py` | Abstract backend + safe `run()` (no-stdin, hard timeout) | done |
-| `backends/{cursor,opencode,codex,command_code,antigravity,claude_code,goose,zcode}.py` | Seven adapters off one base class | done |
+| `backends/*.py` (one per backend; see [`design.md`](design.md) §3) | Every adapter off one base class | done |
 | `worktree.py` | Git worktree lifecycle (isolation boundary) | done |
 | `usage.py` | Per-provider usage (events.jsonl + summary + cost-per-outcome) | done |
 | `eastrouter.py` | Read real per-run cost from EastRouter `/v1/usage` (the `ADMIN_API` path) | done |
@@ -51,6 +51,7 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 | Antigravity | yes | verified (reply) | verified** | tokens via JSON (cost `unavailable`) |
 | Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
 | ZCode | yes (0.16.3, launcher-resolved) | contract-tested | contract-tested | tokens only (cost `unavailable`) |
+| Copilot CLI | yes (1.0.80) | verified (`--mode plan` refuses the write, `filesModified` empty) | verified end-to-end via `marshal run` (worktree diff correct) | output tokens only (cost `unavailable`) |
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
 writes land and the JSONL parser extracts text + tokens correctly. A Codex client routed through

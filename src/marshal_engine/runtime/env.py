@@ -79,6 +79,9 @@ KNOWN_CREDENTIAL_ENV_VARS: frozenset[str] = frozenset(
         "GOOSE_PROVIDER",
         "GOOSE_MODEL",
         "ZCODE_API_KEY",
+        "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
     }
 )
 
