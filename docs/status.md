@@ -50,6 +50,8 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 | Codex | yes | - | verified* | tokens only (cost `admin-api` or `unavailable`) |
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
 | Antigravity | yes (agy ≥ 1.1.12) | verified (`--mode plan` plans, writes nothing) | verified** | tokens via JSON (cost `unavailable`; quota via `/usage`) |
+
+> Antigravity is the CLI surface of **Antigravity 2.0**; the `agy` binary versions independently (1.1.x). `--sandbox` is *not* a filesystem boundary — the worktree remains the only one (see #175).
 | Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
 | ZCode | yes (0.16.3, launcher-resolved) | contract-tested | contract-tested | tokens only (cost `unavailable`) |
 | Copilot CLI | yes (1.0.80) | verified (`--mode plan` refuses the write, `filesModified` empty) | verified end-to-end via `marshal run` (worktree diff correct) | output tokens only (cost `unavailable`) |

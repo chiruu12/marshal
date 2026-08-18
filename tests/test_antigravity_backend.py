@@ -19,6 +19,7 @@ from marshal_engine.backends.antigravity import (
     _parse_agy_models,
     _parse_agy_usage_command,
     _parse_agy_version,
+    _print_timeout,
     _untrust_workspace,
 )
 
@@ -54,8 +55,11 @@ def test_build_invocation_basic(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         "-p",
@@ -71,8 +75,11 @@ def test_build_invocation_model(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         # Long form only — `agy` dropped the `-m` alias by 1.1.13 and its parser rejects it.
@@ -91,8 +98,11 @@ def test_build_invocation_conversation(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         "--conversation",
@@ -110,8 +120,11 @@ def test_compose_prompt_includes_context(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         "-p",
@@ -929,3 +942,97 @@ def test_build_invocation_read_only_uses_plan_mode(backend: AntigravityBackend) 
     )
     assert argv[:3] == ["agy", "--mode", "plan"]
     assert argv[-2:] == ["-p", "review this"]
+
+
+# --- agy's own print deadline --------------------------------------------------------------
+
+
+def test_print_timeout_lands_just_inside_the_run_timeout() -> None:
+    # agy's default is 5 minutes, so leaving it alone silently truncated every longer run at 5m
+    # with "timeout waiting for response" regardless of what the engine was told.
+    assert _print_timeout(600) == "595s"
+    assert _print_timeout(30) == "25s"
+
+
+def test_print_timeout_never_emits_zero_or_negative() -> None:
+    # agy reads `0s` as "no deadline", which would invert the whole point; a negative duration
+    # would not parse at all. A very short run must still produce a valid, bounded deadline.
+    assert _print_timeout(5) == "1s"
+    assert _print_timeout(1) == "1s"
+    assert _print_timeout(0) == "1s"
+
+
+def test_build_invocation_derives_print_timeout_from_opts(
+    backend: AntigravityBackend,
+) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="x"), _opts(permission=PermissionMode.SAFE_EDIT, timeout_s=1800)
+    )
+    assert "--print-timeout" in argv
+    assert argv[argv.index("--print-timeout") + 1] == "1795s"
+
+
+# --- slash-command hijack -------------------------------------------------------------------
+
+
+def test_write_modes_disable_slash_expansion(backend: AntigravityBackend) -> None:
+    # Without this, a goal beginning with "/" is parsed as a CLI slash command and the agent
+    # never runs at all (status=ERROR, num_turns=0) — a task that silently never happened.
+    for mode in (PermissionMode.SAFE_EDIT, PermissionMode.YOLO):
+        argv = backend.build_invocation(
+            TaskSpec(id="t1", goal="/usr/local needs fixing"), _opts(permission=mode)
+        )
+        assert "--disable-slash-commands" in argv
+        assert argv[-1] == "/usr/local needs fixing"
+
+
+def test_read_only_must_not_disable_slash_expansion(backend: AntigravityBackend) -> None:
+    # agy warns "--mode plan has no effect while slash command expansion is disabled" and means
+    # it: with both flags the write was stopped only by the DEFAULT mode's unattended denial, not
+    # by the plan tier. Passing this flag here would leave read-only unenforced.
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="review it"), _opts(permission=PermissionMode.READ_ONLY)
+    )
+    assert "--disable-slash-commands" not in argv
+    assert argv[:3] == ["agy", "--mode", "plan"]
+
+
+@pytest.mark.parametrize("goal", ["/usage now", "  /help me", "/model"])
+def test_read_only_refuses_a_slash_leading_prompt(
+    backend: AntigravityBackend, goal: str
+) -> None:
+    # Refused in build_invocation — a pure function, before any worktree is created. Leading
+    # whitespace does not escape agy's parse, so it must not escape ours either.
+    with pytest.raises(ValueError, match="must not begin with"):
+        backend.build_invocation(
+            TaskSpec(id="t1", goal=goal), _opts(permission=PermissionMode.READ_ONLY)
+        )
+
+
+def test_read_only_refusal_names_the_way_out(backend: AntigravityBackend) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        backend.build_invocation(
+            TaskSpec(id="t1", goal="/usage"), _opts(permission=PermissionMode.READ_ONLY)
+        )
+    msg = str(excinfo.value)
+    # A driver reading this must learn why the obvious fix is unavailable and what to do instead.
+    assert "--disable-slash-commands" in msg
+    assert "safe-edit" in msg
+
+
+def test_write_modes_accept_a_slash_leading_prompt(backend: AntigravityBackend) -> None:
+    # The refusal is specific to read-only; write modes carry the flag that makes it safe.
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="/usage"), _opts(permission=PermissionMode.SAFE_EDIT)
+    )
+    assert argv[-1] == "/usage"
+
+
+def test_read_only_slash_check_sees_the_composed_prompt(backend: AntigravityBackend) -> None:
+    # The check must run on the COMPOSED prompt, not the raw goal: context files are appended
+    # after the goal, so a slash-leading goal stays slash-leading and must still be refused.
+    with pytest.raises(ValueError, match="must not begin with"):
+        backend.build_invocation(
+            TaskSpec(id="t1", goal="/usage", context_files=["a.py"]),
+            _opts(permission=PermissionMode.READ_ONLY),
+        )

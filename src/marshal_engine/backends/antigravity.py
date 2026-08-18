@@ -1,8 +1,15 @@
 """Google Antigravity CLI adapter (`agy`).
 
-Invocation reference (verified against `agy` 1.1.13):
+`agy` is the CLI surface of **Antigravity 2.0** (Google, 19 May 2026), which ships as four
+things: the desktop app, this Go CLI (successor to Gemini CLI), an SDK, and a managed agent
+service. The CLI versions INDEPENDENTLY of the product generation — "Antigravity 2" is the
+platform, `agy --version` reads 1.1.x. Do not conflate them: the version floor below is a CLI
+version, and every behaviour noted here was verified against the binary, not the announcement.
 
-    agy [--mode plan | --dangerously-skip-permissions] [--output-format json] [--add-dir CWD]
+Invocation reference (verified against `agy` 1.1.13 / 1.1.14):
+
+    agy [--mode plan | --dangerously-skip-permissions] [--disable-slash-commands]
+        [--output-format json] [--print-timeout DURATION] [--add-dir CWD]
         [--model MODEL] [--conversation ID] -p "<PROMPT>"
 
 `agy -p` runs one prompt non-interactively. Run with cwd = the target repo (agy operates on
@@ -26,9 +33,16 @@ Honest gaps from research (these shape what we expose):
     logged-out CLI instead of green-lighting a fan-out that dies on its first real run.
     It also carries quota headroom (weekly / 5-hour percentages) — for a backend with no USD
     to report, remaining quota is the only cost signal there is.
-  * `agy` checks for a TTY; without one, stdout can be swallowed while exit code stays 0. A PTY
-    wrapper (e.g. `script -q /dev/null`) belongs in the runner layer - TODO. Until then treat an
-    empty success as suspect.
+  * `--print-timeout` is agy's OWN print-mode deadline and it defaults to **5 minutes**, which
+    silently truncated every Marshal run configured for longer — the run died at 5m with
+    `error: "timeout waiting for response"` no matter what `timeout_s` said. It is now derived
+    from the run's timeout and set just INSIDE it (see `_print_timeout`), so agy returns a
+    parseable envelope with token counts instead of being hard-killed by the external timeout.
+  * PTY: the older "agy checks for a TTY, so stdout can be swallowed while the exit code stays
+    0" note is NOT reproducible on 1.1.13/1.1.14. Every headless run here goes out under
+    `DETACHED_STDIO` (no TTY, stdin `/dev/null`) and the JSON envelope arrives intact, including
+    end-to-end through `marshal run`. The PTY-wrapper TODO is dropped; re-open it with a
+    reproduction rather than on suspicion.
   * JSON envelopes carry ``conversation_id`` (stamped onto ``session_id``). ``--conversation``
     is still passed through when the caller already has an id; resume is not first-class yet.
   * `read-only` maps to `--mode plan` (agy >= 1.1.12, which fixed `--mode` being ignored in
@@ -43,11 +57,26 @@ Honest gaps from research (these shape what we expose):
     the guarantee working - but a reviewer prompt that reaches for `grep`/`pytest` fails the
     run rather than degrading. Prompt read-only Antigravity reviewers to read files and not to
     run commands.
-  * `safe-edit` deliberately stays on `--dangerously-skip-permissions`. `--mode accept-edits`
-    looks like the tighter mapping and is NOT safe to adopt on current evidence: probed without
-    a trust entry it wrote the file AND returned `status=ERROR` ("not a valid artifact path"),
-    i.e. a run that succeeded on disk but reads as failed - exactly the record/reality split
-    this project treats as a bug class. Re-probe it WITH the trust entry before promoting it.
+  * SLASH HIJACK: print mode parses a prompt beginning with `/` as a CLI slash command, so the
+    agent never runs — `-p "/usage ..."` returns `status=ERROR`, `num_turns: 0`. `_compose_prompt`
+    passes `task.goal` through verbatim, so any goal starting with `/` hit this. safe-edit and
+    yolo now pass `--disable-slash-commands`, verified to fix it (the same prompt then replies
+    normally).
+    READ-ONLY CANNOT USE THAT FLAG. agy warns `--mode plan has no effect while slash command
+    expansion is disabled`, and it means it: with both flags the write was blocked only by the
+    DEFAULT mode's unattended denial, not by the plan tier. That is a permission tier that does
+    not bind — the exact thing MIN_AGY_VERSION was raised to prevent — so read-only keeps
+    `--mode plan` and instead REFUSES a slash-leading prompt up front, in `build_invocation`,
+    before a worktree is spent. A leading space does not escape the parse (verified).
+  * `safe-edit` stays on `--dangerously-skip-permissions`, and this is now a TESTED REJECTION
+    rather than an untried idea. `--mode accept-edits` looks like the tighter mapping. It is not
+    usable headless: probed WITH a real `trustedWorkspaces` entry, the agent reached for a shell
+    command (`echo "HELLO" > PROOF.md`), accept-edits denies shell with nobody to approve, and
+    the run exited 1 having written nothing. Probed WITHOUT the trust entry it did the opposite -
+    wrote the file and still returned `status=ERROR` ("not a valid artifact path"), a run that
+    succeeded on disk and reads as failed. Neither outcome is a permission tier. Do not re-litigate
+    this without new upstream behaviour; the agent's freedom to choose shell over the edit tool is
+    the blocker, not the flag.
   * WORKSPACE TRUST (fixed 2026-06-27): headless `agy` cannot establish workspace trust without a
     TTY, so it used to write edits into its scratch dir (`~/.gemini/antigravity-cli/scratch`)
     instead of `cwd` ("you do not have an active workspace"). `prepare()` briefly registers the
@@ -65,6 +94,22 @@ Honest gaps from research (these shape what we expose):
     neither the worktree nor the trust entry, so the grant outlives a run that now *reads* finished.
     Nothing is newly unsafe - it is the same residual as any hard kill - but a terminal-looking
     record makes it easy to assume the cleanup already happened. `clean` is still what reclaims it.
+
+Verified-and-declined, so nobody re-probes them:
+  * `--sandbox` ("terminal restrictions") is NOT a filesystem boundary. Under it the agent still
+    created `/tmp/agy-escape-probe.md`, outside the worktree entirely. It buys Marshal nothing
+    the worktree does not already provide, and claiming a sandbox we do not have would be worse
+    than claiming none (see issue #175: the worktree is a git-branch boundary, not a jail).
+  * `agy models --output-format json` DOES NOT EXIST despite the 1.1.12 changelog announcing it:
+    the subcommand's parser rejects the flag (`flags provided but not defined: -output-format`,
+    exit 1). This is the same class of upstream drift the ZCode adapter documents - help text and
+    release notes advertising flags the binary refuses - so the tab-splitting text parse stays.
+    Do not "upgrade" it to JSON without re-probing the actual binary.
+  * `--json-schema` works: the envelope gains a `structured_output` dict that really does match
+    the schema. Deliberately NOT wired up. Marshal's `output_schema` is a backend-agnostic
+    contract in `orchestration/structured.py` (prompt instruction, then extract + validate from
+    the final message); routing one backend around it would fork a cross-cutting contract for a
+    single adapter's convenience. The existing path already covers agy.
 
 Model ids carry an effort suffix (agy 1.1.13). A BARE family id is REJECTED:
 `--model gemini-3.5-flash` fails with `invalid model selection ... requires --effort
@@ -268,10 +313,20 @@ class AntigravityBackend(CodingAgentBackend):
         )
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        prompt = self._compose_prompt(task)
         argv = [self.binary]
         argv += self.map_permission(opts.permission)
+        if opts.permission is PermissionMode.READ_ONLY:
+            # `--disable-slash-commands` would silently un-bind `--mode plan`, so read-only pays
+            # for its enforcement by refusing the prompts the flag would have protected.
+            _refuse_slash_leading_prompt(prompt)
+        else:
+            argv += ["--disable-slash-commands"]
         # Structured envelope: response text + per-run token usage (no USD).
         argv += ["--output-format", "json"]
+        # agy's own print-mode deadline. Left at its 5-minute default it silently capped every
+        # longer run, so the engine's timeout never meant what it said.
+        argv += ["--print-timeout", _print_timeout(opts.timeout_s)]
         # Add the worktree to the active workspace; paired with the trust entry prepare() writes,
         # this makes edits land in cwd instead of agy's scratch dir.
         argv += ["--add-dir", str(opts.cwd)]
@@ -283,7 +338,7 @@ class AntigravityBackend(CodingAgentBackend):
         if opts.session_id:
             argv += ["--conversation", opts.session_id]
         # -p must come last with the prompt as its trailing argument.
-        argv += ["-p", self._compose_prompt(task)]
+        argv += ["-p", prompt]
         return argv
 
     def _claimed_cwds(self) -> dict[str, int]:
@@ -443,6 +498,43 @@ class AntigravityBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+#: Seconds shaved off the run timeout when setting agy's own ``--print-timeout``.
+#:
+#: Small and fixed: the point is only to order the two deadlines, not to reserve real work time.
+#: When agy hits its deadline first it returns a JSON envelope — status, error, and the token
+#: counts spent so far — where Marshal's external kill leaves a signalled process and no usage.
+#: Landing the same second is a coin flip, so we take the cheap side of it.
+_PRINT_TIMEOUT_GRACE_S = 5
+
+
+def _print_timeout(timeout_s: int) -> str:
+    """Run timeout -> the Go duration for ``--print-timeout``, set just inside ours. Pure.
+
+    Floored at 1s so a very short timeout still produces a valid duration rather than ``0s``
+    (which agy reads as "no deadline") or a negative one.
+    """
+    return f"{max(1, timeout_s - _PRINT_TIMEOUT_GRACE_S)}s"
+
+
+def _refuse_slash_leading_prompt(prompt: str) -> None:
+    """Raise if a read-only prompt would be eaten by agy's slash-command parser. Pure.
+
+    Fails in ``build_invocation`` — before a worktree is created — because the alternative is a
+    run that reports ERROR with ``num_turns: 0`` and looks like an agent failure rather than a
+    prompt that was never delivered. Leading whitespace does not escape the parse (verified), so
+    it is stripped before the check.
+    """
+    if not prompt.lstrip().startswith("/"):
+        return
+    raise ValueError(
+        "antigravity: a read-only prompt must not begin with '/' — agy parses it as a CLI slash "
+        "command and the agent never runs (status=ERROR, num_turns=0). The usual fix, "
+        "--disable-slash-commands, is unavailable here: agy warns '--mode plan has no effect "
+        "while slash command expansion is disabled', which would leave the read-only tier "
+        "unenforced. Reword the goal so it does not start with '/', or run it as safe-edit."
+    )
 
 
 def _parse_agy_models(stdout: str) -> list[str]:
