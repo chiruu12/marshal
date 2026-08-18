@@ -99,8 +99,8 @@ class CodingAgentBackend(ABC):
         """Return True if ``binary`` is on PATH and responds to ``--version``.
 
         This is a presence probe only - it does not verify authentication or pin a minimum
-        version. Backends that require a version floor (e.g. Antigravity ≥ 1.1.8 for JSON
-        output) override this so availability matches what the adapter will actually invoke.
+        version. Backends that require a version floor (e.g. Antigravity, see its MIN_AGY_VERSION)
+        override this so availability matches what the adapter will actually invoke.
         Backends with a cheap authenticated probe override ``account_info()`` and set
         ``verifies_auth()`` so ``marshal doctor`` can distinguish "installed" from "logged in".
         """

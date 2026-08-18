@@ -179,7 +179,7 @@ Model is set per client in `fleet.config.yaml` (or ad-hoc via `--model` / MCP `m
 | `claude-code` | `claude-*` (e.g. `claude-sonnet-4-6`) | **native** (`total_cost_usd` + tokens) |
 | `command-code` | provider/model (e.g. `zai-org/GLM-5.2`) | **unavailable** (hosted account, no token/cost in stdout) |
 | `goose` | `provider/model` or bare model (e.g. `cursor-agent/auto`) | **native** when the provider reports positive cost; else **unavailable** (best-effort stream-json) |
-| `antigravity` *(experimental)* | `gemini-*`, `claude-*`, etc. | **unavailable** (text-only output) |
+| `antigravity` *(experimental)* | effort-suffixed ids, e.g. `gemini-3.1-pro-high`, `claude-sonnet-4-6` (a bare family name is rejected) | **unavailable** (tokens only; quota, not USD) |
 | `zcode` | `glm-*` bare or `provider/model`, via `ZCODE_MODEL` (no `--model` flag) | **unavailable** (tokens only, no price reported) |
 | `copilot` | `auto` (the only id a Copilot **Free** plan accepts); paid plans pin `claude-*` / `gpt-*` from the CLI catalog | **unavailable** (output tokens only; `premiumRequests` is quota, not money) |
 

@@ -8,6 +8,57 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every Antigravity model id Marshal shipped had become invalid, so every model-pinned run
+  failed.** `agy` moved its catalogue to effort-suffixed ids; a bare family name is now rejected
+  outright (`--model gemini-3.5-flash` → `invalid model selection ... requires --effort`). The
+  curated fallback list still held the old bare names (`gemini-3.5-flash`, `claude-sonnet-4.6`,
+  `gpt-oss-120b`), so the degrade path handed callers a model guaranteed to fail. Replaced with
+  ids captured from a live `agy models` on 1.1.13, and note `claude-sonnet-4-6` — dashes, not
+  dots. Marshal deliberately does **not** synthesise an `--effort` value: which effort to spend
+  is the caller's call, not a default worth guessing.
+
+- **`list_models` reported Antigravity ids that could never be used.** `agy models` prints
+  `id<TAB>Human Label` and the parser kept the whole line, so a driver copying an id straight
+  out of the catalogue got a guaranteed `invalid model selection`. The existing test passed
+  because its fixture omitted the label half; it now carries the real CLI shape.
+
+### Added
+
+- **Antigravity supports `read-only`**, mapped to `--mode plan` (agy ≥ 1.1.12 fixed `--mode`
+  being ignored in headless `-p`). Verified against 1.1.13: a run told to create a file returns
+  `status=SUCCESS` with the directory still empty, and does not block on the "Proceed"
+  affordance its response text mentions. This is what lets Antigravity staff adversarial review
+  teams — at no cost, since it reports no USD. One edge, verified end to end: plan mode answers
+  a *file write* with a plan, but hard-denies a *shell command* and exits non-zero — the tier
+  binds, but prompt these reviewers to read files rather than run commands. A read-only run also skips the host-global
+  `trustedWorkspaces` grant entirely: it cannot write, so it has no reason to mutate a shared
+  settings file, least of all across a fan-out.
+
+  `safe-edit` deliberately stays on `--dangerously-skip-permissions`. `--mode accept-edits`
+  looks like the tighter mapping but is not trustworthy yet: probed without a trust entry it
+  wrote the file **and** returned `status=ERROR`, i.e. a run that succeeded on disk and reads as
+  failed. Promoting it needs a re-probe with the trust entry in place.
+
+- **`marshal doctor` now verifies Antigravity credentials** instead of reporting PATH presence.
+  `agy -p "/usage" --output-format json` is answered by the CLI itself — no agent turn, no
+  quota, `total_tokens: 0` — but still requires auth, so it is a real gate. The plan line also
+  carries weekly quota left, which for a backend with no USD to report is the only cost signal
+  there is. `verifies_auth()` is now True, so a logged-out CLI fails closed rather than
+  green-lighting a fan-out that dies on its first real call.
+
+- **Unattended Antigravity auth via `GEMINI_API_KEY`** (agy 1.1.13), added to the backend's
+  credential names and the child-env allowlist. Requires `modelProvider: "gemini"` in agy's own
+  settings.
+
+### Changed
+
+- **Antigravity's minimum `agy` is now 1.1.12** (was 1.1.8). This is a safety floor, not a
+  feature floor: older builds silently ignore `--mode` in headless `-p`, so a `read-only` run
+  would fall back to the default mode and could write. A permission tier that does not bind is
+  worse than one that is unavailable.
+
 ## [0.4.0] - 2026-08-17
 
 ### Fixed

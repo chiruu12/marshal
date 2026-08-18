@@ -278,10 +278,10 @@ def test_too_old_agy_fails_with_version_floor(
     backend = _by_name(checks, "backend:antigravity")
     assert backend.status == FAIL
     assert "1.1.7" in backend.detail
-    assert "1.1.8" in backend.detail
+    assert "1.1.12" in backend.detail
     assert "too old" in backend.detail
     assert "not on PATH" not in backend.detail
-    assert "1.1.8" in (backend.fix or "")
+    assert "1.1.12" in (backend.fix or "")
 
 
 def test_probe_missing_from_snapshot_constructs_fresh_backend(tmp_path: Path, monkeypatch) -> None:

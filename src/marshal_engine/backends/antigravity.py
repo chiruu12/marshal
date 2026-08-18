@@ -1,9 +1,9 @@
 """Google Antigravity CLI adapter (`agy`).
 
-Invocation reference (Antigravity CLI 2.0, `agy`):
+Invocation reference (verified against `agy` 1.1.13):
 
-    agy [--dangerously-skip-permissions] [--output-format json] [--add-dir CWD]
-        [-m MODEL] [--conversation ID] -p "<PROMPT>"
+    agy [--mode plan | --dangerously-skip-permissions] [--output-format json] [--add-dir CWD]
+        [--model MODEL] [--conversation ID] -p "<PROMPT>"
 
 `agy -p` runs one prompt non-interactively. Run with cwd = the target repo (agy operates on
 its launch folder; there is no `--dir` flag).
@@ -16,18 +16,38 @@ Honest gaps from research (these shape what we expose):
     (terminal ``event:"result"`` nests the same object under ``result``).
     ``check_available()`` enforces this floor (unparsable / too-old → unavailable) so doctor
     and graceful client-skip never green-light a CLI that will fail every run.
-  * Auth is OAuth-first; unattended `ANTIGRAVITY_API_KEY` is an unconfirmed upstream request.
-    Expect a one-time OAuth on a persistent runner. There is no cheap dedicated
-    `auth`/`status`/`whoami` CLI probe (`agy --help` has none), so `verifies_auth()` stays
-    False — doctor reports CLI presence + version floor only and must not claim credentials
-    are valid. Prefer an honest path-only gap over a hang-prone "starts language server" probe.
+  * Auth is OAuth-first, and since 1.1.13 also unattended via `GEMINI_API_KEY` (set
+    `modelProvider: "gemini"` in agy's settings; `GOOGLE_GEMINI_BASE_URL` for a custom
+    endpoint). `ANTIGRAVITY_API_KEY` remains an unconfirmed upstream request.
+    There IS now a cheap authenticated-only probe: print-mode slash commands (agy >= 1.1.11)
+    are answered by the CLI without starting an agent turn or spending quota. `account_info()`
+    uses `-p "/usage" --output-format json`, VERIFIED to return `status=SUCCESS` with
+    `usage.total_tokens == 0`, so `verifies_auth()` is True and doctor fails closed on a
+    logged-out CLI instead of green-lighting a fan-out that dies on its first real run.
+    It also carries quota headroom (weekly / 5-hour percentages) — for a backend with no USD
+    to report, remaining quota is the only cost signal there is.
   * `agy` checks for a TTY; without one, stdout can be swallowed while exit code stays 0. A PTY
     wrapper (e.g. `script -q /dev/null`) belongs in the runner layer - TODO. Until then treat an
     empty success as suspect.
   * JSON envelopes carry ``conversation_id`` (stamped onto ``session_id``). ``--conversation``
     is still passed through when the caller already has an id; resume is not first-class yet.
-  * Only `safe-edit` and `yolo` are reliably non-prompting headless. There is no confirmed
-    one-shot read-only flag (the read-only presets prompt), so READ_ONLY is unsupported here.
+  * `read-only` maps to `--mode plan` (agy >= 1.1.12, which fixed `--mode` being ignored in
+    headless `-p`). VERIFIED 2026-08-19 on 1.1.13: a run told to create a file returned
+    `status=SUCCESS` in 6.9s with the directory still EMPTY - it plans instead of writing, and
+    does not block on the "Proceed" affordance its own response text mentions. This is what
+    makes Antigravity usable as a read-only reviewer in adversarial teams.
+    KNOWN EDGE (verified end-to-end through `marshal run`): plan mode treats a *file write* and
+    a *shell command* differently. A write is answered with a plan and `status=SUCCESS`; a shell
+    command is HARD-DENIED and the run exits non-zero (`permission check failed for command
+    ... user denied permission to run command`). So the tier genuinely binds - that denial is
+    the guarantee working - but a reviewer prompt that reaches for `grep`/`pytest` fails the
+    run rather than degrading. Prompt read-only Antigravity reviewers to read files and not to
+    run commands.
+  * `safe-edit` deliberately stays on `--dangerously-skip-permissions`. `--mode accept-edits`
+    looks like the tighter mapping and is NOT safe to adopt on current evidence: probed without
+    a trust entry it wrote the file AND returned `status=ERROR` ("not a valid artifact path"),
+    i.e. a run that succeeded on disk but reads as failed - exactly the record/reality split
+    this project treats as a bug class. Re-probe it WITH the trust entry before promoting it.
   * WORKSPACE TRUST (fixed 2026-06-27): headless `agy` cannot establish workspace trust without a
     TTY, so it used to write edits into its scratch dir (`~/.gemini/antigravity-cli/scratch`)
     instead of `cwd` ("you do not have an active workspace"). `prepare()` briefly registers the
@@ -46,7 +66,10 @@ Honest gaps from research (these shape what we expose):
     Nothing is newly unsafe - it is the same residual as any hard kill - but a terminal-looking
     record makes it easy to assume the cleanup already happened. `clean` is still what reclaims it.
 
-Models available: gemini-3.1-pro, gemini-3.5-flash, claude-sonnet-4.6, claude-opus-4.6, gpt-oss-120b.
+Model ids carry an effort suffix (agy 1.1.13). A BARE family id is REJECTED:
+`--model gemini-3.5-flash` fails with `invalid model selection ... requires --effort
+(available: low, medium, high)`, so pin the suffixed id. Marshal does not synthesise an
+`--effort` value — which effort to spend is the caller's call, not a default worth guessing.
 """
 
 from __future__ import annotations
@@ -84,18 +107,33 @@ from .base import CodingAgentBackend, parse_jsonl
 #: backend so tests can point it at a temp file instead of the real home.
 DEFAULT_SETTINGS_PATH = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
 
-#: Minimum ``agy`` that supports ``--output-format json`` (verified 1.1.8). Availability fails
-#: closed below this so doctor / client-skip never treat a too-old CLI as runnable.
-MIN_AGY_VERSION: tuple[int, int, int] = (1, 1, 8)
+#: Minimum ``agy`` this adapter will drive. Availability fails closed below it so doctor /
+#: client-skip never treat a too-old CLI as runnable.
+#:
+#: 1.1.8 brought ``--output-format json``; the floor is 1.1.12 because that release fixed
+#: ``--mode`` being SILENTLY IGNORED in headless ``-p``. That makes it a safety floor, not a
+#: feature floor: on an older CLI a ``read-only`` run would drop back to the default mode and
+#: could write. A permission tier that does not bind is worse than one that is unavailable.
+MIN_AGY_VERSION: tuple[int, int, int] = (1, 1, 12)
 
-#: Static fallback when ``agy models`` cannot be probed.
-#: Sourced from this module's docstring / docs/model-playbook.md (antigravity rows).
+#: Static fallback when ``agy models`` cannot be probed. Captured from a live ``agy models`` on
+#: 1.1.13 — every id here is one the CLI accepts verbatim.
+#:
+#: These MUST stay suffixed. The previous list held bare family names (``gemini-3.5-flash``,
+#: ``claude-sonnet-4.6``) which the CLI now rejects outright, so the fallback path handed every
+#: caller a model id guaranteed to fail the run. Note ``claude-sonnet-4-6``: dashes, not dots.
 _STATIC_MODELS: tuple[str, ...] = (
-    "gemini-3.1-pro",
-    "gemini-3.5-flash",
-    "claude-sonnet-4.6",
-    "claude-opus-4.6",
-    "gpt-oss-120b",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-low",
+    "gemini-3.5-flash-high",
+    "gemini-3.5-flash-medium",
+    "gemini-3.5-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
 )
 
 _DEFAULT_UNAVAILABLE = "CLI not on PATH / not runnable"
@@ -104,7 +142,7 @@ _DEFAULT_UNAVAILABLE = "CLI not on PATH / not runnable"
 class AntigravityBackend(CodingAgentBackend):
     name = "antigravity"
     binary = "agy"
-    credential_env_vars = ("ANTIGRAVITY_API_KEY",)
+    credential_env_vars = ("ANTIGRAVITY_API_KEY", "GEMINI_API_KEY")
     # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs
     # in-process via this lock, cross-process via ``_settings_file_lock`` on a sibling sidecar).
     _settings_lock = threading.Lock()
@@ -123,38 +161,38 @@ class AntigravityBackend(CodingAgentBackend):
     _thread_claims = threading.local()
     settings_path = DEFAULT_SETTINGS_PATH
     capabilities = Capabilities(
-        json_output=True,  # --output-format json (agy ≥ 1.1.8)
+        json_output=True,  # --output-format json (agy >= 1.1.8; see MIN_AGY_VERSION)
         native_usage=False,  # tokens yes; no USD in CLI output — stay honest
-        permission_modes=frozenset({PermissionMode.SAFE_EDIT, PermissionMode.YOLO}),
+        permission_modes=frozenset(
+            {PermissionMode.READ_ONLY, PermissionMode.SAFE_EDIT, PermissionMode.YOLO}
+        ),
         permission_fidelity=PermissionFidelity.BOUNDARY_ONLY,
     )
 
-    # safe-edit and yolo both map to skip-permissions today: the default preset prompts (which
-    # deadlocks headless), and there is no distinct one-shot safe-edit flag. Tighter scoping
-    # comes from /config presets via the engine config layer later.
+    # read-only is a real tier here: `--mode plan` produces a plan and writes nothing (verified;
+    # see module docstring). safe-edit and yolo still share skip-permissions — the default preset
+    # prompts (which deadlocks headless), and `--mode accept-edits` is not yet trustworthy
+    # headless (it wrote the file and still reported ERROR). Do not collapse read-only into
+    # those two: it is the mode that lets Antigravity join review teams without write access.
     _PERMISSION: ClassVar[dict[PermissionMode, list[str]]] = {
+        PermissionMode.READ_ONLY: ["--mode", "plan"],
         PermissionMode.SAFE_EDIT: ["--dangerously-skip-permissions"],
         PermissionMode.YOLO: ["--dangerously-skip-permissions"],
     }
 
     # --- hooks ---------------------------------------------------------------------------
 
-    def _unsupported_permission_error(self, mode: PermissionMode) -> str:
-        return (
-            f"antigravity: permission mode {mode!r} is not supported headless "
-            "(only safe-edit and yolo)"
-        )
-
     def check_available(self) -> bool:
-        """True only when ``agy`` is on PATH and reports a JSON-capable version (≥ 1.1.8).
+        """True only when ``agy`` is on PATH and meets ``MIN_AGY_VERSION``.
 
-        The adapter always passes ``--output-format json``; a pre-1.1.8 CLI would pass a
-        presence-only probe then fail every run. Unparsable ``--version`` output fails closed.
+        A presence-only probe would green-light a CLI that ignores ``--mode`` (so a read-only
+        run could write) or predates ``--output-format json`` (so every run fails to parse).
+        Unparsable ``--version`` output fails closed.
         """
         return self._probe_availability()[0]
 
     def unavailable_detail(self) -> str:
-        """Doctor detail: names the ≥ 1.1.8 floor when the CLI is present but unusable."""
+        """Doctor detail: names the version floor when the CLI is present but unusable."""
         return self._probe_availability()[1]
 
     def _probe_availability(self) -> tuple[bool, str]:
@@ -178,36 +216,54 @@ class AntigravityBackend(CodingAgentBackend):
         floor = _fmt_agy_version(MIN_AGY_VERSION)
         if ver is None:
             return False, (
-                f"agy version unparsable (need ≥ {floor} for --output-format json)"
+                f"agy version unparsable (need ≥ {floor} for --mode and --output-format json)"
             )
         if ver < MIN_AGY_VERSION:
             return False, (
                 f"agy {_fmt_agy_version(ver)} too old "
-                f"(need ≥ {floor} for --output-format json)"
+                f"(need ≥ {floor} for --mode and --output-format json)"
             )
         return True, ""
 
     def account_info(self) -> dict[str, str] | None:
-        """No cheap auth/status/whoami probe on ``agy`` (``agy --help`` has none).
+        """Authenticated-only probe via print-mode ``/usage`` (agy >= 1.1.11). Never raises.
 
-        Always None. Hang-prone TTY probes are refused — doctor reports CLI presence +
-        version floor only.
+        ``agy -p "/usage" --output-format json`` is answered by the CLI itself: no agent turn,
+        no quota, ``usage.total_tokens == 0`` — but it still needs credentials, which is what
+        makes it an auth gate rather than another PATH check. The returned ``plan`` string
+        carries weekly quota headroom, the closest thing this backend has to a cost signal.
         """
-        return None
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "-p", "/usage", "--output-format", "json"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                **DETACHED_STDIO,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        return _parse_agy_usage_command(proc.stdout or "")
 
     def verifies_auth(self) -> bool:
-        # Honest gap: no authenticated-only probe; a None from account_info is "unsupported",
-        # not "logged out". Doctor must not claim credentials are valid from PATH alone.
-        return False
+        # True since the print-mode /usage probe landed: a None from account_info() now really
+        # does mean "not authenticated (or the probe failed)", so doctor may fail closed on it.
+        return True
 
     def available_models(self) -> ModelCatalog:
-        """Model ids from ``agy models``, falling back to the curated playbook list.
+        """Model ids from ``agy models``, falling back to the curated list.
 
-        One model id per stdout line (verified against the real CLI).
+        Rows are ``id<TAB>Human Label``; only the id half is a model. See
+        ``_parse_agy_models`` for why keeping the whole line was a live bug.
         """
         return self._probe_models(
             [self.binary, "models"],
-            lambda stdout: [ln.strip() for ln in stdout.splitlines() if ln.strip()],
+            _parse_agy_models,
             _STATIC_MODELS,
         )
 
@@ -258,6 +314,13 @@ class AntigravityBackend(CodingAgentBackend):
         paths are pruned as a backstop. Serialized for parallel runs. Fails closed on a malformed or
         unreadable settings file (preserved byte-for-byte).
         """
+        if opts.permission is PermissionMode.READ_ONLY:
+            # A plan-mode run cannot write, so it has nothing to gain from a trust entry — and a
+            # read-only fan-out is exactly where mutating a HOST-GLOBAL settings file is least
+            # welcome. `--add-dir` (still passed) is what lets it read the worktree; trust only
+            # governs writes. `release_trust()` carries the symmetric guard — see the note there
+            # for why the per-thread claim map is not enough on its own.
+            return
         key = str(Path(opts.cwd).resolve())
         # ONE critical section: mutate the settings file and record provenance under the same
         # in-process lock + cross-process flock. Splitting them inverted provenance under
@@ -296,6 +359,13 @@ class AntigravityBackend(CodingAgentBackend):
         overlapping runs cannot be exercised end-to-end in a unit test, and duplicating this logic
         in a test would mean the test could not catch a change here.
         """
+        if opts.permission is PermissionMode.READ_ONLY:
+            # Symmetric with `prepare()`: a read-only run never took a claim, so it must never
+            # drop one. The per-thread claim map alone does NOT provide this, because it is keyed
+            # by cwd rather than by run - a read-only run sharing a thread and a cwd with a
+            # write run would release the WRITE run's claim and revoke trust underneath it,
+            # silently redirecting that run's edits to agy's scratch dir.
+            return
         key = str(Path(opts.cwd).resolve())
         # Only release what THIS run actually claimed. A `prepare()` that raised before registering
         # never claimed anything, and its teardown must not decrement a sibling's live claim.
@@ -373,6 +443,49 @@ class AntigravityBackend(CodingAgentBackend):
 
 
 # --- module helpers ----------------------------------------------------------------------
+
+
+def _parse_agy_models(stdout: str) -> list[str]:
+    """``agy models`` stdout -> model ids. Pure.
+
+    Each row is ``id<TAB>Human Label``. The label is not part of the id, and passing the joined
+    line back as a model makes the CLI reject the run with ``invalid model selection`` — so a
+    driver that copied an id straight out of ``list_models`` got a guaranteed failure. Take the
+    first tab-separated field only, and drop the CLI's progress line if it ever moves to stdout
+    (it is on stderr as of 1.1.13, but a model id ending in an ellipsis is not a real id).
+    """
+    ids: list[str] = []
+    for line in stdout.splitlines():
+        candidate = line.split("\t", 1)[0].strip()
+        if candidate and not candidate.endswith("..."):
+            ids.append(candidate)
+    return ids
+
+
+def _parse_agy_usage_command(stdout: str) -> dict[str, str] | None:
+    """``/usage`` envelope -> ``{"plan": ...}``, or None when it does not prove authentication.
+
+    Response rows are tab-separated ``group, limit, remaining, resets_at``. Only the weekly rows
+    are summarised — the five-hour window refills on its own and is noise on a doctor line. Any
+    shape we do not recognise returns None, and doctor reads that as "not authenticated (or the
+    probe failed)": a false negative costs a re-run, a false OK costs a whole fan-out. Pure.
+    """
+    envelope = _extract_agy_envelope(stdout)
+    if envelope is None or envelope.get("status") != "SUCCESS":
+        return None
+    response = envelope.get("response")
+    if not isinstance(response, str) or not response.strip():
+        return None
+    weekly = []
+    for line in response.splitlines():
+        parts = [part.strip() for part in line.split("\t")]
+        if len(parts) >= 3 and "weekly" in parts[1].lower() and parts[0] and parts[2]:
+            weekly.append(f"{parts[0]} {parts[2]}")
+    if not weekly:
+        # Authenticated (the CLI answered) but the row shape drifted. Say so plainly rather than
+        # inventing a quota figure — an unparsed row is not evidence of headroom.
+        return {"plan": "logged-in"}
+    return {"plan": "logged-in (weekly quota left: " + ", ".join(weekly) + ")"}
 
 
 def _parse_agy_version(raw: str) -> tuple[int, int, int] | None:
