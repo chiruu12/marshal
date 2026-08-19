@@ -40,7 +40,9 @@ Marshal's job is to run autonomous coding agents safely. The guarantees and boun
   inside a repo you run agents against puts the run tree back under it and forfeits the
   relative-path part of this — the per-run clone still holds.
   None of that makes it a sandbox: an agent can still write to an **absolute** path anywhere you
-  can, so only point Marshal at repos and backends you trust. Driver-supplied `task_id` / run
+  can, so only point Marshal at repos and backends you trust. If you need a real filesystem
+  boundary, see *Containing a run at the OS level* below - it is verified to work, but it is a
+  wrapper you supply, not something Marshal provides. Driver-supplied `task_id` / run
   directory names are validated before any git op: charset `[A-Za-z0-9._-]` (must start alphanumeric; no leading `.` or `-`),
   length-capped, and the resolved path must be a strict descendant of the repo's run root
   (`is_relative_to`, equality with the base dir refused so cleanup cannot wipe the shared root).
@@ -127,6 +129,79 @@ enable it only when you trust the driver and everything that can reach its promp
 - **Keep your backend CLIs and their credentials secure.** Marshal inherits whatever access the
   logged-in CLI has.
 - **Review what `integrate` will merge.** Always `collect_run` and inspect the diff first.
+
+## Containing a run at the OS level (optional, operator-supplied)
+
+Marshal itself does not sandbox a run, and no backend it drives offers a filesystem boundary to
+delegate to — `agy --sandbox` reads like one but is not: probed with a goal that reached outside
+its `cwd`, the agent created `/tmp/agy-escape-probe.md` under the flag. So containment, if you
+want it, has to wrap Marshal from outside.
+
+That works, and is **verified end to end** on macOS: a real `marshal run` under `sandbox-exec`
+wrote its file inside the worktree and was refused an absolute-path write to `~/Documents`, with
+the agent reporting `operation not permitted` back in its own transcript.
+
+```scheme
+(version 1)
+(allow default)
+; Deny writes everywhere, then allow back only what a fleet run legitimately needs.
+(deny file-write*)
+(allow file-write*
+  (subpath "/Users/you/.marshal")             ; run state, ledger, worktrees
+  (subpath "/path/to/your/repo")              ; the workspace itself
+  (subpath "/path/to/the/git/common/dir")     ; see below - only if the repo is a git worktree
+  (subpath "/Users/you/.gemini/antigravity-cli")  ; per-backend private state - see below
+  (subpath "/Users/you/.cache/uv")            ; only when launching via `uv run`
+  (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/dev"))
+```
+
+```bash
+sandbox-exec -f marshal.sb marshal run --client <client> --goal "…"
+```
+
+**Keep the allowlist this narrow.** An earlier draft of this profile also allowed `~/.config`,
+`~/.local`, and `~/Library/Application Support` wholesale, which quietly gives most of the
+boundary back: `~/.local/bin` is on `PATH`, so an agent that can write there can plant an
+executable the operator will later run. None of those are needed. Verified by running the same
+escape goal under the narrow profile: the agent wrote its file inside the worktree and was
+refused `~/.local/bin/marshal-persist`, reporting `not permitted` itself.
+
+Leave network open: agents call provider APIs, and a network-denying profile fails every run.
+
+**On Linux there is no recipe here, deliberately.** `bubblewrap` is the equivalent mechanism — a
+read-only root with a writable bind per path above — but everything in this section was verified
+against macOS `sandbox-exec`, and the write set is exactly the part that does not carry over:
+backend state directories differ by platform, and they are discovered by watching runs fail. A
+Bubblewrap invocation written from here would look authoritative and be untested, which in a
+security document is worse than its absence. Build one the same way this was built — narrowest
+profile first, widen only where a real run fails — and it will be right for your machine.
+
+These write paths are easy to miss, and were found by the profile failing a real run rather than
+by reading code:
+
+- **The git common dir, when your repo is itself a git worktree.** Its `.git` is a file pointing
+  into the parent repo, so allowing the checkout is not enough — publishing a run branch failed
+  with `cannot open '…/.git/worktrees/<name>/FETCH_HEAD': Operation not permitted`.
+- **Each backend's private state directory.** Antigravity's `prepare()` writes
+  `~/.gemini/antigravity-cli/settings.lock` - and only there, so the grant does not need to be
+  `~/.gemini` wholesale, which would expose persistent Gemini configuration. Other backends have
+  their own. These are
+  undocumented upstream and move between releases, so treat a newly failing run under a
+  previously working profile as a state-path change, not a Marshal bug. A backend whose state dir
+  is not writable can also read as simply *absent*: under this profile `marshal drift` reported
+  `goose` as not installed, because its probe needs to write before it will answer.
+
+What this does **not** contain: the paths that must stay writable are still writable. An agent can
+corrupt the workspace repo, and it can write into `~/.marshal` — which holds the run ledger and
+other runs' worktrees. This bounds blast radius to what Marshal legitimately touches; it does not
+isolate a run from Marshal's own state, and it is not a defence against an agent you have reason
+to believe is hostile.
+
+Which is the honest cost of this control: the allowlist is per-machine and per-backend, it is
+discovered by watching runs fail, and it needs revisiting when a backend CLI moves. That is why
+it is documented as an operator-supplied wrapper rather than shipped as a Marshal flag — a
+sandbox Marshal maintained across every backend and both platforms would be a standing
+compatibility burden, and a stale allowlist fails runs rather than failing safe.
 
 ## Known trust-boundary gaps (honest inventory)
 
