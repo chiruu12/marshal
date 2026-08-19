@@ -371,6 +371,24 @@ def run_checks(
         if not backend.check_available():
             checks.append(Check(f"backend:{name}", FAIL, backend.unavailable_detail(), hint))
             continue
+
+        if name == "goose":
+            if not backend.verifies_auth():
+                checks.append(
+                    Check(
+                        f"backend:{name}",
+                        WARN,
+                        "available (authentication missing / run 'goose configure')",
+                        hint,
+                    )
+                )
+                continue
+            checks.append(Check(f"backend:{name}", OK, "available & authenticated"))
+            info = backend.account_info()
+            if info:
+                checks.append(Check(f"plan:{name}", OK, _format_plan(info)))
+            continue
+
         # The CLI is present. If the backend exposes an authenticated-only probe (account_info),
         # use it to verify credentials too: a logged-out CLI still passes `--version` but dies on
         # the first real run, so doctor must not green-light it as merely "available".
