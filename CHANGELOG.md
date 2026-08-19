@@ -8,6 +8,8 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-19
+
 ### Fixed
 
 - **A run could be recorded terminal while it still held its enforce-budget concurrency slot.**
@@ -18,7 +20,6 @@ versions may include breaking API changes until 1.0.
   said `failed`, and told to "wait for it to finish". Both terminal paths now release before
   stamping; the `finally` remains as an idempotent backstop. Safe against overshoot because the
   spend is already in the ledger by that point, which is what the next spawn re-checks. (#278)
-
 
 - **Antigravity runs were silently capped at 5 minutes regardless of their configured timeout.**
   `agy` enforces its own print-mode deadline via `--print-timeout`, which defaults to 5m, and
@@ -1917,7 +1918,9 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
   present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
-[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/chiruu12/marshal/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/chiruu12/marshal/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chiruu12/marshal/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/chiruu12/marshal/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/chiruu12/marshal/compare/v0.2.1...v0.2.2
