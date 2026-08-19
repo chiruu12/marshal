@@ -12,6 +12,7 @@ from ...core.layout import marshal_dir
 from ...orchestration.fleet import Fleet
 from ..doctor import FAIL, OK, WARN, doctor_report, run_checks
 from ..drift import INFO, detect_drift
+from ..drift import WARN as DRIFT_WARN
 from ..scaffold import scaffold_fleet_config
 from ..workspaces import (
     WorkspaceRegistry,
@@ -128,14 +129,21 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _cmd_drift(args: argparse.Namespace) -> int:
     """Report where an installed backend CLI has moved away from what its adapter expects.
 
-    Exits non-zero only on a ``fail`` - a curated fallback naming a model the CLI has dropped.
-    Version warnings deliberately do not, so this stays usable as a scheduled check against CLIs
-    that release nightly.
+    Exits non-zero on a ``fail`` - a curated fallback naming a model the CLI has dropped. Version
+    warnings do not, by default, so this stays usable as a scheduled check against CLIs that
+    release nightly.
+
+    ``--fail-on warn`` widens that, and exists because the default is wrong for one real caller: a
+    scheduler that only speaks up on a non-zero exit would never surface a version warning, and a
+    version warning is the signal that catches a CLI moving underneath its adapter - the common
+    case, and the one this command was built for. Which severity should interrupt you is the
+    caller's judgement, so it belongs in the exit code rather than in a log nobody opens.
     """
     report = detect_drift()
+    breached = report.fails + (report.warns if args.fail_on == DRIFT_WARN else 0)
     if args.json:
         print(json.dumps(report.model_dump(mode="json"), indent=2))
-        return 1 if report.fails else 0
+        return 1 if breached else 0
     for f in report.findings:
         print(f"{_GLYPH[f.status]} {f.backend} {f.kind}: {f.detail}")
         if f.fix and f.status != OK:
@@ -143,7 +151,7 @@ def _cmd_drift(args: argparse.Namespace) -> int:
     if report.skipped:
         print(f"\nnot installed, skipped: {', '.join(report.skipped)}")
     print(f"\n{len(report.checked)} backend(s) checked, {report.fails} drifted, {report.warns} unverified")
-    return 1 if report.fails else 0
+    return 1 if breached else 0
 
 
 _GLYPH = {OK: "✓", INFO: "·", WARN: "⚠", FAIL: "✗"}
