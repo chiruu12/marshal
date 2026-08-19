@@ -151,8 +151,7 @@ the agent reporting `operation not permitted` back in its own transcript.
   (subpath "/path/to/your/repo")              ; the workspace itself
   (subpath "/path/to/the/git/common/dir")     ; see below - only if the repo is a git worktree
   (subpath "/Users/you/.gemini")              ; per-backend private state - see below
-  (subpath "/Users/you/.cache") (subpath "/Users/you/.config") (subpath "/Users/you/.local")
-  (subpath "/Users/you/Library/Caches") (subpath "/Users/you/Library/Application Support")
+  (subpath "/Users/you/.cache/uv")            ; only when launching via `uv run`
   (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/dev"))
 ```
 
@@ -160,11 +159,22 @@ the agent reporting `operation not permitted` back in its own transcript.
 sandbox-exec -f marshal.sb marshal run --client <client> --goal "…"
 ```
 
-On Linux the equivalent is `bubblewrap` (`bwrap --ro-bind / / --bind ~/.marshal ~/.marshal …`).
+**Keep the allowlist this narrow.** An earlier draft of this profile also allowed `~/.config`,
+`~/.local`, and `~/Library/Application Support` wholesale, which quietly gives most of the
+boundary back: `~/.local/bin` is on `PATH`, so an agent that can write there can plant an
+executable the operator will later run. None of those are needed. Verified by running the same
+escape goal under the narrow profile: the agent wrote its file inside the worktree and was
+refused `~/.local/bin/marshal-persist`, reporting `not permitted` itself.
+
 Leave network open: agents call provider APIs, and a network-denying profile fails every run.
 
-Two write paths are easy to miss, and both were found by the profile failing a real run rather
-than by reading code:
+On Linux the equivalent approach is `bubblewrap` — `--ro-bind / /` with a `--bind` for each
+writable path above, plus `--dev /dev` and a writable `/tmp`. **That form is untested here**; the
+verification in this section is macOS `sandbox-exec` only, and a Linux profile should be proven
+against a real run the same way before being relied on.
+
+These write paths are easy to miss, and were found by the profile failing a real run rather than
+by reading code:
 
 - **The git common dir, when your repo is itself a git worktree.** Its `.git` is a file pointing
   into the parent repo, so allowing the checkout is not enough — publishing a run branch failed
@@ -172,7 +182,15 @@ than by reading code:
 - **Each backend's private state directory.** Antigravity's `prepare()` writes
   `~/.gemini/antigravity-cli/settings.lock`; other backends have their own. These are
   undocumented upstream and move between releases, so treat a newly failing run under a
-  previously working profile as a state-path change, not a Marshal bug.
+  previously working profile as a state-path change, not a Marshal bug. A backend whose state dir
+  is not writable can also read as simply *absent*: under this profile `marshal drift` reported
+  `goose` as not installed, because its probe needs to write before it will answer.
+
+What this does **not** contain: the paths that must stay writable are still writable. An agent can
+corrupt the workspace repo, and it can write into `~/.marshal` — which holds the run ledger and
+other runs' worktrees. This bounds blast radius to what Marshal legitimately touches; it does not
+isolate a run from Marshal's own state, and it is not a defence against an agent you have reason
+to believe is hostile.
 
 Which is the honest cost of this control: the allowlist is per-machine and per-backend, it is
 discovered by watching runs fail, and it needs revisiting when a backend CLI moves. That is why
