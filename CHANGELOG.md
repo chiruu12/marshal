@@ -11,62 +11,55 @@ versions may include breaking API changes until 1.0.
 ### Fixed
 
 - **Antigravity runs were silently capped at 5 minutes regardless of their configured timeout.**
-  `agy` enforces its own print-mode deadline via `--print-timeout`, which defaults to 5m; Marshal
-  never set it. Any longer run died at 5m with `error: "timeout waiting for response"` — that is
-  three of the four duration presets (`medium` 20m, `large` 100m, `long` 400m), including the one
-  documented as the typical safe-edit run. It is now derived from the run's timeout and set just
-  *inside* it, so agy returns a parseable envelope with token counts rather than being hard-killed
-  by the external timeout with no usage recorded.
+  `agy` enforces its own print-mode deadline via `--print-timeout`, which defaults to 5m, and
+  Marshal never set it — so any longer run died at 5m with `error: "timeout waiting for response"`.
+  That is three of the four duration presets (`medium` 20m, `large` 100m, `long` 400m). It is now
+  derived from the run's timeout and set just *inside* it, so agy returns a parseable envelope with
+  token counts rather than being hard-killed by the external timeout with no usage recorded.
 
 - **A goal beginning with `/` was parsed as a CLI slash command, and the agent never ran.**
-  `agy -p "/usage ..."` returns `status=ERROR` with `num_turns: 0`, and `_compose_prompt` passes
-  the goal through verbatim, so any such task silently never happened. `safe-edit` and `yolo` now
-  pass `--disable-slash-commands`, verified to fix it end to end through `marshal run`.
+  `agy -p "/usage ..."` returns `status=ERROR` with `num_turns: 0`, and the goal reaches agy
+  verbatim, so such a task silently never happened while reading as an agent failure. `safe-edit`
+  and `yolo` now pass `--disable-slash-commands`.
 
   `read-only` deliberately does **not** get that flag: agy warns `--mode plan has no effect while
-  slash command expansion is disabled`, and it means it — with both flags set, a write was stopped
-  only by the default mode's unattended denial rather than by the plan tier, which is a permission
-  mode that does not bind. Read-only instead refuses a slash-leading prompt in `build_invocation`,
-  before a worktree is spent, with an error naming both why the usual flag is unavailable and the
-  way out. A leading space does not escape agy's parse, so it does not escape the check either.
+  slash command expansion is disabled`, and it means it — with both set, the plan tier does not
+  bind. Read-only instead refuses a slash-leading goal in `build_invocation`, before a worktree is
+  spent, with an error naming the way out. A leading space does not escape agy's parse, so it does
+  not escape the check either.
 
 - **Every Antigravity model id Marshal shipped had become invalid, so every model-pinned run
-  failed.** `agy` moved its catalogue to effort-suffixed ids; a bare family name is now rejected
-  outright (`--model gemini-3.5-flash` → `invalid model selection ... requires --effort`). The
-  curated fallback list still held the old bare names (`gemini-3.5-flash`, `claude-sonnet-4.6`,
-  `gpt-oss-120b`), so the degrade path handed callers a model guaranteed to fail. Replaced with
-  ids captured from a live `agy models` on 1.1.13, and note `claude-sonnet-4-6` — dashes, not
-  dots. Marshal deliberately does **not** synthesise an `--effort` value: which effort to spend
-  is the caller's call, not a default worth guessing.
+  failed.** `agy` moved its catalogue to effort-suffixed ids, and a bare family name is now
+  rejected outright (`--model gemini-3.5-flash` → `invalid model selection ... requires --effort`).
+  The curated fallback still held the old bare names, so the degrade path handed callers a model
+  guaranteed to fail. Replaced with current ids — note `claude-sonnet-4-6`, dashes rather than
+  dots. Marshal does **not** synthesise an `--effort` value: which effort to spend is the caller's
+  call, not a default worth guessing.
 
 - **`list_models` reported Antigravity ids that could never be used.** `agy models` prints
-  `id<TAB>Human Label` and the parser kept the whole line, so a driver copying an id straight
-  out of the catalogue got a guaranteed `invalid model selection`. The existing test passed
-  because its fixture omitted the label half; it now carries the real CLI shape.
+  `id<TAB>Human Label` and the parser kept the whole line, so a driver copying an id straight out
+  of the catalogue got a guaranteed `invalid model selection`.
 
 ### Added
 
-- **Antigravity supports `read-only`**, mapped to `--mode plan` (agy ≥ 1.1.12 fixed `--mode`
-  being ignored in headless `-p`). Verified against 1.1.13: a run told to create a file returns
-  `status=SUCCESS` with the directory still empty, and does not block on the "Proceed"
-  affordance its response text mentions. This is what lets Antigravity staff adversarial review
-  teams — at no cost, since it reports no USD. One edge, verified end to end: plan mode answers
-  a *file write* with a plan, but hard-denies a *shell command* and exits non-zero — the tier
-  binds, but prompt these reviewers to read files rather than run commands. A read-only run also skips the host-global
-  `trustedWorkspaces` grant entirely: it cannot write, so it has no reason to mutate a shared
-  settings file, least of all across a fan-out.
+- **Antigravity supports `read-only`**, mapped to `--mode plan` (agy ≥ 1.1.12 fixed `--mode` being
+  ignored in headless `-p`). This is what lets Antigravity staff adversarial review teams — at no
+  cost, since it reports no USD. One edge: plan mode answers a *file write* with a plan, but
+  hard-denies a *shell command* and exits non-zero, so prompt these reviewers to read files rather
+  than run commands. A read-only run also skips the host-global `trustedWorkspaces` grant
+  entirely: it cannot write, so it has no reason to mutate a shared settings file, least of all
+  across a fan-out.
 
-  `safe-edit` deliberately stays on `--dangerously-skip-permissions`. `--mode accept-edits`
-  looks like the tighter mapping but is not trustworthy yet: probed without a trust entry it
-  wrote the file **and** returned `status=ERROR`, i.e. a run that succeeded on disk and reads as
-  failed. Promoting it needs a re-probe with the trust entry in place.
+  `safe-edit` stays on `--dangerously-skip-permissions`. `--mode accept-edits` looks like the
+  tighter mapping but is not one: the agent is free to reach for a shell command, which
+  accept-edits denies with nobody headless to approve it, failing the run.
 
 - **`marshal doctor` now verifies Antigravity credentials** instead of reporting PATH presence.
-  `agy -p "/usage" --output-format json` is answered by the CLI itself — no agent turn, no
-  quota, `total_tokens: 0` — but still requires auth, so it is a real gate. The plan line also
-  carries weekly quota left, which for a backend with no USD to report is the only cost signal
-  there is. `verifies_auth()` is now True, so a logged-out CLI fails closed rather than
-  green-lighting a fan-out that dies on its first real call.
+  `agy -p "/usage" --output-format json` is answered by the CLI itself — no agent turn, no quota —
+  but still requires auth, so it is a real gate. The plan line also carries weekly quota left,
+  which for a backend with no USD to report is the only cost signal there is. `verifies_auth()` is
+  now True, so a logged-out CLI fails closed rather than green-lighting a fan-out that dies on its
+  first real call.
 
 - **Unattended Antigravity auth via `GEMINI_API_KEY`** (agy 1.1.13), added to the backend's
   credential names and the child-env allowlist. Requires `modelProvider: "gemini"` in agy's own
@@ -79,18 +72,12 @@ versions may include breaking API changes until 1.0.
   CLI versions independently and reads 1.1.x. The adapter now says so, so "Antigravity 2" is never
   mistaken for a CLI version floor.
 
-- **Three upstream affordances probed and deliberately declined**, recorded so they are not
-  re-investigated: `--mode accept-edits` is not a usable safe-edit tier (probed *with* a real
-  trust entry, the agent chose a shell command, which accept-edits denies with nobody to approve —
-  exit 1, nothing written); `--sandbox` is not a filesystem boundary (the agent still wrote outside
-  the worktree); and `agy models --output-format json` does not exist despite the 1.1.12 changelog
-  announcing it (the subcommand's parser rejects the flag), so the text parse stays. `--json-schema`
-  does work and returns a schema-matching `structured_output`, but is not wired up: `output_schema`
-  is a deliberately backend-agnostic contract, and forking it for one adapter is not worth it.
+- **`--sandbox` is not a filesystem boundary** on Antigravity — an agent under it can still write
+  outside the worktree. The worktree remains the only isolation boundary Marshal offers (#175).
 
-- **Dropped the PTY-wrapper TODO.** The claim that headless `agy` can swallow stdout while exiting
-  0 does not reproduce on 1.1.13/1.1.14 — every run under `DETACHED_STDIO` returned its JSON
-  envelope intact, including end to end through `marshal run`.
+- **`agy models --output-format json` does not exist**, despite the 1.1.12 changelog announcing
+  it, so the text parse stays. The adapter is the normative home for that and the other upstream
+  affordances Marshal deliberately does not use.
 
 ### Changed
 
