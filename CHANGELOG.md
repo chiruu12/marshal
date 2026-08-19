@@ -60,6 +60,11 @@ versions may include breaking API changes until 1.0.
   against. `verified_version` is a maintenance fact, never a floor - a floor is enforced in
   `check_available()` (see Antigravity's `MIN_AGY_VERSION`).
 
+  ZCode is probed through its resolved launcher rather than `zcode` on PATH, since an install
+  named only by `ZCODE_BIN` / `MARSHAL_ZCODE_BIN` or living inside the desktop app bundle would
+  otherwise be reported absent and checked not at all - the same defect `resolve_launcher` exists
+  to prevent.
+
 - **Antigravity supports `read-only`**, mapped to `--mode plan` (agy ≥ 1.1.12 fixed `--mode` being
   ignored in headless `-p`). This is what lets Antigravity staff adversarial review teams — at no
   cost, since it reports no USD. One edge: plan mode answers a *file write* with a plan, but

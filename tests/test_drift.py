@@ -319,6 +319,32 @@ def test_every_shipped_backend_exposes_its_curated_fallback_to_the_check():
         assert cls.static_models, name
 
 
+def test_zcode_probes_its_resolved_launcher_not_the_path_shim(monkeypatch, tmp_path):
+    """ZCode's entry point can be an app bundle or MARSHAL_ZCODE_BIN, with no `zcode` on PATH.
+
+    A drift check that only asked `shutil.which("zcode")` would report a perfectly installed
+    backend as absent and check nothing - the same defect `resolve_launcher` exists to prevent.
+    """
+    from marshal_engine.backends.zcode import ZCodeBackend
+
+    launcher = tmp_path / "zcode-real"
+    launcher.write_text("#!/bin/sh\necho 0.16.3\n")
+    launcher.chmod(0o755)
+    monkeypatch.setenv("MARSHAL_ZCODE_BIN", str(launcher))
+    monkeypatch.setattr("marshal_engine.backends.zcode.shutil.which", lambda _b: None)
+
+    assert ZCodeBackend().probe_version() == "0.16.3"
+
+
+def test_zcode_reports_absent_when_nothing_resolves(monkeypatch):
+    from marshal_engine.backends.zcode import ZCodeBackend
+
+    monkeypatch.delenv("MARSHAL_ZCODE_BIN", raising=False)
+    monkeypatch.setattr("marshal_engine.backends.zcode.shutil.which", lambda _b: None)
+    monkeypatch.setattr("marshal_engine.backends.zcode._BUNDLE_CANDIDATES", ())
+    assert ZCodeBackend().probe_version() is None
+
+
 def test_probe_version_returns_none_when_the_binary_is_absent():
     class _Real(CodingAgentBackend):
         name = "nope"

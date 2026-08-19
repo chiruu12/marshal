@@ -477,8 +477,8 @@ CLI is absent are skipped rather than failed - a CLI you never installed has not
 missing one is `marshal doctor`'s finding, not this one. Nothing here spawns an agent or spends
 quota: every probe is a CLI answering a question about itself.
 
-Adapters whose catalogue is a deliberate shortlist (Cursor curates one id out of 200+) report
-catalogue growth as a count rather than naming every id.
+Adapters whose catalogue is a deliberate shortlist — Cursor curates a single id out of every
+model its CLI can reach — report catalogue growth as a count rather than naming every id.
 
 ## Use it as a library
 

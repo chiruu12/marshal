@@ -295,11 +295,12 @@ class CodingAgentBackend(ABC):
 
         Side-effect-light and never raises, like every other probe on this class.
         """
-        if shutil.which(self.binary) is None:
+        argv = self._version_argv()
+        if argv is None:
             return None
         try:
             proc = subprocess.run(
-                [self.binary, "--version"],
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=20.0,
@@ -312,6 +313,16 @@ class CodingAgentBackend(ABC):
             return None
         text = (proc.stdout or proc.stderr or "").strip()
         return text.splitlines()[0].strip() if text else None
+
+    def _version_argv(self) -> list[str] | None:
+        """Argv that asks this CLI its version, or None when it is not installed.
+
+        Split out so a backend whose entry point is not a PATH executable can redirect the probe
+        without restating how the answer is read. ZCode is the one that needs it: it resolves a
+        launcher from env vars and app-bundle paths, and a probe that resolved a DIFFERENT
+        launcher than the invocation is the exact defect ``resolve_launcher`` exists to prevent.
+        """
+        return None if shutil.which(self.binary) is None else [self.binary, "--version"]
 
     def verifies_auth(self) -> bool:
         """True if account_info() doubles as an authenticated-only probe.

@@ -158,10 +158,11 @@ def _models_finding(name: str, backend: CodingAgentBackend) -> DriftFinding:
     if not new:
         return DriftFinding(backend=name, kind="models", status=OK, detail=checked)
     # Naming the extras is only meaningful when the fallback plausibly tracks the catalogue. Some
-    # adapters curate a deliberate shortlist of two or three ids out of hundreds the CLI can
-    # reach; for those, "203 ids you do not list" is not a finding, it is the design, and printing
-    # it every run is how a check stops being read. So the extras are named only while they stay
-    # within the size of the list itself, and otherwise collapse to a count on an ``ok`` line.
+    # adapters curate a shortlist of one or two ids out of every model the CLI can reach; for
+    # those, "here are the hundreds you do not list" is not a finding, it is the design, and
+    # printing it every run is how a check stops being read. So the extras are named only while
+    # they stay within the size of the list itself, and otherwise collapse to a count on an
+    # ``ok`` line.
     if len(new) > len(backend.static_models):
         return DriftFinding(
             backend=name,
