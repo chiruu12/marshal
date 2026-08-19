@@ -53,6 +53,12 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **`marshal drift` is documented in the README**, alongside `backends` and `doctor` as the third
+  question worth asking about a fleet: not what this build ships or what is installed, but whether
+  the installed CLI still matches what its adapter expects. `docs/status.md` records it as shipped
+  and drops a stale claim that the first PyPI publish was still pending - `marshal-agents` has been
+  on PyPI since 0.3.0.
+
 - **`SECURITY.md` now documents how to contain a run at the OS level, verified end to end.**
   Marshal does not sandbox a run and no backend it drives offers a filesystem boundary to
   delegate to, so containment has to wrap Marshal from outside. A real `marshal run` under
