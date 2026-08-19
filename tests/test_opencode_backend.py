@@ -52,7 +52,7 @@ def test_permission_config_safe_edit_denies_question_and_curated() -> None:
     assert perms["external_directory"] == "deny"
     bash = perms["bash"]
     # Catch-all allow first; curated denies later (OpenCode last-match-wins).
-    assert list(bash.keys())[0] == "*"
+    assert next(iter(bash.keys())) == "*"
     assert bash["*"] == "allow"
     for pattern, action in SAFE_EDIT_BASH_DENIES:
         assert bash[pattern] == action
@@ -152,8 +152,8 @@ def test_parse_output_success_with_usage(backend: OpenCodeBackend) -> None:
         [
             '{"part":{"type":"text","text":"Hello "}}',
             '{"part":{"type":"text","text":"world"}}',
-            '{"part":{"type":"step-finish","reason":"stop","cost":0.012,'
-            '"tokens":{"input":100,"output":20,"cache":{"read":5,"write":0}}}}',
+            ('{"part":{"type":"step-finish","reason":"stop","cost":0.012,'
+            '"tokens":{"input":100,"output":20,"cache":{"read":5,"write":0}}}}'),
         ]
     )
     res = backend.parse_output(out, "", 0)

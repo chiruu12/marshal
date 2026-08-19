@@ -55,23 +55,23 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
                 "instead - that is why the built-in review teams do so."
             ),
             "the_loop": [
-                "1. doctor - is this workspace ready? Catches a missing CLI, a broken config, and "
-                "a backend that recently failed on billing, BEFORE you spend a run.",
+                ("1. doctor - is this workspace ready? Catches a missing CLI, a broken config, and "
+                 "a backend that recently failed on billing, BEFORE you spend a run."),
                 "2. spawn (or run_agent) - delegate the work to a worker agent.",
-                "2b. wait_for_runs - after spawning, block on the run ids instead of polling "
-                "`status` yourself. One tool call covers the whole wait; hand-rolled polling spends "
-                "a turn per tick to be told 'not yet'. Expiry returns what settled so far, so "
-                "re-call for whatever is still `pending`.",
-                "3. collect_run - read what the run produced (`produced`: diff | text | nothing). "
-                "`exited_clean` means the process exited 0, NOT that the work is correct. For a "
-                "diff run, review before step 4; for a text run, the value is in `text` - skip "
-                "integrate.",
-                "4. integrate - merge a diff run's branch into yours. One run at a time. Skip for "
-                "text-only work.",
-                "5. set_outcome - record the runs you DIDN'T merge (`rejected` / `abandoned`). "
-                "integrate records `integrated` for you; nothing records the rest, so a run you "
-                "reviewed and threw away looks exactly like one nobody read. `routing` rates are "
-                "computed over judged runs only, so without this they read 100% for everyone.",
+                ("2b. wait_for_runs - after spawning, block on the run ids instead of polling "
+                 "`status` yourself. One tool call covers the whole wait; hand-rolled polling spends "
+                 "a turn per tick to be told 'not yet'. Expiry returns what settled so far, so "
+                 "re-call for whatever is still `pending`."),
+                ("3. collect_run - read what the run produced (`produced`: diff | text | nothing). "
+                 "`exited_clean` means the process exited 0, NOT that the work is correct. For a "
+                 "diff run, review before step 4; for a text run, the value is in `text` - skip "
+                 "integrate."),
+                ("4. integrate - merge a diff run's branch into yours. One run at a time. Skip for "
+                 "text-only work."),
+                ("5. set_outcome - record the runs you DIDN'T merge (`rejected` / `abandoned`). "
+                 "integrate records `integrated` for you; nothing records the rest, so a run you "
+                 "reviewed and threw away looks exactly like one nobody read. `routing` rates are "
+                 "computed over judged runs only, so without this they read 100% for everyone."),
             ],
             "which_run_tool": {
                 "run_agent": "Blocks until the run finishes. Use for short work you want inline.",

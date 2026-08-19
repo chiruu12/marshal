@@ -576,6 +576,6 @@ def _failure_tail(blob: str, limit: int = 500) -> str:
         return ""
     for ln in lines:
         lower = ln.lower()
-        if lower.startswith("error:") or lower.startswith("error "):
+        if lower.startswith(("error:", "error ")):
             return ln[:limit]
     return " ".join(lines[-3:])[:limit]

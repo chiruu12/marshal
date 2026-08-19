@@ -432,7 +432,7 @@ class WorktreeManager:
         if on_pid is not None:
             try:
                 on_pid(proc.pid)
-            except Exception:  # noqa: BLE001 - never leak the process over a pid-record failure
+            except Exception:  # noqa: BLE001, S110 - never leak the process over a pid-record failure
                 pass
         pgid = proc.pid
         out, err = "", ""
