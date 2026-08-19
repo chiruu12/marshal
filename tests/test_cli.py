@@ -277,6 +277,66 @@ def test_doctor_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     assert "python" in {c["name"] for c in data["checks"]}
 
 
+def _drift_report(findings, fails=0, warns=0):
+    from marshal_engine.interfaces.drift import DriftFinding, DriftReport
+
+    return DriftReport(
+        findings=[DriftFinding(**f) for f in findings],
+        checked=["a"],
+        skipped=["b"],
+        fails=fails,
+        warns=warns,
+        ok=fails == 0,
+    )
+
+
+def test_drift_json_shape(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(
+        "marshal_engine.interfaces.cli.admin.detect_drift",
+        lambda: _drift_report([{"backend": "a", "kind": "version", "status": "ok", "detail": "d"}]),
+    )
+    assert cli.main(["drift", "--json"]) == 0
+    data = json.loads(capsys.readouterr()[0])
+    assert set(data) == {"findings", "checked", "skipped", "fails", "warns", "ok"}
+    assert set(data["findings"][0]) == {"backend", "kind", "status", "detail", "fix"}
+
+
+def test_drift_exits_non_zero_only_on_a_lying_fallback(monkeypatch, capsys) -> None:
+    """A moved CLI is a prompt to re-verify; a fallback naming a dropped id is a defect."""
+    monkeypatch.setattr(
+        "marshal_engine.interfaces.cli.admin.detect_drift",
+        lambda: _drift_report(
+            [{"backend": "a", "kind": "version", "status": "warn", "detail": "moved", "fix": "f"}],
+            warns=1,
+        ),
+    )
+    assert cli.main(["drift"]) == 0
+    out = capsys.readouterr()[0]
+    assert "⚠ a version: moved" in out
+    assert "fix: f" in out
+    assert "not installed, skipped: b" in out
+
+    monkeypatch.setattr(
+        "marshal_engine.interfaces.cli.admin.detect_drift",
+        lambda: _drift_report(
+            [{"backend": "a", "kind": "models", "status": "fail", "detail": "gone"}], fails=1
+        ),
+    )
+    assert cli.main(["drift"]) == 1
+    assert "✗ a models: gone" in capsys.readouterr()[0]
+
+
+def test_drift_json_exit_code_matches_the_human_view(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "marshal_engine.interfaces.cli.admin.detect_drift",
+        lambda: _drift_report(
+            [{"backend": "a", "kind": "models", "status": "fail", "detail": "gone"}], fails=1
+        ),
+    )
+    assert cli.main(["drift", "--json"]) == 1
+    assert json.loads(capsys.readouterr()[0])["ok"] is False
+
+
 def test_clean_no_runs_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ret = cli.main(["clean", "--json", "--repo", str(tmp_path)])
     assert ret == 0

@@ -122,6 +122,8 @@ _MODEL_LINE = re.compile(r'^\s*-\s*"([A-Za-z0-9][\w.\-]*)"\s*$')
 class CopilotBackend(CodingAgentBackend):
     name = "copilot"
     binary = "copilot"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "GitHub Copilot CLI 1.0.80."
     # Precedence order is the CLI's own (see `copilot help environment`), preserved here so the
     # child sees the same one a human shell would.
     credential_env_vars = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
@@ -161,7 +163,7 @@ class CopilotBackend(CodingAgentBackend):
         return self._probe_models(
             [self.binary, "help", "config"],
             _parse_model_catalog,
-            _STATIC_MODELS,
+            self.static_models,
         )
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:

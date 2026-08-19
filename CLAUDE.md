@@ -65,6 +65,7 @@ marshal/
 │   │   ├── service.py       # MarshalService - the testable core the MCP/CLI call into (single-repo; tenancy lives in workspaces.py)
 │   │   ├── workspaces.py    # MCP-layer multi-repo registry: default + ~/.marshal/workspaces.yaml + env, lazy per-repo service cache (hot-reloaded), run-id addressing, register/scaffold helpers
 │   │   ├── doctor.py        # `marshal doctor` preflight checks (setup readiness) + Cursor plan tier; verifies auth (not just CLI-on-PATH) for backends exposing an authed probe
+│   │   ├── drift.py         # `marshal drift`: probe installed backend CLIs for version + model-catalogue drift against what each adapter records
 │   │   ├── scaffold.py      # repo-shape-aware fleet.config.yaml scaffold
 │   │   ├── mcp_server/      # MCP server (MCPServer) - see docs/mcp-tools.md for the tool reference
 │   │   │   ├── server.py    # build_service + build_app: constructs the app, the ToolContext, and registers each group
@@ -72,7 +73,7 @@ marshal/
 │   │   │   ├── schema.py    # parameter descriptions + the shared Job/ThenJob input models
 │   │   │   └── tools_*.py   # one module per tool group: inspect, runs, integrate, recipes, workspaces
 
-│   │   └── cli/             # `marshal` CLI (init/doctor/backends/models/run/spawn/usage/status/logs/routing/outcome/workflows/teams/team/workspace/clean/mcp)
+│   │   └── cli/             # `marshal` CLI (init/doctor/drift/backends/models/run/spawn/usage/status/logs/routing/outcome/workflows/teams/team/workspace/clean/mcp)
 │   │       ├── parser.py    # argparse wiring + dispatch; `main` is re-exported from __init__
 │   │       ├── inspect.py   # read-only views: backends, models, usage, status, logs
 │   │       ├── runs.py      # dispatch work: run, spawn
@@ -104,7 +105,7 @@ strict models there would reject on an unexpected upstream field. MCP server via
 ## Development
 
 - Install: `uv sync --extra mcp --extra dev`
-- Run CLI: `uv run marshal` (`init` · `doctor` · `backends` · `models` · `run` · `spawn` · `usage` · `status` ·
+- Run CLI: `uv run marshal` (`init` · `doctor` · `drift` · `backends` · `models` · `run` · `spawn` · `usage` · `status` ·
   `logs` · `routing` · `outcome` · `workflows` · `workflow` · `teams` · `team` · `workspace` · `clean` ·
   `mcp` [`--http` for a shared Streamable HTTP server; loopback only])
 - Test: `uv run pytest`

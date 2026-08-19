@@ -42,6 +42,24 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **`marshal drift` - a check for backend CLIs that have moved out from under their adapters.**
+  Marshal drives CLIs it does not control and the suite cannot see them: contract tests pin the
+  argv Marshal *builds*, never what a CLI still *accepts*. That gap is how a stale model catalogue
+  and a five-minute run cap both reached users with CI green. `marshal drift` asks each installed
+  CLI what it is and what it offers, and compares that with what the adapter records - no agent
+  spawn, no quota, every probe a CLI answering about itself.
+
+  A curated fallback naming a model id the live CLI has dropped **fails** (that degrade path hands
+  callers an id guaranteed to fail the run). A CLI that is not the build the adapter was verified
+  against **warns**: not broken, unverified. Only a fail exits non-zero, so this stays readable as
+  a scheduled check against CLIs that release nightly. Backends whose CLI is absent are skipped -
+  a CLI you never installed has not drifted, and a missing one is `marshal doctor`'s finding.
+
+  Backends gained two declarations for it: `static_models`, exposing the curated fallback the
+  adapter already degrades to, and `verified_version`, the CLI build the adapter was last verified
+  against. `verified_version` is a maintenance fact, never a floor - a floor is enforced in
+  `check_available()` (see Antigravity's `MIN_AGY_VERSION`).
+
 - **Antigravity supports `read-only`**, mapped to `--mode plan` (agy ≥ 1.1.12 fixed `--mode` being
   ignored in headless `-p`). This is what lets Antigravity staff adversarial review teams — at no
   cost, since it reports no USD. One edge: plan mode answers a *file write* with a plan, but

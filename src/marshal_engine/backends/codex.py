@@ -54,6 +54,8 @@ _STATIC_MODELS: tuple[str, ...] = ("gpt-5.6-luna",)
 class CodexBackend(CodingAgentBackend):
     name = "codex"
     binary = "codex"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "codex-cli 0.146.0"
     credential_env_vars = ("OPENAI_API_KEY", "CODEX_API_KEY")
     capabilities = Capabilities(
         json_output=True,
@@ -104,7 +106,7 @@ class CodexBackend(CodingAgentBackend):
         Always `STATIC`: this is docs/model-playbook.md talking, not the CLI, so a caller can
         tell it may be stale rather than trusting it as a live account capability.
         """
-        return ModelCatalog(models=list(_STATIC_MODELS), source=ModelSource.STATIC)
+        return ModelCatalog(models=list(self.static_models), source=ModelSource.STATIC)
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "exec", "--json", "--color", "never", "--skip-git-repo-check"]

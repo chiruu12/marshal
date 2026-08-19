@@ -113,6 +113,8 @@ class ZCodeBackend(CodingAgentBackend):
     name = "zcode"
     #: Only the optional PATH shim; the real entry point comes from ``resolve_launcher``.
     binary = "zcode"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = None
     credential_env_vars = ("ZCODE_API_KEY", "ANTHROPIC_API_KEY")
     capabilities = Capabilities(
         json_output=True,
@@ -191,7 +193,7 @@ class ZCodeBackend(CodingAgentBackend):
 
     def available_models(self) -> ModelCatalog:
         """Curated static ids — ZCode has no headless model-list command."""
-        return ModelCatalog(models=list(_STATIC_MODELS), source=ModelSource.STATIC)
+        return ModelCatalog(models=list(self.static_models), source=ModelSource.STATIC)
 
     def prepare(self, opts: RunOpts) -> None:
         """Route the model through ``ZCODE_MODEL`` — ZCode has no ``--model`` flag.

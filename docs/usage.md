@@ -306,6 +306,7 @@ the default workspace.
 ```bash
 marshal init               # scaffold a starter fleet.config.yaml in the current repo
 marshal doctor             # preflight: toolchain, auth, and backend safe-edit permission_fidelity
+marshal drift              # which installed backend CLIs have moved away from what their adapters expect
 marshal backends           # list backends, availability, and safe-edit permission_fidelity
 marshal models             # the `models:` catalog, or what the backends' CLIs report when there is none
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
@@ -437,6 +438,47 @@ or `plan:goose` with the configured provider + model after `goose info --check` 
 (`status --json`, not config.json alone), OpenCode (`auth list`), and Codex (`login status`).
 Antigravity, ZCode, and Copilot stay path-only (no cheap auth probe). Doctor is preflight only — it does not hard-block
 spawn. For every config key see [`config.md`](config.md).
+
+### `marshal drift`
+
+Marshal drives CLIs it does not control, and the test suite cannot see them. Contract tests pin
+the argv Marshal *builds*; nothing pins what a CLI still *accepts*, so a backend can change
+upstream while every test stays green - which is how a stale model catalogue and a five-minute
+run cap both reached users before CI.
+
+`marshal drift` closes that gap by asking each installed CLI what it is and what it offers:
+
+```bash
+marshal drift          # human view
+marshal drift --json   # same report, machine-readable
+```
+
+```
+✓ antigravity version: installed 1.1.15 (as verified)
+· antigravity models: curated fallback is valid; CLI also offers 3 newer id(s): gemini-3.6-flash-high, …
+⚠ command-code version: installed 1.28.1; adapter verified against 1.26.0
+    fix: re-verify this backend end to end, then record it as CommandCodeBackend.verified_version = "1.28.1"
+
+not installed, skipped: zcode
+
+8 backend(s) checked, 0 drifted, 1 unverified
+```
+
+Two signals, at deliberately different severities:
+
+- **`models` fails.** A model id in an adapter's curated fallback that the live CLI no longer
+  lists means the path Marshal degrades to hands you an id guaranteed to fail the run.
+- **`version` warns.** A CLI that is not the build the adapter was verified against is not broken,
+  it is unverified. Some of these CLIs release nightly, so a version finding that *failed* would
+  be red every day and stop being read; it asks for a re-verify and prints the line to record.
+
+Only a `fail` exits non-zero, which is what makes this usable as a scheduled check. Backends whose
+CLI is absent are skipped rather than failed - a CLI you never installed has not drifted, and a
+missing one is `marshal doctor`'s finding, not this one. Nothing here spawns an agent or spends
+quota: every probe is a CLI answering a question about itself.
+
+Adapters whose catalogue is a deliberate shortlist (Cursor curates one id out of 200+) report
+catalogue growth as a count rather than naming every id.
 
 ## Use it as a library
 

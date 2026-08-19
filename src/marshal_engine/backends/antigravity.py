@@ -187,6 +187,8 @@ _DEFAULT_UNAVAILABLE = "CLI not on PATH / not runnable"
 class AntigravityBackend(CodingAgentBackend):
     name = "antigravity"
     binary = "agy"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "1.1.15"
     credential_env_vars = ("ANTIGRAVITY_API_KEY", "GEMINI_API_KEY")
     # agy reads/writes one global settings file; serialize concurrent trust updates (parallel runs
     # in-process via this lock, cross-process via ``_settings_file_lock`` on a sibling sidecar).
@@ -309,7 +311,7 @@ class AntigravityBackend(CodingAgentBackend):
         return self._probe_models(
             [self.binary, "models"],
             _parse_agy_models,
-            _STATIC_MODELS,
+            self.static_models,
         )
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:

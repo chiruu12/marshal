@@ -27,6 +27,7 @@ The full vertical slice is in place - driver → MCP → service → fleet → b
 | `scaffold.py` | Repo-shape-aware `fleet.config.yaml` scaffold | done |
 | `budgets.py` | Dollar caps (soft-warn by default; optional `enforce: true`) | done |
 | `doctor.py` | `marshal doctor` preflight (toolchain, backends, hygiene advisories) | done |
+| `drift.py` | `marshal drift` - version + model-catalogue drift between an installed CLI and its adapter | done |
 | `workflow.py` | Declarative YAML workflows - spec, validation, runner over the service primitives | done |
 | `teams.py` | Adversarial review teams - panels of independent read-only reviewers over one subject | done |
 | `workspaces.py` | Multi-repo registry (MCP layer): default + `~/.marshal/workspaces.yaml` + env, lazy per-repo service cache (hot-reloaded), service-free run-id addressing, register/scaffold helpers, shared concurrency gate | done |

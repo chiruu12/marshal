@@ -11,7 +11,7 @@ from ...core.config import ConfigError
 from ...core.types import RunOutcome
 from ...runtime.env import merge_user_path
 from ..mcp_server.server import DEFAULT_HTTP_PATH, DEFAULT_HTTP_PORT
-from .admin import _cmd_clean, _cmd_doctor, _cmd_init, _cmd_workspace
+from .admin import _cmd_clean, _cmd_doctor, _cmd_drift, _cmd_init, _cmd_workspace
 from .common import _add_run_args, _positive_hours, _positive_int
 from .inspect import (
     _cmd_backends,
@@ -98,6 +98,11 @@ def main(argv: list[str] | None = None) -> int:
     pd.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pd.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     pd.add_argument("--json", action="store_true", help="output JSON")
+    pdr = sub.add_parser(
+        "drift",
+        help="check installed backend CLIs against what their adapters were verified against",
+    )
+    pdr.add_argument("--json", action="store_true", help="output JSON")
     pw = sub.add_parser("workflows", help="list and validate workflow recipes")
     pw.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
@@ -210,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(args)
     if args.cmd == "doctor":
         return _cmd_doctor(args)
+    if args.cmd == "drift":
+        return _cmd_drift(args)
     if args.cmd == "workflows":
         return _cmd_workflows(args)
     if args.cmd == "workflow" and args.wf_cmd == "run":

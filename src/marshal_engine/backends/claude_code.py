@@ -59,6 +59,8 @@ _STATIC_MODELS: tuple[str, ...] = (
 class ClaudeCodeBackend(CodingAgentBackend):
     name = "claude-code"
     binary = "claude"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "2.1.235 (Claude Code)"
     credential_env_vars = ("ANTHROPIC_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
@@ -109,7 +111,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
         Always `STATIC`: this is docs/model-playbook.md talking, not the CLI, so a caller can
         tell it may be stale rather than trusting it as a live account capability.
         """
-        return ModelCatalog(models=list(_STATIC_MODELS), source=ModelSource.STATIC)
+        return ModelCatalog(models=list(self.static_models), source=ModelSource.STATIC)
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "json"]

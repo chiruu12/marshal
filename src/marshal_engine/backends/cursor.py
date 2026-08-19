@@ -83,6 +83,8 @@ _STATIC_MODELS: tuple[str, ...] = ("composer-2.5",)
 class CursorBackend(CodingAgentBackend):
     name = "cursor"
     binary = "cursor-agent"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "2026.08.11-e8db854"
     credential_env_vars = ("CURSOR_API_KEY",)
     resolves_at_mentions = True  # cursor-agent expands @path mentions in the prompt
     capabilities = Capabilities(
@@ -177,7 +179,7 @@ class CursorBackend(CodingAgentBackend):
                 ids.append(stripped.split(" - ", 1)[0].strip())
             return ids
 
-        return self._probe_models([self.binary, "models"], parse, _STATIC_MODELS)
+        return self._probe_models([self.binary, "models"], parse, self.static_models)
 
     def account_info(self) -> dict[str, str] | None:
         """Auth gate via ``cursor-agent status``; plan/model via ``about`` only after auth.

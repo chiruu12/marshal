@@ -77,6 +77,17 @@ class CodingAgentBackend(ABC):
     #: get ``@file`` mentions for ``context_files``; the rest get a plain bulleted list, which is
     #: inert text everywhere and cannot be mistaken for an unresolved mention.
     resolves_at_mentions: ClassVar[bool] = False
+    #: The curated model ids this adapter falls back to when its CLI cannot be probed - the same
+    #: list handed to ``_probe_models``. Declared on the class, not just as a module constant, so
+    #: ``marshal drift`` can compare what Marshal *ships* against what the CLI still *offers*: a
+    #: fallback naming an id the CLI has dropped is a degrade path that guarantees a failed run.
+    static_models: ClassVar[tuple[str, ...]] = ()
+    #: The CLI version line this adapter was last verified against, verbatim as the binary prints
+    #: it. ``None`` means no baseline was recorded, which ``marshal drift`` reports as such rather
+    #: than treating as agreement. This is a maintenance fact, never a floor: a version floor is
+    #: enforced in ``check_available`` (see Antigravity's ``MIN_AGY_VERSION``), whereas this only
+    #: says "the build a human last watched work".
+    verified_version: ClassVar[str | None] = None
 
     # --- hooks subclasses must implement -------------------------------------------------
 
@@ -273,6 +284,34 @@ class CodingAgentBackend(ABC):
         if not models:
             return ModelCatalog(models=list(static), source=ModelSource.STATIC)
         return ModelCatalog(models=models, source=ModelSource.PROBED)
+
+    def probe_version(self) -> str | None:
+        """The installed CLI's own version line, or None when it is missing or not runnable.
+
+        Deliberately returns the line *verbatim* rather than a parsed tuple. This feeds drift
+        detection, where any change is worth surfacing - a build hash moving under an unchanged
+        version number is exactly the kind of upstream shift that has broken adapters before, and
+        parsing to a number would discard it.
+
+        Side-effect-light and never raises, like every other probe on this class.
+        """
+        if shutil.which(self.binary) is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [self.binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=20.0,
+                check=False,
+                **DETACHED_STDIO,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        text = (proc.stdout or proc.stderr or "").strip()
+        return text.splitlines()[0].strip() if text else None
 
     def verifies_auth(self) -> bool:
         """True if account_info() doubles as an authenticated-only probe.
