@@ -31,7 +31,7 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -320,7 +320,7 @@ def check_budget(
     empty = BudgetCheckSnapshot(cursor=LedgerCursor(size=0, inode=0, mtime_ns=0))
     if not budgets:
         return empty
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     matching = [
         b
         for b in budgets
@@ -466,7 +466,7 @@ def _recheck_enforce_from_tail(
             "enforced budgets cannot verify spend - repair or remove the torn line"
         ) from exc
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     spent = dict(snap.enforce_spent)
     unmeasured = dict(snap.enforce_unmeasured)
     matching = [b for b in budgets if b.enforce and _budget_matches(b, req)]

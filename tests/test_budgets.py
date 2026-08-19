@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,7 +50,7 @@ def _seed(
 ) -> None:
     tracker.record(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id=run_id or f"seed.{backend}.{cost}.{time.time_ns()}",
             backend=backend,
             client=client,
@@ -61,7 +61,7 @@ def _seed(
     )
 
 
-SESSION = datetime(2026, 7, 1, tzinfo=timezone.utc)
+SESSION = datetime(2026, 7, 1, tzinfo=UTC)
 
 
 def test_multi_budget_conflict_releases_earlier_slots(tmp_path: Path) -> None:
@@ -337,7 +337,7 @@ def test_rewritten_ledger_under_enforce_fails_closed(tmp_path: Path) -> None:
     tracker.events_path.unlink()
     tracker.record(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="replacement",
             backend="opencode",
             client="worker",
@@ -544,7 +544,7 @@ def test_budget_status_lookup_failure_reports_spent_unknown(tmp_path: Path) -> N
         raise RuntimeError("ledger unreadable")
 
     tracker.summary = boom  # type: ignore[method-assign]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = compute_budget_status(
         tracker, SESSION, [BudgetSpec(window="week", limit_usd=1.0)], now
     )
@@ -1044,7 +1044,7 @@ def test_malformed_held_entry_reporting_stays_lenient(tmp_path: Path) -> None:
     gate = EnforceBudgetGate(path=path)
     keys = gate.begin(tracker, SESSION, [advisory], _scope())
     assert keys == []
-    rows = compute_budget_status(tracker, SESSION, [advisory], datetime.now(timezone.utc))
+    rows = compute_budget_status(tracker, SESSION, [advisory], datetime.now(UTC))
     assert len(rows) == 1
     assert rows[0].spent_known is True
 
@@ -1087,7 +1087,7 @@ def test_corrupt_reservation_file_soft_warn_and_reporting_stay_lenient(
     gate = EnforceBudgetGate(path=path)
     keys = gate.begin(tracker, SESSION, [advisory], _scope())
     assert keys == []
-    rows = compute_budget_status(tracker, SESSION, [advisory], datetime.now(timezone.utc))
+    rows = compute_budget_status(tracker, SESSION, [advisory], datetime.now(UTC))
     assert len(rows) == 1
     assert rows[0].spent_known is True
 
@@ -1187,7 +1187,7 @@ def _seed_unmeasured(tracker: UsageTracker, *, client: str | None = "worker", n:
     for i in range(n):
         tracker.record(
             UsageEvent(
-                ts=datetime.now(timezone.utc).isoformat(),
+                ts=datetime.now(UTC).isoformat(),
                 run_id=f"unmeasured.{i}.{time.time_ns()}",
                 backend="cursor",
                 client=client,
@@ -1213,7 +1213,7 @@ def test_a_dollar_cap_alone_does_not_govern_unmeasurable_runs(tmp_path: Path) ->
     # Not refused: no measured spend exists to exceed the cap, and inventing one would be a lie.
     check_budget(tracker, SESSION, [usd_only], _scope(client="worker"))
 
-    status = compute_budget_status(tracker, SESSION, [usd_only], datetime.now(timezone.utc))[0]
+    status = compute_budget_status(tracker, SESSION, [usd_only], datetime.now(UTC))[0]
     assert status.spent_usd == 0.0
     assert status.runs_unmeasured == 0  # not counted: this budget declares no run cap to count for
 
@@ -1239,7 +1239,7 @@ def test_each_limit_only_counts_what_it_can_see(tmp_path: Path) -> None:
     _seed_unmeasured(tracker, n=4)    # unmeasured
     budget = BudgetSpec(window="month", limit_usd=100.0, limit_runs=100)
 
-    status = compute_budget_status(tracker, SESSION, [budget], datetime.now(timezone.utc))[0]
+    status = compute_budget_status(tracker, SESSION, [budget], datetime.now(UTC))[0]
 
     assert status.spent_usd == pytest.approx(5.0)   # only the priced runs
     assert status.runs_unmeasured == 4              # only the unpriced ones

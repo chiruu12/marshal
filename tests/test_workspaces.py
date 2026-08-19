@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -435,7 +435,7 @@ def test_a_deferred_orphan_reaches_failed_through_a_real_ledger_read(tmp_path: P
             task_id="orph",
             backend="echo",
             status="running",  # left behind by a supervisor that is gone
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.now(UTC).isoformat(),
         )
     )
 
@@ -445,7 +445,7 @@ def test_a_deferred_orphan_reaches_failed_through_a_real_ledger_read(tmp_path: P
     defs = [WorkspaceDef("default", repo, repo / "fleet.config.yaml")]
     reg = WorkspaceRegistry(defs, builder=_explode, prebuilt={"default": svc})
 
-    aged = datetime.now(timezone.utc) - timedelta(seconds=_REAP_GRACE_S + 60)
+    aged = datetime.now(UTC) - timedelta(seconds=_REAP_GRACE_S + 60)
     runs.update("orph.echo.x", started_at=aged.isoformat())
 
     rows = {r.run_id: r.status for _, r in reg.ledger_runs()}
@@ -1070,7 +1070,7 @@ def test_session_clock_and_spend_survive_config_reload(tmp_path: Path) -> None:
     old = reg.get()
     old.fleet.usage.record(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(), run_id="seed", backend="echo",
+            ts=datetime.now(UTC).isoformat(), run_id="seed", backend="echo",
             cost_usd=1.0, source="estimated",
         )
     )
@@ -1146,7 +1146,7 @@ def test_direct_construction_keeps_private_gate_default(tmp_path: Path) -> None:
     assert svc1.fleet.budget_gate is not svc2.fleet.budget_gate  # default: private per Fleet
 
     gate = EnforceBudgetGate()
-    ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ts = datetime(2024, 1, 1, tzinfo=UTC)
     cfg = FleetConfig(clients={"worker": ClientConfig(name="worker", backend="echo")})
     svc3 = MarshalService(repo, cfg, backends={"echo": _Echo()}, budget_gate=gate, session_start=ts)
     assert svc3.fleet.budget_gate is gate  # injection is honored end-to-end

@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -263,7 +263,7 @@ def filter_runs(
     ]
     # Undated runs sort last in a newest-first list, so they never displace a dated run from a
     # `limit`. `datetime.min` only orders them; it is never shown as a time.
-    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    oldest = datetime.min.replace(tzinfo=UTC)
     out.sort(key=lambda r: _started_at_or_none(r) or oldest, reverse=True)
     return out
 
@@ -275,7 +275,7 @@ def _started_at_or_none(rec: RunRecord) -> datetime | None:
         parsed = datetime.fromisoformat(rec.started_at)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 class FleetState:

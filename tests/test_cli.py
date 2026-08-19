@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+from datetime import UTC
 from pathlib import Path
 from typing import ClassVar
 
@@ -78,7 +79,7 @@ def test_usage_defaults_resolve_against_repo_not_cwd(
 ) -> None:
     # Usage data lives under the repo's .marshal/usage, but the CLI is invoked from a subdirectory.
     # Without --repo (or MARSHAL_REPO), cwd-relative defaults would miss the ledger.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
     from marshal_engine.core.layout import usage_dir
@@ -90,7 +91,7 @@ def test_usage_defaults_resolve_against_repo_not_cwd(
     u.mkdir(parents=True)
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="opencode", cost_usd=0.42, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
@@ -107,7 +108,7 @@ def test_usage_json_includes_breakdowns_and_window(tmp_path: Path, capsys: pytes
     # Backward-compat: the four pinned keys (totals/by_backend/by_client/by_model) stay. The new
     # by_backend_model + window metadata is additive (the original test_usage_json only checked
     # the four legacy keys; this one extends, doesn't break).
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -115,7 +116,7 @@ def test_usage_json_includes_breakdowns_and_window(tmp_path: Path, capsys: pytes
     u.mkdir()
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="opencode", model="<provider>/<model-a>",
             cost_usd=0.01, input_tokens=100, output_tokens=10, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
@@ -137,7 +138,7 @@ def test_usage_human_surfaces_by_model_and_tokens(
 ) -> None:
     # The previous human output silently dropped by_client/by_model/cache_read tokens. This locks
     # the fix: the by_model section appears, and an in/out token count is visible in the header.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -145,7 +146,7 @@ def test_usage_human_surfaces_by_model_and_tokens(
     u.mkdir()
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="opencode", model="<provider>/<model-a>",
             client="worker", cost_usd=0.01, input_tokens=100, output_tokens=10,
             cache_read_tokens=5, cache_write_tokens=8, status="exited_clean", source="native",
@@ -170,7 +171,7 @@ def test_usage_human_surfaces_by_model_and_tokens(
 def test_usage_window_flag_is_wired(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # --window goes through to UsageTracker.summary(since=...); verify it produces a valid windowed
     # JSON response with the resolved since populated.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -181,7 +182,7 @@ def test_usage_window_flag_is_wired(tmp_path: Path, capsys: pytest.CaptureFixtur
             ts="2020-01-01T00:00:00Z", run_id="old", backend="opencode", cost_usd=1.00,
         ).model_dump_json() + "\n"
         + UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="new", backend="opencode", cost_usd=0.01,
         ).model_dump_json() + "\n"
     )
@@ -200,7 +201,7 @@ def test_usage_session_window_states_cli_caveat(
 ) -> None:
     # CLI has no long-lived Fleet: --window session must succeed and plainly say it means
     # "since this CLI invocation" (typically empty) — not silently return a misleading $0.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -208,7 +209,7 @@ def test_usage_session_window_states_cli_caveat(
     u.mkdir()
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="opencode", cost_usd=0.50, status="exited_clean", source="native",
         ).model_dump_json() + "\n"
     )
@@ -829,7 +830,7 @@ def test_status_human_native_real_cost(
 def test_usage_human_unavailable_backend_bucket(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -837,7 +838,7 @@ def test_usage_human_unavailable_backend_bucket(
     u.mkdir()
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="cursor", cost_usd=0.0, status="exited_clean",
             source="unavailable",
         ).model_dump_json() + "\n"
@@ -853,7 +854,7 @@ def test_usage_human_unavailable_backend_bucket(
 def test_usage_human_native_zero_totals(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -861,7 +862,7 @@ def test_usage_human_native_zero_totals(
     u.mkdir()
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="claude-code", cost_usd=0.0, status="exited_clean",
             source="native",
         ).model_dump_json() + "\n"
@@ -876,7 +877,7 @@ def test_usage_human_native_zero_totals(
 def test_usage_human_budget_unavailable_spent(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -884,7 +885,7 @@ def test_usage_human_budget_unavailable_spent(
     u.mkdir()
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="cursor", client="composer", cost_usd=0.0,
             status="exited_clean", source="unavailable",
         ).model_dump_json() + "\n"
@@ -914,7 +915,7 @@ def test_usage_json_includes_budgets_when_configured(
     # When --config points at a fleet.config.yaml that declares `budgets:`, the JSON usage
     # response includes a `budgets` list with scope / window / spent / limit / remaining. This
     # is additive: tests that don't set --config still see the legacy four-key shape.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -922,7 +923,7 @@ def test_usage_json_includes_budgets_when_configured(
     u.mkdir()
     (u / "events.jsonl").write_text(
         UsageEvent(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             run_id="r1", backend="opencode", client="worker", model="<provider>/<model-a>",
             cost_usd=0.40, status="exited_clean", source="native",
         ).model_dump_json() + "\n"

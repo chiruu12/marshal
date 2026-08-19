@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -211,8 +211,8 @@ def test_empty_run_with_cost_inflates_cost_per_succeeded(tmp_path: Path) -> None
 
 def test_usage_window_since_resolves_each_window() -> None:
     """Shared mapping: `all` → None; every other window → a concrete UTC `since`."""
-    session_start = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
-    now = datetime(2026, 7, 27, 18, 0, 0, tzinfo=timezone.utc)
+    session_start = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 27, 18, 0, 0, tzinfo=UTC)
 
     assert usage_window_since("all", session_start=session_start, now=now) is None
     assert usage_window_since("session", session_start=session_start, now=now) == session_start
@@ -295,7 +295,7 @@ def test_summary_window_excludes_outside_events(tmp_path: Path) -> None:
     t.record(_ev(run_id="old", ts="2020-01-01T00:00:00Z", backend="opencode", cost_usd=1.00))
     t.record(_ev(run_id="new", ts="2026-06-19T00:00:00Z", backend="opencode", cost_usd=0.05))
 
-    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    since = datetime(2026, 1, 1, tzinfo=UTC)
     s = t.summary(since=since)
     assert s.totals.runs == 1
     assert s.totals.runs == 1
@@ -313,8 +313,8 @@ def test_summary_window_inclusive_bounds_compare_in_utc(tmp_path: Path) -> None:
 
     # since=12:00Z, until=12:00Z -> only the 12:00 event is in the window
     s = t.summary(
-        since=datetime(2026, 6, 19, 12, tzinfo=timezone.utc),
-        until=datetime(2026, 6, 19, 12, tzinfo=timezone.utc),
+        since=datetime(2026, 6, 19, 12, tzinfo=UTC),
+        until=datetime(2026, 6, 19, 12, tzinfo=UTC),
     )
     assert s.totals.runs == 1
 
@@ -331,7 +331,7 @@ def test_summary_window_drops_unparseable_timestamps(tmp_path: Path) -> None:
     t.record(_ev(run_id="bad", ts="not-a-date", backend="opencode"))
 
     assert t.summary().totals.runs == 2  # all-time: keep both
-    s = t.summary(since=datetime(2020, 1, 1, tzinfo=timezone.utc))
+    s = t.summary(since=datetime(2020, 1, 1, tzinfo=UTC))
     assert s.totals.runs == 1  # windowed: drop the malformed one
     assert s.by_backend["opencode"].runs == 1
 

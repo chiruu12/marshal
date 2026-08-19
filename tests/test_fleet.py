@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -2068,13 +2069,13 @@ def _seed_run_event(
     ts: str | None = None,
 ) -> None:
     """Append a single UsageEvent to the ledger so the next budget check has spend to read."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
     fleet.usage.record(
         UsageEvent(
-            ts=ts or datetime.now(timezone.utc).isoformat(),
+            ts=ts or datetime.now(UTC).isoformat(),
             run_id=f"seed.{backend}.x",
             backend=backend,
             client=client,
@@ -2348,7 +2349,7 @@ def test_bind_failure_leaves_no_running_record_or_worktree(
 def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> None:
     # The remaining column floors at 0 (a cap that has been blown reads $0 remaining, not a
     # misleading negative). Spent comes from the windowed rollup; limit comes from the spec.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     fleet = Fleet(
         repo,
@@ -2360,7 +2361,7 @@ def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> Non
         ],
     )
     _seed_run_event(fleet, backend="metered", client="worker", cost=0.50)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = {r.scope: r for r in fleet.budget_status(now=now)}
     assert rows["backend:metered"].spent_usd == 0.50
     assert rows["backend:metered"].limit_usd == 1.0
@@ -2375,14 +2376,14 @@ def test_budget_status_reports_spent_and_remaining_with_floor(repo: Path) -> Non
 def test_budget_status_scope_with_no_spend_reads_zero(repo: Path) -> None:
     # A scope with no recorded events reads $0 spent (and remaining == limit). Subscription /
     # unknown-cost backends that report $0 also live here - we never fabricate a percentage.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     fleet = Fleet(
         repo,
         {"metered": _Metered()},
         budgets=[BudgetSpec(backend="ghost", window="week", limit_usd=2.0)],
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = fleet.budget_status(now=now)
     assert len(rows) == 1
     assert rows[0].scope == "backend:ghost"
@@ -2392,10 +2393,10 @@ def test_budget_status_scope_with_no_spend_reads_zero(repo: Path) -> None:
 
 def test_budget_status_no_budgets_is_empty(repo: Path) -> None:
     # Backward-compat: the default-constructed FleetConfig has no budgets, so the result is [].
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     fleet = Fleet(repo, {"metered": _Metered()})
-    assert fleet.budget_status(now=datetime.now(timezone.utc)) == []
+    assert fleet.budget_status(now=datetime.now(UTC)) == []
 
 
 # --- startup orphan reap: stale RUNNING/QUEUED records from a prior Fleet -----------------------
@@ -3284,7 +3285,7 @@ def test_a_just_started_run_is_never_reaped(repo: Path) -> None:
     server had just started runs. Those records were RUNNING with no pid yet, so nothing protected
     them - two live agents were stamped `failed` seconds after spawning, one still running when
     its record said it had died."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     _write_run_record(
         repo,
@@ -3293,7 +3294,7 @@ def test_a_just_started_run_is_never_reaped(repo: Path) -> None:
             task_id="fresh",
             backend="writer",
             status="running",
-            started_at=datetime.now(timezone.utc).isoformat(),  # just now, pid not yet stamped
+            started_at=datetime.now(UTC).isoformat(),  # just now, pid not yet stamped
         ),
     )
     fleet = Fleet(repo, {"writer": _Writer()})
@@ -3330,7 +3331,7 @@ def test_a_record_with_no_start_time_is_not_reaped(repo: Path) -> None:
 def test_a_young_record_carrying_a_dead_pid_is_reaped_immediately(repo: Path) -> None:
     """The grace window exists only for the pid-not-yet-stamped race. Once a pid IS on the record
     its liveness is decidable now, and waiting would only keep a dead run reported as RUNNING."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     _write_run_record(
         repo,
@@ -3339,7 +3340,7 @@ def test_a_young_record_carrying_a_dead_pid_is_reaped_immediately(repo: Path) ->
             task_id="youngpid",
             backend="writer",
             status="running",
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.now(UTC).isoformat(),
             pid=999_999,  # no such process
             pid_start_time="never-matches",
         ),
@@ -3351,7 +3352,7 @@ def test_a_young_record_carrying_a_dead_pid_is_reaped_immediately(repo: Path) ->
 def test_a_deferred_orphan_is_reconciled_on_a_later_read(repo: Path) -> None:
     """REGRESSION: reconciliation ran once at construction, so a genuine orphan that happened to be
     young at startup stayed RUNNING for the whole life of a long-running server."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from marshal_engine.orchestration.reaping import _REAP_GRACE_S
 
@@ -3362,14 +3363,14 @@ def test_a_deferred_orphan_is_reconciled_on_a_later_read(repo: Path) -> None:
             task_id="defer",
             backend="writer",
             status="running",
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.now(UTC).isoformat(),
         ),
     )
     fleet = Fleet(repo, {"writer": _Writer()})
     assert fleet.state.get("defer.writer.x").status == RunStatus.RUNNING.value
 
     # Age the record past the window, then read again the way a driver polling status would.
-    aged = datetime.now(timezone.utc) - timedelta(seconds=_REAP_GRACE_S + 60)
+    aged = datetime.now(UTC) - timedelta(seconds=_REAP_GRACE_S + 60)
     fleet.state.update("defer.writer.x", started_at=aged.isoformat())
     fleet.reconcile_orphans()
     assert fleet.state.get("defer.writer.x").status == RunStatus.FAILED.value

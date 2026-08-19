@@ -8,6 +8,7 @@ denominator into a 0% success rate.
 from __future__ import annotations
 
 import random
+from datetime import UTC
 
 import pytest
 
@@ -253,13 +254,13 @@ def test_the_task_kind_filter_is_stripped_to_match_its_group() -> None:
 
 
 def test_events_outside_the_window_are_excluded() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     events = [
         _event("old", ts="2020-01-01T00:00:00+00:00"),
         _event("new", ts="2026-07-01T00:00:00+00:00"),
     ]
-    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    since = datetime(2026, 1, 1, tzinfo=UTC)
     ledger = summarize_routing(events, {"old": "integrated", "new": "integrated"}, since=since)
     assert ledger.total_runs == 1
 

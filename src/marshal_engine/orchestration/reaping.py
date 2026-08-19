@@ -13,7 +13,7 @@ rule - a reap can never be authorized by one test and committed against another.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -61,8 +61,8 @@ def _started_within_grace(rec: RunRecord, *, now: datetime | None = None) -> boo
     except ValueError:
         return True
     if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    reference = now or datetime.now(timezone.utc)
+        started = started.replace(tzinfo=UTC)
+    reference = now or datetime.now(UTC)
     return (reference - started).total_seconds() < _REAP_GRACE_S
 
 

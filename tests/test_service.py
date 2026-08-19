@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -462,19 +463,19 @@ def test_run_agent_threads_task_kind_to_usage_event(repo: Path) -> None:
 def test_session_start_is_a_utc_datetime(repo: Path) -> None:
     # session_start is the long-lived MCP server's "wake" timestamp; a "since session" window maps
     # to this instant. Stable for the life of the service, UTC, and accessible on the service.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     svc = _svc(repo)
     assert isinstance(svc.session_start, datetime)
     assert svc.session_start.tzinfo is not None
-    assert svc.session_start.tzinfo.utcoffset(svc.session_start) == timezone.utc.utcoffset(svc.session_start)
+    assert svc.session_start.tzinfo.utcoffset(svc.session_start) == UTC.utcoffset(svc.session_start)
 
 
 def test_service_usage_since_filters_events(repo: Path) -> None:
     # MarshalService.usage(since=...) plumbs the bound into the UsageTracker so a windowed rollup
     # works end-to-end through the service. The `_Echo` backend always stamps `now`, so seeding the
     # ledger with an old event shows the filter in action.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent
 
@@ -489,7 +490,7 @@ def test_service_usage_since_filters_events(repo: Path) -> None:
     assert svc.usage().totals.runs == 2
 
     # since=2026-01-01 drops the 2020 event.
-    s = svc.usage(since=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    s = svc.usage(since=datetime(2026, 1, 1, tzinfo=UTC))
     assert s.totals.runs == 1
     assert abs(s.totals.cost_usd - 0.05) < 1e-9
     # The new by_backend_model breakdown is also present.
