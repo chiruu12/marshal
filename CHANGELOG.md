@@ -42,6 +42,18 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **`SECURITY.md` now documents how to contain a run at the OS level, verified end to end.**
+  Marshal does not sandbox a run and no backend it drives offers a filesystem boundary to
+  delegate to, so containment has to wrap Marshal from outside. A real `marshal run` under
+  `sandbox-exec` wrote inside its worktree and was refused an absolute-path write to `~/Documents`,
+  with the agent reporting `operation not permitted` in its own transcript. The section carries the
+  profile, the `bubblewrap` equivalent, and the two write paths that are easy to miss - the git
+  common dir when the repo is itself a worktree, and each backend's private state directory
+  (Antigravity's `prepare()` writes `~/.gemini/antigravity-cli/settings.lock`). Documented as an
+  operator-supplied wrapper rather than a Marshal flag: the allowlist is per-machine and
+  per-backend, and a stale one fails runs rather than failing safe.
+
+
 - **`marshal drift` - a check for backend CLIs that have moved out from under their adapters.**
   Marshal drives CLIs it does not control and the suite cannot see them: contract tests pin the
   argv Marshal *builds*, never what a CLI still *accepts*. That gap is how a stale model catalogue
