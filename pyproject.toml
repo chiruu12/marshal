@@ -124,7 +124,7 @@ select = [
     # than erroring), `str()` inside an f-string, indexing the first element of a freshly built
     # list, chained `startswith`, and Yoda conditions.
     "ISC004", "RUF010", "RUF015", "PIE810", "SIM300",
-    # S110: `try`/`except`/`pass`. Both current sites are deliberate and already carry a `noqa`
+    # S110: `try`/`except`/`pass`. The existing sites are deliberate and already carry a `noqa`
     # explaining why the failure must not propagate; they gain an `S110` code. Adopted for what it
     # catches NEXT - a silent swallow added without that reasoning.
     "S110",
