@@ -10,6 +10,16 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A run could be recorded terminal while it still held its enforce-budget concurrency slot.**
+  The terminal status was stamped inside the run's `try` and the slot released in the `finally`,
+  so between the two a run read as finished while still holding its cap. A driver following the
+  documented loop - poll until terminal, then dispatch the next run - could be refused with
+  `another in-flight run holds this enforce cap (run ...)`, naming a run whose own record already
+  said `failed`, and told to "wait for it to finish". Both terminal paths now release before
+  stamping; the `finally` remains as an idempotent backstop. Safe against overshoot because the
+  spend is already in the ledger by that point, which is what the next spawn re-checks. (#278)
+
+
 - **Antigravity runs were silently capped at 5 minutes regardless of their configured timeout.**
   `agy` enforces its own print-mode deadline via `--print-timeout`, which defaults to 5m, and
   Marshal never set it — so any longer run died at 5m with `error: "timeout waiting for response"`.

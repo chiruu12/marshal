@@ -5062,6 +5062,41 @@ def test_integrate_and_collect_on_setup_failed_run(repo: Path) -> None:
         fleet.shutdown()
 
 
+def test_no_terminal_record_is_published_while_its_enforce_slot_is_held(repo: Path) -> None:
+    """A record that says the run is over must never coexist with the run holding its cap.
+
+    Deterministic version of the race behind #278: rather than racing a follow-up spawn, this
+    inspects the gate at the exact moment the terminal status is written. The old ordering
+    stamped first and released in the `finally`, so this observed the slot still held and a
+    driver polling terminal-then-dispatching got "wait for it to finish" naming a finished run.
+    """
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        budgets=[BudgetSpec(backend="writer", window="week", limit_usd=100.0, enforce=True)],
+    )
+    held_at_stamp: list[bool] = []
+    real_update_if = fleet.state.update_if
+
+    def spy(run_id: str, pred: object, **fields: object) -> object:
+        if fields.get("status") in {"exited_clean", "succeeded", "failed"}:
+            gate = fleet._budget_gate
+            held_at_stamp.append(any(h == run_id for h in gate._held.values()))
+        return real_update_if(run_id, pred, **fields)  # type: ignore[arg-type]
+
+    try:
+        fleet.state.update_if = spy  # type: ignore[method-assign]
+        fleet.run("writer", TaskSpec(id="budgorder", goal="x"))
+    finally:
+        fleet.state.update_if = real_update_if  # type: ignore[method-assign]
+        fleet.shutdown()
+
+    assert held_at_stamp, "the terminal stamp was never observed - the spy did not fire"
+    assert not any(held_at_stamp), (
+        "a terminal record was published while the run still held its enforce-budget slot"
+    )
+
+
 def test_spawn_setup_failure_releases_enforce_budget_slot(repo: Path) -> None:
     """A setup failure on spawn must release the enforce-budget concurrency slot (#141 compose)."""
     fleet = Fleet(

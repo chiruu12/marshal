@@ -816,6 +816,14 @@ class Fleet:
             # the cut from the string alone; see RunRecord.text_truncated.
             _redacted_text = redact_secrets(result.text)
             _capped_text, _text_truncated, _text_full_len = _cap_text(_redacted_text)
+            # Release the enforce slot BEFORE publishing a record that says the run is over.
+            # Stamping first left a window where a run read as terminal while still holding its
+            # cap, so a driver following the documented loop - poll until terminal, then dispatch -
+            # could be refused with "wait for it to finish" naming a run that had finished (#278).
+            # Safe against overshoot: `usage.record` above already put this run's spend in the
+            # ledger, which is what the next spawn re-checks. The `finally` below still calls this
+            # as the backstop for paths that never reach here; `release_run` is idempotent.
+            self._budget_gate.release_run(run_id)
             record = self.state.update_if(
                 run_id,
                 _still_running,
@@ -848,6 +856,10 @@ class Fleet:
             # Harvest here too: a run that died partway may still have written the findings that
             # explain why, and those are exactly what the next round needs.
             failed_artifacts = self._harvest_artifacts(wt, run_id)
+            # Same ordering as the success path (#278): never publish a terminal record while the
+            # enforce slot is still held. A run that failed before `usage.record` has no spend to
+            # overshoot with; one that failed after has already recorded it.
+            self._budget_gate.release_run(run_id)
             failed_rec = self.state.update_if(
                 run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(),
                 error=f"fleet: {exc}", artifacts=failed_artifacts,
@@ -855,8 +867,9 @@ class Fleet:
             self._ensure_artifacts_recorded(run_id, failed_rec, failed_artifacts)
             raise
         finally:
-            # Release enforce-budget concurrency slots once spend is (or would have been) recorded
-            # so the next matching spawn can re-check the ledger.
+            # Backstop release. Both terminal-stamp paths above release first, so that a record
+            # never says "finished" while its cap is still held (#278); this covers the paths that
+            # reach neither - and is a no-op when they did, since `release_run` is idempotent.
             self._budget_gate.release_run(run_id)
             _unregister_inflight_run(self.state.dir, run_id)
             # Persist the FULL raw stdout/stderr for every terminal run (success OR failure) so a
