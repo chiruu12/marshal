@@ -22,9 +22,10 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from ..core.config import ConfigError
 from ..runtime.env import DETACHED_STDIO

@@ -6,8 +6,9 @@ group is a plain module that states what it needs instead of inheriting a nested
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from ..workspaces import WorkspaceRegistry
 

@@ -1,7 +1,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, Field
 
@@ -57,7 +58,7 @@ def _resolve_all(
     return out
 
 
-def register(app: "MCPServer", ctx: ToolContext) -> None:
+def register(app: MCPServer, ctx: ToolContext) -> None:
     """Register this group's tools on ``app``."""
     registry = ctx.registry
     offload = ctx.offload
