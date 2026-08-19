@@ -150,7 +150,7 @@ the agent reporting `operation not permitted` back in its own transcript.
   (subpath "/Users/you/.marshal")             ; run state, ledger, worktrees
   (subpath "/path/to/your/repo")              ; the workspace itself
   (subpath "/path/to/the/git/common/dir")     ; see below - only if the repo is a git worktree
-  (subpath "/Users/you/.gemini")              ; per-backend private state - see below
+  (subpath "/Users/you/.gemini/antigravity-cli")  ; per-backend private state - see below
   (subpath "/Users/you/.cache/uv")            ; only when launching via `uv run`
   (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/dev"))
 ```
@@ -168,10 +168,13 @@ refused `~/.local/bin/marshal-persist`, reporting `not permitted` itself.
 
 Leave network open: agents call provider APIs, and a network-denying profile fails every run.
 
-On Linux the equivalent approach is `bubblewrap` — `--ro-bind / /` with a `--bind` for each
-writable path above, plus `--dev /dev` and a writable `/tmp`. **That form is untested here**; the
-verification in this section is macOS `sandbox-exec` only, and a Linux profile should be proven
-against a real run the same way before being relied on.
+**On Linux there is no recipe here, deliberately.** `bubblewrap` is the equivalent mechanism — a
+read-only root with a writable bind per path above — but everything in this section was verified
+against macOS `sandbox-exec`, and the write set is exactly the part that does not carry over:
+backend state directories differ by platform, and they are discovered by watching runs fail. A
+Bubblewrap invocation written from here would look authoritative and be untested, which in a
+security document is worse than its absence. Build one the same way this was built — narrowest
+profile first, widen only where a real run fails — and it will be right for your machine.
 
 These write paths are easy to miss, and were found by the profile failing a real run rather than
 by reading code:
@@ -180,7 +183,9 @@ by reading code:
   into the parent repo, so allowing the checkout is not enough — publishing a run branch failed
   with `cannot open '…/.git/worktrees/<name>/FETCH_HEAD': Operation not permitted`.
 - **Each backend's private state directory.** Antigravity's `prepare()` writes
-  `~/.gemini/antigravity-cli/settings.lock`; other backends have their own. These are
+  `~/.gemini/antigravity-cli/settings.lock` - and only there, so the grant does not need to be
+  `~/.gemini` wholesale, which would expose persistent Gemini configuration. Other backends have
+  their own. These are
   undocumented upstream and move between releases, so treat a newly failing run under a
   previously working profile as a state-path change, not a Marshal bug. A backend whose state dir
   is not writable can also read as simply *absent*: under this profile `marshal drift` reported

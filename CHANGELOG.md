@@ -47,7 +47,7 @@ versions may include breaking API changes until 1.0.
   delegate to, so containment has to wrap Marshal from outside. A real `marshal run` under
   `sandbox-exec` wrote inside its worktree and was refused an absolute-path write to `~/Documents`,
   with the agent reporting `operation not permitted` in its own transcript. The section carries the
-  profile, the write paths that are easy to miss - the git common dir when the repo is itself a
+  narrowest verified profile, the write paths that are easy to miss - the git common dir when the repo is itself a
   worktree, and each backend's private state directory (Antigravity's `prepare()` writes
   `~/.gemini/antigravity-cli/settings.lock`) - and what the control does not contain. Documented
   as an operator-supplied wrapper rather than a Marshal flag: the allowlist is per-machine and
