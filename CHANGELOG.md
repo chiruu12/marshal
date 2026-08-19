@@ -8,6 +8,84 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Antigravity runs were silently capped at 5 minutes regardless of their configured timeout.**
+  `agy` enforces its own print-mode deadline via `--print-timeout`, which defaults to 5m, and
+  Marshal never set it — so any longer run died at 5m with `error: "timeout waiting for response"`.
+  That is three of the four duration presets (`medium` 20m, `large` 100m, `long` 400m). It is now
+  derived from the run's timeout and set just *inside* it, so agy returns a parseable envelope with
+  token counts rather than being hard-killed by the external timeout with no usage recorded.
+
+- **A goal beginning with `/` was parsed as a CLI slash command, and the agent never ran.**
+  `agy -p "/usage ..."` returns `status=ERROR` with `num_turns: 0`, and the goal reaches agy
+  verbatim, so such a task silently never happened while reading as an agent failure. `safe-edit`
+  and `yolo` now pass `--disable-slash-commands`.
+
+  `read-only` deliberately does **not** get that flag: agy warns `--mode plan has no effect while
+  slash command expansion is disabled`, and it means it — with both set, the plan tier does not
+  bind. Read-only instead refuses a slash-leading goal in `build_invocation`, before a worktree is
+  spent, with an error naming the way out. A leading space does not escape agy's parse, so it does
+  not escape the check either.
+
+- **Every Antigravity model id Marshal shipped had become invalid, so every model-pinned run
+  failed.** `agy` moved its catalogue to effort-suffixed ids, and a bare family name is now
+  rejected outright (`--model gemini-3.5-flash` → `invalid model selection ... requires --effort`).
+  The curated fallback still held the old bare names, so the degrade path handed callers a model
+  guaranteed to fail. Replaced with current ids — note `claude-sonnet-4-6`, dashes rather than
+  dots. Marshal does **not** synthesise an `--effort` value: which effort to spend is the caller's
+  call, not a default worth guessing.
+
+- **`list_models` reported Antigravity ids that could never be used.** `agy models` prints
+  `id<TAB>Human Label` and the parser kept the whole line, so a driver copying an id straight out
+  of the catalogue got a guaranteed `invalid model selection`.
+
+### Added
+
+- **Antigravity supports `read-only`**, mapped to `--mode plan` (agy ≥ 1.1.12 fixed `--mode` being
+  ignored in headless `-p`). This is what lets Antigravity staff adversarial review teams — at no
+  cost, since it reports no USD. One edge: plan mode answers a *file write* with a plan, but
+  hard-denies a *shell command* and exits non-zero, so prompt these reviewers to read files rather
+  than run commands. A read-only run also skips the host-global `trustedWorkspaces` grant
+  entirely: it cannot write, so it has no reason to mutate a shared settings file, least of all
+  across a fan-out.
+
+  `safe-edit` stays on `--dangerously-skip-permissions`. `--mode accept-edits` looks like the
+  tighter mapping but is not one: the agent is free to reach for a shell command, which
+  accept-edits denies with nobody headless to approve it, failing the run.
+
+- **`marshal doctor` now verifies Antigravity credentials** instead of reporting PATH presence.
+  `agy -p "/usage" --output-format json` is answered by the CLI itself — no agent turn, no quota —
+  but still requires auth, so it is a real gate. The plan line also carries weekly quota left,
+  which for a backend with no USD to report is the only cost signal there is. `verifies_auth()` is
+  now True, so a logged-out CLI fails closed rather than green-lighting a fan-out that dies on its
+  first real call.
+
+- **Unattended Antigravity auth via `GEMINI_API_KEY`** (agy 1.1.13), added to the backend's
+  credential names and the child-env allowlist. Requires `modelProvider: "gemini"` in agy's own
+  settings.
+
+### Documented
+
+- **Antigravity 2.0 vs the `agy` version.** `agy` is the CLI surface of Antigravity 2.0 (Google,
+  19 May 2026 — desktop app, Go CLI succeeding Gemini CLI, SDK, managed agent service), but the
+  CLI versions independently and reads 1.1.x. The adapter now says so, so "Antigravity 2" is never
+  mistaken for a CLI version floor.
+
+- **`--sandbox` is not a filesystem boundary** on Antigravity — an agent under it can still write
+  outside the worktree. The worktree remains the only isolation boundary Marshal offers (#175).
+
+- **`agy models --output-format json` does not exist**, despite the 1.1.12 changelog announcing
+  it, so the text parse stays. The adapter is the normative home for that and the other upstream
+  affordances Marshal deliberately does not use.
+
+### Changed
+
+- **Antigravity's minimum `agy` is now 1.1.12** (was 1.1.8). This is a safety floor, not a
+  feature floor: older builds silently ignore `--mode` in headless `-p`, so a `read-only` run
+  would fall back to the default mode and could write. A permission tier that does not bind is
+  worse than one that is unavailable.
+
 ## [0.4.0] - 2026-08-17
 
 ### Fixed

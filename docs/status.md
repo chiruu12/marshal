@@ -49,10 +49,12 @@ enforces a 90% coverage floor (currently ~91%) and runs on Linux (py3.11-3.13) +
 | Claude Code | yes | verified | verified | verified (tokens + cost, native) |
 | Codex | yes | - | verified* | tokens only (cost `admin-api` or `unavailable`) |
 | Command Code | yes | plan mode | verified (`--yolo`; headless auto-accept blocks writes) | none (hosted account → `unavailable`)*** |
-| Antigravity | yes | verified (reply) | verified** | tokens via JSON (cost `unavailable`) |
+| Antigravity | yes (agy ≥ 1.1.12) | verified (`--mode plan` plans, writes nothing) | verified** | tokens via JSON (cost `unavailable`; quota via `/usage`) |
 | Goose | yes (CLI ≥ 1.43) | verified (`GOOSE_MODE=chat`) | verified (`GOOSE_MODE=auto`; Cursor via `cursor-agent/auto`) | best-effort (stream-json tokens/cost when provider reports them) |
 | ZCode | yes (0.16.3, launcher-resolved) | contract-tested | contract-tested | tokens only (cost `unavailable`) |
 | Copilot CLI | yes (1.0.80) | verified (`--mode plan` refuses the write, `filesModified` empty) | verified end-to-end via `marshal run` (worktree diff correct) | output tokens only (cost `unavailable`) |
+
+> Antigravity is the CLI surface of **Antigravity 2.0**; the `agy` binary versions independently (1.1.x). `--sandbox` is *not* a filesystem boundary — the worktree remains the only one (see #175).
 
 \* Codex verified end-to-end via a custom OpenAI-compatible provider (Responses API): worktree
 writes land and the JSONL parser extracts text + tokens correctly. A Codex client routed through
@@ -121,8 +123,10 @@ API, so no percentage is fabricated.
 not a green `available`.
 **Doctor auth probes (#43)** - Claude Code (`claude auth status`), Command Code
 (`command-code status --json`), OpenCode (`opencode auth list`), and Codex (`codex login status`)
-also fail closed when present but unauthenticated. Antigravity remains path-only (no cheap
-dedicated auth probe). Doctor stays preflight — it does not hard-block spawn.
+also fail closed when present but unauthenticated. Antigravity joined them via print-mode
+`agy -p "/usage"`, which the CLI answers itself — no agent turn, no quota — and which also
+surfaces weekly quota left, the only cost signal this backend has. Doctor stays preflight — it
+does not hard-block spawn.
 **Claude Code backend** (`backends/claude_code.py`) - `claude -p --output-format json` with
 `acceptEdits` for safe-edit; it reports `total_cost_usd` + tokens, so usage is `native` (honest
 cost, no estimation). Live-verified end-to-end (2026-06-26): edits land in the worktree and the

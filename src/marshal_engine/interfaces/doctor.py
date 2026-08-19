@@ -52,7 +52,8 @@ BACKEND_HINTS: dict[str, str] = {
     "codex": "install the Codex CLI, then `codex login` (ChatGPT) or set OPENAI_API_KEY",
     "command-code": "npm i -g command-code, then `command-code login`",
     "antigravity": (
-        "install the Antigravity CLI (agy) ≥ 1.1.8 (required for --output-format json), "
+        "install the Antigravity CLI (agy) ≥ 1.1.12 (required for --mode and "
+        "--output-format json), "
         "then complete its OAuth login"
     ),
     "claude-code": "install Claude Code (claude), then authenticate via its login or set ANTHROPIC_API_KEY",

@@ -16,7 +16,10 @@ from marshal_engine.backends import antigravity as agy_mod
 from marshal_engine.backends.antigravity import (
     MIN_AGY_VERSION,
     AntigravityBackend,
+    _parse_agy_models,
+    _parse_agy_usage_command,
     _parse_agy_version,
+    _print_timeout,
     _untrust_workspace,
 )
 
@@ -34,8 +37,15 @@ def _opts(**kw: object) -> RunOpts:
 def test_map_permission(backend: AntigravityBackend) -> None:
     assert backend.map_permission(PermissionMode.SAFE_EDIT) == ["--dangerously-skip-permissions"]
     assert backend.map_permission(PermissionMode.YOLO) == ["--dangerously-skip-permissions"]
-    with pytest.raises(ValueError, match="not supported"):
-        backend.map_permission(PermissionMode.READ_ONLY)
+    # read-only is a real tier now: `--mode plan` plans and writes nothing (verified on 1.1.13).
+    assert backend.map_permission(PermissionMode.READ_ONLY) == ["--mode", "plan"]
+
+
+def test_read_only_never_maps_to_skip_permissions(backend: AntigravityBackend) -> None:
+    # The whole value of the read-only tier is that it cannot write. If a future edit collapses
+    # it into the safe-edit/yolo mapping, a review-team fan-out silently gains write access.
+    assert "--dangerously-skip-permissions" not in backend.map_permission(PermissionMode.READ_ONLY)
+    assert PermissionMode.READ_ONLY in backend.capabilities.permission_modes
 
 
 def test_build_invocation_basic(backend: AntigravityBackend) -> None:
@@ -45,8 +55,11 @@ def test_build_invocation_basic(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         "-p",
@@ -62,8 +75,11 @@ def test_build_invocation_model(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         # Long form only — `agy` dropped the `-m` alias by 1.1.13 and its parser rejects it.
@@ -82,8 +98,11 @@ def test_build_invocation_conversation(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         "--conversation",
@@ -101,8 +120,11 @@ def test_compose_prompt_includes_context(backend: AntigravityBackend) -> None:
     assert argv == [
         "agy",
         "--dangerously-skip-permissions",
+        "--disable-slash-commands",
         "--output-format",
         "json",
+        "--print-timeout",
+        "595s",
         "--add-dir",
         "/tmp/wt",
         "-p",
@@ -122,7 +144,9 @@ def test_parse_agy_version_shapes() -> None:
     assert _parse_agy_version("version: 1.2") == (1, 2, 0)
     assert _parse_agy_version("not a version") is None
     assert _parse_agy_version("") is None
-    assert MIN_AGY_VERSION == (1, 1, 8)
+    # 1.1.12 is a SAFETY floor, not a feature floor: older agy silently ignores `--mode` in
+    # headless -p, so a read-only run would fall back to the default mode and could write.
+    assert MIN_AGY_VERSION == (1, 1, 12)
 
 
 def _stub_agy_version(
@@ -142,18 +166,18 @@ def _stub_agy_version(
 def test_check_available_true_at_min_version(
     backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _stub_agy_version(monkeypatch, "1.1.8")
+    _stub_agy_version(monkeypatch, "1.1.12")
     assert backend.check_available() is True
 
 
 def test_check_available_false_when_too_old(
     backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _stub_agy_version(monkeypatch, "1.1.7")
+    _stub_agy_version(monkeypatch, "1.1.11")
     assert backend.check_available() is False
     detail = backend.unavailable_detail()
-    assert "1.1.7" in detail
-    assert "1.1.8" in detail
+    assert "1.1.11" in detail
+    assert "1.1.12" in detail
     assert "too old" in detail
 
 
@@ -164,7 +188,7 @@ def test_check_available_false_on_unparsable_version(
     assert backend.check_available() is False
     detail = backend.unavailable_detail()
     assert "unparsable" in detail
-    assert "1.1.8" in detail
+    assert "1.1.12" in detail
 
 
 def test_check_available_false_when_binary_missing(
@@ -431,13 +455,11 @@ def test_trust_workspace_no_temp_leftover_after_concurrent_prepares(
     assert len(data["trustedWorkspaces"]) == 8
 
 
-def test_verifies_auth_false_documented_gap(backend: AntigravityBackend) -> None:
-    # No cheap dedicated auth/status/whoami probe on `agy`; doctor stays path-only.
-    # Explicit overrides (not base defaults) so the gap stays documented in the adapter.
+def test_verifies_auth_true_via_print_mode_usage(backend: AntigravityBackend) -> None:
+    # Explicit overrides (not base defaults), so the probe stays documented in the adapter.
     assert "account_info" in AntigravityBackend.__dict__
     assert "verifies_auth" in AntigravityBackend.__dict__
-    assert backend.verifies_auth() is False
-    assert backend.account_info() is None
+    assert backend.verifies_auth() is True
 
 
 def test_available_models_parses_cli_rows(
@@ -445,7 +467,12 @@ def test_available_models_parses_cli_rows(
 ) -> None:
     class _Proc:
         returncode = 0
-        stdout = "gemini-3.1-pro-high\nclaude-sonnet-4-6\n"
+        # Real 1.1.13 shape: `id<TAB>Human Label`. The old fixture omitted the label, which is
+        # why keeping the whole line looked correct in tests and failed against the CLI.
+        stdout = (
+            "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"
+            "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n"
+        )
         stderr = ""
 
     calls: list[list[str]] = []
@@ -469,9 +496,13 @@ def test_available_models_static_fallback_when_binary_missing(
 ) -> None:
     monkeypatch.setattr("marshal_engine.backends.base.shutil.which", lambda _b: None)
     catalog = backend.available_models()
-    assert "gemini-3.1-pro" in catalog.models
-    assert "gpt-oss-120b" in catalog.models
+    assert "gemini-3.1-pro-high" in catalog.models
+    assert "claude-sonnet-4-6" in catalog.models
     assert catalog.source is ModelSource.STATIC
+    # Every fallback id must be one the CLI accepts. A bare family name is rejected outright
+    # ("requires --effort"), so shipping one guarantees a failed run on the fallback path.
+    assert not any(m in {"gemini-3.5-flash", "claude-sonnet-4.6", "gpt-oss-120b"}
+                   for m in catalog.models)
 
 
 # --- trustedWorkspaces transaction (run() adds on prepare, removes on completion) -------------
@@ -744,3 +775,264 @@ def test_teardown_and_a_new_prepare_cannot_interleave(
     backend.prepare(_opts(cwd=wt))
     assert key in json.loads(settings.read_text(encoding="utf-8"))["trustedWorkspaces"]
     assert AntigravityBackend._trust_added[key][0] is True, "provenance did not reset for the new run"
+
+
+# --- model id parsing ---------------------------------------------------------------------
+
+
+def test_parse_agy_models_drops_the_label_half() -> None:
+    # `agy models` prints `id<TAB>Human Label`. Returning the joined line makes the CLI reject
+    # the run with "invalid model selection", so a driver copying an id out of `list_models`
+    # got a guaranteed failure.
+    rows = "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\ngpt-oss-120b-medium\tGPT-OSS 120B\n"
+    assert _parse_agy_models(rows) == ["gemini-3.7-flash-high", "gpt-oss-120b-medium"]
+
+
+def test_parse_agy_models_tolerates_bare_rows_and_progress_noise() -> None:
+    # The progress line is on stderr as of 1.1.13; drop it defensively if it ever moves.
+    assert _parse_agy_models("Fetching available models...\ngemini-3.1-pro-low\n\n") == [
+        "gemini-3.1-pro-low"
+    ]
+    assert _parse_agy_models("") == []
+
+
+# --- the /usage auth probe ----------------------------------------------------------------
+
+
+_USAGE_RESPONSE = (
+    "Gemini Models\tWeekly Limit Remaining\t93%\t2026-08-18T21:11:07Z\n"
+    "Gemini Models\tFive Hour Limit Remaining\t100%\t2026-08-19T01:11:04Z\n"
+    "Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-08-25T20:11:04Z\n"
+)
+
+
+def test_parse_agy_usage_command_summarises_weekly_quota_only() -> None:
+    payload = json.dumps({"status": "SUCCESS", "response": _USAGE_RESPONSE})
+    info = _parse_agy_usage_command(payload)
+    assert info is not None
+    assert "Gemini Models 93%" in info["plan"]
+    assert "Claude and GPT models 100%" in info["plan"]
+    # The five-hour window refills on its own; it is noise on a doctor line.
+    assert "Five Hour" not in info["plan"]
+
+
+def test_parse_agy_usage_command_reports_logged_in_when_rows_drift() -> None:
+    # The CLI answered, so we are authenticated - but an unparsed row is not evidence of
+    # headroom, so no quota figure is invented.
+    payload = json.dumps({"status": "SUCCESS", "response": "something else entirely\n"})
+    assert _parse_agy_usage_command(payload) == {"plan": "logged-in"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        json.dumps({"status": "ERROR", "response": "", "error": "not signed in"}),
+        json.dumps({"status": "SUCCESS", "response": "   "}),
+        json.dumps({"status": "SUCCESS"}),
+        "not json at all",
+        "",
+    ],
+)
+def test_parse_agy_usage_command_fails_closed(payload: str) -> None:
+    # Doctor reads None as "not authenticated (or the probe failed)" and FAILs. A false negative
+    # costs a re-run; a false OK costs a whole fan-out that dies on its first real call.
+    assert _parse_agy_usage_command(payload) is None
+
+
+def test_account_info_probes_usage_without_spending_quota(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "status": "SUCCESS",
+                "response": _USAGE_RESPONSE,
+                "usage": {"total_tokens": 0},
+            }
+        )
+        stderr = ""
+
+    def _run(argv: list[str], **_kw: object) -> _Proc:
+        calls.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: "/usr/bin/agy")
+    monkeypatch.setattr(agy_mod.subprocess, "run", _run)
+    info = backend.account_info()
+    assert info is not None and info["plan"].startswith("logged-in")
+    # The probe must stay a print-mode slash command: it is answered by the CLI itself, with no
+    # agent turn and no quota spent. Anything else here would bill the user to run `doctor`.
+    assert calls == [["agy", "-p", "/usage", "--output-format", "json"]]
+
+
+def test_account_info_none_when_binary_missing(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: None)
+    assert backend.account_info() is None
+
+
+def test_account_info_never_raises_on_probe_failure(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: "/usr/bin/agy")
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError("no exec")
+
+    monkeypatch.setattr(agy_mod.subprocess, "run", _boom)
+    assert backend.account_info() is None
+
+
+def test_account_info_none_on_nonzero_exit(
+    backend: AntigravityBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "not signed in"
+
+    monkeypatch.setattr(agy_mod.shutil, "which", lambda _b: "/usr/bin/agy")
+    monkeypatch.setattr(agy_mod.subprocess, "run", lambda *_a, **_k: _Proc())
+    assert backend.account_info() is None
+
+
+# --- read-only leaves the host-global settings alone ---------------------------------------
+
+
+def test_read_only_run_writes_no_trust_entry(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    settings = tmp_path / "settings.json"
+    backend.settings_path = settings
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.READ_ONLY))
+    # A plan-mode run cannot write, so it has no reason to mutate a HOST-GLOBAL settings file -
+    # least of all in a read-only fan-out across many worktrees.
+    assert not settings.exists()
+    # Teardown must stay safe for a run that never claimed anything.
+    backend.release_trust(_opts(cwd=wt, permission=PermissionMode.READ_ONLY))
+    assert not settings.exists()
+
+
+def test_read_only_teardown_does_not_release_a_sibling_write_runs_claim(
+    backend: AntigravityBackend, tmp_path: Path
+) -> None:
+    settings = tmp_path / "settings.json"
+    backend.settings_path = settings
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    backend.prepare(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    backend.release_trust(_opts(cwd=wt, permission=PermissionMode.READ_ONLY))
+    # The read-only run never claimed the entry, so its teardown must not pull trust out from
+    # under the safe-edit run still relying on it.
+    trusted = json.loads(settings.read_text())["trustedWorkspaces"]
+    assert str(wt.resolve()) in trusted
+    backend.release_trust(_opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert json.loads(settings.read_text())["trustedWorkspaces"] == []
+
+
+def test_build_invocation_read_only_uses_plan_mode(backend: AntigravityBackend) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="review this"), _opts(permission=PermissionMode.READ_ONLY)
+    )
+    assert argv[:3] == ["agy", "--mode", "plan"]
+    assert argv[-2:] == ["-p", "review this"]
+
+
+# --- agy's own print deadline --------------------------------------------------------------
+
+
+def test_print_timeout_lands_just_inside_the_run_timeout() -> None:
+    # agy's default is 5 minutes, so leaving it alone silently truncated every longer run at 5m
+    # with "timeout waiting for response" regardless of what the engine was told.
+    assert _print_timeout(600) == "595s"
+    assert _print_timeout(30) == "25s"
+
+
+def test_print_timeout_never_emits_zero_or_negative() -> None:
+    # agy reads `0s` as "no deadline", which would invert the whole point; a negative duration
+    # would not parse at all. A very short run must still produce a valid, bounded deadline.
+    assert _print_timeout(5) == "1s"
+    assert _print_timeout(1) == "1s"
+    assert _print_timeout(0) == "1s"
+
+
+def test_build_invocation_derives_print_timeout_from_opts(
+    backend: AntigravityBackend,
+) -> None:
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="x"), _opts(permission=PermissionMode.SAFE_EDIT, timeout_s=1800)
+    )
+    assert "--print-timeout" in argv
+    assert argv[argv.index("--print-timeout") + 1] == "1795s"
+
+
+# --- slash-command hijack -------------------------------------------------------------------
+
+
+def test_write_modes_disable_slash_expansion(backend: AntigravityBackend) -> None:
+    # Without this, a goal beginning with "/" is parsed as a CLI slash command and the agent
+    # never runs at all (status=ERROR, num_turns=0) — a task that silently never happened.
+    for mode in (PermissionMode.SAFE_EDIT, PermissionMode.YOLO):
+        argv = backend.build_invocation(
+            TaskSpec(id="t1", goal="/usr/local needs fixing"), _opts(permission=mode)
+        )
+        assert "--disable-slash-commands" in argv
+        assert argv[-1] == "/usr/local needs fixing"
+
+
+def test_read_only_must_not_disable_slash_expansion(backend: AntigravityBackend) -> None:
+    # agy warns "--mode plan has no effect while slash command expansion is disabled" and means
+    # it: with both flags the write was stopped only by the DEFAULT mode's unattended denial, not
+    # by the plan tier. Passing this flag here would leave read-only unenforced.
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="review it"), _opts(permission=PermissionMode.READ_ONLY)
+    )
+    assert "--disable-slash-commands" not in argv
+    assert argv[:3] == ["agy", "--mode", "plan"]
+
+
+@pytest.mark.parametrize("goal", ["/usage now", "  /help me", "/model"])
+def test_read_only_refuses_a_slash_leading_prompt(
+    backend: AntigravityBackend, goal: str
+) -> None:
+    # Refused in build_invocation — a pure function, before any worktree is created. Leading
+    # whitespace does not escape agy's parse, so it must not escape ours either.
+    with pytest.raises(ValueError, match="must not begin with"):
+        backend.build_invocation(
+            TaskSpec(id="t1", goal=goal), _opts(permission=PermissionMode.READ_ONLY)
+        )
+
+
+def test_read_only_refusal_names_the_way_out(backend: AntigravityBackend) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        backend.build_invocation(
+            TaskSpec(id="t1", goal="/usage"), _opts(permission=PermissionMode.READ_ONLY)
+        )
+    msg = str(excinfo.value)
+    # A driver reading this must learn why the obvious fix is unavailable and what to do instead.
+    assert "--disable-slash-commands" in msg
+    assert "safe-edit" in msg
+
+
+def test_write_modes_accept_a_slash_leading_prompt(backend: AntigravityBackend) -> None:
+    # The refusal is specific to read-only; write modes carry the flag that makes it safe.
+    argv = backend.build_invocation(
+        TaskSpec(id="t1", goal="/usage"), _opts(permission=PermissionMode.SAFE_EDIT)
+    )
+    assert argv[-1] == "/usage"
+
+
+def test_read_only_slash_check_sees_the_composed_prompt(backend: AntigravityBackend) -> None:
+    # The check must run on the COMPOSED prompt, not the raw goal: context files are appended
+    # after the goal, so a slash-leading goal stays slash-leading and must still be refused.
+    with pytest.raises(ValueError, match="must not begin with"):
+        backend.build_invocation(
+            TaskSpec(id="t1", goal="/usage", context_files=["a.py"]),
+            _opts(permission=PermissionMode.READ_ONLY),
+        )
