@@ -35,7 +35,7 @@ import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -107,7 +107,7 @@ class WorkspaceRuntime:
     service; budget *specs* still come from the newly loaded config, so limits hot-reload.
     """
 
-    session_start: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    session_start: datetime = field(default_factory=lambda: datetime.now(UTC))
     budget_gate: EnforceBudgetGate = field(default_factory=EnforceBudgetGate)
 
 
@@ -594,7 +594,7 @@ class WorkspaceRegistry:
             return None  # no ledger yet, or unreadable - absence is reported as absence
         if newest is None:
             return None
-        return datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(newest, tz=UTC).isoformat()
 
     def owner_of(self, run_id: str, hint: str | None = None) -> str | None:
         """The workspace that owns ``run_id``, or None. Cheap path stat; never builds a service.

@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -407,8 +407,8 @@ def summarize_events(
 def _to_utc(ts: datetime) -> datetime:
     """Coerce a datetime to a UTC-aware value for comparison (naive datetimes are treated as UTC)."""
     if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
+        return ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC)
 
 
 def _parse_event_ts(raw: str) -> datetime | None:

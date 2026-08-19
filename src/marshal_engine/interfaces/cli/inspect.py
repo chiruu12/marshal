@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ...accounting.usage import UsageTracker, usage_window_since
@@ -118,7 +118,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
 def _cmd_usage(args: argparse.Namespace) -> int:
     # The CLI has no long-lived Fleet, so `session` = since this invocation (typically empty).
     # Pass `now` as session_start — honest, not a silent fake of MCP's process-lifetime clock.
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     since = usage_window_since(args.window, session_start=now, now=now)
     repo = _resolve_repo(args)
     usage_path = Path(args.dir) if args.dir is not None else usage_dir(repo)
@@ -187,7 +187,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     repo = _resolve_repo(args)
     state_dir = Path(args.state) if args.state is not None else runs_dir(repo)
     since = (
-        datetime.now(timezone.utc) - timedelta(hours=args.since_hours)
+        datetime.now(UTC) - timedelta(hours=args.since_hours)
         if args.since_hours is not None else None
     )
     matched = filter_runs(

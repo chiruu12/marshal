@@ -25,7 +25,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..core.types import RunStatus
@@ -34,7 +34,7 @@ from ..runtime.state import RunRecord
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _is_terminal(rec: RunRecord) -> bool:

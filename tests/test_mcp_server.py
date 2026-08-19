@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import urllib.parse
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -583,7 +584,7 @@ def test_usage_window_param_mapping(
     # 2020 event lets us see session/week/month all filter it out (it's outside every window) and
     # the unfiltered "all" keep it. The 2026 event lands in every window.
     import asyncio
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from marshal_engine.accounting.usage import UsageEvent, UsageTracker
 
@@ -600,7 +601,7 @@ def test_usage_window_param_mapping(
     # before the "new" event so the session filter is deterministic (not wall-clock-relative).
     from datetime import timedelta
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session_start = now - timedelta(hours=1)
     new_ts = (now - timedelta(minutes=1)).isoformat()
     svc.fleet.session_start = session_start

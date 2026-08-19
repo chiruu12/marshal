@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
@@ -296,7 +296,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         """
         rows = await offload(registry.ledger_runs, workspace)
         since = (
-            datetime.now(timezone.utc) - timedelta(hours=since_hours)
+            datetime.now(UTC) - timedelta(hours=since_hours)
             if since_hours is not None else None
         )
         by_run = {id(rec): ws for ws, rec in rows}
@@ -335,7 +335,7 @@ def register(app: "MCPServer", ctx: ToolContext) -> None:
         default; `enforce: true` may refuse subsequent matching spawns on that workspace).
         `spent_known: false` means spend is unknown — do not treat spent/remaining as measured."""
         svc = await offload(registry.get, workspace)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         since = usage_window_since(window, session_start=svc.session_start, now=now)
         summary = await offload(svc.usage, since, None)
         budgets = await offload(svc.budget_status, now)

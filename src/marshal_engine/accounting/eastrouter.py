@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ..core._version import __version__
 from ..core.types import UsageSource
@@ -103,7 +103,7 @@ def _parse_dt(value: object) -> datetime | None:
     # Normalize to aware UTC: EastRouter may return a naive `created_at` (no offset), and comparing a
     # naive datetime to the aware run window (`_now()` is always aware) raises TypeError - which the
     # caller swallows, silently dropping real-cost attribution. Assume UTC for naive records.
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def _parse_amount_usd(value: object) -> float | None:

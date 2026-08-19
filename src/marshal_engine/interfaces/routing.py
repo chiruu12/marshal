@@ -14,7 +14,7 @@ It receives the join as a plain mapping, built here.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -90,7 +90,7 @@ def record_outcome(
     if note is not None:
         note = note.strip()[:MAX_OUTCOME_NOTE_LEN] or None
 
-    stamped = (now or datetime.now(timezone.utc)).isoformat()
+    stamped = (now or datetime.now(UTC)).isoformat()
     # Everything the predicate observed UNDER THE LOCK. Classifying from a pre-read instead would
     # report the wrong status whenever a concurrent write lands in between - and the concurrent
     # write this races is `integrate`, which is exactly the transition that must not be misreported.
@@ -189,7 +189,7 @@ def build_routing(
     Reporting posture, matching every other read path: `strict=False`, so a torn or malformed
     ledger line is skipped with a warning rather than taking the whole report down.
     """
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     since = usage_window_since(window, session_start=session_start or moment, now=moment)
     return summarize_routing(
         usage.events(),

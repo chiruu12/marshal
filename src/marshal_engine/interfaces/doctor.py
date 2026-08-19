@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -102,7 +102,7 @@ def recent_quota_failures(
     A backend absent from the result has no such failures recorded - which is **not** the same as
     "its quota is healthy", and the check must never say otherwise.
     """
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=hours)
+    cutoff = (now or datetime.now(UTC)) - timedelta(hours=hours)
     # backend -> (count, when of the newest, that run's error)
     seen: dict[str, tuple[int, datetime, str]] = {}
     for rec in FleetState(runs_dir(repo)).list():
@@ -137,7 +137,7 @@ def _ended_at(rec: RunRecord) -> datetime | None:
             parsed = datetime.fromisoformat(stamp)
         except ValueError:
             continue
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     return None
 
 

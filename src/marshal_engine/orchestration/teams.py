@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -677,4 +677,4 @@ class TeamRunner:
 
 def utc_stamp() -> str:
     """Filesystem-safe UTC timestamp for report paths (isolated for test seams)."""
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")

@@ -19,7 +19,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -181,7 +181,7 @@ def _ended_before(rec: RunRecord, cutoff: datetime | None) -> bool:
     except ValueError:
         return False
     if ended.tzinfo is None:
-        ended = ended.replace(tzinfo=timezone.utc)
+        ended = ended.replace(tzinfo=UTC)
     return ended <= cutoff
 
 
@@ -291,7 +291,7 @@ class Fleet:
         # without restating the timestamp. Injectable for the same reason as budget_gate: a
         # rebuilt Fleet must not silently reset every `window: session` budget clock.
         self.session_start: datetime = (
-            session_start if session_start is not None else datetime.now(timezone.utc)
+            session_start if session_start is not None else datetime.now(UTC)
         )
         # Reap ONLY as the winner of an atomic claim. Checking liveness and then writing was a
         # TOCTOU: two Fleets could both pass the check and both reap. Winning the claim is the
@@ -697,7 +697,7 @@ class Fleet:
 
     def budget_status(self, now: datetime | None = None) -> list[BudgetStatus]:
         return compute_budget_status(
-            self.usage, self.session_start, self.budgets, now or datetime.now(timezone.utc),
+            self.usage, self.session_start, self.budgets, now or datetime.now(UTC),
         )
 
     def _execute(
@@ -1431,7 +1431,7 @@ class Fleet:
                 else:
                     targets.append(rec)
         else:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours) \
+            cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours) \
                 if older_than_hours is not None else None
             targets = [
                 r for r in self.state.list()
@@ -1765,7 +1765,7 @@ class Fleet:
             run_id,
             merged_into=target,
             outcome=RunOutcome.INTEGRATED.value,
-            outcome_at=datetime.now(timezone.utc).isoformat(),
+            outcome_at=datetime.now(UTC).isoformat(),
             outcome_note=None,
         )
         if cleanup:

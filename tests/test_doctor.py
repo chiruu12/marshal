@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -594,7 +594,7 @@ def test_doctor_warns_when_recent_runs_failed_on_billing(tmp_path: Path) -> None
     ledger already knows; surface it."""
     repo = _quota_repo(tmp_path)
     runs = FleetState(runs_dir(repo))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     runs.add(_record(
         run_id="a.cursor.1",
         error="cursor-agent: Insufficient balance. Please top up.",
@@ -621,7 +621,7 @@ def test_doctor_stays_silent_when_no_billing_failures_were_recorded(tmp_path: Pa
     runs.add(_record(
         run_id="a.cursor.1",
         error="AssertionError: expected 2 got 3",  # a real task failure, not billing
-        ended_at=datetime.now(timezone.utc).isoformat(),
+        ended_at=datetime.now(UTC).isoformat(),
     ))
     checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
     assert not [c for c in checks if c.name.startswith("quota:")]
@@ -634,7 +634,7 @@ def test_doctor_ignores_billing_failures_outside_the_window(tmp_path: Path) -> N
     runs.add(_record(
         run_id="old.cursor.1",
         error="Insufficient balance",
-        ended_at=(datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),
+        ended_at=(datetime.now(UTC) - timedelta(days=7)).isoformat(),
     ))
     checks = run_checks(repo, repo / "fleet.config.yaml", backends={})
     assert not [c for c in checks if c.name.startswith("quota:")]
@@ -646,7 +646,7 @@ def test_doctor_does_not_treat_rate_limiting_as_a_billing_problem(tmp_path: Path
     remedy - a false positive here costs the same detour the check exists to prevent."""
     repo = _quota_repo(tmp_path)
     runs = FleetState(runs_dir(repo))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     runs.add(_record(
         run_id="rl.cursor.1",
         error="HTTP 429: rate limit exceeded, retry after 20s",
