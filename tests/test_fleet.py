@@ -5540,10 +5540,10 @@ class _Reporter(CodingAgentBackend):
         return [
             sys.executable,
             "-c",
-            "import pathlib;"
+            ("import pathlib;"
             "p=pathlib.Path('.marshal-artifacts');p.mkdir(exist_ok=True);"
             "(p/'FINDINGS.md').write_text('the bug is on line 12');"
-            "print('reported')",
+            "print('reported')"),
         ]
 
     def map_permission(self, mode: PermissionMode) -> list[str]:
@@ -5571,9 +5571,9 @@ class _Reader(CodingAgentBackend):
         return [
             sys.executable,
             "-c",
-            "import pathlib;"
+            ("import pathlib;"
             "hits=sorted(pathlib.Path('.marshal-context/artifacts').rglob('FINDINGS.md'));"
-            "print(hits[0].read_text() if hits else 'NOTHING')",
+            "print(hits[0].read_text() if hits else 'NOTHING')"),
         ]
 
     def map_permission(self, mode: PermissionMode) -> list[str]:

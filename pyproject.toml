@@ -119,6 +119,29 @@ select = [
     #   UP031 (`%`-format) fires on three code-generation strings that use `%r` precisely because
     #     they need repr-quoting of a path into a generated script. The rewrite is ruff-unsafe and
     #     buys nothing.
+    # Mechanical cleanups, all autofixable and none behaviour-changing (#239): implicit string
+    # concat inside a collection literal (where a missing comma silently merges two items rather
+    # than erroring), `str()` inside an f-string, indexing the first element of a freshly built
+    # list, chained `startswith`, and Yoda conditions.
+    "ISC004", "RUF010", "RUF015", "PIE810", "SIM300",
+    # S110: `try`/`except`/`pass`. The existing sites are deliberate and already carry a `noqa`
+    # explaining why the failure must not propagate; they gain an `S110` code. Adopted for what it
+    # catches NEXT - a silent swallow added without that reasoning.
+    "S110",
+    # Declined, recorded so they are not re-litigated:
+    #   PLC0414 (`import X as X`) would break the build. Those aliases are the explicit re-export
+    #     idiom mypy strict's `no_implicit_reexport` requires; removing them was tried and produced
+    #     7 `does not explicitly export attribute` errors across service, workspaces, formatting,
+    #     inspect, state, and logs. The published import paths depend on them.
+    #   TRY004 (prefer `TypeError` for a type check) would split one function's error contract in
+    #     two. `parse_structured` raises `ValueError` for every other malformed-input case; making
+    #     the not-a-dict branch raise `TypeError` means a caller catching `ValueError` around a
+    #     parse silently stops catching one of its failures.
+    #   SIM105 (`contextlib.suppress`) over the deliberate swallows this codebase documents inline
+    #     trades a commented reason for a context manager that reads as incidental.
+    #   FLY002 (`"sep".join([...])` of literals -> one string) makes the test fixtures worse: the
+    #     opencode fixtures are a `"\n".join` of one JSON protocol event per line, and collapsing
+    #     them into a single 300-character literal hides the thing the fixture exists to show.
     # I001: import-block sorting. Pure formatting - adopted because unsorted imports are a standing
     # source of diff noise, where two PRs touching neighbouring imports collide over ordering rather
     # than content. Destroys no information, unlike RUF100 (see #239).

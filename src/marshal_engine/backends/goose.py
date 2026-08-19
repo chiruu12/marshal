@@ -422,7 +422,7 @@ def _prefer_error_line(blob: str, limit: int = 500) -> str | None:
         if ln.startswith("{"):
             continue
         lower = ln.lower()
-        if lower.startswith("error:") or lower.startswith("error "):
+        if lower.startswith(("error:", "error ")):
             return ln[:limit]
         if "unknown provider" in lower or "goose configure" in lower:
             return ln[:limit]

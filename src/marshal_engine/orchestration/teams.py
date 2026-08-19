@@ -415,8 +415,8 @@ def render_unified_report(result: TeamReview) -> str:
         "",
         f"- **Subject:** {result.subject_summary or result.subject.kind}",
         f"- **Team run:** `{result.team_run_id}`",
-        f"- **Reviewers:** {len(result.reviews)} "
-        f"({len(result.reviews) - len(result.incomplete_roles)} reported)",
+        (f"- **Reviewers:** {len(result.reviews)} "
+        f"({len(result.reviews) - len(result.incomplete_roles)} reported)"),
     ]
     if result.truncated:
         lines.append(

@@ -994,7 +994,7 @@ class Fleet:
             self._execute(
                 req, run_id, wt, ts, deferred_provisioning=deferred_provisioning
             )
-        except Exception:  # noqa: BLE001 - _execute already terminal-stamped; the driver polls status()
+        except Exception:  # noqa: BLE001, S110 - _execute already terminal-stamped; driver polls status()
             pass
 
     def run_many(

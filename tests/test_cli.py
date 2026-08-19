@@ -806,7 +806,7 @@ def test_status_human_native_zero_cost(
     ret = cli.main(["status", "--state", str(runs)])
     assert ret == 0
     out = capsys.readouterr()[0]
-    line = [ln for ln in out.splitlines() if "claude-code" in ln][0]
+    line = next(ln for ln in out.splitlines() if "claude-code" in ln)
     assert "$0.0000" in line
     assert "unavailable" not in line
 

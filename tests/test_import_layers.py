@@ -167,7 +167,7 @@ def _cycles(edges: set[tuple[str, str]]) -> list[list[str]]:
 
 def test_known_backend_names_match_registry() -> None:
     # Invariant: config's static backend name set must not drift from the registry.
-    assert KNOWN_BACKEND_NAMES == frozenset(backend_names())
+    assert frozenset(backend_names()) == KNOWN_BACKEND_NAMES
 
 
 def test_known_credential_env_vars_match_backends() -> None:
@@ -175,7 +175,7 @@ def test_known_credential_env_vars_match_backends() -> None:
     live: set[str] = set()
     for backend in default_backends().values():
         live.update(backend.credential_env_vars)
-    assert KNOWN_CREDENTIAL_ENV_VARS == frozenset(live)
+    assert frozenset(live) == KNOWN_CREDENTIAL_ENV_VARS
 
 
 def _layer_of(mod: str) -> str | None:
