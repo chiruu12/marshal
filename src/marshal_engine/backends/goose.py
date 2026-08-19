@@ -69,6 +69,8 @@ _STATIC_MODELS: tuple[str, ...] = ("cursor-agent/auto",)
 class GooseBackend(CodingAgentBackend):
     name = "goose"
     binary = "goose"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "1.43.0"
     # GOOSE_MODE is stamped by prepare() via extra_env; provider/model may come from the parent.
     credential_env_vars = ("GOOSE_PROVIDER", "GOOSE_MODEL")
     resolves_at_mentions = True  # goose expands @path mentions in the prompt
@@ -126,7 +128,7 @@ class GooseBackend(CodingAgentBackend):
         ``goose local-models`` covers downloaded GGUF/MLX only, not provider/model ids. Always
         `STATIC`: this is docs/model-playbook.md talking, not the CLI.
         """
-        return ModelCatalog(models=list(_STATIC_MODELS), source=ModelSource.STATIC)
+        return ModelCatalog(models=list(self.static_models), source=ModelSource.STATIC)
 
     def prepare(self, opts: RunOpts) -> None:
         """Stamp GOOSE_MODE for headless permission semantics (argv has no --yes/--plan)."""

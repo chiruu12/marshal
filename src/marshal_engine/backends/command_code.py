@@ -73,6 +73,8 @@ _STATIC_MODELS: tuple[str, ...] = ("zai-org/glm-5.2",)
 class CommandCodeBackend(CodingAgentBackend):
     name = "command-code"
     binary = "command-code"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "1.28.1"
     credential_env_vars = ("COMMAND_CODE_API_KEY",)
     capabilities = Capabilities(
         json_output=True,
@@ -127,7 +129,7 @@ class CommandCodeBackend(CodingAgentBackend):
         return self._probe_models(
             [self.binary, "--list-models"],
             lambda stdout: _parse_list_models(_ANSI.sub("", stdout)),
-            _STATIC_MODELS,
+            self.static_models,
         )
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:

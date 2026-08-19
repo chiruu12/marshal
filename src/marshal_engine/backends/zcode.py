@@ -113,6 +113,8 @@ class ZCodeBackend(CodingAgentBackend):
     name = "zcode"
     #: Only the optional PATH shim; the real entry point comes from ``resolve_launcher``.
     binary = "zcode"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = None
     credential_env_vars = ("ZCODE_API_KEY", "ANTHROPIC_API_KEY")
     capabilities = Capabilities(
         json_output=True,
@@ -183,6 +185,20 @@ class ZCodeBackend(CodingAgentBackend):
             return False
         return proc.returncode == 0
 
+    def _version_argv(self) -> list[str] | None:
+        """Ask the *resolved* launcher, not ``zcode`` on PATH - there may not be one.
+
+        Same rule as ``available_for_client``: a probe that resolves a different entry point than
+        ``build_invocation`` would is how a perfectly runnable install gets reported as absent.
+        Resolved without a client env, because drift is a question about this machine's install,
+        not about one client - a per-client ``ZCODE_BIN`` naming a second install is outside what
+        a machine-level check can speak to.
+        """
+        launcher = self.resolve_launcher()
+        if launcher == [self.binary] and shutil.which(self.binary) is None:
+            return None
+        return [*launcher, "--version"]
+
     def unavailable_detail(self) -> str:
         return (
             "ZCode CLI not found: no ZCODE_BIN / MARSHAL_ZCODE_BIN, no 'zcode' on PATH, and no "
@@ -191,7 +207,7 @@ class ZCodeBackend(CodingAgentBackend):
 
     def available_models(self) -> ModelCatalog:
         """Curated static ids — ZCode has no headless model-list command."""
-        return ModelCatalog(models=list(_STATIC_MODELS), source=ModelSource.STATIC)
+        return ModelCatalog(models=list(self.static_models), source=ModelSource.STATIC)
 
     def prepare(self, opts: RunOpts) -> None:
         """Route the model through ``ZCODE_MODEL`` — ZCode has no ``--model`` flag.

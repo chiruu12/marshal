@@ -153,6 +153,8 @@ def permission_config_for(mode: PermissionMode) -> dict[str, Any] | None:
 class OpenCodeBackend(CodingAgentBackend):
     name = "opencode"
     binary = "opencode"
+    static_models: ClassVar[tuple[str, ...]] = _STATIC_MODELS
+    verified_version: ClassVar[str | None] = "1.18.13"
     # Provider keys (ANTHROPIC_API_KEY, …) are NOT forwarded — use `opencode auth login`.
     # OPENCODE_API_KEY is the OpenCode Zen / hosted credential referenced by Marshal docs.
     credential_env_vars = ("OPENCODE_API_KEY",)
@@ -212,7 +214,7 @@ class OpenCodeBackend(CodingAgentBackend):
             # Drop the ASCII-art banner lines (non id-shaped) — keep provider/model rows only.
             return [r for r in rows if "/" in r and not r.startswith("⠀")]
 
-        return self._probe_models([self.binary, "models"], parse, _STATIC_MODELS)
+        return self._probe_models([self.binary, "models"], parse, self.static_models)
 
     def prepare(self, opts: RunOpts) -> None:
         """Stamp ``OPENCODE_CONFIG_CONTENT`` with the permission snippet for this tier.

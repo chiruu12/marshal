@@ -11,6 +11,7 @@ from pathlib import Path
 from ...core.layout import marshal_dir
 from ...orchestration.fleet import Fleet
 from ..doctor import FAIL, OK, WARN, doctor_report, run_checks
+from ..drift import INFO, detect_drift
 from ..scaffold import scaffold_fleet_config
 from ..workspaces import (
     WorkspaceRegistry,
@@ -124,4 +125,25 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"\n{report.fails} issue(s), {report.warns} warning(s)")
     return 1 if report.fails else 0
 
-_GLYPH = {OK: "✓", WARN: "⚠", FAIL: "✗"}
+def _cmd_drift(args: argparse.Namespace) -> int:
+    """Report where an installed backend CLI has moved away from what its adapter expects.
+
+    Exits non-zero only on a ``fail`` - a curated fallback naming a model the CLI has dropped.
+    Version warnings deliberately do not, so this stays usable as a scheduled check against CLIs
+    that release nightly.
+    """
+    report = detect_drift()
+    if args.json:
+        print(json.dumps(report.model_dump(mode="json"), indent=2))
+        return 1 if report.fails else 0
+    for f in report.findings:
+        print(f"{_GLYPH[f.status]} {f.backend} {f.kind}: {f.detail}")
+        if f.fix and f.status != OK:
+            print(f"    fix: {f.fix}")
+    if report.skipped:
+        print(f"\nnot installed, skipped: {', '.join(report.skipped)}")
+    print(f"\n{len(report.checked)} backend(s) checked, {report.fails} drifted, {report.warns} unverified")
+    return 1 if report.fails else 0
+
+
+_GLYPH = {OK: "✓", INFO: "·", WARN: "⚠", FAIL: "✗"}
