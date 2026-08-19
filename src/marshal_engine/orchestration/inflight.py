@@ -31,7 +31,7 @@ from .liveness import _pid_alive, _pid_start_time
 # Fleet's background pool, so startup reaping must not touch those runs even when they have no pid
 # yet (e.g. a test backend that overrides run() without spawning).
 _active_runs_guard = threading.Lock()
-_active_runs: dict[str, dict[str, "_RunHandle"]] = {}
+_active_runs: dict[str, dict[str, _RunHandle]] = {}
 
 #: Sidecar written before ``worktrees.create`` and cleared only after the RUNNING record's
 #: ``os.replace`` publishes, so a concurrent ``clean`` always sees the claim and/or the record
@@ -62,7 +62,7 @@ def _marshal_base_key(runs_dir: Path) -> str:
     return str(runs_dir.resolve().parent)
 
 
-def _register_inflight_run(runs_dir: Path, run_id: str) -> "_RunHandle":
+def _register_inflight_run(runs_dir: Path, run_id: str) -> _RunHandle:
     key = _marshal_base_key(runs_dir)
     with _active_runs_guard:
         handle = _RunHandle()
@@ -80,7 +80,7 @@ def _unregister_inflight_run(runs_dir: Path, run_id: str) -> None:
                 del _active_runs[key]
 
 
-def _publish_pid(handle: "_RunHandle", pid: int) -> bool:
+def _publish_pid(handle: _RunHandle, pid: int) -> bool:
     """Record a newly spawned child's pid on ``handle``; True if a cancel is already pending.
 
     Clears ``exited``: a published pid means a LIVE child. The handle is reused across retries, so
@@ -95,7 +95,7 @@ def _publish_pid(handle: "_RunHandle", pid: int) -> bool:
         return handle.cancel_requested
 
 
-def _inflight_handle(runs_dir: Path, run_id: str) -> "_RunHandle | None":
+def _inflight_handle(runs_dir: Path, run_id: str) -> _RunHandle | None:
     key = _marshal_base_key(runs_dir)
     with _active_runs_guard:
         return _active_runs.get(key, {}).get(run_id)

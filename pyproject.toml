@@ -107,6 +107,18 @@ select = [
     # 3.11 floor this project already targets, so the rewrite cannot change behaviour - it only
     # settles which spelling the codebase uses, which was previously split between the two (#239).
     "UP017",
+    # UP035/UP037: deprecated typing imports, and annotations quoted for a forward reference that
+    # `from __future__ import annotations` already makes unnecessary. Both are mechanical and
+    # autofixable, and neither changes what the code does (#239).
+    "UP035", "UP037",
+    # Two pyupgrade rules are deliberately NOT adopted, recorded here so they are not re-litigated:
+    #   UP042 (`class X(str, Enum)` -> `StrEnum`) changes behaviour. `str()` of a `str, Enum` member
+    #     gives `X.a`; of a `StrEnum` member it gives `a`. These enums are serialized to the ledger,
+    #     the MCP surface, and persisted run records, so that is a wire-format change wearing a
+    #     lint's clothing - it needs its own PR with migration thought, not a sweep.
+    #   UP031 (`%`-format) fires on three code-generation strings that use `%r` precisely because
+    #     they need repr-quoting of a path into a generated script. The rewrite is ruff-unsafe and
+    #     buys nothing.
     # I001: import-block sorting. Pure formatting - adopted because unsorted imports are a standing
     # source of diff noise, where two PRs touching neighbouring imports collide over ordering rather
     # than content. Destroys no information, unlike RUF100 (see #239).

@@ -13,7 +13,7 @@ if TYPE_CHECKING:  # the mcp SDK is an optional extra; only needed for typing he
 from .schema import _ALLOW_MCP_REGISTRATION_ENV
 
 
-def register(app: "MCPServer", ctx: ToolContext) -> None:
+def register(app: MCPServer, ctx: ToolContext) -> None:
     """Register this group's tools on ``app``."""
     registry = ctx.registry
     offload = ctx.offload

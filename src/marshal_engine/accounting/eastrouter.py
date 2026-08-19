@@ -177,7 +177,7 @@ def _collect_window_records(
     *,
     page_size: int,
     max_pages: int,
-) -> "_Window | None":
+) -> _Window | None:
     """Paginate ``/v1/usage`` (assumed newest-first), collecting records back to the window start.
 
     Stops when a page is short (last page), is entirely older than ``lo`` (paged past the window),

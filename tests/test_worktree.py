@@ -779,7 +779,7 @@ def test_setup_oserror_tears_down_and_raises(repo: Path, monkeypatch: pytest.Mon
     # child's whole process group, and `subprocess.run` is no longer on that path at all.
     real_popen = subprocess.Popen
 
-    def boom(*args: object, **kwargs: object) -> "subprocess.Popen[str]":
+    def boom(*args: object, **kwargs: object) -> subprocess.Popen[str]:
         cmd = args[0] if args else kwargs.get("args")
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == sys.executable:
             raise PermissionError("injected EACCES")
@@ -809,7 +809,7 @@ def test_verify_oserror_reports_not_raises(repo: Path, monkeypatch: pytest.Monke
     # child's whole process group, and `subprocess.run` is no longer on that path at all.
     real_popen = subprocess.Popen
 
-    def boom(*args: object, **kwargs: object) -> "subprocess.Popen[str]":
+    def boom(*args: object, **kwargs: object) -> subprocess.Popen[str]:
         cmd = args[0] if args else kwargs.get("args")
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == sys.executable:
             raise PermissionError("injected EACCES")

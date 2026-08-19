@@ -98,7 +98,7 @@ class Job(BaseModel):
         dict[str, Any] | None, Field(description=_DESC_OUTPUT_SCHEMA)
     ] = None
     then: Annotated[
-        "ThenJob | None",
+        ThenJob | None,
         Field(
             description=(
                 "Optional follow-up run in the same worker after this job's primary finishes. "

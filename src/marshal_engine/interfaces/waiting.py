@@ -18,7 +18,7 @@ as parameters so the whole thing is testable without spending real seconds.
 from __future__ import annotations
 
 import time
-from typing import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel
 
