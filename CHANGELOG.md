@@ -51,9 +51,15 @@ versions may include breaking API changes until 1.0.
 
   A curated fallback naming a model id the live CLI has dropped **fails** (that degrade path hands
   callers an id guaranteed to fail the run). A CLI that is not the build the adapter was verified
-  against **warns**: not broken, unverified. Only a fail exits non-zero, so this stays readable as
-  a scheduled check against CLIs that release nightly. Backends whose CLI is absent are skipped -
-  a CLI you never installed has not drifted, and a missing one is `marshal doctor`'s finding.
+  against **warns**: not broken, unverified. By default only a fail exits non-zero, so this stays
+  readable against CLIs that release nightly. Backends whose CLI is absent are skipped - a CLI you
+  never installed has not drifted, and a missing one is `marshal doctor`'s finding.
+
+  `--fail-on warn` widens that threshold for schedulers, which only ever see the exit code: under
+  the default a timed check would report success on a CLI that has moved off its verified build,
+  which is the finding it exists to catch. `docs/usage.md` carries a launchd/cron recipe. Which
+  severity should interrupt you is the caller's judgement, so it lives in the exit code rather
+  than in a log nobody opens.
 
   Backends gained two declarations for it: `static_models`, exposing the curated fallback the
   adapter already degrades to, and `verified_version`, the CLI build the adapter was last verified

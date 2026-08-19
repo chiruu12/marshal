@@ -306,7 +306,7 @@ the default workspace.
 ```bash
 marshal init               # scaffold a starter fleet.config.yaml in the current repo
 marshal doctor             # preflight: toolchain, auth, and backend safe-edit permission_fidelity
-marshal drift              # which installed backend CLIs have moved away from what their adapters expect
+marshal drift              # which installed backend CLIs have moved away from what their adapters expect (--fail-on warn for a scheduled check)
 marshal backends           # list backends, availability, and safe-edit permission_fidelity
 marshal models             # the `models:` catalog, or what the backends' CLIs report when there is none
 marshal run --goal "…"     # run a task on a client (or ad-hoc by --backend + --model); blocks until done
@@ -449,8 +449,9 @@ run cap both reached users before CI.
 `marshal drift` closes that gap by asking each installed CLI what it is and what it offers:
 
 ```bash
-marshal drift          # human view
-marshal drift --json   # same report, machine-readable
+marshal drift                    # human view
+marshal drift --json             # same report, machine-readable
+marshal drift --fail-on warn     # exit non-zero on an unverified version too, not just a defect
 ```
 
 ```
@@ -472,10 +473,44 @@ Two signals, at deliberately different severities:
   it is unverified. Some of these CLIs release nightly, so a version finding that *failed* would
   be red every day and stop being read; it asks for a re-verify and prints the line to record.
 
-Only a `fail` exits non-zero, which is what makes this usable as a scheduled check. Backends whose
-CLI is absent are skipped rather than failed - a CLI you never installed has not drifted, and a
-missing one is `marshal doctor`'s finding, not this one. Nothing here spawns an agent or spends
-quota: every probe is a CLI answering a question about itself.
+By default only a `fail` exits non-zero. Backends whose CLI is absent are skipped rather than
+failed - a CLI you never installed has not drifted, and a missing one is `marshal doctor`'s
+finding, not this one. Nothing here spawns an agent or spends quota: every probe is a CLI
+answering a question about itself.
+
+### On a schedule
+
+Drift is not something you think to check; it is something you find out about when a run fails.
+Run it on a timer.
+
+`--fail-on warn` exists for exactly this. A scheduler only ever sees the exit code, so under the
+default it would report success on the finding that matters most - a CLI that has moved off the
+build its adapter was verified against. Widen the threshold and the schedule speaks up for both
+signals; keep the default when a human is reading the output anyway.
+
+Pin the job to a **stable checkout**, not a scratch worktree. Drift compares an installed CLI
+against baselines recorded in the code, so a checkout that has fallen behind reports drift that is
+already fixed on `main`.
+
+```bash
+#!/bin/zsh -l
+REPO="$HOME/src/marshal"
+LOG="$HOME/.marshal/drift-last.txt"
+uv --directory "$REPO" run marshal drift --fail-on warn > "$LOG" 2>&1 || \
+  osascript -e "display notification \"$(tail -1 "$LOG")\" with title \"Marshal: a backend CLI moved\""
+```
+
+On macOS, drive it with a launchd agent at `~/Library/LaunchAgents/com.marshal.drift.plist`
+(`StartCalendarInterval` weekly, `RunAtLoad` false), loaded with
+`launchctl bootstrap gui/$UID <plist>` and testable on demand with
+`launchctl kickstart -p gui/$UID/com.marshal.drift`. On Linux, a weekly cron entry or systemd
+timer calling the same script does the job. The login shell (`-l`) is belt-and-braces: the CLI
+recovers your interactive `PATH` at entry, so the probe does not depend on the scheduler's
+minimal environment - the shell just means it never has to.
+
+This is deliberately a recipe rather than a `marshal drift --install-schedule` command. Marshal
+would gain a cross-platform scheduler to maintain, and the two things worth deciding - how often,
+and how you want to be told - are yours, not the engine's.
 
 Adapters whose catalogue is a deliberate shortlist — Cursor curates a single id out of every
 model its CLI can reach — report catalogue growth as a count rather than naming every id.

@@ -103,6 +103,12 @@ def main(argv: list[str] | None = None) -> int:
         help="check installed backend CLIs against what their adapters were verified against",
     )
     pdr.add_argument("--json", action="store_true", help="output JSON")
+    pdr.add_argument(
+        "--fail-on",
+        choices=("fail", "warn"),
+        default="fail",
+        help="lowest severity that exits non-zero (default: fail; use warn for a scheduled check)",
+    )
     pw = sub.add_parser("workflows", help="list and validate workflow recipes")
     pw.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pw.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")

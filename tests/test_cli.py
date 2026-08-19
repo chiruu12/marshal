@@ -337,6 +337,44 @@ def test_drift_json_exit_code_matches_the_human_view(monkeypatch, capsys) -> Non
     assert json.loads(capsys.readouterr()[0])["ok"] is False
 
 
+def test_drift_fail_on_warn_promotes_a_version_warning_to_a_non_zero_exit(monkeypatch, capsys) -> None:
+    """The flag exists for schedulers, which only ever see the exit code."""
+    warned = lambda: _drift_report(  # noqa: E731
+        [{"backend": "a", "kind": "version", "status": "warn", "detail": "moved", "fix": "f"}],
+        warns=1,
+    )
+    monkeypatch.setattr("marshal_engine.interfaces.cli.admin.detect_drift", warned)
+
+    assert cli.main(["drift"]) == 0  # default is unchanged
+    assert cli.main(["drift", "--fail-on", "fail"]) == 0
+    assert cli.main(["drift", "--fail-on", "warn"]) == 1
+    assert cli.main(["drift", "--fail-on", "warn", "--json"]) == 1
+    capsys.readouterr()
+
+
+def test_drift_fail_on_warn_stays_quiet_when_nothing_drifted(monkeypatch, capsys) -> None:
+    """Widening the threshold must not make a clean fleet exit non-zero - that is the alert
+    fatigue the severity split exists to avoid."""
+    monkeypatch.setattr(
+        "marshal_engine.interfaces.cli.admin.detect_drift",
+        lambda: _drift_report([{"backend": "a", "kind": "version", "status": "ok", "detail": "d"}]),
+    )
+    assert cli.main(["drift", "--fail-on", "warn"]) == 0
+    capsys.readouterr()
+
+
+def test_drift_fail_on_warn_still_fails_on_a_lying_fallback(monkeypatch, capsys) -> None:
+    """`warn` widens the threshold; it must never narrow it past a real failure."""
+    monkeypatch.setattr(
+        "marshal_engine.interfaces.cli.admin.detect_drift",
+        lambda: _drift_report(
+            [{"backend": "a", "kind": "models", "status": "fail", "detail": "gone"}], fails=1
+        ),
+    )
+    assert cli.main(["drift", "--fail-on", "warn"]) == 1
+    capsys.readouterr()
+
+
 def test_clean_no_runs_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ret = cli.main(["clean", "--json", "--repo", str(tmp_path)])
     assert ret == 0
