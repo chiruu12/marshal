@@ -183,6 +183,24 @@ Model is set per client in `fleet.config.yaml` (or ad-hoc via `--model` / MCP `m
 | `zcode` | `glm-*` bare or `provider/model`, via `ZCODE_MODEL` (no `--model` flag) | **unavailable** (tokens only, no price reported) |
 | `copilot` | `auto` (the only id a Copilot **Free** plan accepts); paid plans pin `claude-*` / `gpt-*` from the CLI catalog | **unavailable** (output tokens only; `premiumRequests` is quota, not money) |
 
+These are third-party CLIs Marshal does not control, and they move. `marshal drift` asks each
+installed one what it is and compares that with the build its adapter was verified against — so a
+CLI that shifted underneath you is a line of output rather than a failed run three minutes in.
+Where a CLI can list its own models, drift also checks that the adapter's curated fallback still
+names ids the CLI offers; where it cannot, it says so rather than implying a check it did not
+make. It spawns no agent and spends no quota: every probe is a CLI answering a question about
+itself. `--fail-on warn` makes it usable on a timer (recipe in
+[`docs/usage.md`](docs/usage.md#on-a-schedule)).
+
+```console
+$ marshal drift
+✓ opencode version: installed 1.18.13 (as verified)
+✓ opencode models: every curated id is still offered (4 checked); the CLI offers 49 more the adapter does not curate
+⚠ command-code version: installed 1.28.1; adapter verified against 1.26.0
+    fix: re-verify this backend end to end, then record it as CommandCodeBackend.verified_version = "1.28.1"
+· codex models: live catalogue unavailable; the curated fallback cannot be checked
+```
+
 Routing playbook: [`docs/model-playbook.md`](docs/model-playbook.md). Verification matrix: [`docs/status.md`](docs/status.md).
 
 ## Architecture
