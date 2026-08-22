@@ -146,6 +146,16 @@ select = [
     # source of diff noise, where two PRs touching neighbouring imports collide over ordering rather
     # than content. Destroys no information, unlike RUF100 (see #239).
     "I001",
+    #   RUF100 (unused `noqa`) is declined, and the audit behind that is #282. It cannot tell a
+    #     stale suppression from a deliberate one, because it calls a `noqa` for a rule outside
+    #     `select` "unused" - and nearly every suppression in this codebase is exactly that: a
+    #     BLE001/ANN001/ARG001/SIM115/S310 code carrying a written reason for a rule we have not
+    #     adopted. Autofixing would delete those reasons and, worse, un-suppress each site the day
+    #     its rule IS adopted, so the adoption PR would land pre-broken. Run it as an audit instead
+    #     (`ruff check --extend-select RUF100`) and read only the findings that say `unused:`
+    #     rather than `non-enabled:` - those are the genuinely dead ones. Note that `--select
+    #     RUF100` on its own is the wrong command: it REPLACES the rule set, so every suppression
+    #     in the file reports as unused and the audit tells you nothing.
 ]
 
 [tool.mypy]

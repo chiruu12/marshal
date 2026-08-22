@@ -4,4 +4,4 @@ Kept because published docs and examples import `marshal_engine.state` directly.
 should import from the new path; this re-export binds the same objects, not copies.
 """
 
-from .runtime.state import *  # noqa: F401,F403
+from .runtime.state import *  # noqa: F403
