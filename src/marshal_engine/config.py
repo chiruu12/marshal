@@ -4,4 +4,4 @@ Kept because published docs and examples import `marshal_engine.config` directly
 should import from the new path; this re-export binds the same objects, not copies.
 """
 
-from .core.config import *  # noqa: F401,F403
+from .core.config import *  # noqa: F403
