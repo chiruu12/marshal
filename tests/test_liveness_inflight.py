@@ -65,7 +65,8 @@ def test_pid_alive_assumes_alive_when_the_probe_is_denied(monkeypatch: pytest.Mo
     assert _pid_alive(LIVE_PID) is True
 
 
-def test_pid_alive_is_false_only_for_a_genuinely_absent_process() -> None:
+def test_pid_alive_is_false_for_a_genuinely_absent_process() -> None:
+    # The other half of the pair above: ProcessLookupError is the ONE error that means gone.
     assert _pid_alive(_dead_pid()) is False
 
 
@@ -223,6 +224,21 @@ def test_live_holder_with_an_unprobeable_start_time_is_assumed_held(
     assert _another_fleet_active(lock) is True
 
 
+def test_recycled_pid_does_not_impersonate_the_lock_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lock's counterpart to the claim's recycled-pid test, and the reason the lock payload
+    # stamps a start time at all. Without the equality check, a supervisor that died and had its
+    # pid handed to an unrelated live process would look like a live supervisor forever: no later
+    # Fleet would ever take over, and every stale run under it would read RUNNING until that
+    # unrelated process happened to exit.
+    lock = tmp_path / "fleet.lock"
+    payload = {"pid": 1, "pid_start_time": "Thu Jan  1 00:00:00 1970"}
+    lock.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: "Fri Jan  2 00:00:00 1970")
+    assert _another_fleet_active(lock) is False
+
+
 def test_claim_fails_when_the_lock_directory_cannot_be_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,7 +248,11 @@ def test_claim_fails_when_the_lock_directory_cannot_be_created(
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(Path, "mkdir", no_mkdir)
-    assert _claim_fleet_lock(tmp_path / "sub" / "fleet.lock") is False
+    # The parent EXISTS. A missing one would make the guard `open` fail too, and the same False
+    # would come back whether or not the mkdir handler was there at all - so the test would pass
+    # against code with that handler deleted. An existing parent leaves mkdir as the only way to
+    # reach False, which is what makes this a pin rather than a coincidence.
+    assert _claim_fleet_lock(tmp_path / "fleet.lock") is False
 
 
 def test_claim_fails_when_the_guard_file_cannot_be_opened(
