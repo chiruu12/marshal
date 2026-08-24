@@ -4,5 +4,5 @@ Kept because an already-installed `marshal` console script has the old entry poi
 (`marshal_engine.cli:main`) and only picks up the new one on reinstall.
 """
 
-from .interfaces.cli import *  # noqa: F401,F403
+from .interfaces.cli import *  # noqa: F403
 from .interfaces.cli import main  # noqa: F401  - the console-script entry point
