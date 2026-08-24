@@ -10,6 +10,15 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **`run_team` recorded a reviewer as completed when it exited cleanly without reviewing.**
+  Completion required only a clean exit and non-empty text, so an agent that spent its run
+  narrating - "I'll review these tests now..." - counted as a reported lens, and the unified
+  report listed it under Reviews. A review gate that presents a panel it never collected reads as
+  approval of work nobody looked at. A role now counts as completed only when its output names at
+  least one section of the report contract; otherwise it joins `incomplete_roles` with a note
+  saying it narrated rather than reviewed. The raw text and the run's real `status` are kept
+  either way, so nothing is discarded - only the claim that a review happened is withheld.
+
 - **Read-only reviewers were killed by the fleet's "run the tests" instruction.** `context.worker`
   and the worker preamble are written for an agent that edits, and both were prepended to every
   run regardless of permission - so a read-only reviewer was told to make scoped changes and to

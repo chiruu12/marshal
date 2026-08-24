@@ -91,7 +91,8 @@ Then do the work the engine deliberately does not:
 
 Two things to check before you trust the panel at all:
 
-- **`incomplete_roles`** - reviewers that produced no report (broke, timed out, backend missing).
+- **`incomplete_roles`** - reviewers that produced no report (broke, timed out, backend missing,
+  or exited cleanly having narrated instead of reviewing).
   That lens is simply **missing**, not satisfied. Re-run it, or proceed knowing what was never
   looked at.
 - **`truncated`** - the subject exceeded the reviewer size cap and was cut, so the reviews cover
@@ -116,6 +117,8 @@ a human.
 - Never show a reviewer another's report, and never re-run a panel with the earlier reports in the
   prompt - that destroys the independence the whole thing rests on.
 - A missing report is a missing lens, never approval. `completed` describes the *process*, not the
-  content - it says an agent finished cleanly, nothing about whether it liked what it saw.
+  content - it says an agent finished cleanly AND wrote something that answers the report contract,
+  nothing about whether it liked what it saw. An agent that exits 0 without reporting is incomplete,
+  not approving.
 - `succeeded` is not `correct`, and "nobody objected" is not `correct` either. Main is untouched
   until you integrate.

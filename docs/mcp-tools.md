@@ -332,7 +332,7 @@ reviewer spawns, since a panel is expensive.
 | `team_run_id` | string | Unique id for this review. |
 | `subject` / `subject_summary` | object / string | What was reviewed. |
 | `truncated` | bool | True when the subject exceeded the reviewer size cap and was cut (reviews cover only the visible part). |
-| `reviews` | list | Per-role `{ role, client, run_id, status, completed, review, report_path, note }`. `review` is the reviewer's full report text; `completed` describes the *process* (ran clean and produced text), never the content. |
+| `reviews` | list | Per-role `{ role, client, run_id, status, completed, review, report_path, note }`. `review` is the reviewer's full report text; `completed` describes the *process* (ran clean and produced a report that answers the contract), never the content. A run that exits 0 having written only narration - naming none of the contract's sections - is **not** completed: it lands in `incomplete_roles` and its raw text is still returned on `review`. |
 | `unified_report` | string | The report to read first: the panel's shape, who reviewed from which lens, every review inline, and who did not report. States no verdict. |
 | `unified_report_path` | string \| null | `README.md` inside the report directory. |
 | `report_dir` | string \| null | `.marshal/reports/<stamp>-<team>-<id>/`, holding one `<role>.md` per reviewer plus `README.md`. |
