@@ -482,6 +482,17 @@ def test_runner_marks_a_narration_only_report_incomplete() -> None:
     assert "narrated rather than reviewed" in result.reviews[1].note
 
 
+def test_runner_rejects_narration_that_merely_mentions_a_section() -> None:
+    # An unanchored substring check would pass this: the text names a contract section, but as
+    # prose about what it intends to do rather than as a section it actually opened. A heading
+    # counts only at the start of its own line.
+    narration = "I'll check the **Findings** section next, then write up the ## Blocking list."
+    svc = StubService(_config("ro-a", "ro-b"), texts=["## Bottom line\nok", narration])
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].completed is False
+    assert result.incomplete_roles == ["tests"]
+
+
 def test_runner_keeps_the_raw_text_of_a_narration_only_report() -> None:
     # Refusing to call it a review must not destroy it: the text is the evidence for re-running,
     # and discarding it would trade one silent loss for another.
