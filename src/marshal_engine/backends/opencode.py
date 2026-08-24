@@ -265,6 +265,11 @@ class OpenCodeBackend(CodingAgentBackend):
         usage = UsageRecord(backend=self.name, source=UsageSource.UNAVAILABLE)
         found_usage = False
         found_cost = False
+        # The final step's stop reason, and whether that step produced anything. A normal finish
+        # reports `stop`; `tool-calls` means more work was coming. `unknown` with nothing produced
+        # is the provider dropping the stream mid-run (#286).
+        last_step_reason: str | None = None
+        last_step_had_output = False
 
         for ev in events:
             err = ev.get("error")
@@ -300,6 +305,9 @@ class OpenCodeBackend(CodingAgentBackend):
                     usage.cost_usd += float(cost or 0)
                     found_cost = True
                 found_usage = True
+                reason = part.get("reason")
+                last_step_reason = str(reason) if reason is not None else None
+                last_step_had_output = int(tokens.get("output", 0) or 0) > 0
 
         # NATIVE only when the backend reported a POSITIVE cost. A reported $0 alongside consumed
         # tokens means the model is unpriced (e.g. a custom OpenAI-compatible provider opencode has no
@@ -307,6 +315,17 @@ class OpenCodeBackend(CodingAgentBackend):
         # claiming a fake $0. Tokens without any cost field also stay UNAVAILABLE (priced from the table).
         if found_cost and usage.cost_usd > 0:
             usage.source = UsageSource.NATIVE
+
+        # A run that stops on `unknown` having produced nothing did not finish - it was cut off.
+        # Recording that as a clean exit is how a reviewer that never wrote its report came back
+        # looking like a completed review (#286). Both conditions are required: `unknown` alongside
+        # real output is a stop reason we cannot name, not evidence of truncation.
+        truncated = last_step_reason == "unknown" and not last_step_had_output
+        if truncated and error_msg is None:
+            error_msg = (
+                "opencode ended mid-run: the final step reported reason 'unknown' and produced no "
+                "output, so the stream was cut off rather than completed; any text above is partial"
+            )
 
         ok = exit_code == 0 and error_msg is None
         return AgentResult(

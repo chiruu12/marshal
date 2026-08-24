@@ -10,6 +10,20 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **Cursor's report was dropped whenever it ran in plan mode.** In `--mode plan` the deliverable
+  goes into a `createPlanToolCall` payload while the assistant stream and the terminal `result`
+  carry only interleaved narration, and the adapter read the stream. A read-only reviewer
+  therefore "produced" a few hundred characters of "I'll review these tests..." while its actual
+  multi-KB review sat unread in the log. The plan payload is now a candidate alongside the stream
+  and the result, and the longest wins - the rule that already settled stream-vs-truncated-result.
+  Confirmed against two captured runs, which recovered 8426- and 4640-character reports that had
+  been reported as narration.
+- **An OpenCode run cut off mid-stream was recorded as a clean exit.** A final step reporting
+  `reason: "unknown"` with zero tokens means the provider dropped the stream, not that the agent
+  finished; the run was stamped `exited_clean` with whatever partial text existed. Such a run is
+  now `failed` with an error naming the truncation. Both conditions are required - an `unknown`
+  reason alongside real output is an unrecognised stop reason, not evidence of truncation.
+
 - **`run_team` recorded a reviewer as completed when it exited cleanly without reviewing.**
   Completion required only a clean exit and non-empty text, so an agent that spent its run
   narrating - "I'll review these tests now..." - counted as a reported lens, and the unified

@@ -20,6 +20,7 @@ from marshal_engine.core.config import ClientConfig, ConfigError, FleetConfig
 from marshal_engine.core.types import PermissionMode
 from marshal_engine.orchestration.fleet import CollectResult, RunManyJobResult
 from marshal_engine.orchestration.teams import (
+    _REPORT_SECTIONS,
     MAX_SUBJECT_CHARS,
     RoleReview,
     RoleSpec,
@@ -34,6 +35,7 @@ from marshal_engine.orchestration.teams import (
     render_role_report,
     render_unified_report,
     report_dirname,
+    report_is_substantive,
     truncate_subject,
     validate_subject,
     validate_team,
@@ -469,6 +471,27 @@ def test_runner_marks_an_empty_report_incomplete() -> None:
     assert "no report text" in result.reviews[1].note
 
 
+def test_report_sections_stay_in_sync_with_the_contract() -> None:
+    # `_REPORT_SECTIONS` claims to mirror the headings `_CONTRACT` demands, and nothing enforced
+    # that. Renaming an entry (or a contract heading) without the other would make
+    # `report_is_substantive` stop recognising a section real reports use, marking genuine reviews
+    # incomplete - with no test failing.
+    from marshal_engine.orchestration.teams import _CONTRACT, _REPORT_SECTIONS
+
+    contract_headings = {
+        line.lstrip("#").strip().lower()
+        for line in _CONTRACT.splitlines()
+        if line.startswith("#")
+    }
+    assert set(_REPORT_SECTIONS) == contract_headings
+
+
+@pytest.mark.parametrize("section", _REPORT_SECTIONS)
+def test_every_contract_section_is_accepted_as_a_report(section: str) -> None:
+    # Each name must actually work as an opener; "blocking" and "confidence" were never exercised.
+    assert report_is_substantive(f"## {section.title()}\n\nsomething") is True
+
+
 def test_runner_marks_a_narration_only_report_incomplete() -> None:
     # #286: the real failure. Cursor in plan mode exited 0 having written only its interleaved
     # narration - non-empty, so the old `bool(text)` check called it a completed review, and the
@@ -499,6 +522,7 @@ def test_runner_keeps_the_raw_text_of_a_narration_only_report() -> None:
     narration = "I'll review these tests now."
     svc = StubService(_config("ro-a", "ro-b"), texts=["## Bottom line\nok", narration])
     result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].completed is False  # prove the narration path was actually taken
     assert result.reviews[1].review == narration
     assert result.reviews[1].status == "exited_clean"  # the process fact is unchanged
 

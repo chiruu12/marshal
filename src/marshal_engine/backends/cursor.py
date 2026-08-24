@@ -248,6 +248,7 @@ class CursorBackend(CodingAgentBackend):
         events = parse_jsonl(raw_stdout)
 
         text_parts: list[str] = []
+        plan_text = ""
         session_id: str | None = None
         result_obj: dict[str, Any] | None = None
 
@@ -259,6 +260,13 @@ class CursorBackend(CodingAgentBackend):
             etype = ev.get("type")
             if etype == "assistant":
                 text_parts.extend(_assistant_content_texts(ev))
+            elif etype == "tool_call":
+                # Keep the LAST plan payload rather than the longest: the agent may revise its plan
+                # mid-run, and the final revision is the report it stands behind. `started` and
+                # `completed` carry the same body, so this settles on the completed one.
+                plan = _plan_text(ev)
+                if plan is not None:
+                    plan_text = plan
             elif etype == "result":
                 result_obj = ev
                 sid = ev.get("session_id")
@@ -281,7 +289,10 @@ class CursorBackend(CodingAgentBackend):
                 session_id = sid
             _apply_cursor_usage(usage, result_obj.get("usage"))
 
-        text = stream_text if len(stream_text) >= len(result_text) else result_text
+        # Longest wins across every place Cursor can put its output. The stream-vs-result rule
+        # already existed (the single-object mode truncates `result`); the plan payload is a third
+        # candidate, and in plan mode it is the only one holding the actual deliverable.
+        text = max((stream_text, result_text, plan_text), key=len)
 
         if exit_code != 0 or result_obj is None:
             # Carry the session id and whatever usage the stream reported. A failed run still
@@ -534,6 +545,28 @@ def _parse_about(raw: str) -> dict[str, str] | None:
     if "plan" not in info:
         return None
     return info or None
+
+
+def _plan_text(ev: dict[str, Any]) -> str | None:
+    """The report body of a ``createPlanToolCall`` event, if this event is one.
+
+    In ``--mode plan`` Cursor does not put its deliverable in the assistant stream or the terminal
+    ``result``: it calls a plan tool and the prose lands in ``tool_call.createPlanToolCall.args
+    .plan``, while the stream carries only interleaved narration. A read-only reviewer therefore
+    exited 0 having "produced" 398 characters of "I'll review these tests..." while its actual
+    8-KB review sat unread in this payload (#286).
+    """
+    tool_call = ev.get("tool_call")
+    if not isinstance(tool_call, dict):
+        return None
+    plan_call = tool_call.get("createPlanToolCall")
+    if not isinstance(plan_call, dict):
+        return None
+    args = plan_call.get("args")
+    if not isinstance(args, dict):
+        return None
+    plan = args.get("plan")
+    return plan if isinstance(plan, str) and plan.strip() else None
 
 
 def _assistant_content_texts(ev: dict[str, Any]) -> list[str]:

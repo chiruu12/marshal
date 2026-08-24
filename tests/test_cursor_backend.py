@@ -461,6 +461,85 @@ def test_parse_output_prefers_stream_over_truncated_result(backend: CursorBacken
     assert res.text == full
 
 
+def _plan_tool_call_event(plan: str, subtype: str = "completed") -> str:
+    """A `createPlanToolCall` event, shaped from a real `--mode plan` run (see #286)."""
+    return json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": subtype,
+            "session_id": "uuid-9",
+            "call_id": "c1",
+            "tool_call": {
+                "createPlanToolCall": {
+                    "args": {
+                        "plan": plan,
+                        "name": "Regression review report",
+                        "overview": "Regression-lens review",
+                        "todos": [],
+                        "phases": [],
+                        "isProject": False,
+                    },
+                    "result": {"success": True, "planUri": "cursor://plan/1"},
+                }
+            },
+        }
+    )
+
+
+def test_parse_output_recovers_a_plan_mode_report_from_the_tool_call(
+    backend: CursorBackend,
+) -> None:
+    # #286: in `--mode plan` the deliverable goes into the plan tool call, while the assistant
+    # stream and the terminal result carry only narration. Reading the stream alone made a
+    # read-only reviewer look like it had reported when its review was never surfaced.
+    narration = "I'll review these tests for catching power against the production paths..."
+    report = "## Bottom line\n\nThese tests mostly do what a regression suite should.\n" + "x" * 500
+    out = "\n".join(
+        [
+            _assistant_event(narration),
+            _plan_tool_call_event(report, subtype="started"),
+            _plan_tool_call_event(report),
+            _result_event(narration),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == report  # not the narration, and not the two payloads concatenated
+    assert res.session_id == "uuid-9"
+
+
+def test_parse_output_keeps_the_final_plan_revision(backend: CursorBackend) -> None:
+    # An agent that revises its plan stands behind the last version, so a shorter revision must
+    # still win over the draft it replaced - "last", not "longest", among plan payloads.
+    first = "## Bottom line\n\n" + "draft " * 200
+    final = "## Bottom line\n\nRevised: one blocking finding."
+    out = "\n".join(
+        [
+            _plan_tool_call_event(first),
+            _plan_tool_call_event(final),
+            _result_event("short narration"),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.text == final
+
+
+def test_parse_output_ignores_non_plan_tool_calls(backend: CursorBackend) -> None:
+    # Only the plan payload is a report. Other tool calls must not become the run's text.
+    other = json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "session_id": "uuid-9",
+            "tool_call": {"readToolCall": {"args": {"path": "a.py"}, "result": {"ok": True}}},
+        }
+    )
+    body = "the actual answer, at length " * 10
+    out = "\n".join([other, _assistant_event(body), _result_event("short")])
+    res = backend.parse_output(out, "", 0)
+    assert res.text == body
+
+
 def test_parse_output_truncated_stream_returns_partial_text(backend: CursorBackend) -> None:
     out = _assistant_event("partial ") + "\n" + _assistant_event("report")
     res = backend.parse_output(out, "killed", 137)
