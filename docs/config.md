@@ -39,8 +39,18 @@ Fleet-wide layered context strings.
 
 | Key | Type | Default | What it does | Example |
 |-----|------|---------|--------------|---------|
-| `worker` | string \| omitted | `null` | Prepended to every worker agent's goal (shared operating assumptions). | `worker: "Run uv run pytest -q before finishing."` |
+| `worker` | string \| omitted | `null` | Prepended to every **editing** agent's goal (shared operating assumptions). Read-only clients do not receive it - see below. | `worker: "Run uv run pytest -q before finishing."` |
 | `driver` | string \| omitted | `null` | Surfaced to the driver via `list_clients` / `list_models` as `driver_context`. | `driver: "Integrate manually after review."` |
+
+**Read-only clients receive neither `context.worker` nor the worker preamble.** Both are written for
+an agent that edits - "keep changes scoped", "run the tests before finishing" - and a reviewer can
+obey neither: it changed nothing to verify, and on a backend where a denied command aborts the run
+(rather than returning an error the model can route around) a single build/test instruction kills
+the reviewer before it writes its report. Read-only runs get a reviewer preamble instead, which
+states that the run makes no edits and that its output *is* the deliverable. `context.worker` is
+user-authored prose that cannot be filtered line by line, so it is omitted wholesale rather than
+softened. Write reviewer-specific instructions into the team role's `rubric` (or the run's goal),
+which is where a read-only run's guidance belongs.
 
 ### `worktree_setup`
 

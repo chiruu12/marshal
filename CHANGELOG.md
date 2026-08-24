@@ -8,6 +8,18 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Read-only reviewers were killed by the fleet's "run the tests" instruction.** `context.worker`
+  and the worker preamble are written for an agent that edits, and both were prepended to every
+  run regardless of permission - so a read-only reviewer was told to make scoped changes and to
+  verify them before finishing. It can do neither, and on a backend where a denied command aborts
+  the run rather than returning an error the model can route around, that single line ended the
+  run in one turn with no report written. The lenses most likely to reach for the suite are the
+  ones whose absence costs most, so a panel lost exactly the reviewers it needed. Read-only
+  clients now receive a reviewer preamble - no edits, no build/test/install commands, the report
+  is the deliverable - and do not receive `context.worker` at all. Editing runs are unchanged.
+
 ## [0.5.0] - 2026-08-19
 
 ### Fixed

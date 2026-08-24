@@ -500,7 +500,10 @@ def test_service_usage_since_filters_events(repo: Path) -> None:
 def _capture_svc(repo: Path, backend: _Capture, *, worker: str | None = None) -> MarshalService:
     cfg = FleetConfig(
         clients={
-            "worker": ClientConfig(name="worker", backend="capture", permission=PermissionMode.SAFE_EDIT)
+            "worker": ClientConfig(name="worker", backend="capture", permission=PermissionMode.SAFE_EDIT),
+            "reviewer": ClientConfig(
+                name="reviewer", backend="capture", permission=PermissionMode.READ_ONLY
+            ),
         },
         context=FleetContext(worker=worker) if worker else FleetContext(),
     )
@@ -560,6 +563,44 @@ def test_goal_is_prefixed_with_worker_preamble(repo: Path) -> None:
     assert goal.startswith("You are a headless agent in a Marshal fleet")
     assert "headless agent in a Marshal fleet" in goal
     assert "refactor the parser" in goal  # the user's goal text is still present
+
+
+def test_read_only_goal_omits_the_worker_context(repo: Path) -> None:
+    # #287: `context.worker` is written for an agent that edits - here it carries the instruction
+    # that killed a real reviewer. A read-only client must not receive it at all.
+    backend = _Capture()
+    svc = _capture_svc(
+        repo,
+        backend,
+        worker="Run `uv run --extra dev pytest -q` and ruff check before finishing.",
+    )
+    svc.run_agent("reviewer", "review the diff", task_id="t1")
+    goal = backend.tasks[-1].goal
+    assert "pytest" not in goal
+    assert "before finishing" not in goal
+    assert "review the diff" in goal  # the caller's goal still survives
+
+
+def test_read_only_goal_uses_the_reviewer_preamble(repo: Path) -> None:
+    # The worker preamble tells the agent to edit; a read-only run is told the opposite, so a
+    # reviewer does not spend its one turn attempting writes the backend will refuse.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend)
+    svc.run_agent("reviewer", "review the diff", task_id="t1")
+    goal = backend.tasks[-1].goal
+    assert goal.startswith("You are a headless reviewer in a Marshal fleet")
+    assert "READ-ONLY" in goal
+    assert "Make all edits inside this worktree only." not in goal
+
+
+def test_safe_edit_still_gets_the_worker_context_and_preamble(repo: Path) -> None:
+    # The read-only carve-out must not leak into editing runs: they still need both layers.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend, worker="Run pytest before finishing.")
+    svc.run_agent("worker", "fix the bug", task_id="t1")
+    goal = backend.tasks[-1].goal
+    assert goal.startswith("You are a headless agent in a Marshal fleet")
+    assert "Run pytest before finishing." in goal
 
 
 def test_goal_includes_fleet_worker_context_when_set(repo: Path) -> None:
