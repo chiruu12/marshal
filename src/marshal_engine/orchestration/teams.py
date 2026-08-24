@@ -259,6 +259,34 @@ Write for another engineer who will read several of these side by side and decid
 address the other reviewers, and do not summarize the panel - you are one voice in it.
 """.strip()
 
+#: The section headings ``_CONTRACT`` requires. Used to tell a report from narration: a reviewer
+#: that exits cleanly having written "I'll review these tests..." and nothing else has not reviewed,
+#: and recording it as a completed lens turns a lost review into silent approval (#286).
+_REPORT_SECTIONS = ("bottom line", "findings", "blocking", "confidence")
+
+
+#: A contract section used as an actual section: a markdown heading or a bolded label, at the start
+#: of its own line. Anchoring matters - an unanchored substring is satisfied by narration that
+#: merely mentions a section ("I'll check the **Findings** next"), which is precisely the output
+#: this predicate exists to reject.
+_SECTION_RE = re.compile(
+    r"^[ \t]{0,3}(?:#{1,6}[ \t]*|\*\*[ \t]*)(?:" + "|".join(_REPORT_SECTIONS) + r")\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def report_is_substantive(text: str) -> bool:
+    """True when ``text`` answers the report contract rather than narrating around it.
+
+    Deliberately lenient: any ONE section named in ``_REPORT_SECTIONS``, written as a heading or a
+    bolded label at the start of a line, is enough. The check exists to catch output that opens no
+    section at all - a tool-call preamble, a truncated first sentence - not to grade formatting. A
+    real report that reaches only its first section still counts, because the direction of the error
+    matters: a false "incomplete" costs one re-run, while a false "completed" is a review gate
+    approving what it never read.
+    """
+    return _SECTION_RE.search(text) is not None
+
 
 def truncate_subject(body: str) -> tuple[str, bool]:
     """Clamp a subject to what a reviewer can hold, disclosing the cut. Pure."""
@@ -630,12 +658,23 @@ class TeamRunner:
                     )
                 )
                 continue
-            done = rec.status == RunStatus.EXITED_CLEAN.value and bool((rec.text or "").strip())
+            # `status` is a fact about the process; `completed` is a claim about the LENS. Only
+            # the claim is guarded - the raw text is kept either way, so nothing is lost by
+            # refusing to call it a review.
+            text = (rec.text or "").strip()
+            exited_clean = rec.status == RunStatus.EXITED_CLEAN.value
+            done = exited_clean and bool(text) and report_is_substantive(text)
             note = ""
-            if rec.status != RunStatus.EXITED_CLEAN.value:
+            if not exited_clean:
                 note = f"run did not succeed ({rec.status}); any partial output is unreliable"
-            elif not (rec.text or "").strip():
+            elif not text:
                 note = "the run succeeded but produced no report text"
+            elif not done:
+                note = (
+                    "the run exited cleanly but its output contains none of the report sections "
+                    "the contract requires - it narrated rather than reviewed, so this lens did "
+                    "not report (the raw text is kept below and in the run log)"
+                )
             reviews.append(
                 RoleReview(
                     role=role.name,

@@ -469,6 +469,52 @@ def test_runner_marks_an_empty_report_incomplete() -> None:
     assert "no report text" in result.reviews[1].note
 
 
+def test_runner_marks_a_narration_only_report_incomplete() -> None:
+    # #286: the real failure. Cursor in plan mode exited 0 having written only its interleaved
+    # narration - non-empty, so the old `bool(text)` check called it a completed review, and the
+    # unified report listed the lens as having reported. A reviewer that named no section of the
+    # contract did not review.
+    narration = "I'll review these tests now. Let me check a few mutation edge cases..."
+    svc = StubService(_config("ro-a", "ro-b"), texts=["## Bottom line\nok", narration])
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].completed is False
+    assert result.incomplete_roles == ["tests"]
+    assert "narrated rather than reviewed" in result.reviews[1].note
+
+
+def test_runner_rejects_narration_that_merely_mentions_a_section() -> None:
+    # An unanchored substring check would pass this: the text names a contract section, but as
+    # prose about what it intends to do rather than as a section it actually opened. A heading
+    # counts only at the start of its own line.
+    narration = "I'll check the **Findings** section next, then write up the ## Blocking list."
+    svc = StubService(_config("ro-a", "ro-b"), texts=["## Bottom line\nok", narration])
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].completed is False
+    assert result.incomplete_roles == ["tests"]
+
+
+def test_runner_keeps_the_raw_text_of_a_narration_only_report() -> None:
+    # Refusing to call it a review must not destroy it: the text is the evidence for re-running,
+    # and discarding it would trade one silent loss for another.
+    narration = "I'll review these tests now."
+    svc = StubService(_config("ro-a", "ro-b"), texts=["## Bottom line\nok", narration])
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].review == narration
+    assert result.reviews[1].status == "exited_clean"  # the process fact is unchanged
+
+
+def test_runner_accepts_a_report_that_reaches_only_its_first_section() -> None:
+    # The check must not grade formatting. A truncated but genuine report still counts - a false
+    # "incomplete" costs a re-run, and re-running a reviewer that DID report is pure waste.
+    svc = StubService(
+        _config("ro-a", "ro-b"),
+        texts=["## Bottom line\nok", "**Findings**\n- line 12 asserts nothing"],
+    )
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].completed is True
+    assert result.incomplete_roles == []
+
+
 def test_runner_records_an_unavailable_role_instead_of_shrinking_the_panel() -> None:
     svc = StubService(_config("ro-a", "ro-b"), unavailable={"ro-b"})
     result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
