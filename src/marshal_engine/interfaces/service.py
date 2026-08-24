@@ -33,6 +33,7 @@ from ..core.layout import reports_dir
 from ..core.retry import RetryPolicy
 from ..core.types import (
     ModelCatalog,
+    PermissionMode,
     RunStatus,
     TaskSpec,
     UsageSource,
@@ -84,6 +85,20 @@ _WORKER_PREAMBLE = (
     "You are a headless agent in a Marshal fleet, running in an isolated git worktree. "
     "You cannot ask questions or wait for input - make reasonable decisions and proceed. "
     "Make all edits inside this worktree only. "
+    "If the repo root has an AGENTS.md, CLAUDE.md, or GEMINI.md, read it first for project conventions."
+)
+
+#: Read-only runs (reviewers, planners, audits) get their own preamble. The worker text tells the
+#: agent to edit and to verify its edits, and a read-only client can do neither: on a backend where
+#: a denied command aborts the run rather than returning an error the model can route around, a
+#: single "run the tests before finishing" line kills the reviewer before it writes anything. The
+#: lenses most likely to reach for the suite are the ones whose absence costs most, so the
+#: instruction is omitted rather than softened.
+_READ_ONLY_PREAMBLE = (
+    "You are a headless reviewer in a Marshal fleet, running in an isolated git worktree. "
+    "You cannot ask questions or wait for input - make reasonable decisions and proceed. "
+    "You have READ-ONLY access: make no edits, and do not run build, test, or install commands. "
+    "Your entire output is your report - nothing you do to the worktree is kept. "
     "If the repo root has an AGENTS.md, CLAUDE.md, or GEMINI.md, read it first for project conventions."
 )
 
@@ -356,13 +371,20 @@ class MarshalService:
         backend = self.fleet.backends.get(client.backend)
         return backend.available_for_client(client.env) if backend is not None else False
 
-    def _compose_goal(self, goal: str) -> str:
-        # Layered context: the worker preamble + the fleet's `worker` context prefix the user's
-        # goal. Everything (run_agent/run_many/spawn/benchmark/workflows) funnels through
+    def _compose_goal(self, goal: str, permission: PermissionMode) -> str:
+        # Layered context: the preamble + the fleet's `worker` context prefix the user's goal.
+        # Everything (run_agent/run_many/spawn/benchmark/workflows/teams) funnels through
         # _request_for, so this is the single injection point.
-        parts = [_WORKER_PREAMBLE]
+        #
+        # Read-only clients get neither the worker preamble nor `context.worker`. Both are written
+        # for an agent that edits - "keep changes scoped", "run the tests before finishing" - and a
+        # reviewer that obeys them either wastes its turn or, on a backend that aborts on a denied
+        # command, dies without reporting. The fleet's worker context is user-authored and cannot be
+        # filtered line by line, so a read-only run does not receive it at all.
+        read_only = permission is PermissionMode.READ_ONLY
+        parts = [_READ_ONLY_PREAMBLE if read_only else _WORKER_PREAMBLE]
         worker_ctx = self.config.context.worker
-        if worker_ctx:
+        if worker_ctx and not read_only:
             parts.append(worker_ctx.strip())
         parts.append(goal)
         return "\n\n".join(parts)
@@ -416,19 +438,24 @@ class MarshalService:
         # ValidationError → ValueError so CLI/MCP surfaces match other driver-input errors (not a
         # pydantic traceback). Use `is not None` (not truthiness): an explicit empty string must
         # hit the validator, not silently become a generated id.
-        try:
-            task = TaskSpec(
-                id=task_id if task_id is not None else uuid.uuid4().hex[:8],
-                goal=self._compose_goal(goal),
-                task_kind=task_kind,
-                context_files=context_files or [],
-                read_paths=read_paths or [],
-                artifacts_from=artifacts_from or [],
-                base_branch=base_branch,
-                output_schema=output_schema,
-            )
-        except ValidationError as exc:
-            raise ValueError(str(exc)) from exc
+        # Built per-branch rather than up front: the goal's preamble depends on the resolved
+        # permission (read-only clients must not be told to edit or to run the suite), and that is
+        # not known until routing picks the client or synthesizes the ad-hoc one.
+        def build_task(permission: PermissionMode) -> TaskSpec:
+            try:
+                return TaskSpec(
+                    id=task_id if task_id is not None else uuid.uuid4().hex[:8],
+                    goal=self._compose_goal(goal, permission),
+                    task_kind=task_kind,
+                    context_files=context_files or [],
+                    read_paths=read_paths or [],
+                    artifacts_from=artifacts_from or [],
+                    base_branch=base_branch,
+                    output_schema=output_schema,
+                )
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+
         timeout_override = resolve_duration(duration) if duration is not None else None
         if client_name and backend:
             # A contradiction, not a precedence question: the caller named a configured client AND
@@ -458,7 +485,7 @@ class MarshalService:
             self._warn_if_metered(client.backend, client.name, resolved_model)
             return RunRequest(
                 backend_name=client.backend,
-                task=task,
+                task=build_task(client.permission),
                 permission=client.permission,
                 model=resolved_model,
                 client=client.name,
@@ -477,7 +504,7 @@ class MarshalService:
             self._ensure_backend(backend)  # lazy-add so the Fleet knows the backend; raises ValueError on unknown
             return RunRequest(
                 backend_name=ephemeral.backend,
-                task=task,
+                task=build_task(ephemeral.permission),
                 permission=ephemeral.permission,
                 model=resolve_model(ephemeral),
                 client=ephemeral.name,
