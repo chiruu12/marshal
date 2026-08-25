@@ -573,8 +573,8 @@ def test_verify_gates_work_the_agent_committed_itself(repo: Path) -> None:
 
     An agent that commits its own work (Codex, Claude Code, Goose) leaves a clean tree, so the
     gate never ran on it - the run was stamped `exited_clean` with `verify_passed = None`, which
-    the record documents as "no file changes to gate". Two backends' worth of the fleet could
-    walk a failing gate straight to `integrate`.
+    the record documents as "no file changes to gate". Any self-committing backend could walk a
+    failing gate straight to `integrate`.
     """
     fleet = Fleet(
         repo,
