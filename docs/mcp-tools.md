@@ -554,7 +554,7 @@ chaining: `commit_run(A)` then `spawn(B, base_branch=A's branch)`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `run_id` | string | |
-| `status` | `"committed"` \| `"clean"` \| `"blocked"` \| `"error"` | |
+| `status` | `"committed"` \| `"clean"` \| `"blocked"` \| `"error"` | `blocked` means the run is not safe to freeze yet: still running, or its record reads terminal while its agent process is provably alive (a cancel issued by another Marshal process stamps a status it cannot signal). Recoverable — wait or stop the process, then retry. |
 | `branch` | string \| null | Branch to base dependent runs on. |
 | `commit` | string \| null | Branch tip after commit. |
 | `message` | string | Error detail when `status` is `error`. |
@@ -578,7 +578,7 @@ merge (an outcome, not a fault).
 | Field | Type | Description |
 |-------|------|-------------|
 | `run_id` | string | |
-| `status` | `"merged"` \| `"conflict"` \| `"blocked"` \| `"empty"` \| `"error"` | |
+| `status` | `"merged"` \| `"conflict"` \| `"blocked"` \| `"empty"` \| `"error"` | `blocked` means nothing was merged and the state is fixable: the target checkout is dirty/colliding or detached, the run is still in progress, or its record reads terminal while its agent is provably alive (see `commit_run`). Retry after resolving. |
 | `branch` | string \| null | Source branch. |
 | `merged_into` | string \| null | Target branch. |
 | `changed_files` | list[string] | |

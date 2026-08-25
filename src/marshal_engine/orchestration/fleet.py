@@ -58,6 +58,7 @@ from ..runtime.worktree import Worktree, WorktreeError, WorktreeManager, is_git_
 from .diagnostics import (
     _base_branch_drift_warning,
     _deferred_provision_error,
+    _live_agent_message,
     _orphaned_base_diagnosis,
     _worktree_gone_message,
 )
@@ -1363,6 +1364,16 @@ class Fleet:
                 branch=rec.branch,
                 message="run is still in progress; wait for it to finish before committing",
             )
+        if _pid_is_still_ours(rec):
+            # A terminal STATUS is not proof the process stopped - see `_live_agent_message`.
+            # `clean` already refuses these records for exactly this reason; this path writes a
+            # commit, so it needs the check at least as much.
+            return CommitResult(
+                run_id=run_id,
+                status="blocked",
+                branch=rec.branch,
+                message=_live_agent_message(rec),
+            )
         try:
             wt = self._worktree_for(run_id)
         except ValueError:
@@ -1711,6 +1722,15 @@ class Fleet:
                 status="blocked",
                 branch=rec.branch,
                 message="run is still in progress; wait for it to finish before integrating",
+            )
+        if rec is not None and _pid_is_still_ours(rec):
+            # The status says terminal; the process says otherwise. Refuse rather than merge a
+            # tree that still has a writer - this is the one path that reaches the user's branch.
+            return IntegrateResult(
+                run_id=run_id,
+                status="blocked",
+                branch=rec.branch,
+                message=_live_agent_message(rec),
             )
         if rec is not None:
             try:
