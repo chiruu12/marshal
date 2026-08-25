@@ -14,10 +14,12 @@ versions may include breaking API changes until 1.0.
   goes into a `createPlanToolCall` payload while the assistant stream and the terminal `result`
   carry only interleaved narration, and the adapter read the stream. A read-only reviewer
   therefore "produced" a few hundred characters of "I'll review these tests..." while its actual
-  multi-KB review sat unread in the log. The plan payload is now a candidate alongside the stream
-  and the result, and the longest wins - the rule that already settled stream-vs-truncated-result.
-  Confirmed against two captured runs, which recovered 8426- and 4640-character reports that had
-  been reported as narration.
+  multi-KB review sat unread in the log. A plan payload now wins outright, and longest-wins is
+  left to settle stream-vs-truncated-result. Length was the wrong rule for this channel: it lost
+  a captured 530-character report to 571 characters of narration, selecting against exactly the
+  short, clean reviews that unblock a merge. Preferring the plan cannot shadow an editing run -
+  across 438 captured cursor runs, 56 carry a plan and 185 edit files, and the two sets do not
+  intersect (agent mode tracks its steps with `updateTodosToolCall`).
 - **An OpenCode run cut off mid-stream was recorded as a clean exit.** A final step reporting
   `reason: "unknown"` with zero tokens means the provider dropped the stream, not that the agent
   finished; the run was stamped `exited_clean` with whatever partial text existed. Such a run is
@@ -32,6 +34,15 @@ versions may include breaking API changes until 1.0.
   least one section of the report contract; otherwise it joins `incomplete_roles` with a note
   saying it narrated rather than reviewed. The raw text and the run's real `status` are kept
   either way, so nothing is discarded - only the claim that a review happened is withheld.
+
+- **A review cut off by the record's text cap was reported as a whole one.** The engine caps a
+  run's final message and stamps `text_truncated` so a reader never takes a prefix for the
+  product, but `run_team` discarded that fact. The cut lands at the tail, so the opening headings
+  survive and the report still looked substantive - `## Blocking`, the section a gate acts on, is
+  what goes missing. `RoleReview` now carries `review_truncated` and `review_full_len`, a cut
+  report joins `incomplete_roles` with a note pointing at `get_run_log`, and both rendered reports
+  mark where it stops. The partial text is still shown - unlike narration, a cut-off review is
+  real findings as far as it got. This is the same rule the subject side already followed.
 
 - **Read-only reviewers were killed by the fleet's "run the tests" instruction.** `context.worker`
   and the worker preamble are written for an agent that edits, and both were prepended to every

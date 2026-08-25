@@ -91,10 +91,12 @@ Then do the work the engine deliberately does not:
 
 Two things to check before you trust the panel at all:
 
-- **`incomplete_roles`** - reviewers that produced no report (broke, timed out, backend missing,
-  or exited cleanly having narrated instead of reviewing).
-  That lens is simply **missing**, not satisfied. Re-run it, or proceed knowing what was never
-  looked at.
+- **`incomplete_roles`** - reviewers that produced no whole report (broke, timed out, backend
+  missing, exited cleanly having narrated instead of reviewing, or had their report cut off by the
+  record's text cap). That lens is simply **missing**, not satisfied. Re-run it, or proceed knowing
+  what was never looked at. Check `review_truncated` to tell the two apart: a narrator has nothing
+  worth reading and should be re-run, while a cut-off report is real findings as far as it got -
+  read the rest with `get_run_log` rather than spending another run.
 - **`truncated`** - the subject exceeded the reviewer size cap and was cut, so the reviews cover
   only the visible part. On a large diff, split it and review the pieces.
 
@@ -116,9 +118,9 @@ a human.
 - Reviewers are headless and read-only: the rubric + subject is all they get; no questions possible.
 - Never show a reviewer another's report, and never re-run a panel with the earlier reports in the
   prompt - that destroys the independence the whole thing rests on.
-- A missing report is a missing lens, never approval. `completed` describes the *process*, not the
-  content - it says an agent finished cleanly AND wrote something that answers the report contract,
-  nothing about whether it liked what it saw. An agent that exits 0 without reporting is incomplete,
-  not approving.
+- A missing report is a missing lens, never approval. `completed` describes the *run*, not the
+  review's merits - it says an agent finished cleanly AND wrote a whole report that answers the
+  contract, nothing about whether it liked what it saw. An agent that exits 0 without reporting is
+  incomplete, not approving; so is one whose report stops mid-way.
 - `succeeded` is not `correct`, and "nobody objected" is not `correct` either. Main is untouched
   until you integrate.

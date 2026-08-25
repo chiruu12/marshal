@@ -524,17 +524,45 @@ def test_parse_output_keeps_the_final_plan_revision(backend: CursorBackend) -> N
     assert res.text == final
 
 
+def test_parse_output_prefers_a_plan_shorter_than_the_narration(backend: CursorBackend) -> None:
+    # The real failure this rule exists for. In a captured run the plan-mode report was 530
+    # characters and the interleaved narration 571; longest-wins discarded the report and the
+    # panel recorded the lens as "narrated rather than reviewed". `--mode plan` is read-only and
+    # the plan IS the deliverable there, so it wins outright rather than by weight - which also
+    # stops the rule selecting against short, clean reviews, the ones that unblock a merge.
+    plan = "## Bottom line\nNo blocking issues. " + "The gate holds. " * 30
+    narration = "Let me look at the tests. " * 25
+    assert len(narration) > len(plan), "the narration must outweigh the plan or this proves nothing"
+    out = "\n".join(
+        [
+            _plan_tool_call_event(plan),
+            _assistant_event(narration),
+            _result_event(narration),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.text == plan
+
+
 def test_parse_output_ignores_non_plan_tool_calls(backend: CursorBackend) -> None:
-    # Only the plan payload is a report. Other tool calls must not become the run's text.
+    # Only `createPlanToolCall` carries a report. The decoy here is a non-plan tool call whose
+    # args hold a `plan` key LONGER than the assistant stream, so an extractor that read
+    # `args.plan` from any tool call would win the length tiebreak and become the run's text.
+    # Without that, the assertion holds whether or not the guard exists: the stream is longest
+    # either way, and deleting the whole `tool_call` branch leaves the test green.
+    decoy = "not a report, merely a file the agent read " * 20
     other = json.dumps(
         {
             "type": "tool_call",
             "subtype": "completed",
             "session_id": "uuid-9",
-            "tool_call": {"readToolCall": {"args": {"path": "a.py"}, "result": {"ok": True}}},
+            "tool_call": {
+                "readToolCall": {"args": {"path": "a.py", "plan": decoy}, "result": {"ok": True}}
+            },
         }
     )
     body = "the actual answer, at length " * 10
+    assert len(decoy) > len(body), "the decoy must outweigh the stream or this test proves nothing"
     out = "\n".join([other, _assistant_event(body), _result_event("short")])
     res = backend.parse_output(out, "", 0)
     assert res.text == body

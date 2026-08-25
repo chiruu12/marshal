@@ -289,10 +289,15 @@ class CursorBackend(CodingAgentBackend):
                 session_id = sid
             _apply_cursor_usage(usage, result_obj.get("usage"))
 
-        # Longest wins across every place Cursor can put its output. The stream-vs-result rule
-        # already existed (the single-object mode truncates `result`); the plan payload is a third
-        # candidate, and in plan mode it is the only one holding the actual deliverable.
-        text = max((stream_text, result_text, plan_text), key=len)
+        # A plan payload wins outright; longest-wins settles only stream-vs-result (the
+        # single-object mode truncates `result`). Length is the wrong rule for the plan channel:
+        # `--mode plan` is read-only (see `_PERMISSION`), the plan IS the deliverable there, and a
+        # concise report loses to verbose narration - selecting against exactly the short, clean
+        # reviews that would unblock a merge. Measured over 438 captured cursor runs: 56 carry a
+        # plan, 185 edit files, and the two sets do not intersect - agent mode tracks its steps
+        # with `updateTodosToolCall`, not `createPlanToolCall` - so preferring the plan cannot
+        # shadow an editing run's real output.
+        text = plan_text or max((stream_text, result_text), key=len)
 
         if exit_code != 0 or result_obj is None:
             # Carry the session id and whatever usage the stream reported. A failed run still

@@ -80,11 +80,15 @@ class StubService:
         reverse_records: bool = False,
         run_status: str = "exited_clean",
         collect_raises: type[Exception] | None = None,
+        truncated: list[bool] | None = None,
+        full_lens: list[int | None] | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path("/repo")
         self.texts = texts or []
         self.statuses = statuses or []
+        self.truncated = truncated or []
+        self.full_lens = full_lens or []
         self.diff = diff
         self.unavailable = unavailable or set()
         self.run_many_raises = run_many_raises
@@ -109,6 +113,8 @@ class StubService:
                 client=job["client"],
                 status=self.statuses[i] if i < len(self.statuses) else "exited_clean",
                 text=self.texts[i] if i < len(self.texts) else "## Bottom line\nlooks fine",
+                text_truncated=self.truncated[i] if i < len(self.truncated) else False,
+                text_full_len=self.full_lens[i] if i < len(self.full_lens) else None,
             )
             for i, job in enumerate(jobs)
         ]
@@ -537,6 +543,74 @@ def test_runner_accepts_a_report_that_reaches_only_its_first_section() -> None:
     result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
     assert result.reviews[1].completed is True
     assert result.incomplete_roles == []
+
+
+def test_runner_refuses_to_count_a_report_cut_off_on_write() -> None:
+    # The engine caps a record's `text` at _TEXT_CAP and stamps `text_truncated`. The cut lands
+    # wherever 16k characters ran out - the opening sections survive, so the substantive check
+    # passes and the prefix would read as a whole review. `## Blocking`, the section a gate acts
+    # on, is exactly what goes missing. Same rule the subject side already follows.
+    clipped = "## Bottom line\nThe migration is unsafe.\n\n## Findings\n- the retry loop re-enter"
+    svc = StubService(_config("ro-a", "ro-b"), texts=["## Bottom line\nok", clipped], truncated=[False, True])
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert report_is_substantive(clipped)  # the old check passed it; truncation is the only reason
+    assert result.reviews[1].completed is False
+    assert result.reviews[1].review_truncated is True
+    assert result.incomplete_roles == ["tests"]
+
+
+def test_runner_keeps_the_partial_text_and_length_of_a_cut_off_report() -> None:
+    # Refusing to count it must not discard it: a cut-off review is real findings as far as it
+    # got, and the pre-truncation length tells the driver how much is missing from the run log.
+    clipped = "## Bottom line\nThe migration is unsafe.\n\n## Findings\n- the retry loop re-enter"
+    svc = StubService(
+        _config("ro-a", "ro-b"),
+        texts=["## Bottom line\nok", clipped],
+        truncated=[False, True],
+        full_lens=[None, 41234],
+    )
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].review == clipped
+    assert result.reviews[1].review_full_len == 41234
+    assert "41234" in result.reviews[1].note
+    assert result.reviews[1].status == "exited_clean"  # the process fact is unchanged
+
+
+def test_a_cut_off_report_is_distinguished_from_one_that_never_reported() -> None:
+    # Truncation and narration both land in incomplete_roles, but they call for different actions:
+    # re-run the narrator, read the log for the truncated one. Collapsing them loses that.
+    clipped = "## Bottom line\nThe migration is unsafe.\n\n## Findings\n- the retry loop re-enter"
+    svc = StubService(
+        _config("ro-a", "ro-b"),
+        texts=["I'll start reviewing now.", clipped],
+        truncated=[False, True],
+    )
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    narrated, cut = result.reviews[0], result.reviews[1]
+    assert (narrated.review_truncated, cut.review_truncated) == (False, True)
+    assert "narrated rather than reviewed" in narrated.note
+    assert "cut off" in cut.note
+
+
+def test_the_unified_report_shows_a_cut_off_review_rather_than_collapsing_it() -> None:
+    # Narration collapses to a one-line note in the unified report, which is right - there is
+    # nothing to read. A truncated report is the opposite case: dropping it would hide the
+    # findings it did reach behind that same note.
+    clipped = "## Bottom line\nThe migration is unsafe.\n\n## Findings\n- the retry loop re-enter"
+    svc = StubService(_config("ro-a", "ro-b"), texts=["## Bottom line\nok", clipped], truncated=[False, True])
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    rendered = render_unified_report(result)
+    assert "the retry loop re-enter" in rendered
+    assert "cut off here" in rendered
+
+
+def test_a_whole_report_is_rendered_without_a_cut_marker() -> None:
+    # Guard the other direction: the marker must mean something, so it may not appear on a review
+    # that was never truncated.
+    svc = StubService(_config("ro-a", "ro-b"))
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert result.reviews[1].review_truncated is False
+    assert "cut off here" not in render_unified_report(result)
 
 
 def test_runner_records_an_unavailable_role_instead_of_shrinking_the_panel() -> None:
