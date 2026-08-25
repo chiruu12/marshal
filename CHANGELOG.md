@@ -25,6 +25,16 @@ versions may include breaking API changes until 1.0.
   diff and `integrate` merged it onto the driver's branch. Both guards now live in one helper each,
   called from both sites, because the two copies diverging is how this arose.
 
+- **The `verify:` gate never ran when the agent committed its own work.** The trigger asked
+  `changed_files`, which reports only what is *uncommitted*, so a backend that commits as it goes
+  (Codex, Claude Code, Goose) left a clean tree and skipped the gate entirely - then the run was
+  stamped `exited_clean` with `verify_passed: null`, which the run record documents as "no file
+  changes to gate". A driver could not tell a gate that passed from one that never ran on work it
+  was about to integrate, and a failing suite walked straight through. The gate now triggers on
+  committed changes too, counting "cannot tell" as changed. `_authoritative_status` learned this
+  same lesson at #250; the gate is the same question asked one step earlier. A text-only reply is
+  still never gated.
+
 - **Cursor's report was dropped whenever it ran in plan mode.** In `--mode plan` the deliverable
   goes into a `createPlanToolCall` payload while the assistant stream and the terminal `result`
   carry only interleaved narration, and the adapter read the stream. A read-only reviewer

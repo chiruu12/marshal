@@ -62,7 +62,7 @@ which is where a read-only run's guidance belongs.
 
 | Type | Default | What it does | Example |
 |------|---------|--------------|---------|
-| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `exited_clean` and changed files (post-agent). Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. Same allowlist rules as `worktree_setup`, but timing differs: allowlisted runners execute **agent-modified** project content (`Makefile`, npm scripts, tests, package code) under your identity — allowlist ≠ sandbox. Acceptable when you trust the config and treat agent tasks as code you might run yourself; still review `collect_run` / CI before integrate. See `SECURITY.md`. | `verify: uv run pytest -q` |
+| string or argv list \| omitted | `null` | Gate command run in the worktree **after** a run that would otherwise be `exited_clean` and changed files (post-agent) - whether the agent left them uncommitted or committed them itself. Text-only replies are never gated. Non-zero exit → status `verify_failed`; output tail stored on the run record. Same allowlist rules as `worktree_setup`, but timing differs: allowlisted runners execute **agent-modified** project content (`Makefile`, npm scripts, tests, package code) under your identity — allowlist ≠ sandbox. Acceptable when you trust the config and treat agent tasks as code you might run yourself; still review `collect_run` / CI before integrate. See `SECURITY.md`. | `verify: uv run pytest -q` |
 
 ### `allow_unsafe_commands`
 

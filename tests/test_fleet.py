@@ -568,6 +568,44 @@ def test_verify_skipped_for_empty_run(repo: Path) -> None:
     assert rec.verify_output == ""
 
 
+def test_verify_gates_work_the_agent_committed_itself(repo: Path) -> None:
+    """The gate's trigger was `changed_files`, which sees only UNCOMMITTED work.
+
+    An agent that commits its own work (Codex, Claude Code, Goose) leaves a clean tree, so the
+    gate never ran on it - the run was stamped `exited_clean` with `verify_passed = None`, which
+    the record documents as "no file changes to gate". Any self-committing backend could walk a
+    failing gate straight to `integrate`.
+    """
+    fleet = Fleet(
+        repo,
+        {"selfcommit": _SelfCommitter()},
+        verify=[sys.executable, "-c", "import sys; print('regression here'); sys.exit(2)"],
+    )
+    rec = fleet.run("selfcommit", TaskSpec(id="v-sc", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == [], "an uncommitted change would gate the old way too"
+    assert collected.commit_count == 1, "nothing was committed, so this proves nothing"
+    assert rec.status == "verify_failed"
+    assert rec.verify_passed is False
+    assert "regression here" in rec.verify_output
+
+
+def test_verify_still_skipped_when_the_agent_only_replied(repo: Path) -> None:
+    """The other direction: widening the trigger must not burn a gate run on an unchanged tree.
+
+    A text-only reply cannot have broken the repo, and the gate is a full test suite.
+    """
+    fleet = Fleet(
+        repo,
+        {"talker": _Talker("nothing to change here")},
+        verify=[sys.executable, "-c", "import sys; sys.exit(1)"],
+    )
+    rec = fleet.run("talker", TaskSpec(id="v-talk", goal="x"))
+    assert rec.status == "exited_clean", "a text-only run must not be gated"
+    assert rec.verify_passed is None
+    assert rec.verify_output == ""
+
+
 def test_verify_timeout_marks_verify_failed(repo: Path) -> None:
     fleet = Fleet(
         repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "import time; time.sleep(30)"]
