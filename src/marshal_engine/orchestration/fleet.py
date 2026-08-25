@@ -781,13 +781,14 @@ class Fleet:
             # The workspace's optional verify gate: only a would-be-SUCCEEDED run that actually
             # CHANGED FILES is gated (the EMPTY downgrade already happened above; a text-only
             # reply can't have broken the repo, so don't burn a full test run on an unchanged
-            # tree). A failed gate demotes to VERIFY_FAILED; the worktree is kept for review.
+            # tree). "Changed files" means committed ones too - see `_worktree_produced_files`.
+            # A failed gate demotes to VERIFY_FAILED; the worktree is kept for review.
             verify_passed: bool | None = None
             verify_output = ""
             if (
                 status is RunStatus.EXITED_CLEAN
                 and self.worktrees.verify_cmd
-                and self._worktree_has_changes(wt)
+                and self._worktree_produced_files(wt)
             ):
                 verify_passed, verify_output = self.worktrees.verify(wt)
                 if not verify_passed:
@@ -1188,7 +1189,7 @@ class Fleet:
             usage.source = ext.source
 
     def _worktree_has_changes(self, wt: Worktree) -> bool:
-        """Whether the worktree holds uncommitted changes - the verify gate's trigger.
+        """Whether the worktree holds uncommitted changes.
 
         Can't tell (a git failure) counts as changed: a wasted gate run beats a missed regression.
         """
@@ -1196,6 +1197,23 @@ class Fleet:
             return bool(self.worktrees.changed_files(wt))
         except WorktreeError:
             return True
+
+    def _worktree_produced_files(self, wt: Worktree) -> bool:
+        """Whether the run left file changes at all - the verify gate's trigger.
+
+        Uncommitted changes are only half the question. An agent that COMMITS its own work leaves
+        a clean tree behind it, so gating on `changed_files` alone skipped the gate entirely for
+        those backends - and then stamped `verify_passed = None`, which `RunRecord` documents as
+        "no file changes to gate". A driver could not tell a passing gate from one that never ran
+        on work that was about to be integrated. `_authoritative_status` learned this same lesson
+        at #250; the gate is the same question asked one step earlier.
+
+        Can't tell counts as produced, matching `_authoritative_status`'s fail-open direction.
+        """
+        if self._worktree_has_changes(wt):
+            return True
+        committed = self.worktrees.agent_commit_count(wt)
+        return committed is None or committed > 0
 
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
         """A clean exit that produced no work (no text, no file changes) is EMPTY, not success."""
