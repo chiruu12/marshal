@@ -2559,6 +2559,101 @@ def test_startup_skips_running_record_when_agent_pid_still_alive(repo: Path) -> 
         proc.wait()
 
 
+def _pretend_cancelled_but_alive(fleet: Fleet, run_id: str, pid: int) -> None:
+    """Stamp the record the way a cancel from ANOTHER Marshal process does.
+
+    That path records a terminal status without being able to signal the process group, so the
+    status is terminal while the agent keeps writing. The real start time is used so the identity
+    check passes positively rather than through its fail-open branch.
+    """
+    fleet.state.update_if(
+        run_id,
+        lambda r: True,
+        status=RunStatus.CANCELLED.value,
+        pid=pid,
+        pid_start_time=fleet_mod._pid_start_time(pid),
+    )
+
+
+def test_integrate_refuses_a_terminal_record_whose_agent_is_still_alive(repo: Path) -> None:
+    """#290. `clean` already refuses these records, naming this hazard in a comment. `integrate`
+    is the one path that writes to the USER's branch and it gated only on `status == running`,
+    so a cancelled-but-live agent's half-written tree could be merged into main."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="live-int", goal="x"))
+    assert rec.status == "exited_clean", "no work to integrate, so this proves nothing"
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        _pretend_cancelled_but_alive(fleet, rec.run_id, proc.pid)
+        result = fleet.integrate(rec.run_id)
+        assert result.status == "blocked"
+        assert "still alive" in (result.message or "")
+        merged = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert merged.strip() == "", "a live agent's tree reached the user's branch"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_commit_run_refuses_a_terminal_record_whose_agent_is_still_alive(repo: Path) -> None:
+    """`commit_run` freezes the worktree onto the run branch, which `spawn(base_branch=...)` then
+    builds on - so capturing a half-written tree here propagates into every chained run."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="live-commit", goal="x"))
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        _pretend_cancelled_but_alive(fleet, rec.run_id, proc.pid)
+        result = fleet.commit_run(rec.run_id)
+        assert result.status == "blocked"
+        assert "still alive" in (result.message or "")
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_integrate_still_works_once_the_agent_is_gone(repo: Path) -> None:
+    """The guard must key on the PROCESS, not on the status: a cancelled run whose agent has
+    exited is reviewable work, and refusing it would strand every cancelled run forever."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="dead-int", goal="x"))
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    fleet.state.update_if(
+        rec.run_id, lambda r: True, status=RunStatus.CANCELLED.value, pid=dead.pid
+    )
+    result = fleet.integrate(rec.run_id)
+    assert result.status == "merged", f"a dead agent's work was refused: {result.message}"
+
+
+def test_a_finished_run_integrates_even_if_its_stale_pid_was_recycled(repo: Path) -> None:
+    """The live-agent guard must not strand finished work.
+
+    A run's pid is never cleared, so every completed record carries a stale one. On a machine
+    that has recycled that number, `_pid_is_still_ours` fails OPEN whenever identity cannot be
+    established - no recorded start time, or no probe - and would report a stranger's process as
+    this run's agent. That direction is right for reaping and wrong here: the driver has no way
+    to edit the record, so a false block strands the work permanently. Only `cancelled` is
+    stamped without an observed exit, so only `cancelled` is checked.
+    """
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="recycled", goal="x"))
+    assert rec.status == "exited_clean"
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        # A recycled pid with no verifiable identity: exactly the fail-open case.
+        fleet.state.update_if(
+            rec.run_id, lambda r: True, pid=stranger.pid, pid_start_time=None
+        )
+        result = fleet.integrate(rec.run_id)
+        assert result.status == "merged", f"finished work was stranded: {result.message}"
+    finally:
+        stranger.kill()
+        stranger.wait()
+
+
 def test_startup_does_not_steal_the_lock_from_a_live_fleet(repo: Path) -> None:
     """REGRESSION: claiming the lock unconditionally destroyed the protection it just relied on.
 

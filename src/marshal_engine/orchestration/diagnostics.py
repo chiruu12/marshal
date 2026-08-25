@@ -79,3 +79,20 @@ def _worktree_gone_message(rec: RunRecord) -> str:
         return rec.error
     path = rec.worktree or ""
     return f"worktree for run {rec.run_id!r} no longer exists: {path}"
+
+
+def _live_agent_message(rec: RunRecord) -> str:
+    """Driver-facing reason when a record reads terminal but its agent is still writing.
+
+    `cancel_run` on a run this process did not start stamps a terminal status without being able
+    to signal the process group, so the record can read `cancelled` while the agent keeps editing
+    its worktree. Says what to do about it: the run cannot be waited on through Marshal, because
+    the status it would be waited on for is already stamped.
+    """
+    return (
+        f"run {rec.run_id!r} reads {rec.status!r}, but its agent is still alive at pid {rec.pid}. "
+        f"A terminal status can be stamped without the process having been signalled (a cancel "
+        f"from another Marshal process cannot signal it), so the worktree may still be mid-write "
+        f"and committing it now could capture half-written files. Wait for the process to exit or "
+        f"stop it yourself, then retry."
+    )

@@ -35,6 +35,18 @@ versions may include breaking API changes until 1.0.
   same lesson at #250; the gate is the same question asked one step earlier. A text-only reply is
   still never gated.
 
+- **`integrate` and `commit_run` could commit a live agent's half-written files** (#290). Both
+  refused a run whose *status* was `running`, which is not the same question as whether the agent
+  process stopped. `cancel_run` on a run the current process did not start stamps a terminal
+  status without being able to signal the process group, so a record can read `cancelled` while
+  the agent keeps editing its worktree - and `integrate` is the one path that writes to the user's
+  branch. `clean` already refused exactly these records, with a comment naming the hazard; the
+  write paths now share the same check and return `blocked` with the pid and what to do about it.
+  Keyed on the process, not the status: a cancelled run whose agent has exited is reviewable work
+  and still integrates. The check is scoped to `cancelled`, the only terminal status stamped
+  without an observed exit - a run's pid is never cleared, so checking every terminal status would
+  let a recycled pid strand finished work behind a refusal the driver cannot clear.
+
 - **Cursor's report was dropped whenever it ran in plan mode.** In `--mode plan` the deliverable
   goes into a `createPlanToolCall` payload while the assistant stream and the terminal `result`
   carry only interleaved narration, and the adapter read the stream. A read-only reviewer
