@@ -37,7 +37,11 @@ from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
 from marshal_engine.orchestration import reaping as reaping_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
-from marshal_engine.orchestration.provisioning import ARTIFACT_DIR, harvest_artifacts
+from marshal_engine.orchestration.provisioning import (
+    ARTIFACT_DIR,
+    ARTIFACT_MOUNT,
+    harvest_artifacts,
+)
 from marshal_engine.runtime.state import FleetState, RunRecord
 from marshal_engine.runtime.worktree import WorktreeError
 
@@ -5646,6 +5650,84 @@ def test_an_artifact_symlink_is_not_followed_out_of_the_worktree(repo: Path, tmp
     stored = harvest_artifacts(wt, artifacts_dir(repo) / "linky")
     assert stored == ["real.md"], "a symlinked artifact was harvested"
     assert not (artifacts_dir(repo) / "linky" / "stolen.txt").exists()
+
+
+def test_a_tracked_artifact_mount_symlink_is_refused_rather_than_followed(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Every component of the mount path needs the same refusal, not just its root.
+
+    `.marshal-context` was checked and `artifacts` under it was not, and `mkdir(exist_ok=True)` accepts an
+    existing symlink-to-directory because its exist_ok branch tests `is_dir()`, which follows
+    links. So a link committed on the base branch made MARSHAL ITSELF write agent-chosen files
+    outside every worktree - the isolation boundary breached by the tool that enforces it.
+    """
+    victim_dir = tmp_path / "outside-store"
+    victim_dir.mkdir()
+    fleet = Fleet(repo, {"reporter": _Reporter(), "reader": _Reader()})
+    first = fleet.run("reporter", TaskSpec(id="art-src", goal="audit it"))
+    assert first.artifacts == ["FINDINGS.md"], "no artifact to mount, so this proves nothing"
+
+    ctx = repo / ".marshal-context"
+    ctx.mkdir()
+    (ctx / ARTIFACT_MOUNT).symlink_to(victim_dir, target_is_directory=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "tracked artifact mount symlink"],
+        check=True,
+        capture_output=True,
+    )
+
+    with pytest.raises(ValueError, match=r"not a plain directory"):
+        fleet.run("reader", TaskSpec(id="art-dst", goal="x", artifacts_from=[first.run_id]))
+
+    assert list(victim_dir.iterdir()) == [], "Marshal wrote through the link, outside the worktree"
+
+
+def test_a_tracked_artifact_dir_symlink_is_refused_rather_than_followed(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Same hole on the write side: `prepare_artifact_dir` created the agent's output directory
+    with the same `exist_ok=True` mkdir, so a tracked `.marshal-artifacts` link would have the
+    agent writing - and `harvest_artifacts` then reading - through it."""
+    victim_dir = tmp_path / "outside-artifacts"
+    victim_dir.mkdir()
+    (repo / ARTIFACT_DIR).symlink_to(victim_dir, target_is_directory=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-Af"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "tracked artifact dir symlink"],
+        check=True,
+        capture_output=True,
+    )
+
+    fleet = Fleet(repo, {"reporter": _Reporter()})
+    with pytest.raises(ValueError, match=r"not a plain directory"):
+        fleet.run("reporter", TaskSpec(id="art-dir-link", goal="audit it"))
+
+    assert list(victim_dir.iterdir()) == [], "the agent wrote through the link"
+
+
+def test_mounted_artifacts_are_not_reported_as_the_runs_own_work(repo: Path) -> None:
+    """`artifacts_from` alone reached the mount without excluding it.
+
+    `_provision_read_paths` excludes `.marshal-context/`, but it returns early when `read_paths`
+    is empty - so a run that only chained artifacts left the mount as untracked content. It then
+    counts as the run's diff, which integrate merges onto the driver's branch, and it makes the
+    run look like it changed files when it changed none.
+    """
+    fleet = Fleet(repo, {"reporter": _Reporter(), "reader": _Reader()})
+    first = fleet.run("reporter", TaskSpec(id="chain-src", goal="audit it"))
+    second = fleet.run(
+        "reader", TaskSpec(id="chain-dst", goal="x", artifacts_from=[first.run_id])
+    )
+    status = subprocess.run(
+        ["git", "-C", str(second.worktree), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert ".marshal-context" not in status, "provisioned input is being reported as the work"
+    assert status.strip() == "", "the reader changed no files, so its diff must be empty"
 
 
 def test_a_cancelled_run_still_records_the_artifacts_it_wrote(repo: Path) -> None:
