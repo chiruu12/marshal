@@ -10,6 +10,20 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **`artifacts_from` could be made to write outside the worktree, and mounted its input into the
+  run's own diff.** Provisioning refused a symlinked `.marshal-context` but not the `artifacts`
+  directory under it, and `mkdir(parents=True, exist_ok=True)` accepts an existing
+  symlink-to-directory - its `exist_ok` branch tests `is_dir()`, which follows links. A link
+  committed on the base branch therefore had Marshal itself copying an earlier run's artifacts to
+  wherever the link pointed. Every component the mount creates is now refused as a symlink, and
+  the resolved destination is re-checked to be inside the worktree; `.marshal-artifacts/` gets the
+  same refusal on the write side, where the hazard is the agent writing - and harvest reading -
+  through a tracked link. Separately, the mount was only git-excluded by the `read_paths` path,
+  which returns early when no `read_paths` were declared: a run that chained artifacts alone left
+  `.marshal-context/` untracked in its worktree, so provisioned **input** counted as the run's own
+  diff and `integrate` merged it onto the driver's branch. Both guards now live in one helper each,
+  called from both sites, because the two copies diverging is how this arose.
+
 - **Cursor's report was dropped whenever it ran in plan mode.** In `--mode plan` the deliverable
   goes into a `createPlanToolCall` payload while the assistant stream and the terminal `result`
   carry only interleaved narration, and the adapter read the stream. A read-only reviewer

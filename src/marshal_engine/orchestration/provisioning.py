@@ -462,25 +462,48 @@ def _append_exclude(wt: Worktree, entry: str) -> None:
         raise ValueError(str(exc)) from exc
 
 
-def _ensure_plain_marshal_context_dir(dest_root: Path) -> Path:
-    """Return ``dest_root`` as a plain directory; refuse a pre-existing symlink or non-dir.
+def _ensure_plain_dir(path: Path, *, what: str) -> Path:
+    """Return ``path`` as a plain directory; refuse a pre-existing symlink or non-dir.
 
-    Do **not** ``resolve()`` through ``dest_root`` before this check: a tracked
-    ``.marshal-context`` symlink would be followed and provisioning would copy into (and chmod)
-    the link target. Create with ``mkdir`` only when absent; never silently replace or follow.
+    Do **not** ``resolve()`` through ``path`` before this check: a tracked symlink would be
+    followed and provisioning would copy into (and chmod) the link target. Create with ``mkdir``
+    only when absent; never silently replace or follow.
+
+    Every component a caller creates needs this, not just the first. ``mkdir(parents=True,
+    exist_ok=True)`` is not a substitute: its ``exist_ok`` branch tests ``is_dir()``, which
+    follows symlinks, so it accepts a link pointing anywhere and writes land at the target.
     """
     try:
-        st = dest_root.lstat()
+        st = path.lstat()
     except FileNotFoundError:
-        dest_root.mkdir(parents=True, exist_ok=False)
+        path.mkdir(parents=True, exist_ok=False)
     else:
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
             raise ValueError(
-                f"read_paths refuses worktree `.marshal-context` that is not a plain directory: "
-                f"{dest_root}. The worktree already contains a `.marshal-context` that is not a "
-                f"plain directory; refuse rather than follow or replace it."
+                f"{what} refuses a worktree `{path.name}` that is not a plain directory: {path}. "
+                f"The worktree already contains a `{path.name}` that is not a plain directory; "
+                f"refuse rather than follow or replace it."
             )
-    return dest_root
+    return path
+
+
+def _ensure_plain_marshal_context_dir(dest_root: Path) -> Path:
+    """``_ensure_plain_dir`` for the ``.marshal-context`` root every read mount hangs off."""
+    return _ensure_plain_dir(dest_root, what="read_paths")
+
+
+def _ensure_contained(dest_root: Path, wt: Worktree, *, what: str) -> Path:
+    """Resolve ``dest_root`` and prove it is still inside ``wt``. Returns the resolved path.
+
+    Safe to resolve at this point only because every component was already refused as a symlink
+    by ``_ensure_plain_dir`` - this is the belt to that braces, and catches a component swapped
+    between the check and the copy.
+    """
+    resolved = dest_root.resolve()
+    base = wt.path.resolve()
+    if resolved != base and base not in resolved.parents:
+        raise ValueError(f"{what} destination escaped the worktree: {resolved}")
+    return resolved
 
 
 def _provision_read_paths(
@@ -538,13 +561,7 @@ def _provision_read_paths(
 
     dest_root = _ensure_plain_marshal_context_dir(wt.path / _READ_CONTEXT_DIR)
     # Containment: every copy lands under `.marshal-context/` inside this worktree.
-    # Safe to resolve now: dest_root is a plain directory (symlink/non-dir already refused).
-    dest_root = dest_root.resolve()
-    base = wt.path.resolve()
-    if dest_root != base and base not in dest_root.parents:
-        raise ValueError(
-            f"read_paths destination escaped the worktree: {dest_root}"
-        )
+    dest_root = _ensure_contained(dest_root, wt, what="read_paths")
 
     seen_names: dict[str, str] = {}
     for raw, src in resolved:
@@ -587,7 +604,11 @@ def prepare_artifact_dir(wt: Worktree) -> None:
     and so the exclude entry exists before anything lands in it - an artifact appearing in the
     run's own diff would make a report about the work look like part of the work.
     """
-    (wt.path / ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
+    # Same refusal as the read mounts: a `.marshal-artifacts` symlink committed in the repo would
+    # be followed here, and `harvest_artifacts` would then copy out of the link target.
+    _ensure_contained(
+        _ensure_plain_dir(wt.path / ARTIFACT_DIR, what="artifacts"), wt, what="artifacts"
+    )
     _append_exclude(wt, f"{ARTIFACT_DIR}/")
 
 
@@ -633,8 +654,17 @@ def provision_run_artifacts(wt: Worktree, artifacts_root: Path, run_ids: list[st
     """
     if not run_ids:
         return
-    dest_root = _ensure_plain_marshal_context_dir(wt.path / _READ_CONTEXT_DIR) / ARTIFACT_MOUNT
-    dest_root.mkdir(parents=True, exist_ok=True)
+    # Both components are refused as symlinks, then the result is proved to still be inside the
+    # worktree. `artifacts` needs the check as much as `.marshal-context` does: the agent of an
+    # earlier run controls its own worktree, and a link committed there rides into this one.
+    context_root = _ensure_plain_marshal_context_dir(wt.path / _READ_CONTEXT_DIR)
+    dest_root = _ensure_plain_dir(context_root / ARTIFACT_MOUNT, what="artifacts_from")
+    dest_root = _ensure_contained(dest_root, wt, what="artifacts_from")
+    # Without this the mount is untracked content in the worktree: it lands in the run's own diff
+    # and `changed_files`, so provisioned INPUT gets reported as the agent's work and integrate
+    # merges it onto the driver's branch. `_provision_read_paths` excludes the same directory, but
+    # it returns early when `read_paths` is empty - so `artifacts_from` alone reached here bare.
+    _append_exclude(wt, f"{_READ_CONTEXT_DIR}/")
     for run_id in run_ids:
         # Validated as a path segment: a run id reaching the filesystem must not be able to
         # address a sibling directory (`../`) or escape the artifacts root.
