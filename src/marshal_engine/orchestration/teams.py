@@ -133,9 +133,14 @@ class TeamSubject(BaseModel):
 class RoleReview(BaseModel):
     """One reviewer's report, plus the mechanical facts needed to weigh it.
 
-    ``completed`` is a statement about the *process*, not the content: it means the agent ran to a
-    clean finish and produced text. It carries no opinion about what that text says - that reading
-    is the requesting agent's.
+    ``completed`` says this lens actually reported: the agent ran to a clean finish and produced
+    a whole report that answers the contract. It is a claim about the *run*, never about the
+    review's merits - whether the objections are any good is the requesting agent's reading, and
+    nothing here grades them.
+
+    ``status``, ``review_truncated`` and ``review_full_len`` are the facts behind that claim, kept
+    separately so a driver can see why a lens was not counted rather than take the verdict on
+    trust.
     """
 
     role: str
@@ -144,6 +149,11 @@ class RoleReview(BaseModel):
     status: str = ""
     completed: bool = False
     review: str = ""
+    #: True when the run record's `text` was cut on write, so `review` is a prefix of what the
+    #: reviewer actually wrote. The whole report is in the run log. `review_full_len` is the
+    #: pre-truncation length; None when nothing was cut.
+    review_truncated: bool = False
+    review_full_len: int | None = None
     report_path: str | None = None
     note: str = ""
 
@@ -414,6 +424,11 @@ def discover_teams(directory: Path | str) -> TeamListing:
 # --- report rendering (one shared serializer for library / CLI / MCP) ----------------------
 
 
+#: Rendered where a cut-off report stops. Without it a reader who scrolls to the end sees a review
+#: that simply ends, and reads the reviewer's silence on the remaining sections as "nothing to say".
+_CUT_MARKER = "_[the report is cut off here - the rest is in the run log: `get_run_log`]_"
+
+
 def render_role_report(review: RoleReview, *, team: str, subject_summary: str) -> str:
     """One reviewer's standalone report file."""
     lines = [
@@ -428,6 +443,8 @@ def render_role_report(review: RoleReview, *, team: str, subject_summary: str) -
         lines.append(f"- **Note:** {review.note}")
     lines += ["", "---", ""]
     lines.append(review.review.strip() or "_This reviewer produced no report._")
+    if review.review_truncated and review.review.strip():
+        lines += ["", _CUT_MARKER]
     return "\n".join(lines) + "\n"
 
 
@@ -481,6 +498,11 @@ def render_unified_report(result: TeamReview) -> str:
         lines += [f"### {r.role} (`{r.client}`)", ""]
         if r.completed and r.review.strip():
             lines += [r.review.strip(), ""]
+        elif r.review_truncated and r.review.strip():
+            # A cut-off report is a real review as far as it got. Collapsing it to a one-line note
+            # the way narration is collapsed would throw away the findings it did reach, so the
+            # prefix is rendered with the cut disclosed above and below it.
+            lines += [f"_Partial report: {r.note}._", "", r.review.strip(), "", _CUT_MARKER, ""]
         else:
             lines += [f"_No report: {r.note or r.status or 'did not run'}._", ""]
 
@@ -663,17 +685,33 @@ class TeamRunner:
             # refusing to call it a review.
             text = (rec.text or "").strip()
             exited_clean = rec.status == RunStatus.EXITED_CLEAN.value
-            done = exited_clean and bool(text) and report_is_substantive(text)
+            # A capped `text` is a PREFIX of the report, and the cut lands wherever 16k characters
+            # ran out - typically before `## Blocking`, which is the section a gate acts on. The
+            # opening sections survive, so `report_is_substantive` still passes and the prefix
+            # would read as a whole review. Same rule the subject side already follows
+            # (MAX_SUBJECT_CHARS): a partial review is disclosed, never silently counted.
+            # Named apart from the subject-side `truncated` above: these are opposite directions
+            # of the same hazard (what the reviewer was shown vs what the reviewer wrote back),
+            # and one name for both would silently overwrite the subject's flag.
+            report_cut = bool(rec.text_truncated)
+            done = exited_clean and bool(text) and report_is_substantive(text) and not report_cut
             note = ""
             if not exited_clean:
                 note = f"run did not succeed ({rec.status}); any partial output is unreliable"
             elif not text:
                 note = "the run succeeded but produced no report text"
-            elif not done:
+            elif not report_is_substantive(text):
                 note = (
                     "the run exited cleanly but its output contains none of the report sections "
                     "the contract requires - it narrated rather than reviewed, so this lens did "
                     "not report (the raw text is kept below and in the run log)"
+                )
+            elif report_cut:
+                how_long = f" of {rec.text_full_len} characters" if rec.text_full_len else ""
+                note = (
+                    f"the report was cut off at {len(rec.text or '')} characters{how_long}, so what "
+                    "is kept below is a prefix and the reviewer's later sections - typically "
+                    "Blocking and Confidence - are missing; read the full report with get_run_log"
                 )
             reviews.append(
                 RoleReview(
@@ -683,6 +721,8 @@ class TeamRunner:
                     status=rec.status,
                     completed=done,
                     review=rec.text or "",
+                    review_truncated=report_cut,
+                    review_full_len=rec.text_full_len,
                     note=note,
                 )
             )

@@ -147,6 +147,57 @@ def test_compose_prompt_includes_context(backend: OpenCodeBackend) -> None:
     assert "Relevant files:" in argv[-1] and "a.py" in argv[-1]
 
 
+def test_parse_output_flags_a_run_cut_off_on_an_unknown_stop_reason(
+    backend: OpenCodeBackend,
+) -> None:
+    # #286: a reviewer's stream ended on a step reporting `unknown` with zero tokens, having never
+    # written its report, and the run was recorded as a clean exit. From the panel's side that is
+    # indistinguishable from a review that found nothing.
+    out = "\n".join(
+        [
+            '{"part":{"type":"text","text":"Let me start the review."}}',
+            ('{"part":{"type":"step-finish","reason":"tool-calls",'
+            '"tokens":{"input":1044,"output":157,"cache":{"read":0,"write":0}}}}'),
+            ('{"part":{"type":"step-finish","reason":"unknown",'
+            '"tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}}}'),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.FAILED
+    assert res.error is not None and "cut off" in res.error
+    assert res.text == "Let me start the review."  # partial text is kept, not discarded
+
+
+def test_parse_output_keeps_an_unknown_reason_that_produced_output_clean(
+    backend: OpenCodeBackend,
+) -> None:
+    # Both conditions are required. `unknown` alongside real output is a stop reason we cannot
+    # name - not evidence the stream was cut off - and failing it would turn every unrecognised
+    # upstream reason into a broken run.
+    out = "\n".join(
+        [
+            '{"part":{"type":"text","text":"## Bottom line\\n\\nlooks fine"}}',
+            ('{"part":{"type":"step-finish","reason":"unknown",'
+            '"tokens":{"input":100,"output":40,"cache":{"read":0,"write":0}}}}'),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.error is None
+
+
+def test_parse_output_normal_stop_is_unaffected(backend: OpenCodeBackend) -> None:
+    out = "\n".join(
+        [
+            '{"part":{"type":"text","text":"done"}}',
+            ('{"part":{"type":"step-finish","reason":"stop",'
+            '"tokens":{"input":10,"output":0,"cache":{"read":0,"write":0}}}}'),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+
+
 def test_parse_output_success_with_usage(backend: OpenCodeBackend) -> None:
     out = "\n".join(
         [

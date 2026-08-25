@@ -504,6 +504,7 @@ def _capture_svc(repo: Path, backend: _Capture, *, worker: str | None = None) ->
             "reviewer": ClientConfig(
                 name="reviewer", backend="capture", permission=PermissionMode.READ_ONLY
             ),
+            "yolo": ClientConfig(name="yolo", backend="capture", permission=PermissionMode.YOLO),
         },
         context=FleetContext(worker=worker) if worker else FleetContext(),
     )
@@ -591,6 +592,18 @@ def test_read_only_goal_uses_the_reviewer_preamble(repo: Path) -> None:
     assert goal.startswith("You are a headless reviewer in a Marshal fleet")
     assert "READ-ONLY" in goal
     assert "Make all edits inside this worktree only." not in goal
+
+
+def test_yolo_is_an_editing_run_and_keeps_both_layers(repo: Path) -> None:
+    # The carve-out is keyed on READ_ONLY, not on "not SAFE_EDIT". Writing it the other way still
+    # satisfies the safe-edit test while silently giving a YOLO client the reviewer preamble and
+    # dropping its worker context - an editing agent told it may not edit.
+    backend = _Capture()
+    svc = _capture_svc(repo, backend, worker="Run pytest before finishing.")
+    svc.run_agent("yolo", "fix the bug", task_id="t1")
+    goal = backend.tasks[-1].goal
+    assert goal.startswith("You are a headless agent in a Marshal fleet")
+    assert "Run pytest before finishing." in goal
 
 
 def test_safe_edit_still_gets_the_worker_context_and_preamble(repo: Path) -> None:

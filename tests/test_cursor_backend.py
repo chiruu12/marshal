@@ -461,6 +461,113 @@ def test_parse_output_prefers_stream_over_truncated_result(backend: CursorBacken
     assert res.text == full
 
 
+def _plan_tool_call_event(plan: str, subtype: str = "completed") -> str:
+    """A `createPlanToolCall` event, shaped from a real `--mode plan` run (see #286)."""
+    return json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": subtype,
+            "session_id": "uuid-9",
+            "call_id": "c1",
+            "tool_call": {
+                "createPlanToolCall": {
+                    "args": {
+                        "plan": plan,
+                        "name": "Regression review report",
+                        "overview": "Regression-lens review",
+                        "todos": [],
+                        "phases": [],
+                        "isProject": False,
+                    },
+                    "result": {"success": True, "planUri": "cursor://plan/1"},
+                }
+            },
+        }
+    )
+
+
+def test_parse_output_recovers_a_plan_mode_report_from_the_tool_call(
+    backend: CursorBackend,
+) -> None:
+    # #286: in `--mode plan` the deliverable goes into the plan tool call, while the assistant
+    # stream and the terminal result carry only narration. Reading the stream alone made a
+    # read-only reviewer look like it had reported when its review was never surfaced.
+    narration = "I'll review these tests for catching power against the production paths..."
+    report = "## Bottom line\n\nThese tests mostly do what a regression suite should.\n" + "x" * 500
+    out = "\n".join(
+        [
+            _assistant_event(narration),
+            _plan_tool_call_event(report, subtype="started"),
+            _plan_tool_call_event(report),
+            _result_event(narration),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == report  # not the narration, and not the two payloads concatenated
+    assert res.session_id == "uuid-9"
+
+
+def test_parse_output_keeps_the_final_plan_revision(backend: CursorBackend) -> None:
+    # An agent that revises its plan stands behind the last version, so a shorter revision must
+    # still win over the draft it replaced - "last", not "longest", among plan payloads.
+    first = "## Bottom line\n\n" + "draft " * 200
+    final = "## Bottom line\n\nRevised: one blocking finding."
+    out = "\n".join(
+        [
+            _plan_tool_call_event(first),
+            _plan_tool_call_event(final),
+            _result_event("short narration"),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.text == final
+
+
+def test_parse_output_prefers_a_plan_shorter_than_the_narration(backend: CursorBackend) -> None:
+    # The real failure this rule exists for. In a captured run the plan-mode report was 530
+    # characters and the interleaved narration 571; longest-wins discarded the report and the
+    # panel recorded the lens as "narrated rather than reviewed". `--mode plan` is read-only and
+    # the plan IS the deliverable there, so it wins outright rather than by weight - which also
+    # stops the rule selecting against short, clean reviews, the ones that unblock a merge.
+    plan = "## Bottom line\nNo blocking issues. " + "The gate holds. " * 30
+    narration = "Let me look at the tests. " * 25
+    assert len(narration) > len(plan), "the narration must outweigh the plan or this proves nothing"
+    out = "\n".join(
+        [
+            _plan_tool_call_event(plan),
+            _assistant_event(narration),
+            _result_event(narration),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.text == plan
+
+
+def test_parse_output_ignores_non_plan_tool_calls(backend: CursorBackend) -> None:
+    # Only `createPlanToolCall` carries a report. The decoy here is a non-plan tool call whose
+    # args hold a `plan` key LONGER than the assistant stream, so an extractor that read
+    # `args.plan` from any tool call would win the length tiebreak and become the run's text.
+    # Without that, the assertion holds whether or not the guard exists: the stream is longest
+    # either way, and deleting the whole `tool_call` branch leaves the test green.
+    decoy = "not a report, merely a file the agent read " * 20
+    other = json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "session_id": "uuid-9",
+            "tool_call": {
+                "readToolCall": {"args": {"path": "a.py", "plan": decoy}, "result": {"ok": True}}
+            },
+        }
+    )
+    body = "the actual answer, at length " * 10
+    assert len(decoy) > len(body), "the decoy must outweigh the stream or this test proves nothing"
+    out = "\n".join([other, _assistant_event(body), _result_event("short")])
+    res = backend.parse_output(out, "", 0)
+    assert res.text == body
+
+
 def test_parse_output_truncated_stream_returns_partial_text(backend: CursorBackend) -> None:
     out = _assistant_event("partial ") + "\n" + _assistant_event("report")
     res = backend.parse_output(out, "killed", 137)
