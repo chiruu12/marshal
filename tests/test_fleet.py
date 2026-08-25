@@ -5655,9 +5655,9 @@ def test_an_artifact_symlink_is_not_followed_out_of_the_worktree(repo: Path, tmp
 def test_a_tracked_artifact_mount_symlink_is_refused_rather_than_followed(
     repo: Path, tmp_path: Path
 ) -> None:
-    """The mount's SECOND component needs the same refusal as its first.
+    """Every component of the mount path needs the same refusal, not just its root.
 
-    `.marshal-context` was checked and `artifacts` was not, and `mkdir(exist_ok=True)` accepts an
+    `.marshal-context` was checked and `artifacts` under it was not, and `mkdir(exist_ok=True)` accepts an
     existing symlink-to-directory because its exist_ok branch tests `is_dir()`, which follows
     links. So a link committed on the base branch made MARSHAL ITSELF write agent-chosen files
     outside every worktree - the isolation boundary breached by the tool that enforces it.

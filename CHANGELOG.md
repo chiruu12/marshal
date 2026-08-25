@@ -15,7 +15,8 @@ versions may include breaking API changes until 1.0.
   directory under it, and `mkdir(parents=True, exist_ok=True)` accepts an existing
   symlink-to-directory - its `exist_ok` branch tests `is_dir()`, which follows links. A link
   committed on the base branch therefore had Marshal itself copying an earlier run's artifacts to
-  wherever the link pointed. Every component the mount creates is now refused as a symlink, and
+  wherever the link pointed. Every component of the destination path is now refused as a symlink,
+  not just its root, and
   the resolved destination is re-checked to be inside the worktree; `.marshal-artifacts/` gets the
   same refusal on the write side, where the hazard is the agent writing - and harvest reading -
   through a tracked link. Separately, the mount was only git-excluded by the `read_paths` path,
