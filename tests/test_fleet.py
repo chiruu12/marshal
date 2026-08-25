@@ -2628,6 +2628,32 @@ def test_integrate_still_works_once_the_agent_is_gone(repo: Path) -> None:
     assert result.status == "merged", f"a dead agent's work was refused: {result.message}"
 
 
+def test_a_finished_run_integrates_even_if_its_stale_pid_was_recycled(repo: Path) -> None:
+    """The live-agent guard must not strand finished work.
+
+    A run's pid is never cleared, so every completed record carries a stale one. On a machine
+    that has recycled that number, `_pid_is_still_ours` fails OPEN whenever identity cannot be
+    established - no recorded start time, or no probe - and would report a stranger's process as
+    this run's agent. That direction is right for reaping and wrong here: the driver has no way
+    to edit the record, so a false block strands the work permanently. Only `cancelled` is
+    stamped without an observed exit, so only `cancelled` is checked.
+    """
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="recycled", goal="x"))
+    assert rec.status == "exited_clean"
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        # A recycled pid with no verifiable identity: exactly the fail-open case.
+        fleet.state.update_if(
+            rec.run_id, lambda r: True, pid=stranger.pid, pid_start_time=None
+        )
+        result = fleet.integrate(rec.run_id)
+        assert result.status == "merged", f"finished work was stranded: {result.message}"
+    finally:
+        stranger.kill()
+        stranger.wait()
+
+
 def test_startup_does_not_steal_the_lock_from_a_live_fleet(repo: Path) -> None:
     """REGRESSION: claiming the lock unconditionally destroyed the protection it just relied on.
 

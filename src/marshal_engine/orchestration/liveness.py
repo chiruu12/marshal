@@ -120,6 +120,24 @@ def _pid_is_still_ours(rec: RunRecord) -> bool:
     return now == rec.pid_start_time
 
 
+def _agent_may_still_be_writing(rec: RunRecord) -> bool:
+    """Terminal status, but the agent process could still be mid-write.
+
+    Deliberately scoped to ``cancelled``. Every other terminal status is stamped by the supervisor
+    AFTER it observed the process exit, so the recorded pid is known-stale - and the pid is never
+    cleared, so on a machine that has since recycled it, ``_pid_is_still_ours`` would fail OPEN
+    (no recorded start time, or the probe is unavailable) and report a stranger's live process as
+    this run's agent. For reaping that direction is the safe one; for a write path it would strand
+    a finished run's work behind a permanent refusal the driver has no way to clear.
+
+    ``cancel_run`` is the one path that stamps terminal without having observed an exit: on a run
+    the current process did not start it cannot signal the process group at all, so the record
+    reads ``cancelled`` while the agent keeps writing. ``teams.py`` draws this same line for the
+    same reason (``_UNSTABLE_FOR_REVIEW``).
+    """
+    return rec.status == RunStatus.CANCELLED.value and _pid_is_still_ours(rec)
+
+
 def _pid_is_verifiably_ours(rec: RunRecord) -> bool:
     """Like ``_pid_is_still_ours`` but fails CLOSED: True only on proof, never on ambiguity.
 

@@ -74,6 +74,7 @@ from .inflight import (
     _write_creating_claim,
 )
 from .liveness import (
+    _agent_may_still_be_writing,
     _claim_fleet_lock,
     _is_terminal,
     _now,
@@ -1364,8 +1365,8 @@ class Fleet:
                 branch=rec.branch,
                 message="run is still in progress; wait for it to finish before committing",
             )
-        if _pid_is_still_ours(rec):
-            # A terminal STATUS is not proof the process stopped - see `_live_agent_message`.
+        if _agent_may_still_be_writing(rec):
+            # A cancelled STATUS is not proof the process stopped - see `_agent_may_still_be_writing`.
             # `clean` already refuses these records for exactly this reason; this path writes a
             # commit, so it needs the check at least as much.
             return CommitResult(
@@ -1723,8 +1724,8 @@ class Fleet:
                 branch=rec.branch,
                 message="run is still in progress; wait for it to finish before integrating",
             )
-        if rec is not None and _pid_is_still_ours(rec):
-            # The status says terminal; the process says otherwise. Refuse rather than merge a
+        if rec is not None and _agent_may_still_be_writing(rec):
+            # The status says cancelled; the process says otherwise. Refuse rather than merge a
             # tree that still has a writer - this is the one path that reaches the user's branch.
             return IntegrateResult(
                 run_id=run_id,
