@@ -19,6 +19,25 @@ versions may include breaking API changes until 1.0.
   in a newline now closes the torn line first. Handling a tear on the read side was always
   deliberate; the writer just had to stop making it contagious.
 
+- **The orphan sweep could stamp a live run `failed`.** It asked whether the *agent* process was
+  still alive, which is not the question it needed answered. A supervisor's work continues after
+  the agent exits - pricing, a usage-API backfill, the `verify:` gate, artifact harvest - and the
+  record reads `running` for all of it, with a dead agent pid on it. A second Marshal process on
+  the same repo therefore read a healthy mid-finalization run as abandoned and stamped it
+  `failed`; the real terminal stamp was then dropped, because it is guarded on the status still
+  being `running`. The ledger kept the true outcome while the record claimed the run had died.
+  Reachable because `fleet.lock` gates *reaping*, not `run`, so two processes can supervise one
+  repo. Run records now carry the identity of the process supervising them
+  (`supervisor_pid` + start time, the same pid-reuse-proof pattern as `fleet.lock` and disk
+  reservations), and a run is declared abandoned only when its supervisor *and* its agent are both
+  gone. That identity is rendered under a pinned locale and timezone: `ps` formats in the calling
+  process's, and the process that writes this is by definition not the one that checks it, so an
+  unpinned stamp read as "pid reused" wherever a launchd-spawned server and a terminal CLI
+  disagree about `TZ`. A process does not protect its own forgotten runs - if the supervisor is
+  this process and the run is not in its in-flight pool, nothing is coming, and a record that used
+  to self-heal must not become permanently unreapable. Records written before these fields fall
+  back to the previous behaviour rather than being treated as unsupervised.
+
 - **`artifacts_from` could be made to write outside the worktree, and mounted its input into the
   run's own diff.** Provisioning refused a symlinked `.marshal-context` but not the `artifacts`
   directory under it, and `mkdir(parents=True, exist_ok=True)` accepts an existing

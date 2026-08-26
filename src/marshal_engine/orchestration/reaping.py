@@ -1,9 +1,17 @@
 """Declaring abandoned runs dead - the orphan sweep a Fleet performs at startup.
 
 A run record on disk says RUNNING; the process that was supervising it is gone. Nothing will ever
-write that run's outcome, so it must be stamped terminal or it reads as live forever. The whole
-problem is that "the supervisor is gone" is not directly observable - it has to be *inferred* from
-a pid, and every inference here is biased against the destructive answer.
+write that run's outcome, so it must be stamped terminal or it reads as live forever.
+
+"The supervisor is gone" is answered from the supervisor's own recorded identity
+(``supervisor_pid`` + start time), not inferred from the agent's. Those are different questions,
+and the difference is a window minutes wide: after the agent exits, its supervisor still has
+pricing, a usage-API backfill, the ``verify:`` gate and artifact harvest to do, and the record
+reads RUNNING throughout. Reading the dead agent pid as an absent supervisor stamped live runs
+``failed`` and discarded the outcome they were about to write - and it is reachable, because
+``fleet.lock`` gates *reaping*, not ``run``, so a second Marshal process on the same repo sweeps
+while the first is mid-finalization. Records predating those fields fall back to the old
+inference. Every inference here is biased against the destructive answer.
 
 ``_is_reapable`` is the single place the decision is made, and it is deliberately called twice per
 record: once to scan, and again inside ``update_if`` under the run's own lock. Two callers, one
@@ -21,7 +29,7 @@ from pydantic import ValidationError
 from ..core.types import RunStatus
 from ..runtime.state import FleetState, RunRecord
 from .inflight import _inflight_in_this_process
-from .liveness import _is_terminal, _now, _pid_is_still_ours
+from .liveness import _is_terminal, _now, _pid_is_still_ours, _supervisor_is_gone
 
 #: How long a PID-LESS non-terminal record is protected from reaping. A run is persisted RUNNING a
 #: moment before its pid is stamped, so a short-lived CLI can otherwise reap a long-lived server's
@@ -72,11 +80,18 @@ def _is_reapable(rec: RunRecord, runs_dir: Path) -> bool:
     Used twice per record on purpose: once to scan, and again inside ``update_if`` under the run's
     own lock. Two callers, one rule - a reap can never be authorized by one test and committed
     against another.
+
+    Both processes must be accounted for. A live SUPERVISOR means the outcome is still coming, so
+    there is nothing to declare. A live AGENT means the worktree still has a writer, so declaring
+    it dead would be a record at odds with what is happening on disk. Only when neither is there
+    is the run genuinely abandoned.
     """
     if _inflight_in_this_process(runs_dir, rec.run_id):
         return False  # a Fleet in this process still owns it (config hot-reload)
     if _started_within_grace(rec):
         return False  # no pid stamped yet and too young to judge
+    if not _supervisor_is_gone(rec):
+        return False  # someone is still going to write this run's outcome
     return not _pid_is_still_ours(rec)
 
 
@@ -84,8 +99,8 @@ def _reap_orphaned_runs(state: FleetState) -> bool:
     """Terminal-stamp persisted ``running``/``queued`` runs left by a prior Fleet instance.
 
     Returns True when at least one record was left undecided on evidence that will go stale - it
-    was inside the pid-less grace window, or its agent was still alive at this instant. Both are
-    snapshots, not verdicts, so the caller must run this again later (see
+    was inside the pid-less grace window, or its supervisor or agent was still alive at this
+    instant. All are snapshots, not verdicts, so the caller must run this again later (see
     ``Fleet.reconcile_orphans``); otherwise such a record reads RUNNING for the whole life of a
     server that never constructs another Fleet.
 
@@ -98,7 +113,8 @@ def _reap_orphaned_runs(state: FleetState) -> bool:
     ``fleet.lock`` check in ``Fleet.__init__``) - this function does not re-check.
 
     A new Fleet's in-process pool starts empty, so any non-terminal record on disk is orphaned
-    unless the agent subprocess is still running (per-record ``pid`` probe) or another Fleet in
+    unless the process that will write its outcome is still alive (``supervisor_pid`` + start
+    time), the agent subprocess is still running (per-record ``pid`` probe), or another Fleet in
     THIS process still owns it (config hot-reload). Reaping clears ``pid`` so a later
     ``cancel_run`` can never ``killpg`` a reused pid. Corrupt records are skipped with a warning.
     """

@@ -34,9 +34,15 @@ from marshal_engine.core.config import BudgetSpec
 from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.core.retry import RetryPolicy
 from marshal_engine.orchestration import fleet as fleet_mod
+from marshal_engine.orchestration import liveness as liveness_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
 from marshal_engine.orchestration import reaping as reaping_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
+from marshal_engine.orchestration.liveness import (
+    _stable_pid_start_time,
+    _supervisor_identity,
+    _supervisor_is_gone,
+)
 from marshal_engine.orchestration.provisioning import (
     ARTIFACT_DIR,
     ARTIFACT_MOUNT,
@@ -2470,6 +2476,174 @@ def test_startup_reaps_running_record_left_by_prior_fleet(repo: Path) -> None:
     assert rec.pid is None
     assert rec.ended_at is not None
     assert rec.error and "orphaned at startup" in rec.error
+
+
+def test_startup_does_not_reap_a_run_whose_supervisor_is_still_finishing_it(repo: Path) -> None:
+    """The window this fix exists for.
+
+    A supervisor's work does not end when the agent exits: pricing, a usage-API backfill, the
+    `verify:` gate (up to the setup timeout) and artifact harvest all come after, and the record
+    still reads `running` throughout. The agent pid is already dead in that window, so a second
+    Marshal process on the same repo - `fleet.lock` gates reaping, not `run` - read the record as
+    orphaned and stamped it `failed`, discarding the outcome the live supervisor was about to
+    write. The supervisor is what the sweep is actually asking about.
+    """
+    supervisor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    dead_agent = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_agent.wait()
+    run_id = "midflight.writer.feedbeef"
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id=run_id,
+                task_id="midflight",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=dead_agent.pid,
+                supervisor_pid=supervisor.pid,
+                supervisor_start_time=_stable_pid_start_time(supervisor.pid),
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get(run_id)
+        assert rec is not None
+        assert rec.status == "running", "a live supervisor's run was declared dead"
+        assert rec.pid == dead_agent.pid, "the agent pid must not be cleared out from under it"
+    finally:
+        supervisor.kill()
+        supervisor.wait()
+
+
+def test_startup_still_reaps_when_the_supervisor_is_gone_too(repo: Path) -> None:
+    """The sweep must keep working: a record whose supervisor AND agent are both dead is exactly
+    what it exists to stamp, and narrowing the rule must not cost that."""
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    run_id = "trulyorphan.writer.d00dfeed"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="trulyorphan",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+            supervisor_pid=gone.pid,
+            supervisor_start_time="Mon Jan  1 00:00:00 2026",
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.status == "failed"
+    assert rec.error and "orphaned at startup" in rec.error
+
+
+def test_startup_reaps_a_run_whose_supervisor_pid_was_recycled(repo: Path) -> None:
+    """A live pid is not an identity. If the recorded start time does not match the process now
+    holding that pid, the supervisor is gone and a stranger inherited its number."""
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    run_id = "recycledsup.writer.beefd00d"
+    try:
+        _write_run_record(
+            repo,
+            RunRecord(
+                run_id=run_id,
+                task_id="recycledsup",
+                backend="writer",
+                status="running",
+                started_at="2026-01-01T00:00:00Z",
+                pid=424242,
+                supervisor_pid=stranger.pid,
+                supervisor_start_time="Mon Jan  1 00:00:00 2026",  # NOT the stranger's
+            ),
+        )
+        fleet = Fleet(repo, {"writer": _Writer()})
+        rec = fleet.state.get(run_id)
+        assert rec is not None
+        assert rec.status == "failed"
+    finally:
+        stranger.kill()
+        stranger.wait()
+
+
+def test_a_real_run_stamps_the_supervising_process_on_its_record(repo: Path) -> None:
+    """The fields have to actually be written, or every guard above is dead code in production."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="stamped", goal="x"))
+    assert rec.supervisor_pid == os.getpid()
+    assert rec.supervisor_start_time == _stable_pid_start_time(os.getpid())
+
+
+def test_supervisor_identity_survives_a_timezone_difference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ps -o lstart=` renders in the CALLING process's timezone, and the whole point of this
+    identity is that one process writes it and another reads it. Marshal's documented setup has
+    exactly that split - a launchd-spawned MCP server and a terminal CLI do not share an
+    environment. Unpinned, the reader sees a different string for the same live process, reads
+    "pid reused", and the guard silently degrades to the bug it replaced."""
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        started = _stable_pid_start_time(other.pid)
+        assert started is not None
+        rec = RunRecord(
+            run_id="tz.writer.0badcafe",
+            task_id="tz",
+            backend="writer",
+            status="running",
+            supervisor_pid=other.pid,
+            supervisor_start_time=started,
+        )
+        for zone in ("UTC", "Asia/Kolkata", "America/Los_Angeles"):
+            monkeypatch.setenv("TZ", zone)
+            assert _supervisor_is_gone(rec) is False, (
+                f"a live supervisor read as gone under TZ={zone}"
+            )
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_a_supervisor_that_forgot_the_run_does_not_protect_it_forever(repo: Path) -> None:
+    """The guard asks "will anyone write this outcome", not "did someone once start it".
+
+    A long-lived MCP server outlives an abandoned run by days. If its own pid protected that
+    record, a stale run that used to self-heal would become permanently unreapable - and its
+    worktree with it, since clean only targets terminal records. `_another_fleet_active` carves
+    out its own pid for the same reason.
+    """
+    run_id = "forgotten.writer.0ff1ce"
+    pid, started = _supervisor_identity()
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="forgotten",
+            backend="writer",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+            supervisor_pid=pid,          # this very process
+            supervisor_start_time=started,
+        ),
+    )
+    fleet = Fleet(repo, {"writer": _Writer()})  # does not hold it in flight
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.status == "failed", "this process protected a run it is not running"
+
+
+def test_supervisor_identity_is_stamped_whole_or_not_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pid without a verifiable start time is worse than no pid: it would be trusted on bare
+    liveness, and after a reboot recycles the number it reads as a live supervisor forever."""
+    monkeypatch.setattr(liveness_mod, "_stable_pid_start_time", lambda pid: None)
+    assert _supervisor_identity() == (None, None)
 
 
 def test_startup_leaves_terminal_record_unchanged(repo: Path) -> None:

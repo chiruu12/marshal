@@ -96,6 +96,20 @@ class RunRecord(BaseModel):
     # Start time of `pid` as the OS reports it. Pids are reused, so this is what makes the pid an
     # identity: a live pid whose start time differs is somebody else's process, never our agent.
     pid_start_time: str | None = None
+    # Identity of the process that took this run on - the Fleet supervising it. A FACT about who
+    # started supervising, not a promise that it still is: nothing clears these at terminal, so on
+    # a finished record they name whichever process wrote the outcome, and readers must not take a
+    # populated pid as "supervised right now" (`_supervisor_is_gone` probes, it does not assume).
+    # Not
+    # the same question as `pid`, which names the agent subprocess. Between the agent exiting and
+    # the terminal stamp a supervisor still has real work to do (pricing, a usage-API backfill,
+    # the `verify:` gate, artifact harvest), and during that window `pid` is already dead while
+    # the record still reads `running`. The orphan sweep asks "is anyone still going to write this
+    # run's outcome?", and only these fields answer it; inferring it from the agent's pid declared
+    # live runs dead. None on records written before these fields existed - reaping falls back to
+    # the old agent-pid inference there rather than treating unknown as gone.
+    supervisor_pid: int | None = None
+    supervisor_start_time: str | None = None
     attempts: int = 1  # how many times the backend was run (>1 means a transient failure was retried)
     # Outcome of the workspace's optional `verify:` gate. None = no gate ran (unconfigured, run
     # not would-be-succeeded, or no file changes to gate); False pairs with status `verify_failed`.

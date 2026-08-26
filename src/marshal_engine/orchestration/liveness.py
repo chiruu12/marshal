@@ -120,6 +120,85 @@ def _pid_is_still_ours(rec: RunRecord) -> bool:
     return now == rec.pid_start_time
 
 
+def _stable_pid_start_time(pid: int) -> str | None:
+    """``_pid_start_time`` rendered identically no matter who asks.
+
+    ``ps -o lstart=`` formats in the CALLING process's locale and timezone, so the same live pid
+    renders differently to two processes that disagree about ``TZ``/``LC_TIME`` - measured on one
+    machine: ``Wed Aug 26 05:24:02 2026`` under ``TZ=UTC`` against ``10:54:02`` under the ambient
+    zone. That is precisely the deployment Marshal documents: a launchd-spawned MCP server and a
+    terminal CLI do not share an environment (``runtime/env.py`` recovers PATH for the same
+    reason). An identity written by one process and checked by another therefore has to pin the
+    rendering, or every comparison reads as "pid reused". ``worktree.py`` pins ``LC_ALL`` for this
+    same reason.
+
+    Used only for the SUPERVISOR pair, which is new: nothing on disk was stamped with the ambient
+    rendering, so pinning costs nothing here. ``pid_start_time`` cannot adopt it without
+    invalidating identities already recorded - a mismatch there means "not our agent", which
+    authorises reaping a live run - so that migration is deliberately not folded into this change.
+    """
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+            **DETACHED_STDIO,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout.strip() or None
+
+
+def _supervisor_identity() -> tuple[int | None, str | None]:
+    """This process's ``(pid, start_time)``, for stamping onto a run it is about to supervise.
+
+    Both or neither. A pid whose start time could not be probed is worse than no pid at all:
+    `_supervisor_is_gone` would have to trust it on liveness alone, and once a reboot recycles the
+    number that reads as a live supervisor for good - permanently unreapable, where the rule this
+    replaced would have reaped it.
+    """
+    pid = os.getpid()
+    started = _stable_pid_start_time(pid)
+    return (pid, started) if started is not None else (None, None)
+
+
+def _supervisor_is_gone(rec: RunRecord) -> bool:
+    """Whether the process that would write this run's outcome has died.
+
+    The orphan sweep's real question. It used to be inferred from the AGENT's pid, which answers a
+    different one: a supervisor between the agent exiting and the terminal stamp still has pricing,
+    a usage-API backfill, the `verify:` gate and artifact harvest ahead of it - minutes, during
+    which the agent pid is already dead and the record still reads `running`. Reading that as
+    "orphaned" stamps a live run `failed` and drops the outcome it was about to write.
+
+    Fails CLOSED (False = "assume someone is still there, do not reap") whenever a live
+    supervisor pid cannot be told apart from a reused one, matching `_reservation_holder_live`.
+    Returns True when no supervisor was recorded at all: those records predate the fields, and
+    treating them as unreapable would leave every one of them reading `running` forever.
+
+    Callers MUST have ruled out in-process ownership first (`_inflight_in_this_process`); the
+    own-pid branch below reads "not in flight here" from that having already been checked.
+    """
+    if rec.supervisor_pid is None:
+        return True  # legacy record - fall back to the agent-pid inference in `_is_reapable`
+    if rec.supervisor_pid == os.getpid():
+        # The supervisor is THIS process, and the caller has already established the run is not in
+        # its in-flight pool - so nothing here is going to write that outcome either. Without this
+        # a long-lived server would protect its own abandoned runs for as long as it stays up, and
+        # a record that used to self-heal would become permanently unreapable. `_another_fleet_active`
+        # carves out its own pid for the same reason: "me" is not "someone else who will finish it".
+        return True
+    if not _pid_alive(rec.supervisor_pid):
+        return True
+    if not rec.supervisor_start_time:
+        return False  # live pid, unverifiable identity - assume it is the supervisor
+    now = _stable_pid_start_time(rec.supervisor_pid)
+    if now is None:
+        return False  # probe unavailable - assume it is the supervisor
+    return now != rec.supervisor_start_time  # a different process reused the pid
+
+
 def _agent_may_still_be_writing(rec: RunRecord) -> bool:
     """Terminal status, but the agent process could still be mid-write.
 
