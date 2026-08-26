@@ -119,13 +119,25 @@ class Job(BaseModel):
 
 
 class ThenJob(BaseModel):
-    """Follow-up stage for a run_many job (same field set as Job, minus workspace/then)."""
+    """Follow-up stage for a run_many job (same field set as Job, minus workspace/then).
+
+    Keep this in step with ``Job``. A field declared there and omitted here is dropped silently:
+    Pydantic ignores unknown keys, and the engine's ``job_request`` reads the same names off both
+    bodies - so the follow-up spawns without the input the driver asked for and reports success.
+    ``read_paths`` and ``artifacts_from`` were missing for exactly that reason, which inverted two
+    documented fail-closed guarantees ("missing or refused paths fail the spawn", "a run with no
+    stored artifacts fails the spawn rather than silently handing the agent nothing") into no-ops.
+    """
 
     client: Annotated[str | None, Field(description=_DESC_CLIENT + " Omit to spawn ad-hoc by `backend`.")] = None
     goal: Annotated[str, Field(description=_DESC_GOAL)]
     task_id: Annotated[str | None, Field(description=_DESC_TASK_ID)] = None
     task_kind: Annotated[str | None, Field(description=_DESC_TASK_KIND)] = None
     context_files: Annotated[list[str] | None, Field(description=_DESC_CONTEXT)] = None
+    read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None
+    artifacts_from: Annotated[
+        list[str] | None, Field(description=_DESC_ARTIFACTS_FROM)
+    ] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None

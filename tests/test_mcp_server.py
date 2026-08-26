@@ -13,6 +13,7 @@ import pytest
 import marshal_engine.interfaces.mcp_server.server as server_mod
 from marshal_engine.core.config import ConfigError
 from marshal_engine.interfaces.mcp_server import build_service
+from marshal_engine.interfaces.mcp_server.schema import Job, ThenJob
 from marshal_engine.orchestration.workflow import WorkflowRunner
 
 _CONFIG = """
@@ -1329,3 +1330,40 @@ def test_wait_for_runs_defaults_to_the_poll_shape_and_honours_view(
     full = _wait(view="full")
     assert full["view"] == "full"
     assert full["settled"][0]["text"] == "x" * 5000, "view='full' must still give the whole text"
+
+
+# --- the then-stage carries the same inputs as its primary ----------------------------------
+
+
+def test_a_then_stage_declares_every_field_its_primary_does() -> None:
+    """A field on `Job` and not on `ThenJob` is dropped in silence.
+
+    Pydantic ignores unknown keys and the engine's `job_request` reads the same names off both
+    bodies, so the follow-up spawns without the input the driver asked for and still reports
+    success. `read_paths` and `artifacts_from` were missing for exactly that reason, turning two
+    documented fail-closed guarantees into no-ops. Compared by field set rather than by listing
+    the names, so a field added to `Job` later cannot quietly skip the follow-up.
+    """
+    missing = (set(Job.model_fields) - {"then", "workspace"}) - set(ThenJob.model_fields)
+    assert not missing, (
+        f"ThenJob is missing {sorted(missing)}; a driver passing those to `then` would have them "
+        "silently dropped and the follow-up would run without them"
+    )
+
+
+def test_a_then_stage_keeps_the_context_inputs_through_validation() -> None:
+    """The parity check above is structural; this one proves the values actually survive."""
+    job = Job.model_validate(
+        {
+            "goal": "primary",
+            "then": {
+                "goal": "follow-up",
+                "read_paths": ["/tmp/notes.md"],
+                "artifacts_from": ["run-1"],
+            },
+        }
+    )
+    assert job.then is not None
+    body = job.then.model_dump()
+    assert body["read_paths"] == ["/tmp/notes.md"]
+    assert body["artifacts_from"] == ["run-1"]

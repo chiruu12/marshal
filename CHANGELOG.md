@@ -20,6 +20,16 @@ versions may include breaking API changes until 1.0.
   sections now reach the reviewers, labelled when both are present, and the file count spans them
   without double-counting a file that appears in each.
 
+- **A `then` follow-up silently lost `read_paths` and `artifacts_from`.** The MCP `ThenJob` model
+  did not declare either field, so Pydantic dropped them before the engine saw them - and the
+  engine's `job_request` reads those exact names off the follow-up body, so the second stage
+  spawned without the input the driver asked for and reported success. That inverted two
+  documented fail-closed guarantees ("missing or refused paths fail the spawn"; "a run with no
+  stored artifacts fails the spawn rather than silently handing the agent nothing") into no-ops,
+  precisely on the chaining path those inputs exist for. The follow-up now declares the same
+  fields as its primary, and a test compares the two field sets rather than listing names, so a
+  field added to a job later cannot quietly skip the follow-up.
+
 - **A torn line in the usage ledger silently took the next event with it.** A crash between an
   event and its newline leaves a fragment; the next `record` appended straight onto it, fusing the
   two into one invalid line, so the reader dropped the fragment *and* the complete event written
