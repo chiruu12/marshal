@@ -183,6 +183,22 @@ def test_an_intruders_reasoning_tokens_cannot_inflate_the_bill() -> None:
     assert ext is None
 
 
+def test_a_foreign_record_inside_a_small_absolute_slack_is_refused() -> None:
+    """The over side gets no absolute allowance at all. Token counts are integers, so nothing
+    rounds - a slack here would not absorb noise, it would admit a foreign record small enough to
+    fit, and that record arrives with its whole `amount` attached."""
+    body = _usage(
+        _rec("z-ai/glm-5.1", 0.005, 10000, 100, "2026-06-28T12:00:03+00:00"),
+        _rec("z-ai/glm-5.1", 0.400, 150, 9000, "2026-06-28T12:00:05+00:00"),  # 150 < any small tol
+    )
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=10000,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is None
+
+
 def test_a_short_window_still_attributes() -> None:
     """The under side keeps its slack. A record that has not propagated makes the cost SHORT,
     which understates spend - the safe direction, and the case the tolerance exists for."""

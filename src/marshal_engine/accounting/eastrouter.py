@@ -262,16 +262,19 @@ def _reconciles(matched_prompt: int, input_tokens: int, cache_read_tokens: int =
     It is not zero, because the two sides count differently: ``input_tokens`` excludes cache reads
     (OpenCode reports ``input`` and ``cache.read`` as separate fields) while a provider may bill
     cached tokens inside ``prompt``. Over-counting up to the run's own cache reads is therefore
-    explainable by this run alone; beyond that it is not. An intruder smaller than the run's cache
-    reads can still hide - this bounds the exposure rather than removing it, and no data available
-    here distinguishes that case.
+    explainable by this run alone; beyond that it is not, and it gets no further slack. Token
+    counts are integers, so nothing rounds - an absolute allowance here would not absorb noise,
+    it would simply admit a foreign record small enough to fit, and that record arrives with its
+    whole ``amount`` attached. An intruder smaller than the run's cache reads can still hide:
+    this bounds the exposure rather than removing it, and no data available here distinguishes
+    that case.
     """
     if input_tokens <= 0:
         return False
     short = input_tokens - matched_prompt
     if short >= 0:
         return short <= max(_RECONCILE_ABS_TOL, _RECONCILE_REL_TOL * input_tokens)
-    return -short <= max(0, cache_read_tokens) + _RECONCILE_ABS_TOL
+    return -short <= max(0, cache_read_tokens)
 
 
 def fetch_run_cost(
