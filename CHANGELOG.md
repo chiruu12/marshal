@@ -10,6 +10,17 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **Log redaction rewrote ordinary words out of every run's output.** One set of names,
+  `credential_env_vars`, was doing two jobs: allowlisting what a backend needs in its child env,
+  and naming values to scrub from persisted text. `GOOSE_PROVIDER` and `GOOSE_MODEL` belong in the
+  first and not the second - Goose needs them, but they hold ordinary words. With
+  `GOOSE_PROVIDER=anthropic` and `GOOSE_MODEL=claude-sonnet-4-5` exported, every run's final
+  message, structured output and log came back with those words replaced by
+  `[redacted:GOOSE_PROVIDER]`, and any backend's run was affected because redaction uses the whole
+  known set regardless of which adapter ran. Redaction runs before every write, so no unredacted
+  copy survived anywhere - and for a review or research run the final message IS the product. The
+  two roles are now separate: the names stay on the allowlist and are excluded from redaction.
+
 - **A workflow whose agent runs all failed reported `status: "completed"` and exited 0.** The
   fan-out branch recorded a failed run as a note and a next action but set neither status flag, so
   a workflow where every agent failed or timed out came back as `completed` - which the driver
