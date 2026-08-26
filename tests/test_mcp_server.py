@@ -551,11 +551,33 @@ def test_get_run_log_round_trips_via_call_tool(
     assert "=== run synthetic.run ===" in out["log"]
     assert out["workspace"] == "default"  # tag() stamps the owning workspace
 
-    # And: a run id no workspace owns returns log=null with the requested workspace stamp
-    structured2 = asyncio.run(app.call_tool("get_run_log", {"run_id": "nope.run"})).structured_content
-    out2 = structured2.get("result", structured2) if isinstance(structured2, dict) else structured2
-    assert out2["log"] is None
-    assert out2["run_id"] == "nope.run"
+    # And: a run id no workspace owns is an ERROR, not a null log. Returning `{log: null}` made
+    # "no such run" byte-identical to "this run wrote no log", so a driver read a typo'd or
+    # already-cleaned id as a run that crashed before producing diagnostics, and re-spawned it.
+    with pytest.raises(Exception, match="no run 'nope.run'"):
+        asyncio.run(app.call_tool("get_run_log", {"run_id": "nope.run"}))
+
+
+def test_get_run_log_does_not_stamp_a_workspace_it_never_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old null-log answer echoed the caller's `workspace` back, naming a workspace nothing
+    had resolved - and one that need not be registered at all. `status`, `doctor` and
+    `list_clients` all reject an unregistered name; this quietly agreed with it."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+
+    with pytest.raises(Exception, match="no run 'ghost.run'"):
+        asyncio.run(
+            app.call_tool("get_run_log", {"run_id": "ghost.run", "workspace": "not-registered"})
+        )
 
 
 def test_usage_window_param_is_in_schema(

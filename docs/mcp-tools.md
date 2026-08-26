@@ -365,7 +365,7 @@ Full persisted stdout/stderr for a run (not the truncated `text` on the record).
 | `run_id` | string | *(required)* | Run id. |
 | `workspace` | string \| null | `null` | Workspace hint. |
 
-**Returns:** `{ run_id, log, workspace }` — `log` is string \| null.
+**Returns:** `{ run_id, log, workspace }` — `log` is string \| null. `null` means the run exists but wrote no log (it pre-dates log storage, or the backend crashed before producing one). An unknown run id **raises**, naming the registered workspaces — it is never answered with a null log, which a driver would read as a run that crashed without diagnostics.
 
 ### `collect_run`
 
