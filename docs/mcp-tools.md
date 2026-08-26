@@ -316,7 +316,7 @@ reviewer spawns, since a panel is expensive.
 |-----------|------|---------|-------------|
 | `name` | string | *(required)* | Review team name (from `list_teams`). |
 | `target` | `"run"` \| `"plan"` \| `"range"` \| `"audit"` | *(required)* | What is reviewed; must match the team's declared `target`. |
-| `run_id` | string \| null | `null` | Run whose diff to review (target `run`). |
+| `run_id` | string \| null | `null` | Run whose diff to review (target `run`). Covers what the run committed as well as what it left uncommitted, so a self-committing backend and a run frozen with `commit_run` are both reviewable; the two are labelled separately when both are present, and the file count spans both. |
 | `base` | string \| null | `null` | Base ref (target `range`). Validated — a ref that git would read as an option is refused. |
 | `head` | string \| null | `null` | Head ref (target `range`; default `HEAD`). |
 | `pr` | int \| null | `null` | GitHub PR number to review (target `range`). Fills in `base`/`head`, so pass it **instead of** them — supplying both is refused rather than silently preferring one. Needs `gh` on PATH. |

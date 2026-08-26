@@ -82,6 +82,9 @@ class StubService:
         collect_raises: type[Exception] | None = None,
         truncated: list[bool] | None = None,
         full_lens: list[int | None] | None = None,
+        changed_files: list[str] | None = None,
+        committed_diff: str = "",
+        committed_changed_files: list[str] | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path("/repo")
@@ -89,6 +92,9 @@ class StubService:
         self.statuses = statuses or []
         self.truncated = truncated or []
         self.full_lens = full_lens or []
+        self.changed_files = ["x.py"] if changed_files is None else changed_files
+        self.committed_diff = committed_diff
+        self.committed_changed_files = committed_changed_files or []
         self.diff = diff
         self.unavailable = unavailable or set()
         self.run_many_raises = run_many_raises
@@ -134,7 +140,13 @@ class StubService:
         if self.collect_raises:
             raise self.collect_raises(f"worktree for run {run_id!r} no longer exists: /gone")
         return CollectResult(
-            run_id=run_id, branch="b", worktree="w", changed_files=["x.py"], diff=self.diff
+            run_id=run_id,
+            branch="b",
+            worktree="w",
+            changed_files=self.changed_files,
+            diff=self.diff,
+            committed_changed_files=self.committed_changed_files,
+            committed_diff=self.committed_diff,
         )
 
     def diff_range(
@@ -611,6 +623,81 @@ def test_a_whole_report_is_rendered_without_a_cut_marker() -> None:
     result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
     assert result.reviews[1].review_truncated is False
     assert "cut off here" not in render_unified_report(result)
+
+
+def test_a_fully_self_committed_run_is_reviewable() -> None:
+    """The review gate silently reviewed nothing for a whole class of runs.
+
+    `changed_files`/`diff` are the UNCOMMITTED work. An agent that commits its own leaves a clean
+    tree, and `commit_run` - the recommended way to freeze a run before chaining - guarantees one.
+    So `commit_run` then `run_team` was refused as "nothing to review" on work that was sitting
+    right there on the branch.
+    """
+    svc = StubService(
+        _config("ro-a", "ro-b"),
+        diff="",
+        changed_files=[],
+        committed_diff="diff --git a/committed.py b/committed.py",
+        committed_changed_files=["committed.py"],
+    )
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert "committed.py" in svc.jobs[0]["goal"], "the reviewers never saw the committed work"
+    assert "1 file(s) changed" in result.subject_summary
+
+
+def test_a_partly_committed_run_is_reviewed_whole() -> None:
+    """The subtler half: with SOME work uncommitted the panel ran, but on that remainder only,
+    and the summary counted only the remainder - so a partial review was indistinguishable from a
+    complete one. Both sections must reach the reviewers, and the count must cover both."""
+    svc = StubService(
+        _config("ro-a", "ro-b"),
+        diff="diff --git a/loose.py b/loose.py",
+        changed_files=["loose.py"],
+        committed_diff="diff --git a/frozen.py b/frozen.py",
+        committed_changed_files=["frozen.py"],
+    )
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    goal = svc.jobs[0]["goal"]
+    assert "frozen.py" in goal and "loose.py" in goal
+    assert "2 file(s) changed" in result.subject_summary
+
+
+def test_the_two_kinds_of_work_are_labelled_when_both_are_present() -> None:
+    """"Already on the branch" and "still loose in the worktree" are different things to review,
+    so a reviewer seeing both needs to be able to tell them apart."""
+    svc = StubService(
+        _config("ro-a", "ro-b"),
+        diff="diff --git a/loose.py b/loose.py",
+        changed_files=["loose.py"],
+        committed_diff="diff --git a/frozen.py b/frozen.py",
+        committed_changed_files=["frozen.py"],
+    )
+    _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    goal = svc.jobs[0]["goal"]
+    assert "committed to the run branch" in goal
+    assert "uncommitted in the worktree" in goal
+
+
+def test_a_file_touched_in_both_sections_is_counted_once() -> None:
+    """A file committed and then edited again appears in both lists; the summary is a count of
+    files changed, not of diff hunks."""
+    svc = StubService(
+        _config("ro-a", "ro-b"),
+        diff="diff --git a/same.py b/same.py",
+        changed_files=["same.py"],
+        committed_diff="diff --git a/same.py b/same.py",
+        committed_changed_files=["same.py"],
+    )
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert "1 file(s) changed" in result.subject_summary
+
+
+def test_a_run_that_produced_nothing_at_all_is_still_refused() -> None:
+    """Widening what counts as work must not make an empty run reviewable - a panel over nothing
+    burns a fleet and returns reports that say nothing."""
+    svc = StubService(_config("ro-a", "ro-b"), diff="", changed_files=[])
+    with pytest.raises(ConfigError, match="nothing to review"):
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
 
 
 def test_runner_records_an_unavailable_role_instead_of_shrinking_the_panel() -> None:

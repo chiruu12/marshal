@@ -10,6 +10,16 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **`run_team` reviewed only a run's uncommitted work, so a self-committing run was reviewed
+  partially or not at all.** The subject was built from `diff`/`changed_files`, which report what
+  is still loose in the worktree. An agent that commits as it goes leaves a clean tree, and
+  `commit_run` - the documented way to freeze a run before chaining off it - guarantees one, so
+  `commit_run` then `run_team` was refused with "nothing to review" on work sitting on the branch.
+  With only *some* of it committed the panel did run, but against the remainder alone, and the
+  summary counted only that remainder - a partial review that read as a complete one. Both
+  sections now reach the reviewers, labelled when both are present, and the file count spans them
+  without double-counting a file that appears in each.
+
 - **A torn line in the usage ledger silently took the next event with it.** A crash between an
   event and its newline leaves a fragment; the next `record` appended straight onto it, fusing the
   two into one invalid line, so the reader dropped the fragment *and* the complete event written
