@@ -82,6 +82,7 @@ from .liveness import (
     _pid_is_still_ours,
     _pid_is_verifiably_ours,
     _pid_start_time,
+    _supervisor_identity,
     with_liveness,
 )
 from .provisioning import (
@@ -499,6 +500,7 @@ class Fleet:
                             self.worktrees.discard(str(wt.path), wt.branch)
                         raise
                 _register_inflight_run(self.state.dir, run_id)
+                _sup_pid, _sup_started = _supervisor_identity()
                 # Publish the record FIRST (state.add → os.replace). Clear the claim only after
                 # that replace: reverse order opens a gap where a concurrent sweep sees neither
                 # claim nor record and discards a live worktree. Between replace and clear both
@@ -511,6 +513,15 @@ class Fleet:
                         client=req.client,
                         model=req.model,
                         status=RunStatus.RUNNING.value,
+                        # Who is supervising this run. Stamped at creation, before the agent
+                        # even starts, so the record is never briefly reapable-by-default. Both
+                        # halves or neither: a pid without a verifiable start time would be
+                        # trusted on bare liveness alone, and after a reboot recycles the number
+                        # that reads as a live supervisor forever - permanently unreapable, where
+                        # the rule this replaced would have reaped it. `None` falls back to that
+                        # rule, which is the honest answer when identity cannot be established.
+                        supervisor_pid=_sup_pid,
+                        supervisor_start_time=_sup_started,
                         worktree=str(wt.path),
                         branch=wt.branch,
                         base_branch=resolved_base,

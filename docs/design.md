@@ -42,8 +42,16 @@ Claude Code is **stateless across turns** - it forgets the fleet between message
 agents outlive a turn. So fleet state lives in the **long-lived MCP server**, persisted to disk.
 On Fleet construction the engine reconciles any persisted `running`/`queued` records left by a
 prior supervisor (stamped `failed`, `pid` cleared) unless another live Fleet holds `fleet.lock`,
+**the process that will write the run's outcome is still alive** (`supervisor_pid` + start time),
 the agent subprocess is still running, or this process still has the run in its in-flight pool
-(config hot-reload) — so stale pids can never be signalled by `cancel_run`. A record with no pid
+(config hot-reload) — so stale pids can never be signalled by `cancel_run`. Supervisor and agent
+are different questions, and a run is abandoned only when both are gone: after the agent exits its
+supervisor still has pricing, a usage-API backfill, the `verify:` gate and artifact harvest ahead
+of it, and the record reads `running` throughout. Inferring the supervisor from the agent's pid
+declared those runs dead — reachable because `fleet.lock` gates *reaping*, not `run`. The
+supervisor's identity is rendered under a pinned locale and timezone, since the process that
+writes it is not the one that checks it. Records predating those fields fall back to the
+agent-pid inference. A record with no pid
 stamped yet is too young to judge (it may belong to a run another process started moments ago); it
 is left alone and re-examined on the next `status`/`get_run` instead of being decided or forgotten.
 
