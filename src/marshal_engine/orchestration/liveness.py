@@ -126,6 +126,14 @@ def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
     it is about to do. This adds one more way to be unable to check: a stamp written before start
     times were pinned, which cannot be compared against a pinned one without reading a rendering
     difference as a different process.
+
+    The cost of that is a wider conservative window during an upgrade: an unmarked stamp whose pid
+    has since been recycled by an unrelated process now holds its lock / claim / reservation
+    instead of being reclaimed. It is bounded, not permanent - every caller establishes
+    ``_pid_alive`` before asking, so the recycled process exiting reclaims the artifact and the
+    next write stamps it marked. And the thing being held onto is the tolerable failure by this
+    module's own rule: reaping is suppressed until then, where the direction it replaces reaps a
+    live agent.
     """
     if not recorded or not recorded.startswith(_PINNED_IDENTITY_PREFIX):
         return None  # never stamped, or stamped with the un-comparable ambient rendering
