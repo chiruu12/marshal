@@ -65,6 +65,34 @@ def test_permission_config_safe_edit_denies_question_and_curated() -> None:
     assert '"ask"' not in json.dumps(cfg)
 
 
+#: OpenCode's curated bash denies, written out rather than imported. The assertions above compare
+#: the emitted config against `SAFE_EDIT_BASH_DENIES`, which only proves the builder copies it -
+#: delete a pattern and both sides shrink together. The `read`/`edit` denies beside them are
+#: already pinned literally; these were not. Do not replace this with the import.
+_PINNED_BASH_DENIES: tuple[tuple[str, str], ...] = (
+    ("rm", "deny"),
+    ("rm *", "deny"),
+    ("git config", "deny"),
+    ("git config *", "deny"),
+    ("*>*.env", "deny"),
+    ("*>*.env.*", "deny"),
+    ("*>*.git/*", "deny"),
+    ("tee *.env", "deny"),
+    ("tee *.env.*", "deny"),
+    ("tee *.git/*", "deny"),
+    ("sed *.env", "deny"),
+    ("sed *.env.*", "deny"),
+    ("sed *.git/*", "deny"),
+)
+
+
+def test_safe_edit_bash_denies_match_their_pinned_policy() -> None:
+    assert SAFE_EDIT_BASH_DENIES == _PINNED_BASH_DENIES, (
+        "the safe-edit bash deny list changed; if that was deliberate, update _PINNED_BASH_DENIES "
+        "in the same commit and say why"
+    )
+
+
 def test_permission_config_yolo_only_denies_question() -> None:
     cfg = permission_config_for(PermissionMode.YOLO)
     assert cfg is not None
