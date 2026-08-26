@@ -850,7 +850,8 @@ class WorktreeManager:
         delete host directories). A branch outside ``branch_prefix/`` is refused *after* the
         worktree dir is reclaimed so cleanup is not stranded — only the `-D` is skipped.
         Owner-write is restored on directories first so read-only trees (e.g. provisioned
-        ``read_paths`` at 0o555) cannot strand the worktree.
+        ``read_paths`` at 0o555) cannot strand the worktree. If the directory survives anyway,
+        that raises: tolerant of a partial failure is not the same as silent about a total one.
         """
         p = Path(path)
         self._ensure_removable(p)
@@ -859,6 +860,19 @@ class WorktreeManager:
             # `ignore_errors` because reclaiming the disk is the whole point: a run dir left
             # half-readable by a killed agent must not strand under an `errors` entry forever.
             shutil.rmtree(p, ignore_errors=True)
+            if p.exists():
+                # Best-effort is about not failing on what it CAN reclaim, not about reporting a
+                # directory still on disk as gone. Nothing else on this path raises - `prune`
+                # ignores its return code and `_delete_managed_branch` ignores git's - so a caller
+                # took the silence as proof: `Fleet.clean` listed it under `removed`, which
+                # `docs/mcp-tools.md` defines as "worktrees/branches were removed". `remove()` has
+                # always been honest about exactly this failure. Raised BEFORE prune and the
+                # branch delete: with the worktree still present, reaping its admin files and
+                # deleting its branch would leave a worse state than stopping here.
+                raise WorktreeError(
+                    f"could not remove run dir {p}: still present after rmtree - something in it "
+                    f"could not be deleted (permissions, or a file held open)"
+                )
         # Still pruned, though a clone registers nothing: a repo that ran an older Marshal can hold
         # admin entries for LINKED worktrees under this same base dir, and this is what reaps them.
         self.prune()

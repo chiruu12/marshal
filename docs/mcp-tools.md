@@ -676,7 +676,7 @@ Tear down finished runs' worktrees and branches. The usage ledger and run-state 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `removed` | list[string] | Run ids whose worktrees/branches were removed. |
+| `removed` | list[string] | Run ids whose worktrees/branches were removed. A worktree that survives teardown - something in it could not be deleted - is reported under `errors` instead, never here. |
 | `orphans_removed` | list[string] | Worktree dirs with no readable run record (scope-mode only). |
 | `skipped` | list | `[{ run_id, reason }]` — e.g. still running. |
 | `errors` | list | `[{ run_id, error }]` |
