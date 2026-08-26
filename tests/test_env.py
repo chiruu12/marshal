@@ -699,6 +699,39 @@ def test_redact_secrets_skips_short_values(monkeypatch: pytest.MonkeyPatch) -> N
     assert redact_secrets(text, credential_names=["ANTHROPIC_API_KEY"]) == text
 
 
+def test_provider_and_model_names_are_not_redacted_out_of_a_runs_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`credential_env_vars` was doing two jobs. `GOOSE_PROVIDER`/`GOOSE_MODEL` belong in a
+    child's env because Goose needs them - but their values are ordinary words, and redaction
+    rewrites whatever it scans. With them exported, every run's final message, structured output
+    and log came back with those words replaced, and redaction runs before every write, so no
+    unredacted copy survived anywhere. For a review or research run the final message IS the
+    product.
+    """
+    monkeypatch.setenv("GOOSE_PROVIDER", "anthropic")
+    monkeypatch.setenv("GOOSE_MODEL", "claude-sonnet-4-5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret-value-123")
+    text = "The anthropic adapter should route to claude-sonnet-4-5, key sk-secret-value-123"
+    out = redact_secrets(text)
+    assert "anthropic adapter" in out
+    assert "claude-sonnet-4-5" in out
+    assert "[redacted:ANTHROPIC_API_KEY]" in out, "a real secret stopped being redacted"
+    assert "sk-secret-value-123" not in out
+
+
+def test_the_non_secret_names_are_still_forwarded_to_a_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the split: excluding them from redaction must not drop them from the
+    child env, or Goose loses the provider and model it was configured with."""
+    monkeypatch.setenv("GOOSE_PROVIDER", "anthropic")
+    monkeypatch.setenv("GOOSE_MODEL", "claude-sonnet-4-5")
+    env = child_env(credentials=("GOOSE_PROVIDER", "GOOSE_MODEL"))
+    assert env["GOOSE_PROVIDER"] == "anthropic"
+    assert env["GOOSE_MODEL"] == "claude-sonnet-4-5"
+
+
 def test_redact_secrets_leaves_ordinary_output_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

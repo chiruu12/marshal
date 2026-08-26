@@ -86,6 +86,17 @@ KNOWN_CREDENTIAL_ENV_VARS: frozenset[str] = frozenset(
     }
 )
 
+#: Names carried in a backend's ``credential_env_vars`` whose VALUES are not secrets. They select a
+#: provider and a model, so the backend genuinely needs them in its child env - but they hold
+#: ordinary words, and redaction rewrites the text it scans. With ``GOOSE_PROVIDER=anthropic`` and
+#: ``GOOSE_MODEL=claude-sonnet-4-5`` exported, every run's final message, structured output and log
+#: came back with those words replaced by ``[redacted:GOOSE_PROVIDER]`` - and redaction runs before
+#: every write, so no unredacted copy is kept anywhere. `runtime/state.py` says the final message
+#: IS the product for a review or research run.
+#:
+#: One set was doing two jobs. The allowlist wants these names; redaction must not.
+_NON_SECRET_CREDENTIAL_VARS: frozenset[str] = frozenset({"GOOSE_PROVIDER", "GOOSE_MODEL"})
+
 # Exact names every child genuinely needs. Err toward operational usefulness; exclude anything
 # credential-shaped or loader-hijack (LD_PRELOAD, PYTHONPATH, NODE_OPTIONS, GIT_SSH_COMMAND, …).
 _BASE_ENV_EXACT: frozenset[str] = frozenset(
@@ -268,7 +279,9 @@ def credential_redactions(
 ) -> list[tuple[str, str]]:
     """``(env_var_name, value)`` pairs to scrub from logs, longest values first.
 
-    Only values of length ``>= min_len`` are included so short tokens do not mangle ordinary text.
+    Only values of length ``>= min_len`` are included so short tokens do not mangle ordinary text,
+    and names in ``_NON_SECRET_CREDENTIAL_VARS`` are excluded entirely - they are allowlisted into a
+    child's env because a backend needs them, not because their values are secret.
     """
     env = os.environ if environ is None else environ
     names = (
@@ -276,8 +289,9 @@ def credential_redactions(
         if credential_names is not None
         else all_credential_env_vars()
     )
+    names = frozenset(names)
     pairs: list[tuple[str, str]] = []
-    for name in names:
+    for name in names - _NON_SECRET_CREDENTIAL_VARS:
         value = env.get(name)
         if value is not None and len(value) >= min_len:
             pairs.append((name, value))
