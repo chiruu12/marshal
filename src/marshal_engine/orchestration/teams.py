@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from ..core.config import ConfigError, FleetConfig
 from ..core.types import PermissionMode, RunStatus
 from ..runtime.worktree import WorktreeError
+from .liveness import _agent_may_still_be_writing
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
     from ..runtime.state import RunRecord
@@ -77,12 +78,16 @@ def _review_instability(run_id: str, rec: RunRecord | None) -> str | None:
     """Why this run's worktree is not a stable snapshot, as a message - or None when it is.
 
     Status alone does not answer it. A timed-out run is normally settled, because the timeout path
-    signals the agent's process group and confirms it died; when that confirmation fails the record
-    carries ``agent_survived_kill`` and the agent is still writing, which is the same situation
-    ``cancelled`` is refused for. The two need different advice, though - a cancelled run settles
-    on its own, and this one settles only when somebody stops the process - so the reason and the
-    remedy are built together rather than shared. ``liveness._agent_may_still_be_writing`` draws
-    the same line for the write paths.
+    signals the agent's process group and confirms it died; when that confirmation fails the agent
+    is still writing, which is the same situation ``cancelled`` is refused for. The two need
+    different advice, though - a cancelled run settles on its own, and this one settles only when
+    somebody stops the process - so the reason and the remedy are built together rather than
+    shared.
+
+    Delegates the timed-out case to ``_agent_may_still_be_writing`` rather than reading the flag
+    directly, so this agrees with what the write paths do. Reading the flag alone would refuse for
+    good: the flag is what was observed at kill time, and only the pid probe behind that helper can
+    ever say the process has since gone.
     """
     if rec is None:
         return None  # unknown run: `collect_run` below raises the error that names it
@@ -91,7 +96,7 @@ def _review_instability(run_id: str, rec: RunRecord | None) -> str | None:
             f"run {run_id} is {rec.status}; its worktree is not a stable snapshot, so a review "
             "of it describes nothing. Wait for the run to settle before reviewing."
         )
-    if rec.status == RunStatus.TIMED_OUT.value and rec.agent_survived_kill:
+    if _agent_may_still_be_writing(rec):
         return (
             f"run {run_id} timed out and its agent did not stop - Marshal signalled its process "
             "group and the process was still alive afterwards. Its worktree is being written to, "

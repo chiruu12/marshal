@@ -508,7 +508,12 @@ def test_a_descendant_that_escaped_the_group_counts_as_a_survivor(tmp_path: Path
     group, so the group kill never reaches it and the leader's exit proves nothing about it - yet
     it inherited the pipes and can go on writing to the worktree. The drain is the evidence: it is
     bounded precisely because such a survivor holds the write end open, so a drain that never
-    finishes means somebody is still there."""
+    finishes means somebody is still there.
+
+    Disclosed rather than blocked. There is no pid for an escaped descendant - held pipes are the
+    entire trace - so a refusal keyed on it could never be lifted, and the run's work would be
+    stranded for good. `agent_survived_kill` stays False because it means the one survivor Marshal
+    can actually watch stop."""
     import os
     import signal
 
@@ -525,8 +530,11 @@ def test_a_descendant_that_escaped_the_group_counts_as_a_survivor(tmp_path: Path
 
     try:
         assert res.status is RunStatus.TIMED_OUT
-        assert res.agent_survived_kill is True, (
-            "the leader's exit was read as proof that everything it started had stopped"
+        assert "had left the process group" in (res.error or ""), (
+            "the leader's exit was reported as proof that everything it started had stopped"
+        )
+        assert res.agent_survived_kill is False, (
+            "an escaped descendant has no pid, so nothing could ever lift a block keyed on it"
         )
     finally:
         for pid in child_pid:
