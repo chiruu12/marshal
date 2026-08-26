@@ -1192,6 +1192,7 @@ class Fleet:
                 start_iso=start_iso,
                 end_iso=_now(),
                 input_tokens=usage.input_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
             )
         except Exception:  # noqa: BLE001 - external cost lookup must never break a finished run
             return
