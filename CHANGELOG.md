@@ -10,6 +10,20 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **Workspace registration reported success for registrations that never took effect.** Two
+  symptoms of one gap: the write path validated shape without ever asking what the registry would
+  actually do with the result. Re-pointing an existing name at a new repo returned the new path
+  and evicted the cached service, but `_refresh` is additive - it only picks up names the registry
+  lacks - so the rebuilt service still targeted the old repo and every later run landed in the
+  directory the caller had just moved away from. And registering a path another name already owns
+  wrote the entry, returned success, and left the resolver to drop it with a warning on stderr,
+  where an MCP driver never sees it: the entry stayed in the file permanently, never resolved, and
+  the next call said "unknown workspace ... register it with add_workspace" - pointing back at the
+  call that had just succeeded. `add()` now rewrites the definition it registered, and a path
+  another name already claims is refused up front, naming the owner. Re-registering a name onto
+  the path it already has is unaffected - that is how a config gets scaffolded into an existing
+  workspace.
+
 - **`clean` reported worktrees it had not removed.** Teardown ends in
   `shutil.rmtree(ignore_errors=True)`, which swallows whatever stopped it, and nothing else on
   that path raises - `prune` ignores its return code and the branch delete ignores git's. So
