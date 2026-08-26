@@ -1159,6 +1159,42 @@ def test_usage_api_overrides_cost_with_admin_api(repo: Path) -> None:
     assert seen["model"] == "z-ai/glm-5.1"
 
 
+def test_the_resolver_is_handed_the_runs_cache_reads(repo: Path) -> None:
+    """`cache_read_tokens` is how much over-counting reconciliation will forgive, so a call site
+    that stopped passing it would silently tighten the guard for every cache-hitting run - turning
+    their measured cost back into `unavailable` with nothing to show why.
+
+    Nothing else catches that. `CostResolver` is `Callable[..., ...]`, so the kwargs are untyped,
+    and `_apply_external_cost` wraps the call in `except Exception: return` - a resolver raising
+    `TypeError` on a missing kwarg disables real-cost backfill instead of failing loudly. The
+    backend reports a distinctive value so this cannot pass on a defaulted zero.
+    """
+
+    class _Cached(_Tokened):
+        name = "cached"
+
+        def parse_output(
+            self, raw_stdout: str, raw_stderr: str, exit_code: int
+        ) -> AgentResult:
+            result = super().parse_output(raw_stdout, raw_stderr, exit_code)
+            assert result.usage is not None
+            result.usage.cache_read_tokens = 250_000
+            return result
+
+    seen: dict[str, object] = {}
+
+    def resolver(**kw: object) -> ExternalCost:
+        seen.update(kw)
+        return ExternalCost(0.42, UsageSource.ADMIN_API, 1_000_000, 0, 1)
+
+    fleet = Fleet(repo, {"cached": _Cached()}, cost_resolvers={"eastrouter": resolver})
+    fleet.run(
+        "cached", TaskSpec(id="cache1", goal="x"), model="z-ai/glm-5.1", usage_api="eastrouter"
+    )
+    assert seen["cache_read_tokens"] == 250_000
+    assert seen["input_tokens"] == 1_000_000
+
+
 def test_usage_api_does_not_overwrite_native_cost(repo: Path) -> None:
     # Native cost is ground truth. A client with both native cost AND usage_api must keep
     # the backend-reported cost — admin-api only fills unavailable.

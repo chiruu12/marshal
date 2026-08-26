@@ -8,9 +8,15 @@ Attribution. A Marshal run carries no EastRouter ``request_id`` (Codex doesn't s
 records are matched by ``(model, created_at within the run's [start, end] window)``. That is exact
 when at most one run uses a given EastRouter model at a time - the default fleet pairs each model
 with a single client. If two clients drive the SAME EastRouter model concurrently, the window cannot
-separate them; the token-reconciliation guard below detects the mismatch (matched prompt tokens won't
-equal the run's input tokens) and the run KEEPS unavailable cost rather than asserting
-a wrong real cost. Honest-or-nothing.
+separate them; the token-reconciliation guard below detects the mismatch and the run KEEPS
+unavailable cost rather than asserting a wrong real cost. Honest-or-nothing.
+
+That guard is a tolerance, not an equality, and the two directions are not symmetric. Matching
+FEWER prompt tokens than the run reported is the case the slack exists for (a record still
+propagating, or one past the page cap) and makes the cost short - understating spend. Matching
+MORE means the window holds prompt tokens this run never sent, which is somebody else's request:
+that direction is bounded tightly, because summing a stranger's charge and stamping it
+``admin-api`` is exactly the fabricated cost this project refuses to report.
 
 Pagination. ``/v1/usage`` returns the most recent records; a single page can miss a run's records
 when the account is busy (e.g. a long run + a concurrent benchmark push them past page 1). So we
@@ -237,11 +243,43 @@ class _Window:
     truncated: bool
 
 
-def _reconciles(matched_prompt: int, input_tokens: int) -> bool:
-    """True if the matched records' prompt tokens agree with the run's input tokens."""
+def _reconciles(matched_prompt: int, input_tokens: int, cache_read_tokens: int = 0) -> bool:
+    """True if the matched records' prompt tokens agree with the run's input tokens.
+
+    Deliberately ASYMMETRIC, because the two directions mean opposite things.
+
+    *Short* - the records sum to fewer prompt tokens than the run reported - is what the slack
+    exists for: a record that has not propagated yet, or one lost past the page cap. Where the
+    matched records ARE this run's, that only under-states spend. It is not a safe direction in
+    general: when the run's own record is the one still propagating - the very case the slack
+    exists for - a lone foreign record can match short and be attributed in full. Closing that
+    needs evidence this layer does not have (a request id would settle it; Codex surfaces none),
+    so the slack stays and this says plainly what it costs.
+
+    *Over* cannot happen to a run's own records: the window holds prompt tokens this run never
+    sent. That is a concurrent same-model run, and a symmetric tolerance folded its charge into
+    this one and stamped the total ``admin-api`` - measured. Worse, ``completion``/``reasoning``
+    are summed but never reconciled at all, so what an intruder can add is not bounded by the
+    slack that let it in. Fabricating cost is the one thing this project refuses to do, so the
+    over side gets no relative growth.
+
+    It is not zero, because the two sides can count differently: OpenCode reports ``input`` and
+    ``cache.read`` separately, so ``input_tokens`` excludes cache reads while a provider may bill
+    them inside ``prompt``. The allowance is only as large as the backend's own reported cache
+    reads - a backend that nests them inside ``input_tokens`` reports none, and so earns none. Over-counting up to the run's own cache reads is therefore
+    explainable by this run alone; beyond that it is not, and it gets no further slack. Token
+    counts are integers, so nothing rounds - an absolute allowance here would not absorb noise,
+    it would simply admit a foreign record small enough to fit, and that record arrives with its
+    whole ``amount`` attached. An intruder smaller than the run's cache reads can still hide:
+    this bounds the exposure rather than removing it, and no data available here distinguishes
+    that case.
+    """
     if input_tokens <= 0:
         return False
-    return abs(matched_prompt - input_tokens) <= max(_RECONCILE_ABS_TOL, _RECONCILE_REL_TOL * input_tokens)
+    short = input_tokens - matched_prompt
+    if short >= 0:
+        return short <= max(_RECONCILE_ABS_TOL, _RECONCILE_REL_TOL * input_tokens)
+    return -short <= max(0, cache_read_tokens)
 
 
 def fetch_run_cost(
@@ -250,6 +288,9 @@ def fetch_run_cost(
     start_iso: str,
     end_iso: str,
     input_tokens: int,
+    #: Excluded from `input_tokens` by the backends, but a provider may bill cached tokens inside
+    #: `prompt` - so this is how much over-counting one run can honestly explain. See `_reconciles`.
+    cache_read_tokens: int = 0,
     api_key: str | None = None,
     base_url: str | None = None,
     timeout_s: float = 8.0,
@@ -297,7 +338,7 @@ def fetch_run_cost(
             ]
             if matched:
                 matched_prompt = sum(r.prompt for r in matched)
-                if _reconciles(matched_prompt, input_tokens):
+                if _reconciles(matched_prompt, input_tokens, cache_read_tokens):
                     cost = round(sum(r.amount for r in matched), 6)
                     completion = sum(r.completion + r.reasoning for r in matched)
                     return ExternalCost(
@@ -312,7 +353,10 @@ def fetch_run_cost(
     return None
 
 
-#: (model, start_iso, end_iso, input_tokens) -> ExternalCost | None. Keyword-called.
+#: (model, start_iso, end_iso, input_tokens, cache_read_tokens) -> ExternalCost | None.
+#: Keyword-called. `Callable[..., ...]` cannot type the kwargs, and `_apply_external_cost`
+#: swallows the TypeError, so a resolver written to a stale signature would silently stop
+#: backfilling rather than fail - keep this list in step with the call site.
 CostResolver = Callable[..., "ExternalCost | None"]
 
 

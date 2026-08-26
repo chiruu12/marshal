@@ -150,6 +150,82 @@ def test_token_mismatch_declines_cost() -> None:
     assert ext is None
 
 
+def test_a_concurrent_run_inside_the_slack_is_not_billed_to_this_run() -> None:
+    """The reconciliation slack used to be symmetric, so any concurrent same-model run whose
+    prompt fit inside it was folded in - its charge summed and the total stamped `admin-api`,
+    i.e. measured. Over-counting cannot happen to a run's own records: those prompt tokens were
+    never sent by this run."""
+    body = _usage(
+        _rec("z-ai/glm-5.1", 0.005, 10000, 100, "2026-06-28T12:00:03+00:00"),  # this run
+        _rec("z-ai/glm-5.1", 0.002, 600, 40, "2026-06-28T12:00:05+00:00"),     # somebody else's
+    )
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=10000,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is None, "a concurrent run's charge was billed here as measured cost"
+
+
+def test_an_intruders_reasoning_tokens_cannot_inflate_the_bill() -> None:
+    """The cost an intruder adds is not bounded by the prompt slack that let it in: `completion`
+    and `reasoning` are summed and never reconciled, so a record with a tiny prompt and enormous
+    reasoning could contribute an unbounded amount."""
+    body = _usage(
+        _rec("z-ai/glm-5.1", 0.005, 10000, 100, "2026-06-28T12:00:03+00:00"),
+        _rec("z-ai/glm-5.1", 0.900, 600, 60000, "2026-06-28T12:00:05+00:00"),
+    )
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=10000,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is None
+
+
+def test_a_foreign_record_inside_a_small_absolute_slack_is_refused() -> None:
+    """The over side gets no absolute allowance at all. Token counts are integers, so nothing
+    rounds - a slack here would not absorb noise, it would admit a foreign record small enough to
+    fit, and that record arrives with its whole `amount` attached."""
+    body = _usage(
+        _rec("z-ai/glm-5.1", 0.005, 10000, 100, "2026-06-28T12:00:03+00:00"),
+        _rec("z-ai/glm-5.1", 0.400, 150, 9000, "2026-06-28T12:00:05+00:00"),  # 150 < any small tol
+    )
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=10000,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is None
+
+
+def test_a_short_window_still_attributes() -> None:
+    """The under side keeps its slack. A record that has not propagated makes the cost SHORT,
+    which understates spend - the safe direction, and the case the tolerance exists for."""
+    body = _usage(_rec("z-ai/glm-5.1", 0.004, 9500, 100, "2026-06-28T12:00:03+00:00"))
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=10000,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is not None
+    assert ext.cost_usd == 0.004
+
+
+def test_cache_reads_explain_a_provider_counting_them_in_prompt() -> None:
+    """`input_tokens` excludes cache reads; a provider may bill them inside `prompt`. That
+    over-count is explainable by this run alone, so it must not be read as an intruder - a
+    flat refusal here would silently turn every cache-hitting run's cost into `unavailable`."""
+    body = _usage(_rec("z-ai/glm-5.1", 0.006, 14000, 120, "2026-06-28T12:00:03+00:00"))
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=10000, cache_read_tokens=4000,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is not None
+    assert ext.cost_usd == 0.006
+
+
 def test_missing_key_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EASTROUTER_API_KEY", raising=False)
     ext = fetch_run_cost(

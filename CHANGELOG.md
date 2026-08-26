@@ -38,6 +38,22 @@ versions may include breaking API changes until 1.0.
   to self-heal must not become permanently unreapable. Records written before these fields fall
   back to the previous behaviour rather than being treated as unsupervised.
 
+- **EastRouter reconciliation could bill a concurrent run's charge here as measured cost.** The
+  guard tolerated the matched records' prompt tokens differing from the run's by up to 10%, in
+  either direction - so any same-model request landing in the window with a prompt inside that
+  slack was folded in, its `amount_usd` summed, and the total stamped `admin-api`. What it could
+  add was not bounded by the slack that admitted it, since completion and reasoning tokens are
+  summed but never reconciled at all. The tolerance is now asymmetric: matching *fewer* prompt
+  tokens than the run reported is the propagation-delay case it exists for, while matching *more*
+  means prompt tokens this run never sent. Over-counting is allowed
+  only as far as the run's own cache reads explain it - `input_tokens` excludes those while a
+  provider may bill cached tokens inside `prompt` - and refused beyond; a backend that nests cache
+  reads inside `input_tokens` reports none and so earns no allowance. Cache-heavy runs that
+  previously fell back to `unavailable` under the symmetric rule now attribute correctly. The
+  short side is unchanged and still has a gap this does not close: when a run's own record is the
+  one still propagating, a lone foreign record can match short and be attributed in full. Settling
+  that needs a request id, which Codex does not surface.
+
 - **`artifacts_from` could be made to write outside the worktree, and mounted its input into the
   run's own diff.** Provisioning refused a symlinked `.marshal-context` but not the `artifacts`
   directory under it, and `mkdir(parents=True, exist_ok=True)` accepts an existing
