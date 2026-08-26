@@ -174,8 +174,10 @@ def _supervisor_is_gone(rec: RunRecord) -> bool:
 
     Fails CLOSED (False = "assume someone is still there, do not reap") whenever a live
     supervisor pid cannot be told apart from a reused one, matching `_reservation_holder_live`.
-    Returns True when no supervisor was recorded at all: those records predate the fields, and
-    treating them as unreapable would leave every one of them reading `running` forever.
+    Returns True when no supervisor was recorded at all - a record predating the fields, or one
+    written on a host where the start-time probe was unavailable (`_supervisor_identity` stamps
+    both halves or neither). Treating those as unreapable would leave them reading `running`
+    forever.
 
     Callers MUST have ruled out in-process ownership first (`_inflight_in_this_process`); the
     own-pid branch below reads "not in flight here" from that having already been checked.
