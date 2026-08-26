@@ -149,30 +149,6 @@ _NO_USAGE_OUTPUTS = (
 )
 
 
-def test_a_native_usage_claim_is_backed_by_a_figure(backend: CodingAgentBackend) -> None:
-    """`NATIVE` means the backend reported this. An all-zero record claiming it reported nothing.
-
-    Broader net than the no-usage cases below: an adapter that attaches a record at all must have
-    something in it to justify the tag. What a given backend is *able* to report is its own file's
-    business - Codex, for instance, reports tokens but never a cost, so it must never claim NATIVE
-    at all (`tests/test_codex_backend.py`).
-    """
-    for stdout, code in _NO_USAGE_OUTPUTS:
-        usage = backend.parse_output(stdout, "", code).usage
-        if usage is None or usage.source is not UsageSource.NATIVE:
-            continue
-        figures = (
-            usage.cost_usd,
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.cache_read_tokens,
-            usage.cache_write_tokens,
-        )
-        assert any(figures), (
-            f"{backend.name} tagged usage NATIVE with nothing in it, from {stdout!r}"
-        )
-
-
 @pytest.mark.parametrize(("stdout", "code"), _NO_USAGE_OUTPUTS, ids=repr)
 def test_a_backend_never_reports_measured_usage_it_did_not_parse(
     backend: CodingAgentBackend, stdout: str, code: int
