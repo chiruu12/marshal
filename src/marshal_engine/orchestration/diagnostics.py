@@ -84,15 +84,23 @@ def _worktree_gone_message(rec: RunRecord) -> str:
 def _live_agent_message(rec: RunRecord) -> str:
     """Driver-facing reason when a record reads terminal but its agent is still writing.
 
-    `cancel_run` on a run this process did not start stamps a terminal status without being able
-    to signal the process group, so the record can read `cancelled` while the agent keeps editing
-    its worktree. Says what to do about it: the run cannot be waited on through Marshal, because
-    the status it would be waited on for is already stamped.
+    Two paths stamp terminal without the process having stopped, and a driver's next move is the
+    same for both - stop it, then retry - so they share this message and differ only in the cause
+    named. `cancel_run` on a run this process did not start cannot signal the process group at
+    all. A timeout can signal it and fail: the group survives, and `base.run()` records that on
+    the run. Naming which one happened matters, because "nobody signalled it" and "we signalled it
+    and it did not die" call for different amounts of force.
     """
+    cause = (
+        "the run timed out and the kill did not land - Marshal signalled the process group and "
+        "the process was still alive afterwards"
+        if rec.agent_survived_kill
+        else "a terminal status can be stamped without the process having been signalled at all "
+        "(a cancel from another Marshal process cannot signal it)"
+    )
     return (
         f"run {rec.run_id!r} reads {rec.status!r}, but its agent is still alive at pid {rec.pid}. "
-        f"A terminal status can be stamped without the process having been signalled (a cancel "
-        f"from another Marshal process cannot signal it), so the worktree may still be mid-write "
-        f"and committing it now could capture half-written files. Wait for the process to exit or "
-        f"stop it yourself, then retry."
+        f"This happens because {cause}, so the worktree may still be mid-write and committing it "
+        f"now could capture half-written files. Wait for the process to exit or stop it yourself, "
+        f"then retry."
     )

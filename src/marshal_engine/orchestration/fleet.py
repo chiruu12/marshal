@@ -863,6 +863,7 @@ class Fleet:
                 attempts=attempts,
                 verify_passed=verify_passed,
                 verify_output=verify_output,
+                agent_survived_kill=result.agent_survived_kill,
             )
             self._ensure_artifacts_recorded(run_id, record, artifacts)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
@@ -910,7 +911,24 @@ class Fleet:
                 except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
                     print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
 
-        if cleanup:
+        if cleanup and _agent_may_still_be_writing(record):
+            # Deleting a worktree out from under a live writer destroys the partial work AND the
+            # branch it is on, and unlike commit/integrate there is nothing to retry afterwards.
+            # `Fleet.clean` refuses these records already; this inline path skipped the check and
+            # so undid, destructively, the protection the flag exists to give.
+            msg = (
+                "cleanup skipped: the agent is still alive and writing to this worktree "
+                "(see `error`); removing it now would delete work in progress. Clean it "
+                "once the process is gone."
+            )
+            existing = self.state.get(run_id)
+            if existing is not None and existing.error:
+                msg = f"{existing.error}; {msg}"
+            self.state.update(run_id, error=msg)
+            refreshed = self.state.get(run_id)
+            if refreshed is not None:
+                record = refreshed
+        elif cleanup:
             try:
                 self.worktrees.remove(wt)
             except Exception as exc:  # noqa: BLE001 - terminal stamp already landed
@@ -1404,9 +1422,10 @@ class Fleet:
                 message="run is still in progress; wait for it to finish before committing",
             )
         if _agent_may_still_be_writing(rec):
-            # A cancelled STATUS is not proof the process stopped - see `_agent_may_still_be_writing`.
-            # `clean` already refuses these records for exactly this reason; this path writes a
-            # commit, so it needs the check at least as much.
+            # A terminal STATUS is not proof the process stopped - a cancel that could not signal
+            # it, or a timeout whose kill did not land. See `_agent_may_still_be_writing`. `clean`
+            # already refuses these records for exactly this reason; this path writes a commit, so
+            # it needs the check at least as much.
             return CommitResult(
                 run_id=run_id,
                 status="blocked",
@@ -1762,8 +1781,9 @@ class Fleet:
                 message="run is still in progress; wait for it to finish before integrating",
             )
         if rec is not None and _agent_may_still_be_writing(rec):
-            # The status says cancelled; the process says otherwise. Refuse rather than merge a
-            # tree that still has a writer - this is the one path that reaches the user's branch.
+            # The status says the run is over; the process says otherwise. Refuse rather than
+            # merge a tree that still has a writer - this is the one path that reaches the user's
+            # branch.
             return IntegrateResult(
                 run_id=run_id,
                 status="blocked",

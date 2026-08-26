@@ -445,3 +445,53 @@ def test_both_layers_mark_a_pinned_start_time_the_same_way() -> None:
 
     assert BUDGETS_PINNED == PINNED
     assert _pid_start_time(LIVE_PID).startswith(PINNED)  # type: ignore[union-attr]
+
+
+def test_a_timed_out_run_whose_kill_landed_is_writable() -> None:
+    """The ordinary timeout DID observe the exit - `base.run()` polls after signalling - so the
+    worktree is a finished snapshot. Refusing these would strand every timed-out run's work behind
+    a block no driver can clear, which is why the guard keys off the observation and not the
+    status."""
+    rec = RunRecord(
+        run_id="to.writer.deadbeef",
+        task_id="to",
+        backend="writer",
+        status="timed_out",
+        pid=LIVE_PID,  # a live pid, and still writable: the kill was confirmed
+        pid_start_time=_pid_start_time(LIVE_PID),
+        agent_survived_kill=False,
+    )
+    assert liveness_mod._agent_may_still_be_writing(rec) is False
+
+
+def test_a_timed_out_run_whose_agent_survived_the_kill_is_not_writable() -> None:
+    """`timed_out` was treated as proof the agent had stopped, on the premise that every terminal
+    status but `cancelled` is stamped after an observed exit. A kill that fails breaks that: the
+    record reads terminal while the agent is still writing, and `commit_run` / `integrate` would
+    capture a half-written tree - integrate onto the user's own branch."""
+    rec = RunRecord(
+        run_id="to.writer.deadbee0",
+        task_id="to",
+        backend="writer",
+        status="timed_out",
+        pid=LIVE_PID,
+        pid_start_time=_pid_start_time(LIVE_PID),
+        agent_survived_kill=True,
+    )
+    assert liveness_mod._agent_may_still_be_writing(rec) is True
+
+
+def test_a_survived_kill_on_a_dead_pid_does_not_block_forever() -> None:
+    """The flag records what was observed at kill time, not a standing claim. Once that process is
+    gone the tree is settled, so the guard has to re-probe rather than latch - otherwise a run
+    Marshal failed to kill stays unmergeable for good."""
+    rec = RunRecord(
+        run_id="to.writer.deadbee1",
+        task_id="to",
+        backend="writer",
+        status="timed_out",
+        pid=_dead_pid(),
+        pid_start_time=f"{PINNED}Thu Jan  1 00:00:00 1970",
+        agent_survived_kill=True,
+    )
+    assert liveness_mod._agent_may_still_be_writing(rec) is False

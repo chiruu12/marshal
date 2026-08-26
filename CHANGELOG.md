@@ -10,6 +10,31 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A run that timed out reported the agent stopped without ever checking.** `base.run()`
+  signalled the process group and then declared the run over - but signalling is not dying, and
+  nothing on that path could tell the difference. `_kill_process_group` swallows every signalling
+  error and cannot distinguish "the group is already gone" from "that signal did not land": on the
+  `EPERM` macOS returns where `ESRCH` is expected, it returns without ever escalating to
+  `SIGKILL`. A leader wedged in uninterruptible I/O outlives a `SIGKILL` that did land. The record
+  was stamped `timed_out` regardless, which every other part of Marshal reads as a finished
+  snapshot: `commit_run` and `integrate` would freeze or merge a worktree an agent was still
+  writing into - `integrate` onto the user's own branch - `run_team` would hand a panel of
+  reviewers a diff that changed underneath them, and an inline `cleanup=True` would delete the
+  worktree and its branch out from under the live writer, the one of those with nothing left to
+  retry afterwards. `_agent_may_still_be_writing` guarded exactly this for a cancelled run and
+  explicitly excluded the rest, on the premise that every other terminal status is stamped only
+  after an observed exit; a kill that fails is the case where that premise is false. Worse, the
+  caller was told the child had been reaped and its pid was free to recycle, so `cancel_run` would
+  decline to signal it - retiring the last control over a process Marshal had just failed to stop.
+  The timeout path now polls after signalling and records what it found, so the question is
+  answered rather than assumed. A surviving agent is named in the error with what to do about it,
+  is not reported as reaped, and blocks the write, review and cleanup paths until its pid is
+  actually gone - a re-probe every time, so the refusal lifts on its own once the process exits. A
+  descendant that left the group with its own `setsid` is reported separately and does not block:
+  the only trace it leaves is output pipes that never closed, so there is no pid to watch and a
+  refusal keyed on it could never be lifted. A timeout whose kill landed - the ordinary case - is
+  unchanged and stays collectable, reviewable and mergeable.
+
 - **Process identity was a locale- and timezone-formatted string, so two Marshal processes read
   one live agent as two different processes.** `ps -o lstart=` renders through `TZ` and `LC_TIME`,
   and pid + start time is the identity every liveness decision rests on. Measured here, one live

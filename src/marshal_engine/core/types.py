@@ -292,6 +292,11 @@ class AgentResult(BaseModel):
     error: str | None = None
     raw_stdout: str = ""
     raw_stderr: str = ""
+    # True only when `base.run()` timed a run out, signalled its process group, and then OBSERVED
+    # the agent still alive. A fact about what the kill achieved, not a prediction: the default is
+    # False because "we did not see it survive" is what every other path knows. Callers use it to
+    # tell a timed-out run whose agent is gone from one that is still writing to the worktree.
+    agent_survived_kill: bool = False
     # Schema-validated JSON object from the final message when TaskSpec.output_schema was set and
     # the reply conformed. None when no schema was requested, or when validation failed (see error).
     structured: dict[str, Any] | None = None

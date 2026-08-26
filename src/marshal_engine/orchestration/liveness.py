@@ -223,12 +223,20 @@ def _agent_may_still_be_writing(rec: RunRecord) -> bool:
     this run's agent. For reaping that direction is the safe one; for a write path it would strand
     a finished run's work behind a permanent refusal the driver has no way to clear.
 
-    ``cancel_run`` is the one path that stamps terminal without having observed an exit: on a run
-    the current process did not start it cannot signal the process group at all, so the record
-    reads ``cancelled`` while the agent keeps writing. ``teams.py`` draws this same line for the
-    same reason (``_UNSTABLE_FOR_REVIEW``).
+    Two paths stamp terminal without having observed an exit. ``cancel_run`` is one: on a run the
+    current process did not start it cannot signal the process group at all, so the record reads
+    ``cancelled`` while the agent keeps writing. The other is a timeout whose kill did not land -
+    ``base.run()`` signals the group, then polls, and a leader still alive after SIGKILL is stamped
+    ``timed_out`` with ``agent_survived_kill`` set. That flag is the whole difference: an ordinary
+    timeout DID observe the exit, and widening this to the status alone would strand every one of
+    them behind a refusal no driver can clear. ``teams.py`` draws this same line for the same
+    reason (``_review_instability``).
     """
-    return rec.status == RunStatus.CANCELLED.value and _pid_is_still_ours(rec)
+    if rec.status == RunStatus.CANCELLED.value:
+        return _pid_is_still_ours(rec)
+    if rec.status == RunStatus.TIMED_OUT.value and rec.agent_survived_kill:
+        return _pid_is_still_ours(rec)
+    return False
 
 
 def _pid_is_verifiably_ours(rec: RunRecord) -> bool:

@@ -10,6 +10,7 @@ and it never integrates.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from pydantic import ValidationError
 from marshal_engine.core.config import ClientConfig, ConfigError, FleetConfig
 from marshal_engine.core.types import PermissionMode
 from marshal_engine.orchestration.fleet import CollectResult, RunManyJobResult
+from marshal_engine.orchestration.liveness import _pid_start_time
 from marshal_engine.orchestration.teams import (
     _REPORT_SECTIONS,
     MAX_SUBJECT_CHARS,
@@ -79,6 +81,7 @@ class StubService:
         drop_records: int = 0,
         reverse_records: bool = False,
         run_status: str = "exited_clean",
+        agent_survived_kill: bool = False,
         collect_raises: type[Exception] | None = None,
         truncated: list[bool] | None = None,
         full_lens: list[int | None] | None = None,
@@ -104,6 +107,7 @@ class StubService:
         self.calls: list[str] = []
         self.diff_paths: list[str] = []
         self.run_status = run_status
+        self.agent_survived_kill = agent_survived_kill
         self.collect_raises = collect_raises
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
@@ -131,8 +135,18 @@ class StubService:
         return [RunManyJobResult(primary=r) for r in out]
 
     def get_run(self, run_id: str) -> RunRecord | None:
+        # A surviving agent means a LIVE pid: the guard re-probes it, so a record without one
+        # reads as settled no matter what the flag says. Use this process, which is alive for the
+        # duration of the test and whose start time the real probe can read.
+        pid = os.getpid() if self.agent_survived_kill else None
         return RunRecord(
-            run_id=run_id, task_id="t", backend="opencode", status=self.run_status
+            run_id=run_id,
+            task_id="t",
+            backend="opencode",
+            status=self.run_status,
+            agent_survived_kill=self.agent_survived_kill,
+            pid=pid,
+            pid_start_time=_pid_start_time(pid) if pid is not None else None,
         )
 
     def collect_run(self, run_id: str) -> CollectResult:
@@ -909,3 +923,40 @@ def test_report_dirname_is_deterministic() -> None:
     assert report_dirname("hard-gate", "t1", stamp="20260727T000000Z") == (
         "20260727T000000Z-hard-gate-t1"
     )
+
+
+def test_runner_refuses_to_review_a_run_whose_agent_outlived_its_timeout() -> None:
+    """A timed-out run is normally settled, and reviewing one is a legitimate post-mortem - the
+    test above depends on that. It is settled because the timeout path signals the agent's process
+    group and confirms it died. When that confirmation fails the agent is still editing, so the
+    diff a panel reads is a moving target and every reviewer reports on a different tree."""
+    svc = StubService(_config("ro-a", "ro-b"), run_status="timed_out", agent_survived_kill=True)
+    with pytest.raises(ConfigError, match="did not stop"):
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert svc.calls == [], "collected a diff from a worktree still being written"
+
+
+def test_runner_still_reviews_a_timed_out_run_whose_agent_stopped() -> None:
+    """The refusal is about the observation, not the status. Keying it off `timed_out` alone would
+    take away post-mortems on every run that hit its cap - the common case by far."""
+    svc = StubService(_config("ro-a", "ro-b"), run_status="timed_out", agent_survived_kill=False)
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert "run status timed_out" in result.subject_summary
+
+
+def test_a_survivor_that_has_since_exited_becomes_reviewable_again() -> None:
+    """The refusal is keyed on a re-probe, not on the flag alone. Reading the flag directly would
+    refuse for good - it records what was observed at kill time, and nothing rewrites it - so a run
+    Marshal failed to kill could never be reviewed even after its process was gone."""
+    svc = StubService(_config("ro-a", "ro-b"), run_status="timed_out", agent_survived_kill=True)
+    original = svc.get_run
+
+    def _dead_now(run_id: str) -> RunRecord | None:
+        rec = original(run_id)
+        assert rec is not None
+        rec.pid = 999_999_999  # a pid no process holds
+        return rec
+
+    svc.get_run = _dead_now  # type: ignore[method-assign]
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert "run status timed_out" in result.subject_summary

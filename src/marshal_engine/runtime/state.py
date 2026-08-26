@@ -93,6 +93,12 @@ class RunRecord(BaseModel):
     outcome_note: str | None = None
     commit: str | None = None  # branch tip after commit_run froze the work (for chaining/integrate)
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
+    # The run timed out AND the agent was observed still alive after its process group was
+    # signalled. Absent/False means no such observation - either the kill worked, or this is not a
+    # timed-out run, or the record predates the field. Never a guess: `base.run()` sets it only
+    # from a `poll()` that came back None. It is what lets `_agent_may_still_be_writing` tell a
+    # finished timed-out run from one whose agent is still writing into the worktree.
+    agent_survived_kill: bool = False
     # Start time of `pid` as the OS reports it. Pids are reused, so this is what makes the pid an
     # identity: a live pid whose start time differs is somebody else's process, never our agent.
     pid_start_time: str | None = None

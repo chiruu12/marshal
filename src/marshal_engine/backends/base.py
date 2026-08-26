@@ -429,16 +429,38 @@ class CodingAgentBackend(ABC):
             out, err = proc.communicate(timeout=opts.timeout_s)
         except subprocess.TimeoutExpired:
             _kill_process_group(pgid)
-            out, err = _drain(proc)  # bounded: a setsid-escaped survivor holding the pipe can't hang us
-            _notify_exit()
+            out, err, drained = _drain(proc)  # bounded: a pipe-holder that escaped can't hang us
+            # Ask whether the kill worked instead of assuming it. `_kill_process_group` swallows
+            # every signalling error, so it can return having achieved nothing - a leader wedged in
+            # uninterruptible I/O rides out SIGKILL, and a `killpg` refused with EPERM never
+            # escalates at all.
+            #
+            # Two DIFFERENT things can outlive the kill, and they are not interchangeable. The
+            # leader is one, and it is the one worth recording: its pid is on the record, so every
+            # guard downstream can re-probe it and stop refusing once it is gone. A descendant that
+            # left the group with its own `setsid` is the other, and all we ever learn about it is
+            # that the pipes did not close - no pid, so nothing to probe and nothing that could
+            # ever clear a block. Recording that as the same fact would strand the run's work
+            # behind a refusal with no way out, so it is disclosed in the error instead and the
+            # driver decides.
+            survived = proc.poll() is None
+            escaped = not drained
+            if not survived:
+                # Only claim the pid is recyclable when it actually is. Saying so over a live agent
+                # tells `cancel_run` the child already exited, so it declines to signal - retiring
+                # the one control left over a process Marshal just failed to stop.
+                _notify_exit()
             return AgentResult(
                 status=RunStatus.TIMED_OUT,
-                error=f"{self.name}: timed out after {opts.timeout_s}s",
+                error=_timeout_error(
+                    self.name, opts.timeout_s, survived=survived, escaped=escaped
+                ),
                 session_id=opts.session_id,
                 usage=self._recover_partial_usage(out, err),
                 raw_stdout=out,
                 raw_stderr=err,
                 duration_ms=_elapsed_ms(),
+                agent_survived_kill=survived,
             )
 
         _notify_exit()
@@ -493,14 +515,57 @@ def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
         return
 
 
-def _drain(proc: subprocess.Popen[str]) -> tuple[str, str]:
-    """Collect remaining output and reap, bounded so a surviving pipe-holder can't block forever."""
+_DRAIN_TIMEOUT_S = 2.0
+
+
+def _timeout_error(name: str, timeout_s: float, *, survived: bool, escaped: bool) -> str:
+    """The error for a timed-out run, saying what survived the kill.
+
+    A driver's next move differs completely. If nothing survived, the worktree is a stable snapshot
+    and the usual choices apply - collect it, re-run with a longer timeout. Otherwise the diff is a
+    moving target and integrating it commits a half-written tree. Reporting every case as "timed
+    out after 600s" hands the driver the first plan for the second situation.
+
+    The two survivors are reported differently because only one of them can be waited out. Marshal
+    holds the leader's pid, so a driver (and every guard downstream) can watch it go. An escaped
+    descendant left no pid at all - the sole trace is pipes that never closed - so nothing can
+    report when it stops, and saying so plainly is better than a refusal that would never lift.
+    """
+    base = f"{name}: timed out after {timeout_s}s"
+    if survived:
+        return (
+            f"{base}, and the agent did NOT stop: SIGTERM then SIGKILL to its process group left "
+            "it running. It may still be writing to the worktree, so its diff is not a snapshot - "
+            "do not integrate or clean this run on the strength of the timeout alone. Stop the "
+            "process yourself (its pid is on the run record) and re-check before acting on the "
+            "worktree."
+        )
+    if escaped:
+        return (
+            f"{base}. The agent itself is gone, but something it started had left the process "
+            "group (its own setsid) and was still holding the run's output pipes, so the group "
+            "kill never reached it. Marshal has no pid for it and cannot tell you when it stops. "
+            "It is usually a server or helper rather than an editor, but check the worktree is "
+            "quiet before integrating this run."
+        )
+    return base
+
+
+def _drain(proc: subprocess.Popen[str]) -> tuple[str, str, bool]:
+    """Collect remaining output and reap, bounded so a surviving pipe-holder can't block forever.
+
+    The third value says whether the pipes actually closed. Hitting the bound is not just a
+    give-up: the pipes are inherited by every descendant, so something is still holding the write
+    end - a process that escaped the group via its own ``setsid`` and cannot be signalled through
+    the group at all. That is the one signal ``run()`` has that a writer outlived the kill even
+    though the leader it can poll is gone, so it is reported rather than swallowed.
+    """
     try:
-        out, err = proc.communicate(timeout=2)
-        return out or "", err or ""
+        out, err = proc.communicate(timeout=_DRAIN_TIMEOUT_S)
+        return out or "", err or "", True
     except subprocess.TimeoutExpired as exc:
         proc.poll()  # non-blocking: reap the killed leader now (a setsid'd survivor keeps the pipe)
-        return _as_text(exc.stdout), _as_text(exc.stderr)
+        return _as_text(exc.stdout), _as_text(exc.stderr), False
 
 
 def _spawn_os_error(name: str, binary: str, exc: OSError) -> str:
