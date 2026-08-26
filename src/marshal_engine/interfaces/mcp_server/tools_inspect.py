@@ -215,14 +215,18 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
         Each terminal run (success or failure) gets one file under `<base>/logs/<run_id>.log` with
         a `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---` section -
         the FULL streams, not the 16KB-truncated `text` on the run record - including EVERY attempt of
-        a retried run, each under `--- attempt N/M ---`. `log` is null when no
-        log exists (a run that pre-dates log storage, or a backend that crashed before producing
-        one). The owning workspace is resolved by the same scan as `get_run`, with the same
+        a retried run, each under `--- attempt N/M ---`. `log` is null when the run
+        exists but wrote no log (a run that pre-dates log storage, or a backend that crashed before
+        producing one) - never as an answer to "no such run", which raises, naming the registered
+        workspaces. The owning workspace is resolved by the same scan as `get_run`, with the same
         `workspace` hint."""
-        resolved = await offload(registry.resolve_run, run_id, workspace)
-        if resolved is None:
-            return tag({"run_id": run_id, "log": None}, workspace or DEFAULT_WORKSPACE)
-        name, svc = resolved
+        # `require_run`, not `resolve_run`: an unknown id is an error, not a null log. Returning
+        # `{log: null}` here made "no such run" byte-identical to "this run wrote no log" apart
+        # from the id echoed back - so a driver read a typo'd or already-cleaned id as a run that
+        # had crashed before producing diagnostics, and re-spawned it. It also stamped `workspace`
+        # with whatever the caller passed, naming a workspace nothing had resolved and that may
+        # not be registered at all. Every sibling raises here; `service.run_log` does too.
+        name, svc = await offload(registry.require_run, run_id, workspace)
         text = await offload(svc.run_log, run_id)
         return tag({"run_id": run_id, "log": text}, name)
 

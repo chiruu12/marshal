@@ -21,6 +21,15 @@ versions may include breaking API changes until 1.0.
   genuinely zero-signal answer a workflow can give. "I cannot tell you what this run did" is not
   "it did nothing", and it is now reported as neither.
 
+- **`get_run_log` answered an unknown run id with a success-shaped null log.** The reply was
+  byte-identical to "this run wrote no log" apart from the id echoed back, so a driver reading a
+  typo'd or already-cleaned id concluded the run had crashed before producing any diagnostics -
+  and re-spawned it. It also stamped `workspace` with whatever the caller passed, naming a
+  workspace nothing had resolved and which need not be registered at all, while `status`, `doctor`
+  and `list_clients` all reject an unregistered name. An unknown id now raises and names the
+  registered workspaces, matching every sibling tool and `service.run_log` itself; `log: null`
+  keeps its one honest meaning.
+
 - **`run_team` reviewed only a run's uncommitted work, so a self-committing run was reviewed
   partially or not at all.** The subject was built from `diff`/`changed_files`, which report what
   is still loose in the worktree. An agent that commits as it goes leaves a clean tree, and
