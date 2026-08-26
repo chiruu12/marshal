@@ -139,11 +139,46 @@ def test_available_models_never_raises(
     assert catalog.source is not ModelSource.PROBED
 
 
-def test_usage_source_in_vocabulary(backend: CodingAgentBackend) -> None:
-    for stdout, code in (("", 0), ("", 1), ('{"type":"result"}\n', 0)):
-        result = backend.parse_output(stdout, "", code)
-        if result.usage is not None:
-            assert result.usage.source in UsageSource
+#: Outputs that carry no usage information of any kind - an empty stream, a failed run, a result
+#: envelope with no usage block, and something that is not JSON at all.
+_NO_USAGE_OUTPUTS = (
+    ("", 0),
+    ("", 1),
+    ('{"type":"result"}\n', 0),
+    ("this is not json\n", 0),
+)
+
+
+@pytest.mark.parametrize(("stdout", "code"), _NO_USAGE_OUTPUTS, ids=repr)
+def test_a_backend_never_reports_measured_usage_it_did_not_parse(
+    backend: CodingAgentBackend, stdout: str, code: int
+) -> None:
+    """The load-bearing half of "never fabricate cost".
+
+    `UsageSource.NATIVE` is a claim that the BACKEND reported this usage, and the engine treats it
+    as measured: `_price_usage` returns early on NATIVE rather than deriving a price, so whatever
+    is attached rides into `usage/events.jsonl` - an append-only ledger, interpreted on read - and
+    every `report`, `routing` and savings figure inherits it. There is no later check.
+
+    None of the inputs here contains usage, so no adapter may come back claiming it did. This
+    replaced `assert result.usage.source in UsageSource`, which is guaranteed by the field's own
+    enum type and therefore could not fail; its `if result.usage is not None` body was also dead
+    for most of the fleet. An adapter hardcoding `source=NATIVE, cost_usd=0.42` passed the entire
+    suite.
+    """
+    result = backend.parse_output(stdout, "", code)
+    if result.usage is None:
+        return
+    assert result.usage.source is not UsageSource.NATIVE, (
+        f"{backend.name} claims it measured usage from output that carries none: {stdout!r}"
+    )
+    # `cost_usd` is a plain `float` defaulting to 0.0, so it cannot express "unknown" - `source`
+    # carries that. What must never appear is a FIGURE: 0.0 alongside `unavailable` is honest,
+    # any non-zero amount from output with no usage in it is invented.
+    assert not result.usage.cost_usd, (
+        f"{backend.name} invented a cost of {result.usage.cost_usd} from output carrying none: "
+        f"{stdout!r}"
+    )
 
 
 # --- the run() escape hatch ------------------------------------------------------------------

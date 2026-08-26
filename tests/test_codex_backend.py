@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine import (
+    ModelSource,
+    PermissionMode,
+    RunOpts,
+    RunStatus,
+    TaskSpec,
+    UsageSource,
+)
 from marshal_engine.backends.codex import CodexBackend
 
 
@@ -119,6 +126,30 @@ def test_parse_output_success_best_effort(backend: CodexBackend) -> None:
     assert "pong" in res.text
     assert res.usage is not None
     assert res.usage.input_tokens == 10 and res.usage.output_tokens == 2
+
+
+def test_parse_output_reports_tokens_without_claiming_a_measured_cost(
+    backend: CodexBackend,
+) -> None:
+    """Codex reports tokens and never a cost, so its usage stays `unavailable`.
+
+    `NATIVE` is the engine's word for "the backend measured this", and `_price_usage` returns
+    early on it rather than deriving a price - so a record tagged `NATIVE` with no cost asserts a
+    $0 spend Codex never reported, and it lands in an append-only ledger that every `report`,
+    `routing` and savings figure reads back. Nothing downstream re-checks it.
+
+    This is the one adapter the shared contract test cannot cover: "tokens but never a cost" is
+    Codex-specific, and the generic test cannot know it. Hardcoding `source=NATIVE, cost_usd=0.42`
+    in `parse_output` passed the entire suite before this existed.
+    """
+    stdout = '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}'
+    res = backend.parse_output(stdout, "", 0)
+    assert res.usage is not None
+    assert res.usage.input_tokens == 10, "no tokens parsed, so this proves nothing"
+    assert res.usage.source is UsageSource.UNAVAILABLE, (
+        "codex claimed it measured usage; it reports tokens but no cost"
+    )
+    assert res.usage.cost_usd == 0.0
 
 
 def test_parse_output_nonzero_exit_is_failure(backend: CodexBackend) -> None:
