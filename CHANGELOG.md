@@ -10,6 +10,17 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A workflow whose agent runs all failed reported `status: "completed"` and exited 0.** The
+  fan-out branch recorded a failed run as a note and a next action but set neither status flag, so
+  a workflow where every agent failed or timed out came back as `completed` - which the driver
+  skill defines as "nothing left" - and `cli/recipes.py` maps that to exit 0. A CI step wrapping a
+  workflow passed green on total failure, while the healthy path that merely needs review exited
+  1. A run that did not succeed now makes the workflow an `error`. Separately, an `exited_clean`
+  run whose worktree could not be read at collect time returned `produced: "unavailable"` and was
+  treated as ordinary output, giving `completed` with no notes and no next actions - the one
+  genuinely zero-signal answer a workflow can give. "I cannot tell you what this run did" is not
+  "it did nothing", and it is now reported as neither.
+
 - **`run_team` reviewed only a run's uncommitted work, so a self-committing run was reviewed
   partially or not at all.** The subject was built from `diff`/`changed_files`, which report what
   is still loose in the worktree. An agent that commits as it goes leaves a clean tree, and

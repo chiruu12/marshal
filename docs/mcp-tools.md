@@ -262,7 +262,7 @@ Race the same goal through several configured clients.
 | `workflow_run_id` | string | Unique id for this execution. |
 | `inputs` | dict | Resolved inputs. |
 | `phases` | list | Per-phase `{ name, run, run_ids, records, collected, integrations, skipped, notes }` |
-| `status` | `"completed"` \| `"awaiting_review"` \| `"error"` | |
+| `status` | `"completed"` \| `"awaiting_review"` \| `"error"` | `completed` means every phase did its job and nothing is left. `error` means the workflow did not do what it was asked: an agent run failed or timed out, its work could not be read, or an auto-integrate hit a state needing a human. The CLI exits non-zero on `error`. |
 | `next_actions` | list[string] | Suggested follow-ups (e.g. runs to review/integrate). |
 
 ### `list_teams`

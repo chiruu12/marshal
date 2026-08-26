@@ -348,6 +348,13 @@ class WorkflowRunner:
                 for r in records:
                     status_by_run[r.run_id] = r.status
                     if r.status != RunStatus.EXITED_CLEAN.value:
+                        # A phase's agent failing is a workflow that did not do what it was asked,
+                        # so it must reach `status`. Leaving these flags alone reported a run
+                        # where EVERY agent failed or timed out as `completed` - which the driver
+                        # skill defines as "nothing left" - and `cli/recipes.py` maps that to
+                        # exit 0, so a CI step wrapping a workflow passed green on total failure
+                        # while the healthy gated path exited 1.
+                        had_error = True
                         notes.append(f"{r.run_id}: run did not succeed ({r.status})")
                         next_actions.append(
                             f"inspect failed run: {r.run_id} (client {r.client}, {r.status})"
@@ -416,10 +423,19 @@ class WorkflowRunner:
                 for rid in source_ids:
                     try:
                         cr = self.service.collect_run(rid)
-                    except ValueError as exc:  # empty/failed/missing-worktree runs raise; record, continue
+                    except ValueError as exc:  # a run with no worktree to resolve; record, continue
                         notes.append(f"{rid}: {exc}")
                         continue
                     collected.append(cr.model_dump(mode="json"))
+                    if cr.produced == "unavailable":
+                        # "I cannot tell you what this run did" is not "it did nothing". Without
+                        # this an `exited_clean` run whose worktree could not be read at collect
+                        # time left `completed`, empty notes and empty next_actions - the one
+                        # genuinely zero-signal answer the workflow can give.
+                        had_error = True
+                        notes.append(f"{rid}: work could not be read ({cr.unavailable_reason})")
+                        next_actions.append(f"inspect unreadable run: {rid}")
+                        continue
                     review_files = len(cr.changed_files) + len(cr.committed_changed_files)
                     if review_files:
                         needs_review = True
