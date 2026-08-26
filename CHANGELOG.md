@@ -10,6 +10,17 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **`clean` reported worktrees it had not removed.** Teardown ends in
+  `shutil.rmtree(ignore_errors=True)`, which swallows whatever stopped it, and nothing else on
+  that path raises - `prune` ignores its return code and the branch delete ignores git's. So
+  `Fleet.clean` took the silence as proof and listed a worktree still on disk under `removed`,
+  which `docs/mcp-tools.md` defines as "worktrees/branches were removed". Reachable without root:
+  an agent that chmods one of its own subdirectories to `0o000` defeats the writability pass,
+  because `os.walk` never yields a directory it cannot list. Teardown now checks whether the
+  directory survived and says so, and `clean` reports it under `errors` where it already reports
+  every other teardown failure. Tolerant of a partial failure is not the same as silent about a
+  total one - `remove()` has always been honest about exactly this.
+
 - **Log redaction rewrote ordinary words out of every run's output.** One set of names,
   `credential_env_vars`, was doing two jobs: allowlisting what a backend needs in its child env,
   and naming values to scrub from persisted text. `GOOSE_PROVIDER` and `GOOSE_MODEL` belong in the

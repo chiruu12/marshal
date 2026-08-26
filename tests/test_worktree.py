@@ -1294,3 +1294,40 @@ def test_diff_still_accepts_the_normal_exit_1_from_no_index(repo: Path) -> None:
     wt = m.create("task_diff_exit1")
     (wt.path / "new.txt").write_text("brand new\n")
     assert "brand new" in m.diff(wt)
+
+
+# --- discard reports a directory it could not remove ------------------------------------------
+
+
+def test_discard_raises_when_the_directory_survives(repo: Path) -> None:
+    """`rmtree(ignore_errors=True)` swallows whatever stopped it, and nothing else on the discard
+    path raises - `prune` ignores its return code, `_delete_managed_branch` ignores git's. So a
+    caller read the silence as proof and reported a worktree still on disk as removed.
+
+    The blocker here is an agent chmod-ing its own subdirectory to 0o000: `_restore_writable_dirs`
+    walks with `os.walk`, which never yields a directory it cannot list, so the tree is not
+    rescued and rmtree cannot recurse into it.
+    """
+    wm = WorktreeManager(repo)
+    doomed = wm.base_dir / "stuck"
+    (doomed / "locked").mkdir(parents=True)
+    (doomed / "locked" / "file.txt").write_text("x")
+    os.chmod(doomed / "locked", 0o000)
+    try:
+        with pytest.raises(WorktreeError, match="still present after rmtree"):
+            wm.discard(doomed, None)
+        assert doomed.exists(), "the directory is gone, so this proves nothing"
+    finally:
+        os.chmod(doomed / "locked", 0o755)
+
+
+def test_discard_is_silent_when_the_directory_really_went(repo: Path) -> None:
+    """The other direction: an ordinary teardown must not start raising, and neither must a
+    worktree that was already gone - discard is explicitly tolerant of both."""
+    wm = WorktreeManager(repo)
+    ordinary = wm.base_dir / "fine"
+    (ordinary / "sub").mkdir(parents=True)
+    (ordinary / "sub" / "f.txt").write_text("x")
+    wm.discard(ordinary, None)
+    assert not ordinary.exists()
+    wm.discard(wm.base_dir / "never-existed", None)  # already gone: still no raise
