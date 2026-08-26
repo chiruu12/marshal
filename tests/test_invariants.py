@@ -259,26 +259,63 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
 # --- every child process is detached from our stdin and our controlling terminal --------------
 
 
+#: Every way this codebase can start a child process. Deliberately not a short list: the point of
+#: the invariant is that there is no allowlist, and a walker matching two names was one.
+_SPAWN_ATTRS = frozenset(
+    {
+        "run", "Popen", "call", "check_call", "check_output",
+        "spawnv", "spawnve", "spawnvp", "spawnvpe", "posix_spawn", "posix_spawnp", "system",
+    }
+)
+_SPAWN_OWNERS = frozenset({"subprocess", "os"})
+
+
+def _spawners_imported_by_name(tree: ast.AST) -> set[str]:
+    """Local names bound to a spawn function by ``from subprocess|os import ...``.
+
+    Includes ``as`` aliases. Resolving from the module's real imports keeps the bare-name check
+    precise: without it, matching any call named ``run`` would flag unrelated helpers.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.module not in _SPAWN_OWNERS:
+            continue
+        for alias in node.names:
+            if alias.name in _SPAWN_ATTRS:
+                names.add(alias.asname or alias.name)
+    return names
+
+
 def _spawn_calls(tree: ast.AST) -> list[ast.Call]:
     """Every call that starts a child process.
 
-    Two shapes, because matching only ``subprocess.run``/``Popen`` misses the indirect ones: teams'
-    PR resolution spawns through an injected ``Runner`` (``runner(...)``, defaulted to
-    ``subprocess.run`` so tests can substitute it), and that call inherits exactly the same fds. So
-    a call also counts when it passes ``capture_output`` - in this codebase nothing but a spawn
-    does, and a new indirection has to keep passing it to get output back.
+    Three shapes. **Attribute calls** on ``subprocess``/``os`` against the full spawn vocabulary -
+    not just ``run``/``Popen``: ``check_output``, ``call`` and ``check_call`` fork identically, and
+    none of them accepts ``capture_output``, so the indirect clause below could never rescue them.
+    An undetached ``subprocess.check_output`` used to pass this test. **Bare names** imported with
+    ``from subprocess import Popen``, resolved from the module's own imports so a local helper
+    named ``run`` is not mistaken for a spawn. And **anything passing ``capture_output``**, which
+    catches the indirect ones: teams' PR resolution spawns through an injected ``Runner``
+    (``runner(...)``, defaulted to ``subprocess.run`` so tests can substitute it) and inherits
+    exactly the same fds; in this codebase nothing but a spawn passes that kwarg, and a new
+    indirection has to keep passing it to get output back.
     """
+    imported = _spawners_imported_by_name(tree)
     out: list[ast.Call] = []
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
         direct = (
             isinstance(n.func, ast.Attribute)
-            and n.func.attr in {"run", "Popen"}
+            and n.func.attr in _SPAWN_ATTRS
             and isinstance(n.func.value, ast.Name)
-            and n.func.value.id == "subprocess"
+            and n.func.value.id in _SPAWN_OWNERS
         )
-        if direct or any(k.arg == "capture_output" for k in n.keywords):
+        # `from subprocess import Popen` then `Popen(...)`: no attribute to match on. Resolved
+        # from this module's own imports rather than by bare name, so a local helper that happens
+        # to be called `run` is not mistaken for a spawn.
+        bare = isinstance(n.func, ast.Name) and n.func.id in imported
+        if direct or bare or any(k.arg == "capture_output" for k in n.keywords):
             out.append(n)
     return out
 
