@@ -249,8 +249,12 @@ def _reconciles(matched_prompt: int, input_tokens: int, cache_read_tokens: int =
     Deliberately ASYMMETRIC, because the two directions mean opposite things.
 
     *Short* - the records sum to fewer prompt tokens than the run reported - is what the slack
-    exists for: a record that has not propagated yet, or one lost past the page cap. It makes the
-    attributed cost **under**-state spend, which is the safe direction to be wrong in.
+    exists for: a record that has not propagated yet, or one lost past the page cap. Where the
+    matched records ARE this run's, that only under-states spend. It is not a safe direction in
+    general: when the run's own record is the one still propagating - the very case the slack
+    exists for - a lone foreign record can match short and be attributed in full. Closing that
+    needs evidence this layer does not have (a request id would settle it; Codex surfaces none),
+    so the slack stays and this says plainly what it costs.
 
     *Over* cannot happen to a run's own records: the window holds prompt tokens this run never
     sent. That is a concurrent same-model run, and a symmetric tolerance folded its charge into
@@ -259,9 +263,10 @@ def _reconciles(matched_prompt: int, input_tokens: int, cache_read_tokens: int =
     slack that let it in. Fabricating cost is the one thing this project refuses to do, so the
     over side gets no relative growth.
 
-    It is not zero, because the two sides count differently: ``input_tokens`` excludes cache reads
-    (OpenCode reports ``input`` and ``cache.read`` as separate fields) while a provider may bill
-    cached tokens inside ``prompt``. Over-counting up to the run's own cache reads is therefore
+    It is not zero, because the two sides can count differently: OpenCode reports ``input`` and
+    ``cache.read`` separately, so ``input_tokens`` excludes cache reads while a provider may bill
+    them inside ``prompt``. The allowance is only as large as the backend's own reported cache
+    reads - a backend that nests them inside ``input_tokens`` reports none, and so earns none. Over-counting up to the run's own cache reads is therefore
     explainable by this run alone; beyond that it is not, and it gets no further slack. Token
     counts are integers, so nothing rounds - an absolute allowance here would not absorb noise,
     it would simply admit a foreign record small enough to fit, and that record arrives with its
@@ -348,7 +353,10 @@ def fetch_run_cost(
     return None
 
 
-#: (model, start_iso, end_iso, input_tokens) -> ExternalCost | None. Keyword-called.
+#: (model, start_iso, end_iso, input_tokens, cache_read_tokens) -> ExternalCost | None.
+#: Keyword-called. `Callable[..., ...]` cannot type the kwargs, and `_apply_external_cost`
+#: swallows the TypeError, so a resolver written to a stale signature would silently stop
+#: backfilling rather than fail - keep this list in step with the call site.
 CostResolver = Callable[..., "ExternalCost | None"]
 
 
