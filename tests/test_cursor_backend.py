@@ -64,6 +64,35 @@ def test_map_permission(backend: CursorBackend) -> None:
     assert backend.map_permission(PermissionMode.YOLO) == ["--yolo"]
 
 
+#: The safe-edit deny list, written out rather than imported. The duplication is the point: every
+#: other assertion here compares the emitted config against `SAFE_EDIT_DENY`, which only proves the
+#: writer copies the list it was given. Delete a rule and both sides shrink together - removing both
+#: `Read(**/.env*)` entries passed the entire suite. Do not "DRY" this back to the constant.
+#:
+#: Changing it is a policy decision: update this list deliberately, in the same commit, with the
+#: reason. Note what the `Read` denies are for - the `Write` rules stop an agent damaging a
+#: worktree, which is disposable, while the `Read` rules stop it copying secrets into its own
+#: output, where they reach `text`, the run log and the ledger. Worktree isolation does not contain
+#: that, so those two rules are exactly the ones an independent guard has to hold.
+_PINNED_SAFE_EDIT_DENY: tuple[str, ...] = (
+    "Shell(rm)",
+    "Write(**/.env)",
+    "Write(**/.env.*)",
+    "Write(**/.git/**)",
+    "Write(.cursor/cli.json)",
+    "Write(**/.cursor/cli.json)",
+    "Read(**/.env)",
+    "Read(**/.env.*)",
+)
+
+
+def test_safe_edit_deny_list_matches_its_pinned_policy() -> None:
+    assert SAFE_EDIT_DENY == _PINNED_SAFE_EDIT_DENY, (
+        "the safe-edit deny list changed; if that was deliberate, update _PINNED_SAFE_EDIT_DENY "
+        "in the same commit and say why"
+    )
+
+
 def test_prepare_safe_edit_writes_deny_list(backend: CursorBackend, tmp_path: Path) -> None:
     wt = tmp_path / "wt"
     wt.mkdir()
