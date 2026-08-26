@@ -65,7 +65,10 @@ records/diffs, a `status`, and `next_actions`.
 
 ## 4. Read the gate, then merge
 - `status`: `completed` (nothing left), `awaiting_review` (diffs and/or gated integrate candidates
-  to act on), or `error` (an auto-integrate hit a state needing a human).
+  to act on), or `error` (the workflow did not do what it was asked - an agent run failed or timed
+  out, its work could not be read, or an auto-integrate hit a state needing a human). `completed`
+  means every phase did its job: a run that failed makes the workflow an `error`, never a quiet
+  success.
 - Work the `next_actions` list. For each candidate, read its diff (`collect_run`) - you are the
   reviewer - then `integrate(run_id)` the ones worth keeping, **one at a time**. Reject the rest by
   simply not integrating; their worktrees stay isolated and main is untouched.

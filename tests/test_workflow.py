@@ -41,6 +41,7 @@ class StubService:
         *,
         statuses: dict[str, str] | None = None,
         collect_errors: set[str] | None = None,
+        unreadable: set[str] | None = None,
         integrate: dict[str, IntegrateResult] | None = None,
         unavailable: set[str] | None = None,
     ) -> None:
@@ -48,6 +49,7 @@ class StubService:
         self.calls: list[tuple[Any, ...]] = []
         self._statuses = statuses or {}
         self._collect_errors = collect_errors or set()
+        self._unreadable = unreadable or set()
         self._integrate = integrate or {}
         self._unavailable = unavailable
         self._n = 0
@@ -82,6 +84,16 @@ class StubService:
         self.calls.append(("collect_run", run_id))
         if run_id in self._collect_errors:
             raise ValueError(f"run {run_id}: no collectable work")
+        if run_id in self._unreadable:
+            return CollectResult(
+                run_id=run_id,
+                branch="b",
+                worktree="w",
+                changed_files=[],
+                diff="",
+                produced="unavailable",
+                unavailable_reason="worktree was removed",
+            )
         return CollectResult(
             run_id=run_id, branch="b", worktree="w", changed_files=["f.py"], diff="--- diff ---"
         )
@@ -283,7 +295,10 @@ def test_runner_auto_integrate_only_succeeded() -> None:
 
     integrated = [c[1] for c in svc.calls if c[0] == "integrate"]
     assert integrated == ["a.1"]  # only the succeeded run was integrated; the failed one skipped
-    assert result.status == "completed"
+    # `b` failed. Reporting that as "completed" told the driver there was nothing left, and
+    # `cli/recipes.py` maps it to exit 0 - so a failed agent passed a CI step green.
+    assert result.status == "error"
+    assert any("b" in a and "inspect failed run" in a for a in result.next_actions)
 
 
 def test_runner_collect_survives_a_bad_run() -> None:
@@ -301,6 +316,40 @@ def test_runner_collect_survives_a_bad_run() -> None:
     gate = result.phases[1]
     assert len(gate.collected) == 1          # b.2 collected fine
     assert any("a.1" in n for n in gate.notes)  # a.1's raise was recorded, run continued
+
+
+def test_a_workflow_whose_every_run_failed_is_not_completed() -> None:
+    """`completed` is defined by the driver skill as "nothing left", and `cli/recipes.py` maps it
+    to exit 0 - so this reported total failure as a green CI step, while the healthy gated path
+    exits 1. The exit codes were inverted against reality."""
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[PhaseSpec(name="impl", run="fan_out", clients=["a", "b"], goal="{t}")],
+    )
+    svc = StubService(_config("a", "b"), statuses={"a": "timed_out", "b": "failed"})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+    assert result.status == "error"
+    assert len(result.next_actions) == 2
+
+
+def test_work_that_could_not_be_read_is_not_reported_as_nothing_left() -> None:
+    """"I cannot tell you what this run did" is not "it did nothing". An `exited_clean` run whose
+    worktree is unreadable at collect time produced the one genuinely zero-signal answer a
+    workflow can give: `completed`, no notes, no next actions."""
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[
+            PhaseSpec(name="impl", run="fan_out", clients=["a"], goal="{t}"),
+            PhaseSpec(name="gate", run="collect"),
+        ],
+    )
+    svc = StubService(_config("a"), unreadable={"a.1"})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+    assert result.status == "error"
+    assert any("could not be read" in n for n in result.phases[1].notes)
+    assert any("inspect unreadable run" in a for a in result.next_actions)
 
 
 def test_runner_auto_integrate_conflict_is_awaiting_review() -> None:
