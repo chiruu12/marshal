@@ -24,7 +24,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from .liveness import _pid_alive, _pid_start_time
+from .liveness import _identity_verdict, _pid_alive, _pid_start_time
 
 # Process-wide in-flight run ids keyed by ``<repo>/.marshal`` (resolved). A replacement Fleet
 # constructed in the same MCP server process (config hot-reload) shares this map with the evicted
@@ -149,9 +149,9 @@ def _creating_claim_held(runs_dir: Path, run_id: str) -> bool:
     if not _pid_alive(pid):
         return False
     recorded = data.get("pid_start_time")
-    if not isinstance(recorded, str) or not recorded:
-        return True  # older/unreadable stamp: assume held while the pid lives
-    now = _pid_start_time(pid)
-    if now is None:
-        return True  # cannot probe: spare rather than delete a possibly-live create
-    return now == recorded
+    verdict = _identity_verdict(pid, recorded if isinstance(recorded, str) else None)
+    if verdict is None:
+        # Older/unreadable stamp, a pre-pinning one, or the probe is unavailable: spare rather
+        # than delete a possibly-live create.
+        return True
+    return verdict

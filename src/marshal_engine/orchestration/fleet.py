@@ -76,6 +76,7 @@ from .inflight import (
 from .liveness import (
     _agent_may_still_be_writing,
     _claim_fleet_lock,
+    _identity_verdict,
     _is_terminal,
     _now,
     _pid_alive,
@@ -1691,8 +1692,8 @@ class Fleet:
                     pid = handle.pid
                     started = handle.pid_start_time
                     if started is not None:
-                        live_started = _pid_start_time(pid)
-                        if live_started is None:
+                        verdict = _identity_verdict(pid, started)
+                        if verdict is None:
                             # Probe failed or process gone. Distinguish: an alive pid whose
                             # identity we cannot read must not be claimed cancelled.
                             if _pid_alive(pid):
@@ -1704,11 +1705,10 @@ class Fleet:
                                     "assuming it stopped."
                                 )
                             # else: dead — stamp cancelled without signalling
-                        elif live_started != started:
-                            pass  # recycled: do not signal a stranger
-                        else:
+                        elif verdict:
                             with contextlib.suppress(ProcessLookupError, OSError):
                                 os.killpg(pid, signal.SIGTERM)
+                        # else: recycled pid - do not signal a stranger
                     else:
                         with contextlib.suppress(ProcessLookupError, OSError):
                             os.killpg(pid, signal.SIGTERM)

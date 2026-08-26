@@ -10,6 +10,27 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **Process identity was a locale- and timezone-formatted string, so two Marshal processes read
+  one live agent as two different processes.** `ps -o lstart=` renders through `TZ` and `LC_TIME`,
+  and pid + start time is the identity every liveness decision rests on. Measured here, one live
+  pid rendered 5h30m apart under `TZ=UTC` against `TZ=Asia/Kolkata` - and that divergence is the
+  documented deployment, a launchd-spawned MCP server against a terminal CLI, plus a laptop that
+  crosses a timezone and re-renders every pid it already stamped with no second process involved.
+  A mismatch is not read as "cannot tell"; it is read as "this pid belongs to somebody else", and
+  three of the affected decisions act destructively on that: the orphan sweep stamps a working
+  agent `failed` and clears its pid so it can never be cancelled, the fleet lock's holder check
+  judges a live supervisor stale and the winner then reaps the runs behind it, and the
+  creating-claim sweep deletes a live mid-create's claim. The rest misjudge more quietly - `cancel_run`
+  declines to signal a live agent and reports the run as possibly still running, a run's pid is
+  withheld from the kill instruction a driver would need, and an enforce-mode budget cap reclaims
+  a live holder's reservation and admits past it. Start times are now probed under a pinned
+  `LC_ALL`/`TZ`, in both copies of the probe (`accounting` and `orchestration` are sibling layers
+  and cannot import each other; only one of the two was pinned before), and every comparison runs
+  through one three-valued check. Pinning changes the rendered string, so a stamp written by an
+  older Marshal cannot be compared against a fresh one: those carry no marker, and are reported
+  unverifiable - joining the probe-failure case each caller already handles in its own safe
+  direction - rather than being read as a different process.
+
 - **Workspace registration reported success for registrations that never took effect.** Two
   symptoms of one gap: the write path validated shape without ever asking what the registry would
   actually do with the result. Re-pointing an existing name at a new repo returned the new path

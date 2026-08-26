@@ -14,6 +14,7 @@ from marshal_engine.orchestration.fleet import (
     _register_inflight_run,
     _unregister_inflight_run,
 )
+from marshal_engine.orchestration.liveness import _PINNED_IDENTITY_PREFIX as PINNED
 from marshal_engine.runtime.state import RunRecord
 
 
@@ -60,7 +61,7 @@ def test_cancel_running_with_pid_kills_and_marks_cancelled(
             status="running",
             started_at="2026-01-01T00:00:00Z",
             pid=12345,
-            pid_start_time="Mon Jan  1 00:00:00 2026",
+            pid_start_time=f"{PINNED}Mon Jan  1 00:00:00 2026",
         )
     )
     rec = fleet.cancel_run("t.x.a2")
@@ -147,7 +148,7 @@ def test_cancel_running_race_natural_finish_no_overwrite(
         status="running",
         started_at="2026-01-01T00:00:00Z",
         pid=12345,
-        pid_start_time="Mon Jan  1 00:00:00 2026",
+        pid_start_time=f"{PINNED}Mon Jan  1 00:00:00 2026",
     )
     finished = RunRecord(
         run_id="t.x.a5",

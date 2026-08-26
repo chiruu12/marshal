@@ -38,8 +38,9 @@ from marshal_engine.orchestration import liveness as liveness_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
 from marshal_engine.orchestration import reaping as reaping_mod
 from marshal_engine.orchestration.fleet import Fleet, RunManyJob, RunRequest, _register_inflight_run
+from marshal_engine.orchestration.liveness import _PINNED_IDENTITY_PREFIX as PINNED
 from marshal_engine.orchestration.liveness import (
-    _stable_pid_start_time,
+    _pid_start_time,
     _supervisor_identity,
     _supervisor_is_gone,
 )
@@ -771,7 +772,7 @@ def test_a_cancel_during_the_backoff_sleep_stops_the_retry(
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
 
-    real_start = fleet_mod._pid_start_time
+    real_start = liveness_mod._pid_start_time
     unconfirm = {"active": False}
 
     def probe(pid: int) -> str | None:
@@ -779,7 +780,10 @@ def test_a_cancel_during_the_backoff_sleep_stops_the_retry(
             return None
         return real_start(pid)
 
-    monkeypatch.setattr(fleet_mod, "_pid_start_time", probe)
+    # Patched on `liveness`, the module that owns the probe: `_identity_verdict` looks it up
+    # there, so the toggle reaches the cancel comparison and nothing else. The stamping paths
+    # (creating-claim, `on_pid`) hold their own import-time bindings and stay real.
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", probe)
     monkeypatch.setattr(fleet_mod, "_pid_alive", lambda pid: True)
 
     fleet = Fleet(repo, {"flaky": _FlakyLivePid(["opencode: database is locked"] * 4)},
@@ -2081,7 +2085,7 @@ def test_cancel_unconfirmed_when_identity_probe_fails(
 
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
-    monkeypatch.setattr(fleet_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
     monkeypatch.setattr(fleet_mod, "_pid_alive", lambda pid: True)
 
     fleet = Fleet(repo, {"writer": _Writer()})
@@ -2089,7 +2093,7 @@ def test_cancel_unconfirmed_when_identity_probe_fails(
     handle = _register_inflight_run(fleet.state.dir, run_id)
     _publish_pid(handle, 4242)
     # Publish overwrites start time via the real probe; force a recorded identity to probe against.
-    handle.pid_start_time = "Mon Jan  1 00:00:00 2026"
+    handle.pid_start_time = f"{PINNED}Mon Jan  1 00:00:00 2026"
     fleet.state.add(
         RunRecord(
             run_id=run_id,
@@ -2097,7 +2101,7 @@ def test_cancel_unconfirmed_when_identity_probe_fails(
             backend="writer",
             status="running",
             pid=4242,
-            pid_start_time="Mon Jan  1 00:00:00 2026",
+            pid_start_time=f"{PINNED}Mon Jan  1 00:00:00 2026",
         )
     )
     rec = fleet.cancel_run(run_id)
@@ -2120,8 +2124,8 @@ def test_cancel_of_verified_live_run_still_signals_and_stamps_cancelled(
     monkeypatch.setattr(
         _os, "killpg", lambda pgid, sig: killed.append((pgid, sig))
     )
-    started = "Mon Jan  1 00:00:00 2026"
-    monkeypatch.setattr(fleet_mod, "_pid_start_time", lambda pid: started)
+    started = f"{PINNED}Mon Jan  1 00:00:00 2026"
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: started)
 
     fleet = Fleet(repo, {"writer": _Writer()})
     run_id = "verifcancel.writer.deadbeef"
@@ -2625,7 +2629,7 @@ def test_startup_does_not_reap_a_run_whose_supervisor_is_still_finishing_it(repo
                 started_at="2026-01-01T00:00:00Z",
                 pid=dead_agent.pid,
                 supervisor_pid=supervisor.pid,
-                supervisor_start_time=_stable_pid_start_time(supervisor.pid),
+                supervisor_start_time=_pid_start_time(supervisor.pid),
             ),
         )
         fleet = Fleet(repo, {"writer": _Writer()})
@@ -2654,7 +2658,7 @@ def test_startup_still_reaps_when_the_supervisor_is_gone_too(repo: Path) -> None
             started_at="2026-01-01T00:00:00Z",
             pid=424242,
             supervisor_pid=gone.pid,
-            supervisor_start_time="Mon Jan  1 00:00:00 2026",
+            supervisor_start_time=f"{PINNED}Mon Jan  1 00:00:00 2026",
         ),
     )
     fleet = Fleet(repo, {"writer": _Writer()})
@@ -2680,7 +2684,7 @@ def test_startup_reaps_a_run_whose_supervisor_pid_was_recycled(repo: Path) -> No
                 started_at="2026-01-01T00:00:00Z",
                 pid=424242,
                 supervisor_pid=stranger.pid,
-                supervisor_start_time="Mon Jan  1 00:00:00 2026",  # NOT the stranger's
+                supervisor_start_time=f"{PINNED}Mon Jan  1 00:00:00 2026",  # NOT the stranger's
             ),
         )
         fleet = Fleet(repo, {"writer": _Writer()})
@@ -2697,7 +2701,7 @@ def test_a_real_run_stamps_the_supervising_process_on_its_record(repo: Path) -> 
     fleet = Fleet(repo, {"writer": _Writer()})
     rec = fleet.run("writer", TaskSpec(id="stamped", goal="x"))
     assert rec.supervisor_pid == os.getpid()
-    assert rec.supervisor_start_time == _stable_pid_start_time(os.getpid())
+    assert rec.supervisor_start_time == _pid_start_time(os.getpid())
 
 
 def test_supervisor_identity_survives_a_timezone_difference(
@@ -2710,7 +2714,7 @@ def test_supervisor_identity_survives_a_timezone_difference(
     "pid reused", and the guard silently degrades to the bug it replaced."""
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
-        started = _stable_pid_start_time(other.pid)
+        started = _pid_start_time(other.pid)
         assert started is not None
         rec = RunRecord(
             run_id="tz.writer.0badcafe",
@@ -2764,7 +2768,7 @@ def test_supervisor_identity_is_stamped_whole_or_not_at_all(
 ) -> None:
     """A pid without a verifiable start time is worse than no pid: it would be trusted on bare
     liveness, and after a reboot recycles the number it reads as a live supervisor forever."""
-    monkeypatch.setattr(liveness_mod, "_stable_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
     assert _supervisor_identity() == (None, None)
 
 
@@ -3278,7 +3282,7 @@ def test_a_reused_pid_does_not_shield_a_stale_record(repo: Path) -> None:
                 status="running",
                 started_at="2026-01-01T00:00:00Z",
                 pid=holder.pid,
-                pid_start_time="Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
+                pid_start_time=f"{PINNED}Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
             ),
         )
         fleet = Fleet(repo, {"writer": _Writer()})
@@ -3339,7 +3343,7 @@ def test_cancel_does_not_signal_a_run_this_process_does_not_own(
                 status="running",
                 started_at="2026-01-01T00:00:00Z",
                 pid=holder.pid,
-                pid_start_time="Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
+                pid_start_time=f"{PINNED}Thu Jan  1 00:00:00 2026",  # NOT this process's real start time
             ),
         )
         rec = fleet.cancel_run("mismatch.writer.deadbeef")
@@ -3775,7 +3779,7 @@ def test_a_young_record_carrying_a_dead_pid_is_reaped_immediately(repo: Path) ->
             status="running",
             started_at=datetime.now(UTC).isoformat(),
             pid=999_999,  # no such process
-            pid_start_time="never-matches",
+            pid_start_time=f"{PINNED}never-matches",
         ),
     )
     fleet = Fleet(repo, {"writer": _Writer()})
@@ -3960,7 +3964,7 @@ def test_a_recycled_lock_pid_does_not_block_reaping_forever(repo: Path) -> None:
         lock.parent.mkdir(parents=True, exist_ok=True)
         # The pid is alive, but it is NOT the process that wrote the lock.
         lock.write_text(
-            _json.dumps({"pid": holder.pid, "pid_start_time": "not-when-this-one-started"}),
+            _json.dumps({"pid": holder.pid, "pid_start_time": f"{PINNED}not-when-this-one-started"}),
             encoding="utf-8",
         )
         assert not _another_fleet_active(lock), "a recycled pid was mistaken for a live supervisor"
@@ -3996,7 +4000,7 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
         backend="writer",
         status="running",
         pid=4242,
-        pid_start_time="Mon Jan  1 00:00:00 2026",
+        pid_start_time=f"{PINNED}Mon Jan  1 00:00:00 2026",
     )
     monkey = pytest.MonkeyPatch()
     monkey.setattr(liveness_mod, "_pid_alive", lambda pid: True)  # the process exists...

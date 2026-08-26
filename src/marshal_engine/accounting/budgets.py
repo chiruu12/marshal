@@ -517,14 +517,26 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+# Duplicated from orchestration/liveness.py, which owns the reasoning: accounting and
+# orchestration are sibling layers and must not import each other, and the pure half cannot move
+# to `core` (no subprocess there). Read `_PINNED_IDENTITY_PREFIX` there before changing this, and
+# change both together - `test_liveness_inflight.py` fails if the two markers drift apart.
+_PINNED_IDENTITY_PREFIX = "C/UTC|"
+
+
 def _pid_start_time(pid: int) -> str | None:
-    """OS-reported start time of ``pid``, or None when unverifiable (same idiom as fleet.lock)."""
+    """OS-reported start time of ``pid``, or None when unverifiable (same idiom as fleet.lock).
+
+    Rendered under a pinned ``LC_ALL``/``TZ`` and returned prefixed, so two processes that
+    disagree about either still read one live pid as one identity.
+    """
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True,
             text=True,
             timeout=5,
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
             # Spelled out rather than splatting runtime.env.DETACHED_STDIO: accounting and runtime
             # are sibling layers and must not import each other. Same contract, same reasons -
             # see that constant's docstring before changing either kwarg.
@@ -535,7 +547,21 @@ def _pid_start_time(pid: int) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     started = proc.stdout.strip()
-    return started or None
+    return _PINNED_IDENTITY_PREFIX + started if started else None
+
+
+def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
+    """Whether ``pid`` is still the process ``recorded`` named. None = cannot be established.
+
+    The accounting-layer twin of ``liveness._identity_verdict``; see it for why an unpinned stamp
+    is unverifiable rather than different.
+    """
+    if not recorded or not recorded.startswith(_PINNED_IDENTITY_PREFIX):
+        return None
+    now = _pid_start_time(pid)
+    if now is None:
+        return None
+    return now == recorded
 
 
 def _reservation_holder_live(entry: dict[str, Any]) -> bool:
@@ -543,8 +569,9 @@ def _reservation_holder_live(entry: dict[str, Any]) -> bool:
 
     Staleness rule (mirrors ``fleet.lock`` / ``_pid_is_still_ours``): reclaim when the holder
     pid is dead, or when a live pid's OS start time does not match the recorded
-    ``pid_start_time`` (pid reuse). Missing/unprobeable start time while the pid is alive
-    fails closed (assume held) so a hard cap never admits past a possibly-live holder.
+    ``pid_start_time`` (pid reuse). A start time that is missing, unprobeable, or written before
+    start times were pinned leaves identity unverifiable, and that fails closed (assume held)
+    while the pid is alive, so a hard cap never admits past a possibly-live holder.
     """
     try:
         pid = int(entry["pid"])
@@ -553,12 +580,10 @@ def _reservation_holder_live(entry: dict[str, Any]) -> bool:
     if not _pid_alive(pid):
         return False
     recorded = entry.get("pid_start_time")
-    if not isinstance(recorded, str) or not recorded:
-        return True  # older/missing start time: assume held while pid alive
-    now = _pid_start_time(pid)
-    if now is None:
-        return True  # probe unavailable: assume held
-    return now == recorded
+    verdict = _identity_verdict(pid, recorded if isinstance(recorded, str) else None)
+    if verdict is None:
+        return True  # missing, pre-pinning, or unprobeable start time: assume held while pid alive
+    return verdict
 
 
 def _unbound_reservation_expired(entry: dict[str, Any]) -> bool:

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import marshal_engine.accounting.budgets as budgets_mod
+from marshal_engine.accounting.budgets import _PINNED_IDENTITY_PREFIX as PINNED
 from marshal_engine.accounting.budgets import (
     BudgetExceeded,
     BudgetStatus,
@@ -618,7 +619,7 @@ def test_dead_process_reservation_is_reclaimed(tmp_path: Path) -> None:
                     key: {
                         "run_id": "orphan-run",
                         "pid": 2_000_000_000,  # not a live pid on any sane host
-                        "pid_start_time": "Thu Jan  1 00:00:00 1970",
+                        "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970",
                         "token": "orphan-token",
                         "reserved_at": time.time(),
                     }
@@ -792,7 +793,7 @@ def test_bind_refuses_when_slot_held_by_peer(tmp_path: Path) -> None:
                     key: {
                         "run_id": "peer-run",
                         "pid": 2_000_000_000,
-                        "pid_start_time": "Thu Jan  1 00:00:00 1970",
+                        "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970",
                         "reserved_at": time.time(),
                         "token": "peer-token",
                     }
@@ -1377,3 +1378,41 @@ def test_enforce_refuses_a_ledger_it_cannot_decode(tmp_path: Path) -> None:
 
     with pytest.raises((UnicodeDecodeError, UnreadableUsageLedgerError)):
         tracker.read_events(strict=True)
+
+
+def _budgets_probe_in_a_child(pid: int, **env_overrides: str) -> str:
+    """``budgets._pid_start_time(pid)`` as rendered by a SEPARATE process with its own env."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "from marshal_engine.accounting.budgets import _pid_start_time\n"
+                "print(_pid_start_time(int(sys.argv[1])))\n"
+            ),
+            str(pid),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env_overrides},
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def test_the_reservation_probe_reads_one_identity_across_timezones() -> None:
+    """`accounting` cannot import `orchestration`, so the pid identity probe exists twice. The
+    copies are never compared against each other, which is exactly why one can be fixed and the
+    other left behind - and a reservation holder that reads as a stranger lets an enforce-mode cap
+    admit past a live one. Same property, asserted separately, because the marker alone does not
+    prove the environment was pinned."""
+    utc = _budgets_probe_in_a_child(os.getpid(), TZ="UTC", LC_ALL="C")
+    kolkata = _budgets_probe_in_a_child(os.getpid(), TZ="Asia/Kolkata", LC_ALL="C")
+
+    assert utc not in ("", "None"), "the probe could not read a live pid at all"
+    assert utc.startswith(PINNED)
+    assert utc == kolkata, "the same live pid rendered as two identities"

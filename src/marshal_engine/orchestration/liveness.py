@@ -78,6 +78,20 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+# Marks a start time as rendered under a PINNED locale and timezone, and is therefore comparable
+# across processes. `ps -o lstart=` formats through LC_TIME and TZ, so the same live pid renders
+# differently to two processes that disagree about either - measured here, 5h30m apart under
+# `TZ=UTC` against `TZ=Asia/Kolkata`. That is the deployment Marshal documents: a launchd-spawned
+# MCP server and a terminal CLI do not share an environment (`runtime/env.py` recovers PATH for
+# the same reason), and a laptop crossing timezones re-renders every pid on its own. Unmarked
+# values were stamped by a version that used the ambient rendering; they are NOT comparable, and
+# `_identity_verdict` reports them unverifiable rather than different, because "different" means
+# "this pid is somebody else's" - the reading that authorises reaping a live run.
+# `accounting/budgets.py` keeps its own copy of this marker (sibling layers must not import each
+# other); change both together, and see `test_liveness_inflight.py` for the guard that they agree.
+_PINNED_IDENTITY_PREFIX = "C/UTC|"
+
+
 def _pid_start_time(pid: int) -> str | None:
     """The OS-reported start time of ``pid``, or None when it cannot be determined.
 
@@ -85,57 +99,10 @@ def _pid_start_time(pid: int) -> str | None:
     not mean "our agent is alive". Pairing the pid with its start time makes the identity
     verifiable. POSIX-only via ``ps``; None on any failure, and callers must treat None as
     "unverifiable", never as "different".
-    """
-    try:
-        proc = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=5,
-            check=False,
-            **DETACHED_STDIO,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    started = proc.stdout.strip()
-    return started or None
 
-
-def _pid_is_still_ours(rec: RunRecord) -> bool:
-    """Whether ``rec.pid`` still names the agent this run started.
-
-    Fails OPEN (True = "assume it is ours, do not reap") whenever identity cannot be established:
-    no recorded start time (an older record), or the probe is unavailable. That direction is
-    deliberate. Falsely reaping a LIVE run is destructive and silent - the record is stamped
-    failed, its pid cleared so it can never be cancelled, and its real outcome is never recorded
-    because the terminal stamp is guarded on the status still being running. Failing to reap a
-    stale record only leaves it visible as running until someone explicitly calls ``cancel_run``,
-    and only then can a wrong process be signalled.
-    """
-    if rec.pid is None or not _pid_alive(rec.pid):
-        return False
-    if not rec.pid_start_time:
-        return True  # unverifiable (record predates the field) - fail open
-    now = _pid_start_time(rec.pid)
-    if now is None:
-        return True  # probe unavailable (non-POSIX, permission) - fail open
-    return now == rec.pid_start_time
-
-
-def _stable_pid_start_time(pid: int) -> str | None:
-    """``_pid_start_time`` rendered identically no matter who asks.
-
-    ``ps -o lstart=`` formats in the CALLING process's locale and timezone, so the same live pid
-    renders differently to two processes that disagree about ``TZ``/``LC_TIME`` - measured on one
-    machine: ``Wed Aug 26 05:24:02 2026`` under ``TZ=UTC`` against ``10:54:02`` under the ambient
-    zone. That is precisely the deployment Marshal documents: a launchd-spawned MCP server and a
-    terminal CLI do not share an environment (``runtime/env.py`` recovers PATH for the same
-    reason). An identity written by one process and checked by another therefore has to pin the
-    rendering, or every comparison reads as "pid reused". ``worktree.py`` pins ``LC_ALL`` for this
-    same reason.
-
-    Used only for the SUPERVISOR pair, which is new: nothing on disk was stamped with the ambient
-    rendering, so pinning costs nothing here. ``pid_start_time`` cannot adopt it without
-    invalidating identities already recorded - a mismatch there means "not our agent", which
-    authorises reaping a live run - so that migration is deliberately not folded into this change.
+    Rendered under a pinned ``LC_ALL``/``TZ`` and returned prefixed, so the value means the same
+    thing to whoever reads it next - see ``_PINNED_IDENTITY_PREFIX``. ``worktree.py`` pins
+    ``LC_ALL`` for the same reason.
     """
     try:
         proc = subprocess.run(
@@ -147,7 +114,54 @@ def _stable_pid_start_time(pid: int) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return proc.stdout.strip() or None
+    started = proc.stdout.strip()
+    return _PINNED_IDENTITY_PREFIX + started if started else None
+
+
+def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
+    """Whether ``pid`` is still the process ``recorded`` named. None = cannot be established.
+
+    Three-valued on purpose. Every caller already had to distinguish "proven different" from "I
+    could not check" - the probe can be unavailable - and each picks the safe direction for what
+    it is about to do. This adds one more way to be unable to check: a stamp written before start
+    times were pinned, which cannot be compared against a pinned one without reading a rendering
+    difference as a different process.
+
+    The cost of that is a wider conservative window during an upgrade: an unmarked stamp whose pid
+    has since been recycled by an unrelated process now holds its lock / claim / reservation
+    instead of being reclaimed. It is bounded, not permanent - every caller establishes
+    ``_pid_alive`` before asking, so the recycled process exiting reclaims the artifact and the
+    next write stamps it marked. And the thing being held onto is the tolerable failure by this
+    module's own rule: reaping is suppressed until then, where the direction it replaces reaps a
+    live agent.
+    """
+    if not recorded or not recorded.startswith(_PINNED_IDENTITY_PREFIX):
+        return None  # never stamped, or stamped with the un-comparable ambient rendering
+    now = _pid_start_time(pid)
+    if now is None:
+        return None  # probe unavailable (non-POSIX, permission)
+    return now == recorded
+
+
+def _pid_is_still_ours(rec: RunRecord) -> bool:
+    """Whether ``rec.pid`` still names the agent this run started.
+
+    Fails OPEN (True = "assume it is ours, do not reap") whenever identity cannot be established:
+    no recorded start time (an older record), one written before start times were pinned, or the
+    probe is unavailable. That direction is deliberate. Falsely reaping a LIVE run is destructive and silent - the record is stamped
+    failed, its pid cleared so it can never be cancelled, and its real outcome is never recorded
+    because the terminal stamp is guarded on the status still being running. Failing to reap a
+    stale record only leaves it visible as running until someone explicitly calls ``cancel_run``,
+    and only then can a wrong process be signalled.
+    """
+    if rec.pid is None or not _pid_alive(rec.pid):
+        return False
+    verdict = _identity_verdict(rec.pid, rec.pid_start_time)
+    if verdict is None:
+        # Unverifiable: no recorded start time, an un-comparable pre-pinning stamp, or the probe
+        # is unavailable. Fail open - assume it is ours.
+        return True
+    return verdict
 
 
 def _supervisor_identity() -> tuple[int | None, str | None]:
@@ -159,7 +173,7 @@ def _supervisor_identity() -> tuple[int | None, str | None]:
     replaced would have reaped it.
     """
     pid = os.getpid()
-    started = _stable_pid_start_time(pid)
+    started = _pid_start_time(pid)
     return (pid, started) if started is not None else (None, None)
 
 
@@ -193,12 +207,10 @@ def _supervisor_is_gone(rec: RunRecord) -> bool:
         return True
     if not _pid_alive(rec.supervisor_pid):
         return True
-    if not rec.supervisor_start_time:
-        return False  # live pid, unverifiable identity - assume it is the supervisor
-    now = _stable_pid_start_time(rec.supervisor_pid)
-    if now is None:
-        return False  # probe unavailable - assume it is the supervisor
-    return now != rec.supervisor_start_time  # a different process reused the pid
+    verdict = _identity_verdict(rec.supervisor_pid, rec.supervisor_start_time)
+    if verdict is None:
+        return False  # unverifiable - assume it is the supervisor
+    return not verdict  # False = a different process reused the pid
 
 
 def _agent_may_still_be_writing(rec: RunRecord) -> bool:
@@ -232,9 +244,9 @@ def _pid_is_verifiably_ours(rec: RunRecord) -> bool:
     # returns True when the probe is unavailable, which is the fail-open answer. Inheriting it here
     # would let an unprobeable pid count as "verified" and put a recycled process group into a
     # `kill` instruction - the exact outcome this function exists to prevent.
-    if not rec.pid or not rec.pid_start_time:
+    if not rec.pid:
         return False
-    return _pid_start_time(rec.pid) == rec.pid_start_time
+    return _identity_verdict(rec.pid, rec.pid_start_time) is True
 
 
 def _another_fleet_active(lock_path: Path) -> bool:
@@ -258,12 +270,12 @@ def _another_fleet_active(lock_path: Path) -> bool:
     if not _pid_alive(pid):
         return False
     recorded = data.get("pid_start_time")
-    if not isinstance(recorded, str) or not recorded:
-        return True  # older lock, or start time unreadable when written: assume still held
-    now = _pid_start_time(pid)
-    if now is None:
-        return True  # cannot probe: assume held rather than steal a live supervisor's lock
-    return now == recorded
+    verdict = _identity_verdict(pid, recorded if isinstance(recorded, str) else None)
+    if verdict is None:
+        # Older lock, a pre-pinning stamp, or the probe is unavailable: assume still held rather
+        # than steal a live supervisor's lock.
+        return True
+    return verdict
 
 
 def _claim_fleet_lock(lock_path: Path) -> bool:
