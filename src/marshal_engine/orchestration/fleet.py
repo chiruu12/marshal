@@ -782,7 +782,7 @@ class Fleet:
                 # runs AFTER retries so a schema-invalid reply is never treated as transient.
                 run_task = _task_with_schema_instruction(req.task)
                 result, attempts, abandoned = self._run_with_retries(
-                    backend, run_task, opts, run_id
+                    backend, run_task, opts, run_id, wt
                 )
                 result = _apply_structured_output(req.task, result)
             usage = backend.extract_usage(result)    # the seam (default: result.usage)
@@ -948,7 +948,12 @@ class Fleet:
         return rec is not None and _is_terminal(rec)
 
     def _run_with_retries(
-        self, backend: CodingAgentBackend, task: TaskSpec, opts: RunOpts, run_id: str
+        self,
+        backend: CodingAgentBackend,
+        task: TaskSpec,
+        opts: RunOpts,
+        run_id: str,
+        wt: Worktree,
     ) -> tuple[AgentResult, int, list[AgentResult]]:
         """Run the backend, retrying only on a transient (infra/transport) failure with backoff.
 
@@ -957,10 +962,23 @@ class Fleet:
         The abandoned ones are returned rather than dropped because a provider can charge for an
         attempt it then failed - a rate limit hit part-way through leaves real tokens spent, and the
         backend reports them. Keeping only the last result meant the ledger stated a three-attempt
-        run cost what its final attempt cost, which is an undercount presented as a measurement. The worktree is reused across
-        attempts: the markers we retry on (DB lock, rate limit, 5xx, connection errors) happen at
-        startup/transport time, before an agent writes anything, so there is nothing to reset. A
+        run cost what its final attempt cost, which is an undercount presented as a measurement. A
         genuine task failure or a timeout is returned as-is - never retried.
+
+        The worktree is reused across attempts, which is safe only while the tree is untouched.
+        Those markers usually DO arrive at startup or transport time, before the agent has written
+        anything - but not always: a rate limit or a dropped connection can land mid-run, and
+        `base.run()` fills `error` from the output tail for any backend killed part-way, so a
+        transient-shaped error is not proof that nothing was written. Retrying into a tree the
+        agent has already edited restarts the task on top of its own half-finished work, and the
+        duplicated result is recorded `exited_clean` like any other success. So the tree is
+        checked before each retry and one that has been written to ends the loop: one honest
+        failure the driver can re-run beats a success built on work nobody asked for twice.
+
+        The check has to be `_worktree_produced_files`, not `_worktree_has_changes`. A backend
+        that commits as it goes leaves an uncommitted tree that is clean, so asking only `git
+        status` reads a partially-committed run as untouched and retries straight into it - the
+        same blind spot that skipped the verify gate (#294) and truncated the review subject.
 
         Cancel *intent* ends the loop - including an unconfirmed cancel that left the record
         `running`. SIGTERM can surface as a transport-shaped error, so without this check a
@@ -975,6 +993,13 @@ class Fleet:
             if attempt >= self.retries.max_attempts or not is_transient_failure(result):
                 return result, attempt, abandoned
             if self._cancel_requested(run_id):
+                return result, attempt, abandoned
+            if self._worktree_produced_files(wt):
+                result.error = (
+                    f"{result.error or 'transient failure'} - not retried: the agent had already "
+                    f"written to its worktree when this arrived, so another attempt would restart "
+                    f"the task on top of its own partial work. Re-run it if you want a clean try."
+                )
                 return result, attempt, abandoned
             delay = self.retries.delay_for(attempt)
             print(

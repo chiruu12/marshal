@@ -657,6 +657,92 @@ def test_non_transient_failure_is_not_retried(repo: Path) -> None:
     assert backend.calls == 1
 
 
+class _WritesThenFlakes(_Flaky):
+    """Writes to the worktree and THEN fails transiently - a rate limit arriving mid-run.
+
+    `_Flaky` fails before touching anything, which is the case the retry loop was written for.
+    This is the case it was not: `base.run()` fills `error` from the output tail for any backend
+    killed part-way, so a transient-shaped error is not evidence that nothing was written.
+    """
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        err = self._errors[self.calls] if self.calls < len(self._errors) else None
+        self.calls += 1
+        (opts.cwd / f"partial-{self.calls}.txt").write_text("half-done")
+        if err is None:
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok")
+        return AgentResult(status=RunStatus.FAILED, error=err)
+
+
+def test_a_transient_failure_after_the_agent_wrote_is_not_retried(repo: Path) -> None:
+    """Retrying restarts the task on top of the agent's own half-finished work, and the duplicated
+    result is recorded `exited_clean` like any other success. One honest failure the driver can
+    re-run beats a success built on work nobody asked for twice."""
+    backend = _WritesThenFlakes(["opencode: rate limit exceeded"])
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="dirty", goal="x"))
+    assert backend.calls == 1, "the agent was restarted on top of its own partial work"
+    assert rec.attempts == 1
+    assert rec.status == "failed"
+    assert "not retried" in (rec.error or ""), "the record does not say why it stopped"
+
+
+def test_the_partial_work_is_kept_when_a_retry_is_refused(repo: Path) -> None:
+    """Refusing the retry must not also discard what the attempt produced - it is the evidence for
+    deciding whether to re-run, and the worktree is the only place it exists."""
+    backend = _WritesThenFlakes(["opencode: rate limit exceeded"])
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="kept", goal="x"))
+    assert (Path(rec.worktree or "") / "partial-1.txt").read_text() == "half-done"
+
+
+class _CommitsThenFlakes(_Flaky):
+    """Commits its partial work and THEN fails transiently.
+
+    The nastiest shape: a self-committing backend (Codex, Claude Code, Goose) leaves an
+    uncommitted tree that is perfectly clean, so `git status` reads the run as untouched.
+    """
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        err = self._errors[self.calls] if self.calls < len(self._errors) else None
+        self.calls += 1
+        path = opts.cwd / f"partial-{self.calls}.txt"
+        path.write_text("half-done")
+        subprocess.run(["git", "add", "-A"], cwd=opts.cwd, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "--no-verify", "-q", "-m", "agent partial"],
+            cwd=opts.cwd, check=True, capture_output=True,
+        )
+        if err is None:
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok")
+        return AgentResult(status=RunStatus.FAILED, error=err)
+
+
+def test_a_transient_failure_after_the_agent_committed_is_not_retried(repo: Path) -> None:
+    """`git status` is clean after a self-committing agent, so a guard that asks only that reads a
+    partially-committed run as untouched and retries straight into it - the same blind spot that
+    skipped the verify gate and truncated the review subject."""
+    backend = _CommitsThenFlakes(["opencode: rate limit exceeded"])
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="committed", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.changed_files == [], "the tree is dirty, so this proves nothing"
+    assert collected.commit_count == 1, "nothing was committed, so this proves nothing"
+    assert backend.calls == 1, "the agent was restarted on top of its own committed work"
+    assert rec.status == "failed"
+    assert "not retried" in (rec.error or "")
+
+
+def test_a_transient_failure_on_a_clean_worktree_still_retries(repo: Path) -> None:
+    """The other direction. Those markers usually DO arrive before the agent writes anything, and
+    that is the case retries exist for - narrowing must not cost it."""
+    backend = _Flaky(["opencode: database is locked"])  # fails without touching the tree
+    fleet = Fleet(repo, {"flaky": backend}, retries=RetryPolicy(max_attempts=3, backoff_base_s=0.0))
+    rec = fleet.run("flaky", TaskSpec(id="clean", goal="x"))
+    assert rec.status == "exited_clean"
+    assert backend.calls == 2
+
+
 def test_a_cancel_during_the_backoff_sleep_stops_the_retry(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
