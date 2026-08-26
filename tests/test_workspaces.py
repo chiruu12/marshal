@@ -1595,3 +1595,128 @@ def test_ledger_runs_reports_liveness_without_a_built_service(tmp_path: Path) ->
     finally:
         holder.kill()
         holder.wait()
+
+
+# --- registration reports what the registry will actually honour ------------------------------
+
+
+def test_repointing_a_workspace_serves_the_new_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_refresh` is additive - it only picks up names the registry lacks - so a re-point left
+    `_defs` holding the OLD path while `add()` returned the new one and reported success. Every
+    later run landed in the repo the caller had just moved away from."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    first, second, default = tmp_path / "one", tmp_path / "two", tmp_path / "def"
+    for d in (first, second, default):
+        d.mkdir()
+    env = {"HOME": str(tmp_path)}
+    reg = WorkspaceRegistry(
+        [WorkspaceDef("default", default, default / "fleet.config.yaml")],
+        resolver=lambda: resolve_workspaces(env),
+        environ=env,
+    )
+
+    def path_of(name: str) -> Path:
+        return next(Path(r["path"]) for r in reg.describe() if r["name"] == name)
+
+    reg.add("mine", first)
+    assert path_of("mine") == first
+
+    returned = reg.add("mine", second)
+    assert returned.path == second, "add() reported the new path"
+    assert path_of("mine") == second, "but the registry kept serving the old repo"
+
+
+def test_registering_a_path_another_name_already_owns_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write path validated the name and that the directory exists, then reported success -
+    while the resolver silently dropped any entry whose path another name already claims, warning
+    to stderr where an MCP driver never sees it. The entry stayed in the file for good and the
+    next `get()` said "unknown workspace ... register it with add_workspace", pointing back at the
+    call that had just succeeded."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = tmp_path / "shared"
+    repo.mkdir()
+    env = {"HOME": str(tmp_path)}
+
+    register_workspace("first", repo, environ=env)
+    with pytest.raises(ValueError, match="already registered as 'first'"):
+        register_workspace("second", repo, environ=env)
+
+    names = [d.name for d in resolve_workspaces(env)]
+    assert "second" not in names, "the refused entry must not be in the file either"
+
+
+def test_re_registering_the_same_name_and_path_is_still_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is about a DIFFERENT name claiming a path. Re-registering a name onto the path
+    it already has is how `add_workspace` scaffolds a config into an existing workspace."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"HOME": str(tmp_path)}
+    register_workspace("mine", repo, environ=env)
+    again = register_workspace("mine", repo, environ=env)  # no raise
+    assert again.path == repo
+
+
+def test_the_duplicate_path_check_runs_under_the_file_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read the registry outside the write lock and the refusal above is only advisory: two
+    registrations of different names for one directory can both find it unclaimed and both
+    persist, leaving exactly the state that check exists to prevent. Check and write have to be
+    one critical section, so observe the lock while the check is running."""
+    from marshal_engine.interfaces import workspaces as ws
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"HOME": str(tmp_path)}
+    held: list[bool] = []
+    real = ws.resolve_workspaces
+
+    def watched(environ: object = None) -> list[WorkspaceDef]:
+        held.append(ws._FILE_WRITE_LOCK.locked())
+        return real(environ)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ws, "resolve_workspaces", watched)
+    ws.register_workspace("mine", repo, environ=env)
+
+    assert held, "the duplicate-path check never consulted the resolver"
+    assert all(held), "the check ran with the write lock free - it cannot bind what happens next"
+
+
+def test_add_holds_the_name_lock_across_the_registration_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`add()` writes the file and then rewrites `_defs`. Under separate locks those two can be
+    reached in opposite orders by concurrent re-points of one name, leaving the live registry
+    routing to one repo while the file names the other - and a restart moving the workspace."""
+    from marshal_engine.interfaces import workspaces as ws
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo, default = tmp_path / "repo", tmp_path / "def"
+    for d in (repo, default):
+        d.mkdir()
+    env = {"HOME": str(tmp_path)}
+    reg = WorkspaceRegistry(
+        [WorkspaceDef("default", default, default / "fleet.config.yaml")],
+        resolver=lambda: resolve_workspaces(env),
+        environ=env,
+    )
+    held: list[bool] = []
+    real = ws.register_workspace
+
+    def watched(name: str, path: Path | str, **kwargs: object) -> WorkspaceDef:
+        lock = reg._locks.get(name)
+        held.append(lock is not None and lock.locked())
+        return real(name, path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ws, "register_workspace", watched)
+    reg.add("mine", repo)
+
+    assert held == [True], "the file write happened outside the lock guarding the `_defs` rewrite"

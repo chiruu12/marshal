@@ -199,7 +199,23 @@ def register_workspace(
     if not resolved.is_dir():
         raise ValueError(f"path is not an existing directory: {resolved}")
     fpath = Path(file_path) if file_path else workspaces_file_path(environ)
+    # Check and write under ONE lock. Reading the registry outside it left the check advisory:
+    # two registrations of different names for the same directory could both find it unclaimed
+    # and both persist, which is precisely the state this check exists to prevent - the resolver
+    # then drops one of them and its next `get()` raises "unknown workspace".
     with _FILE_WRITE_LOCK:
+        # Ask what the RESOLVER will do with this path, not just whether the directory exists. It
+        # drops any entry whose resolved path another name already claims, warning to stderr -
+        # where an MCP driver never sees it. The entry stayed in the file for good, never
+        # resolved, and the next `get()` raised "unknown workspace ... register it with
+        # add_workspace", pointing back at the call that had just reported success. Fail closed
+        # here, naming the owner.
+        for existing in resolve_workspaces(environ):
+            if existing.path == resolved and existing.name != name:
+                raise ValueError(
+                    f"path is already registered as {existing.name!r}: {resolved}. "
+                    f"Use workspace={existing.name!r}, or remove that registration first."
+                )
         workspaces, max_concurrent = read_workspaces_file(fpath)
         workspaces[name] = str(resolved)
         _write_workspaces_file(fpath, workspaces, max_concurrent)
@@ -435,8 +451,8 @@ class WorkspaceRegistry:
         # repo path - not display name - so two names for two repos never share a gate. Entries
         # survive both eviction paths (config-signature rebuild and add()'s cache pop): the
         # replacement Fleet consults the same gate the evicted Fleet's in-flight runs hold and
-        # release. (``_refresh`` is additive only — remapping an existing name to a new path needs
-        # a reconnect; add() does not rewrite ``_defs``.)
+        # release. (``_refresh`` is additive only, so a remapped name reaches ``_defs`` through
+        # ``add()``, which rewrites it directly.)
         self._runtimes: dict[Path, WorkspaceRuntime] = {}
         self._runtimes_lock = threading.Lock()
         self._builder = builder or (
@@ -557,11 +573,23 @@ class WorkspaceRegistry:
     def add(self, name: str, path: Path | str) -> WorkspaceDef:
         """Register a workspace into the file THIS registry reads (so it hot-reloads in), then
         refresh so it is immediately resolvable. Writes against the registry's own env."""
-        wdef = register_workspace(name, path, environ=self._environ)
-        self._refresh()
-        # Evict any cached service for this name so re-registering is always picked up (the path
-        # may have changed, and add_workspace scaffolds a config right after this call).
+        # Hold the NAME's lock across the file write as well as the rewrite below. With the write
+        # outside it, two re-points of one name could reach the file in one order and `_defs` in
+        # the other: the live registry routed to one repo while the file named the other, and a
+        # restart silently moved the workspace under whoever registered it.
         with self._locks.setdefault(name, threading.Lock()):
+            wdef = register_workspace(name, path, environ=self._environ)
+            self._refresh()
+            # `_refresh` is additive: it only picks up names the registry does not already have,
+            # so a re-point left `_defs` holding the OLD path. Evicting the cache then rebuilt a
+            # service for that old repo, while this call returned the new path and reported
+            # success - every later run landed in the repo the caller had just moved away from.
+            # Rewrite the def here, under the same lock as the eviction, so the rebuild uses what
+            # was actually registered.
+            with self._defs_lock:
+                merged = dict(self._defs)
+                merged[name] = wdef
+                self._defs = merged  # atomic rebind, as in `_refresh`
             self._cache.pop(name, None)
         return wdef
 
