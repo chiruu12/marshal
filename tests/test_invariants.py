@@ -259,15 +259,35 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
 # --- every child process is detached from our stdin and our controlling terminal --------------
 
 
-#: Every way this codebase can start a child process. Deliberately not a short list: the point of
-#: the invariant is that there is no allowlist, and a walker matching two names was one.
+#: The spawn vocabulary this walker recognises. Deliberately not a short list - a matcher of two
+#: names let an undetached ``subprocess.check_output`` through - but it is a vocabulary, not a
+#: proof of completeness: the invariant's "no allowlist" means no SITE is exempt from the
+#: requirement, not that every conceivable spelling is enumerated here. Kept a superset of the
+#: sibling walker's set in ``tests/test_backend_contract.py``, which asks a related question.
 _SPAWN_ATTRS = frozenset(
     {
-        "run", "Popen", "call", "check_call", "check_output",
-        "spawnv", "spawnve", "spawnvp", "spawnvpe", "posix_spawn", "posix_spawnp", "system",
+        "run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput",
+        "spawnv", "spawnve", "spawnvp", "spawnvpe", "posix_spawn", "posix_spawnp",
+        "system", "popen",
     }
 )
-_SPAWN_OWNERS = frozenset({"subprocess", "os"})
+_SPAWN_MODULES = frozenset({"subprocess", "os"})
+
+
+def _spawn_module_aliases(tree: ast.AST) -> set[str]:
+    """Local names bound to ``subprocess``/``os`` by ``import x`` or ``import x as y``.
+
+    Resolved from the module's real imports rather than hardcoding the conventional spellings, so
+    ``import subprocess as sp`` is matched without guessing that anyone writes ``sp``.
+    """
+    names: set[str] = set(_SPAWN_MODULES)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Import):
+            continue
+        for alias in node.names:
+            if alias.name in _SPAWN_MODULES:
+                names.add(alias.asname or alias.name)
+    return names
 
 
 def _spawners_imported_by_name(tree: ast.AST) -> set[str]:
@@ -278,7 +298,7 @@ def _spawners_imported_by_name(tree: ast.AST) -> set[str]:
     """
     names: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.module not in _SPAWN_OWNERS:
+        if not isinstance(node, ast.ImportFrom) or node.module not in _SPAWN_MODULES:
             continue
         for alias in node.names:
             if alias.name in _SPAWN_ATTRS:
@@ -301,6 +321,7 @@ def _spawn_calls(tree: ast.AST) -> list[ast.Call]:
     indirection has to keep passing it to get output back.
     """
     imported = _spawners_imported_by_name(tree)
+    owners = _spawn_module_aliases(tree)
     out: list[ast.Call] = []
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
@@ -309,7 +330,7 @@ def _spawn_calls(tree: ast.AST) -> list[ast.Call]:
             isinstance(n.func, ast.Attribute)
             and n.func.attr in _SPAWN_ATTRS
             and isinstance(n.func.value, ast.Name)
-            and n.func.value.id in _SPAWN_OWNERS
+            and n.func.value.id in owners
         )
         # `from subprocess import Popen` then `Popen(...)`: no attribute to match on. Resolved
         # from this module's own imports rather than by bare name, so a local helper that happens
