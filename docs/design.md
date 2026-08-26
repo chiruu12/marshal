@@ -339,7 +339,11 @@ that currently supervises this repo's runs. Only its holder reconciles run state
 is never released - a long-lived server keeps it, while a short-lived CLI leaves a dead pid that the
 next process takes over. The holder is identified by pid **and** start time, the same pairing run
 records use: a bare pid the OS later recycled would otherwise impersonate a live supervisor forever
-and permanently suppress reaping. Auth is per-CLI login;
+and permanently suppress reaping. Start times are probed under a pinned locale and timezone and
+carry a marker saying so - `ps -o lstart=` renders through `TZ`/`LC_TIME`, so unpinned, a launchd-
+spawned server and a terminal CLI read one live pid as two identities, and "different" is the
+reading that authorises reaping a live run. A value without that marker predates the pinning and
+is treated as unverifiable, never as a mismatch. Auth is per-CLI login;
 an optional `secret_ref: env:VAR` is an advisory preflight check only (not injected).
 
 **Per-run record locking (cross-process).** Each run is `runs/<run_id>.json`. Most runs have a

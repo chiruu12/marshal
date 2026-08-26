@@ -16,18 +16,19 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from marshal_engine.orchestration import inflight as inflight_mod
 from marshal_engine.orchestration import liveness as liveness_mod
 from marshal_engine.orchestration.inflight import (
     _creating_claim_held,
     _creating_claim_path,
     _write_creating_claim,
 )
+from marshal_engine.orchestration.liveness import _PINNED_IDENTITY_PREFIX as PINNED
 from marshal_engine.orchestration.liveness import (
     _another_fleet_active,
     _claim_fleet_lock,
@@ -149,7 +150,7 @@ def test_recycled_pid_does_not_impersonate_the_claim_holder(tmp_path: Path) -> N
     # an unrelated process, and that process is alive - so a pid-only check would report "held"
     # and shield this dead run from every future sweep. The mismatched start time is what breaks
     # the impersonation.
-    payload = {"pid": LIVE_PID, "pid_start_time": "Thu Jan  1 00:00:00 1970"}
+    payload = {"pid": LIVE_PID, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     _creating_claim_path(tmp_path, "r1").write_text(json.dumps(payload), encoding="utf-8")
     assert _creating_claim_held(tmp_path, "r1") is False
 
@@ -168,9 +169,9 @@ def test_claim_with_an_unprobeable_start_time_is_held(
 ) -> None:
     # The pid is alive but `ps` will not answer, so we cannot tell holder from impersonator.
     # Unverifiable errs toward sparing: deleting a possibly-live create is the worse mistake.
-    payload = {"pid": LIVE_PID, "pid_start_time": "Thu Jan  1 00:00:00 1970"}
+    payload = {"pid": LIVE_PID, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     _creating_claim_path(tmp_path, "r1").write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
     assert _creating_claim_held(tmp_path, "r1") is True
 
 
@@ -218,7 +219,7 @@ def test_live_holder_with_an_unprobeable_start_time_is_assumed_held(
     # pid 1 is live and is not this process, so the identity check is actually reached rather
     # than short-circuiting on the "that's my own lock" branch.
     lock = tmp_path / "fleet.lock"
-    payload = {"pid": 1, "pid_start_time": "Thu Jan  1 00:00:00 1970"}
+    payload = {"pid": 1, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     lock.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
     assert _another_fleet_active(lock) is True
@@ -233,9 +234,9 @@ def test_recycled_pid_does_not_impersonate_the_lock_holder(
     # Fleet would ever take over, and every stale run under it would read RUNNING until that
     # unrelated process happened to exit.
     lock = tmp_path / "fleet.lock"
-    payload = {"pid": 1, "pid_start_time": "Thu Jan  1 00:00:00 1970"}
+    payload = {"pid": 1, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     lock.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: "Fri Jan  2 00:00:00 1970")
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: f"{PINNED}Fri Jan  2 00:00:00 1970")
     assert _another_fleet_active(lock) is False
 
 
@@ -369,3 +370,78 @@ def test_a_stamped_pid_skips_the_grace_window() -> None:
     # probed directly, and deferring would just leave a decidable run undecided.
     fresh = datetime.now(UTC).isoformat()
     assert _started_within_grace(_record(pid=LIVE_PID, started_at=fresh)) is False
+
+
+def _probe_in_a_child(pid: int, **env_overrides: str) -> str:
+    """``_pid_start_time(pid)`` as rendered by a SEPARATE process with its own environment."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "from marshal_engine.orchestration.liveness import _pid_start_time\n"
+                "print(_pid_start_time(int(sys.argv[1])))\n"
+            ),
+            str(pid),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env_overrides},
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def test_one_live_pid_reads_as_one_identity_from_processes_in_different_timezones() -> None:
+    """The whole module rests on pid + start time being an IDENTITY: a value one process writes
+    and another compares. `ps -o lstart=` renders through TZ and LC_TIME, so unpinned it is not
+    one - measured here, 5h30m apart for a single live pid. Two Marshal processes that disagree
+    (a launchd-spawned MCP server against a terminal CLI, or one laptop before and after crossing
+    a timezone) then read a live agent as a stranger's recycled pid, and that is the reading which
+    authorises reaping a run while it is still working."""
+    utc = _probe_in_a_child(LIVE_PID, TZ="UTC", LC_ALL="C")
+    kolkata = _probe_in_a_child(LIVE_PID, TZ="Asia/Kolkata", LC_ALL="C")
+
+    assert utc not in ("", "None"), "the probe could not read a live pid at all"
+    assert utc == kolkata, "the same live pid rendered as two identities"
+
+
+def test_a_start_time_stamped_before_pinning_is_unverifiable_not_different() -> None:
+    """Pinning changes the rendered string, so every identity written by an older Marshal
+    mismatches a freshly probed one. A mismatch means "this pid is somebody else's" - which is the
+    destructive reading - so a stamp this version cannot compare has to fall in with the probe
+    failures instead: unverifiable, and each caller's own safe direction from there."""
+    rec = RunRecord(
+        run_id="legacy.writer.deadbeef",
+        task_id="legacy",
+        backend="writer",
+        status="running",
+        pid=LIVE_PID,
+        pid_start_time="Thu Jan  1 00:00:00 1970",  # a pre-pinning stamp: no marker
+    )
+    assert liveness_mod._pid_is_still_ours(rec) is True, "a pre-pinning stamp read as a stranger"
+
+
+def test_a_lock_stamped_before_pinning_is_treated_as_held(tmp_path: Path) -> None:
+    """The same migration rule at the most destructive site. Judging a live supervisor's lock
+    stale wins `_claim_fleet_lock`, and the winner then reaps the runs that supervisor is still
+    working on - so an upgrade must never be what makes a held lock look free."""
+    lock = tmp_path / "fleet.lock"
+    # pid 1, as the sibling lock tests use: reliably alive and reliably not this process, which
+    # `_another_fleet_active` carves out as "me, not someone who will finish it".
+    payload = {"pid": 1, "pid_start_time": "Thu Jan  1 00:00:00 1970"}
+    lock.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert _another_fleet_active(lock) is True, "an upgrade made a live supervisor's lock look free"
+
+
+def test_both_layers_mark_a_pinned_start_time_the_same_way() -> None:
+    """`accounting` and `orchestration` are siblings and must not import each other, so the marker
+    is written out twice. Nothing else notices if one copy is changed and the other is not - the
+    two never read each other's stamps - and the last time this probe was corrected, only one of
+    the two copies got the fix."""
+    from marshal_engine.accounting.budgets import _PINNED_IDENTITY_PREFIX as BUDGETS_PINNED
+
+    assert BUDGETS_PINNED == PINNED
+    assert _pid_start_time(LIVE_PID).startswith(PINNED)  # type: ignore[union-attr]
