@@ -537,6 +537,29 @@ class TeamService(Protocol):
     def client_available(self, client_name: str) -> bool: ...
 
 
+def _combined_run_diff(cr: CollectResult) -> str:
+    """Everything a run produced - what it committed AND what it left uncommitted.
+
+    Labelled only when there is more than one section: a reviewer reading a single diff should
+    not have to parse a header that carries no distinction, and the existing panels expect the
+    bare diff. When both exist the labels matter, because "already on the branch" and "still
+    loose in the worktree" are different things to review.
+    """
+    sections = [
+        (label, text)
+        for label, text in (
+            ("committed to the run branch", cr.committed_diff),
+            ("uncommitted in the worktree", cr.diff),
+        )
+        if text.strip()
+    ]
+    if not sections:
+        return ""
+    if len(sections) == 1:
+        return sections[0][1]
+    return "\n\n".join(f"--- {label} ---\n{text}" for label, text in sections)
+
+
 class TeamRunner:
     """Fans a validated TeamSpec out over service primitives and collects the reports. No new path."""
 
@@ -587,7 +610,15 @@ class TeamRunner:
                 "reviewing an unsuccessful candidate, not finished work"
             )
             suffix = "" if not note else f", run status {status or 'unknown'}"
-            return cr.diff, f"run {run_id} ({len(cr.changed_files)} file(s) changed{suffix})", note
+            # `diff`/`changed_files` are the UNCOMMITTED work only. An agent that commits its own
+            # (Codex, Claude Code, Goose) leaves a clean tree, and `commit_run` - the recommended
+            # way to freeze a run before chaining off it - guarantees one. Reviewing that alone
+            # reviews nothing: the panel was refused as "nothing to review", or shown the
+            # uncommitted remainder while the summary counted only that remainder, so a partial
+            # review was indistinguishable from a whole one. Both sections go to the reviewers.
+            body = _combined_run_diff(cr)
+            files = len(set(cr.changed_files) | set(cr.committed_changed_files))
+            return body, f"run {run_id} ({files} file(s) changed{suffix})", note
         if subject.kind == "range":
             diff = self.service.diff_range(str(subject.base), subject.head, paths=subject.paths)
             scope = f" limited to {', '.join(subject.paths)}" if subject.paths else ""
