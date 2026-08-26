@@ -7,6 +7,7 @@ Uses a dummy backend over the local Python interpreter - portable, fast, no real
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import subprocess
 import sys
@@ -431,3 +432,72 @@ def test_extract_usage_override_receives_post_parse_output() -> None:
     assert backend.captured.status is result.status
     assert backend.captured.text == result.text
     assert backend.captured.exit_code == result.exit_code
+
+
+def test_an_ordinary_timeout_reports_the_agent_stopped(tmp_path: Path) -> None:
+    """The kill lands, so the run is settled: the flag stays clear, the error says only that it
+    timed out, and the caller is told the pid is reaped and reusable."""
+    exited: list[bool] = []
+    b = _Dummy([sys.executable, "-c", "import time; time.sleep(30)"])
+    res = b.run(
+        _task(),
+        RunOpts(cwd=tmp_path, timeout_s=1, on_exit=lambda: exited.append(True)),
+    )
+
+    assert res.status is RunStatus.TIMED_OUT
+    assert res.agent_survived_kill is False
+    assert "did NOT stop" not in (res.error or ""), "claimed a survivor over a dead process"
+    assert exited == [True], "a reaped child must still be reported as reaped"
+
+
+def test_a_timeout_whose_kill_did_nothing_says_the_agent_is_still_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_kill_process_group` swallows every signalling error and `_drain` gives up after two
+    seconds, so both can return having achieved nothing - a `killpg` refused with EPERM never
+    escalates to SIGKILL, and a leader wedged in uninterruptible I/O rides one out. The run was
+    stamped `timed_out` either way, which tells a driver the worktree is a finished snapshot while
+    the agent is still writing into it, and told the fleet the pid was reaped - retiring the one
+    control left over a process Marshal had just failed to stop."""
+    import os
+    import signal
+
+    from marshal_engine.backends import base as base_mod
+
+    monkeypatch.setattr(base_mod, "_kill_process_group", lambda pgid, **kw: None)
+
+    exited: list[bool] = []
+    child_pid: list[int] = []
+    b = _Dummy([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        res = b.run(
+            _task(),
+            RunOpts(
+                cwd=tmp_path,
+                timeout_s=1,
+                on_pid=child_pid.append,
+                on_exit=lambda: exited.append(True),
+            ),
+        )
+
+        assert res.status is RunStatus.TIMED_OUT
+        assert res.agent_survived_kill is True, "the surviving agent was recorded as stopped"
+        assert "did NOT stop" in (res.error or ""), "the error read like an ordinary timeout"
+        assert exited == [], "told the fleet a live agent's pid was reaped and reusable"
+        assert child_pid and _pid_is_alive(child_pid[0]), "the child was not actually alive"
+    finally:
+        for pid in child_pid:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True

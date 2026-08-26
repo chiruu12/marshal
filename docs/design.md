@@ -120,6 +120,15 @@ enforces both halves: an override must contain a `super().run(` call and must no
 itself, and each overriding adapter's real `run()` is driven against a binary that never exits to
 prove the timeout still fires, the group is still signalled, and the child is still reaped.
 
+**A timeout confirms its own kill.** Signalling the group is not the same as the group dying:
+`killpg` can be refused (macOS reports `EPERM` where `ESRCH` is expected) and a leader wedged in
+uninterruptible I/O rides out `SIGKILL`. `base.run()` therefore polls after signalling and records
+what it found on the run as `agent_survived_kill`. It matters because `timed_out` otherwise reads
+as a settled run: the write paths (`commit_run`, `integrate`) and `run_team` would take a worktree
+that still has a writer, and the caller would be told the pid was reaped - retiring `cancel_run`,
+the one control left over a process Marshal had just failed to stop. An ordinary timeout, where
+the kill did land, stays fully collectable and reviewable.
+
 Rules: code against **capability flags**, not assumptions. Persist `session_id` yourself.
 Add a **version probe** in `check_available` + **contract tests per backend** (their flags/JSON drift fast).
 `check_available` is presence-only; backends with a cheap authenticated probe override `account_info`

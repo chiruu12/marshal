@@ -72,6 +72,34 @@ _UNSTABLE_FOR_REVIEW = frozenset(
     {RunStatus.RUNNING.value, RunStatus.QUEUED.value, RunStatus.CANCELLED.value}
 )
 
+
+def _review_instability(run_id: str, rec: RunRecord | None) -> str | None:
+    """Why this run's worktree is not a stable snapshot, as a message - or None when it is.
+
+    Status alone does not answer it. A timed-out run is normally settled, because the timeout path
+    signals the agent's process group and confirms it died; when that confirmation fails the record
+    carries ``agent_survived_kill`` and the agent is still writing, which is the same situation
+    ``cancelled`` is refused for. The two need different advice, though - a cancelled run settles
+    on its own, and this one settles only when somebody stops the process - so the reason and the
+    remedy are built together rather than shared. ``liveness._agent_may_still_be_writing`` draws
+    the same line for the write paths.
+    """
+    if rec is None:
+        return None  # unknown run: `collect_run` below raises the error that names it
+    if rec.status in _UNSTABLE_FOR_REVIEW:
+        return (
+            f"run {run_id} is {rec.status}; its worktree is not a stable snapshot, so a review "
+            "of it describes nothing. Wait for the run to settle before reviewing."
+        )
+    if rec.status == RunStatus.TIMED_OUT.value and rec.agent_survived_kill:
+        return (
+            f"run {run_id} timed out and its agent did not stop - Marshal signalled its process "
+            "group and the process was still alive afterwards. Its worktree is being written to, "
+            "so a review of it describes a moving target. This one will not settle on its own: "
+            "stop the process (its pid is on the run record), then review."
+        )
+    return None
+
 # A team name becomes part of `task_id` (`team.<name>.<run>`), which TaskSpec validates as a
 # worktree-safe id, and part of the report directory name. Bound it here so a bad name fails at
 # load rather than deep inside run_many.
@@ -580,11 +608,9 @@ class TeamRunner:
             # reviewer's prompt and the unified report - so nobody mistakes it for a candidate.
             rec = self.service.get_run(run_id)
             status = rec.status if rec is not None else ""
-            if status in _UNSTABLE_FOR_REVIEW:
-                raise ConfigError(
-                    f"run {run_id} is {status}; its worktree is not a stable snapshot, so a review "
-                    "of it describes nothing. Wait for the run to settle before reviewing."
-                )
+            unstable = _review_instability(run_id, rec)
+            if unstable is not None:
+                raise ConfigError(unstable)
             try:
                 cr = self.service.collect_run(run_id)
             except (ValueError, WorktreeError, OSError) as exc:

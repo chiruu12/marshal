@@ -863,6 +863,7 @@ class Fleet:
                 attempts=attempts,
                 verify_passed=verify_passed,
                 verify_output=verify_output,
+                agent_survived_kill=result.agent_survived_kill,
             )
             self._ensure_artifacts_recorded(run_id, record, artifacts)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
@@ -1404,9 +1405,10 @@ class Fleet:
                 message="run is still in progress; wait for it to finish before committing",
             )
         if _agent_may_still_be_writing(rec):
-            # A cancelled STATUS is not proof the process stopped - see `_agent_may_still_be_writing`.
-            # `clean` already refuses these records for exactly this reason; this path writes a
-            # commit, so it needs the check at least as much.
+            # A terminal STATUS is not proof the process stopped - a cancel that could not signal
+            # it, or a timeout whose kill did not land. See `_agent_may_still_be_writing`. `clean`
+            # already refuses these records for exactly this reason; this path writes a commit, so
+            # it needs the check at least as much.
             return CommitResult(
                 run_id=run_id,
                 status="blocked",
@@ -1762,8 +1764,9 @@ class Fleet:
                 message="run is still in progress; wait for it to finish before integrating",
             )
         if rec is not None and _agent_may_still_be_writing(rec):
-            # The status says cancelled; the process says otherwise. Refuse rather than merge a
-            # tree that still has a writer - this is the one path that reaches the user's branch.
+            # The status says the run is over; the process says otherwise. Refuse rather than
+            # merge a tree that still has a writer - this is the one path that reaches the user's
+            # branch.
             return IntegrateResult(
                 run_id=run_id,
                 status="blocked",

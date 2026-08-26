@@ -6690,3 +6690,37 @@ def test_a_backend_that_reports_tokens_keeps_the_real_numbers(repo: Path) -> Non
     assert rec.input_tokens == 5
     assert rec.output_tokens == 1
     assert rec.duration_ms is not None and rec.duration_ms >= 0
+
+
+def test_a_surviving_agent_reaches_the_run_record(repo: Path) -> None:
+    """The observation is made in `base.run()` and acted on by `commit_run`, `integrate` and
+    `run_team`, which all read the RECORD. If the stamp is dropped in between, every one of those
+    guards silently reverts to trusting the status - and the whole point is that the status is
+    what was wrong."""
+
+    class _Survivor(_Writer):
+        name = "survivor"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+            return AgentResult(
+                status=RunStatus.TIMED_OUT,
+                error="survivor: timed out after 1s, and the agent did NOT stop",
+                duration_ms=1000,
+                agent_survived_kill=True,
+            )
+
+    fleet = Fleet(repo, {"survivor": _Survivor()})
+    rec = fleet.run("survivor", TaskSpec(id="t", goal="x"))
+
+    assert rec.status == RunStatus.TIMED_OUT.value
+    assert rec.agent_survived_kill is True, "the observation never reached the record"
+
+
+def test_an_ordinary_run_never_claims_its_agent_survived(repo: Path) -> None:
+    """The default has to stay False on every other path: it is the flag that blocks integrate,
+    and a spurious True strands finished work behind a refusal a driver cannot clear."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="t", goal="x"))
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.agent_survived_kill is False
