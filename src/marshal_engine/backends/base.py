@@ -429,13 +429,14 @@ class CodingAgentBackend(ABC):
             out, err = proc.communicate(timeout=opts.timeout_s)
         except subprocess.TimeoutExpired:
             _kill_process_group(pgid)
-            out, err = _drain(proc)  # bounded: a setsid-escaped survivor holding the pipe can't hang us
+            out, err, drained = _drain(proc)  # bounded: a pipe-holder that escaped can't hang us
             # Ask whether the kill worked instead of assuming it. `_kill_process_group` swallows
-            # every signalling error and `_drain` gives up after two seconds, so both can return
-            # having achieved nothing - a leader wedged in uninterruptible I/O rides out SIGKILL,
-            # and a `killpg` refused with EPERM never escalates at all. `poll()` is the answer:
-            # non-None means the leader was reaped, None means it is still there.
-            survived = proc.poll() is None
+            # every signalling error, so it can return having achieved nothing - a leader wedged in
+            # uninterruptible I/O rides out SIGKILL, and a `killpg` refused with EPERM never
+            # escalates at all. Two things answer it, and a writer survives if EITHER says so:
+            # `poll()` for the leader, and the drain for anything that escaped the group, which
+            # `poll()` cannot see. An unfinished drain means a descendant still holds the pipes.
+            survived = proc.poll() is None or not drained
             if not survived:
                 # Only claim the pid is recyclable when it actually is. Saying so over a live agent
                 # tells `cancel_run` the child already exited, so it declines to signal - retiring
@@ -504,6 +505,9 @@ def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
         return
 
 
+_DRAIN_TIMEOUT_S = 2.0
+
+
 def _timeout_error(name: str, timeout_s: float, *, survived: bool) -> str:
     """The error for a timed-out run, saying whether the kill actually landed.
 
@@ -524,14 +528,21 @@ def _timeout_error(name: str, timeout_s: float, *, survived: bool) -> str:
     )
 
 
-def _drain(proc: subprocess.Popen[str]) -> tuple[str, str]:
-    """Collect remaining output and reap, bounded so a surviving pipe-holder can't block forever."""
+def _drain(proc: subprocess.Popen[str]) -> tuple[str, str, bool]:
+    """Collect remaining output and reap, bounded so a surviving pipe-holder can't block forever.
+
+    The third value says whether the pipes actually closed. Hitting the bound is not just a
+    give-up: the pipes are inherited by every descendant, so something is still holding the write
+    end - a process that escaped the group via its own ``setsid`` and cannot be signalled through
+    the group at all. That is the one signal ``run()`` has that a writer outlived the kill even
+    though the leader it can poll is gone, so it is reported rather than swallowed.
+    """
     try:
-        out, err = proc.communicate(timeout=2)
-        return out or "", err or ""
+        out, err = proc.communicate(timeout=_DRAIN_TIMEOUT_S)
+        return out or "", err or "", True
     except subprocess.TimeoutExpired as exc:
         proc.poll()  # non-blocking: reap the killed leader now (a setsid'd survivor keeps the pipe)
-        return _as_text(exc.stdout), _as_text(exc.stderr)
+        return _as_text(exc.stdout), _as_text(exc.stderr), False
 
 
 def _spawn_os_error(name: str, binary: str, exc: OSError) -> str:

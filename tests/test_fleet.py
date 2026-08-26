@@ -6724,3 +6724,43 @@ def test_an_ordinary_run_never_claims_its_agent_survived(repo: Path) -> None:
 
     assert rec.status == RunStatus.EXITED_CLEAN.value
     assert rec.agent_survived_kill is False
+
+
+def test_cleanup_does_not_delete_a_worktree_the_agent_is_still_writing(repo: Path) -> None:
+    """`cleanup=True` removed the worktree straight after the terminal stamp, with none of the
+    live-writer checks `commit_run` and `integrate` make. It is the most destructive of the three:
+    the worktree AND its branch go, and unlike a refused commit there is nothing left to retry."""
+    import os as _os
+
+    class _Survivor(_Writer):
+        name = "survivor"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:  # type: ignore[override]
+            # Publish a pid that is genuinely alive for the whole test, so the guard's liveness
+            # probe answers the way it would for an agent that outlived its kill.
+            if opts.on_pid is not None:
+                opts.on_pid(_os.getpid())
+            return AgentResult(
+                status=RunStatus.TIMED_OUT,
+                error="survivor: timed out after 1s, and the agent did NOT stop",
+                duration_ms=1000,
+                agent_survived_kill=True,
+            )
+
+    fleet = Fleet(repo, {"survivor": _Survivor()})
+    rec = fleet.run("survivor", TaskSpec(id="t", goal="x"), cleanup=True)
+
+    assert rec.agent_survived_kill is True
+    assert liveness_mod._agent_may_still_be_writing(rec) is True, "test setup: guard not armed"
+    assert rec.worktree and Path(rec.worktree).exists(), "worktree deleted under a live writer"
+    assert "cleanup skipped" in (rec.error or ""), "deletion was skipped without saying so"
+
+
+def test_cleanup_still_removes_the_worktree_of_a_settled_run(repo: Path) -> None:
+    """The guard must not turn `cleanup=True` into a no-op for ordinary runs - it is opt-in
+    precisely so a caller who wants the worktree gone gets it gone."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="t", goal="x"), cleanup=True)
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert not (rec.worktree and Path(rec.worktree).exists()), "cleanup stopped removing worktrees"

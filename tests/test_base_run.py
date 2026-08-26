@@ -501,3 +501,45 @@ def _pid_is_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def test_a_descendant_that_escaped_the_group_counts_as_a_survivor(tmp_path: Path) -> None:
+    """`poll()` answers for the leader only. A grandchild that calls `setsid` leaves the process
+    group, so the group kill never reaches it and the leader's exit proves nothing about it - yet
+    it inherited the pipes and can go on writing to the worktree. The drain is the evidence: it is
+    bounded precisely because such a survivor holds the write end open, so a drain that never
+    finishes means somebody is still there."""
+    import os
+    import signal
+
+    # Leader spawns a setsid'd grandchild that holds the inherited pipes, then exits immediately.
+    inner = "import time; time.sleep(30)"
+    outer = (
+        "import subprocess, sys; "
+        f"subprocess.Popen([sys.executable, '-c', {inner!r}], start_new_session=True); "
+        "import time; time.sleep(30)"
+    )
+    b = _Dummy([sys.executable, "-c", outer])
+    child_pid: list[int] = []
+    res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1, on_pid=child_pid.append))
+
+    try:
+        assert res.status is RunStatus.TIMED_OUT
+        assert res.agent_survived_kill is True, (
+            "the leader's exit was read as proof that everything it started had stopped"
+        )
+    finally:
+        for pid in child_pid:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
+
+
+def test_a_clean_timeout_is_not_reported_as_a_survivor(tmp_path: Path) -> None:
+    """The drain finishing is the normal case and must not read as evidence of anything. Treating
+    it as a survivor would block every timed-out run's worktree from being committed, reviewed or
+    cleaned - the failure this whole guard exists to avoid, in the opposite direction."""
+    b = _Dummy([sys.executable, "-c", "import time; time.sleep(30)"])
+    res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+
+    assert res.status is RunStatus.TIMED_OUT
+    assert res.agent_survived_kill is False

@@ -121,11 +121,15 @@ itself, and each overriding adapter's real `run()` is driven against a binary th
 prove the timeout still fires, the group is still signalled, and the child is still reaped.
 
 **A timeout confirms its own kill.** Signalling the group is not the same as the group dying:
-`killpg` can be refused (macOS reports `EPERM` where `ESRCH` is expected) and a leader wedged in
-uninterruptible I/O rides out `SIGKILL`. `base.run()` therefore polls after signalling and records
-what it found on the run as `agent_survived_kill`. It matters because `timed_out` otherwise reads
-as a settled run: the write paths (`commit_run`, `integrate`) and `run_team` would take a worktree
-that still has a writer, and the caller would be told the pid was reaped - retiring `cancel_run`,
+`killpg` can be refused (macOS reports `EPERM` where `ESRCH` is expected), a leader wedged in
+uninterruptible I/O rides out `SIGKILL`, and a descendant that called `setsid` left the group
+before the signal was ever sent. `base.run()` therefore polls after signalling and records what it
+found on the run as `agent_survived_kill`. Two things answer it, and either is enough: `poll()`
+for the leader, and the bounded drain for anything that escaped the group - pipes that never close
+mean a descendant still holds the write end, which is the only trace an escaped writer leaves. It matters because `timed_out` otherwise reads
+as a settled run: the write paths (`commit_run`, `integrate`), `run_team`, and an inline
+`cleanup=True` would all take a worktree that still has a writer - the last of those deleting it
+and its branch outright - and the caller would be told the pid was reaped, retiring `cancel_run`,
 the one control left over a process Marshal had just failed to stop. An ordinary timeout, where
 the kill did land, stays fully collectable and reviewable.
 

@@ -911,7 +911,24 @@ class Fleet:
                 except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
                     print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
 
-        if cleanup:
+        if cleanup and _agent_may_still_be_writing(record):
+            # Deleting a worktree out from under a live writer destroys the partial work AND the
+            # branch it is on, and unlike commit/integrate there is nothing to retry afterwards.
+            # `Fleet.clean` refuses these records already; this inline path skipped the check and
+            # so undid, destructively, the protection the flag exists to give.
+            msg = (
+                "cleanup skipped: the agent is still alive and writing to this worktree "
+                "(see `error`); removing it now would delete work in progress. Clean it "
+                "once the process is gone."
+            )
+            existing = self.state.get(run_id)
+            if existing is not None and existing.error:
+                msg = f"{existing.error}; {msg}"
+            self.state.update(run_id, error=msg)
+            refreshed = self.state.get(run_id)
+            if refreshed is not None:
+                record = refreshed
+        elif cleanup:
             try:
                 self.worktrees.remove(wt)
             except Exception as exc:  # noqa: BLE001 - terminal stamp already landed
