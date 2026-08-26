@@ -1661,3 +1661,62 @@ def test_re_registering_the_same_name_and_path_is_still_allowed(
     register_workspace("mine", repo, environ=env)
     again = register_workspace("mine", repo, environ=env)  # no raise
     assert again.path == repo
+
+
+def test_the_duplicate_path_check_runs_under_the_file_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read the registry outside the write lock and the refusal above is only advisory: two
+    registrations of different names for one directory can both find it unclaimed and both
+    persist, leaving exactly the state that check exists to prevent. Check and write have to be
+    one critical section, so observe the lock while the check is running."""
+    from marshal_engine.interfaces import workspaces as ws
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"HOME": str(tmp_path)}
+    held: list[bool] = []
+    real = ws.resolve_workspaces
+
+    def watched(environ: object = None) -> list[WorkspaceDef]:
+        held.append(ws._FILE_WRITE_LOCK.locked())
+        return real(environ)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ws, "resolve_workspaces", watched)
+    ws.register_workspace("mine", repo, environ=env)
+
+    assert held, "the duplicate-path check never consulted the resolver"
+    assert all(held), "the check ran with the write lock free - it cannot bind what happens next"
+
+
+def test_add_holds_the_name_lock_across_the_registration_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`add()` writes the file and then rewrites `_defs`. Under separate locks those two can be
+    reached in opposite orders by concurrent re-points of one name, leaving the live registry
+    routing to one repo while the file names the other - and a restart moving the workspace."""
+    from marshal_engine.interfaces import workspaces as ws
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo, default = tmp_path / "repo", tmp_path / "def"
+    for d in (repo, default):
+        d.mkdir()
+    env = {"HOME": str(tmp_path)}
+    reg = WorkspaceRegistry(
+        [WorkspaceDef("default", default, default / "fleet.config.yaml")],
+        resolver=lambda: resolve_workspaces(env),
+        environ=env,
+    )
+    held: list[bool] = []
+    real = ws.register_workspace
+
+    def watched(name: str, path: Path | str, **kwargs: object) -> WorkspaceDef:
+        lock = reg._locks.get(name)
+        held.append(lock is not None and lock.locked())
+        return real(name, path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ws, "register_workspace", watched)
+    reg.add("mine", repo)
+
+    assert held == [True], "the file write happened outside the lock guarding the `_defs` rewrite"

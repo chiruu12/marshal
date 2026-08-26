@@ -20,9 +20,11 @@ versions may include breaking API changes until 1.0.
   where an MCP driver never sees it: the entry stayed in the file permanently, never resolved, and
   the next call said "unknown workspace ... register it with add_workspace" - pointing back at the
   call that had just succeeded. `add()` now rewrites the definition it registered, and a path
-  another name already claims is refused up front, naming the owner. Re-registering a name onto
-  the path it already has is unaffected - that is how a config gets scaffolded into an existing
-  workspace.
+  another name already claims is refused up front, naming the owner - and both the check and the
+  rewrite now hold the same lock as the write they qualify, so concurrent registrations cannot
+  step between them and land in the file and in the live registry in opposite orders.
+  Re-registering a name onto the path it already has is unaffected - that is how a config gets
+  scaffolded into an existing workspace.
 
 - **`clean` reported worktrees it had not removed.** Teardown ends in
   `shutil.rmtree(ignore_errors=True)`, which swallows whatever stopped it, and nothing else on
