@@ -37,8 +37,10 @@ versions may include breaking API changes until 1.0.
   mid-run, and `base.run()` fills `error` from the output tail for any backend killed part-way, so
   a transient-shaped error is not evidence that nothing was written. The next attempt then
   restarted the task on top of its own half-finished work, and the duplicated result was recorded
-  `exited_clean` like any other success. The tree is now checked before each retry and a dirty one
-  ends the loop, with the run's `error` saying why so a driver can re-run deliberately. A clean
+  `exited_clean` like any other success. The tree is now checked before each retry - committed
+  work included, since a backend that commits as it goes leaves an uncommitted tree that is
+  perfectly clean - and one that has been written to ends the loop, with the run's `error` saying
+  why so a driver can re-run deliberately. A clean
   tree still retries exactly as before, and the partial work is kept - it is the evidence for
   deciding whether to re-run, and the worktree is the only place it exists.
 

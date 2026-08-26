@@ -972,8 +972,13 @@ class Fleet:
         transient-shaped error is not proof that nothing was written. Retrying into a tree the
         agent has already edited restarts the task on top of its own half-finished work, and the
         duplicated result is recorded `exited_clean` like any other success. So the tree is
-        checked before each retry and a dirty one ends the loop: one honest failure the driver can
-        re-run beats a success built on work nobody asked for twice.
+        checked before each retry and one that has been written to ends the loop: one honest
+        failure the driver can re-run beats a success built on work nobody asked for twice.
+
+        The check has to be `_worktree_produced_files`, not `_worktree_has_changes`. A backend
+        that commits as it goes leaves an uncommitted tree that is clean, so asking only `git
+        status` reads a partially-committed run as untouched and retries straight into it - the
+        same blind spot that skipped the verify gate (#294) and truncated the review subject.
 
         Cancel *intent* ends the loop - including an unconfirmed cancel that left the record
         `running`. SIGTERM can surface as a transport-shaped error, so without this check a
@@ -989,7 +994,7 @@ class Fleet:
                 return result, attempt, abandoned
             if self._cancel_requested(run_id):
                 return result, attempt, abandoned
-            if self._worktree_has_changes(wt):
+            if self._worktree_produced_files(wt):
                 result.error = (
                     f"{result.error or 'transient failure'} - not retried: the agent had already "
                     f"written to its worktree when this arrived, so another attempt would restart "
