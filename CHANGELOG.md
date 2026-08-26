@@ -30,6 +30,18 @@ versions may include breaking API changes until 1.0.
   fields as its primary, and a test compares the two field sets rather than listing names, so a
   field added to a job later cannot quietly skip the follow-up.
 
+- **A transient failure arriving mid-run retried the agent into the worktree it had already
+  edited.** Retries reuse the worktree, on the premise that the markers they fire on - DB lock,
+  rate limit, 5xx, connection errors - arrive at startup or transport time, before anything is
+  written. That is usually true and not always: a rate limit or dropped connection can land
+  mid-run, and `base.run()` fills `error` from the output tail for any backend killed part-way, so
+  a transient-shaped error is not evidence that nothing was written. The next attempt then
+  restarted the task on top of its own half-finished work, and the duplicated result was recorded
+  `exited_clean` like any other success. The tree is now checked before each retry and a dirty one
+  ends the loop, with the run's `error` saying why so a driver can re-run deliberately. A clean
+  tree still retries exactly as before, and the partial work is kept - it is the evidence for
+  deciding whether to re-run, and the worktree is the only place it exists.
+
 - **A torn line in the usage ledger silently took the next event with it.** A crash between an
   event and its newline leaves a fragment; the next `record` appended straight onto it, fusing the
   two into one invalid line, so the reader dropped the fragment *and* the complete event written
