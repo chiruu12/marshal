@@ -10,6 +10,15 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A torn line in the usage ledger silently took the next event with it.** A crash between an
+  event and its newline leaves a fragment; the next `record` appended straight onto it, fusing the
+  two into one invalid line, so the reader dropped the fragment *and* the complete event written
+  after it. `events.jsonl` is append-only and interpreted on read, so that run's measured spend
+  was gone from `usage`, `report`, `routing` and advisory budget totals permanently - while the
+  warning reported one skipped line for two lost events. A write onto a ledger that does not end
+  in a newline now closes the torn line first. Handling a tear on the read side was always
+  deliberate; the writer just had to stop making it contagious.
+
 - **`artifacts_from` could be made to write outside the worktree, and mounted its input into the
   run's own diff.** Provisioning refused a symlinked `.marshal-context` but not the `artifacts`
   directory under it, and `mkdir(parents=True, exist_ok=True)` accepts an existing
