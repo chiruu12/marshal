@@ -378,6 +378,39 @@ def test_pre_rename_ledger_events_still_count_as_successes(tmp_path: Path) -> No
     assert summary.totals.cost_per_succeeded == 0.1
 
 
+def test_a_torn_line_does_not_swallow_the_next_event(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A tear must cost the fragment only, never the complete event written after it.
+
+    `record` appended straight onto whatever was there, so the fragment and the next event fused
+    into one invalid line and the parser dropped BOTH. The ledger is append-only and interpreted
+    on read, so that run's measured spend was gone from every reporting surface for good - and the
+    warning said one line was skipped while two events were missing.
+    """
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="ok1", cost_usd=0.01, status="exited_clean", source="native"))
+    with t.events_path.open("a", encoding="utf-8") as f:
+        f.write('{"ts":"2026-06-19T00:00:00Z","run_id":"torn","backend":"openco')  # crash here
+    t.record(_ev(run_id="after", cost_usd=5.00, status="exited_clean", source="native"))
+
+    events = t.events()
+    assert [e.run_id for e in events] == ["ok1", "after"], "the tear took its neighbour with it"
+    assert abs(t.summary().totals.cost_usd - 5.01) < 1e-9
+    assert "skipping 1 malformed usage event line" in capsys.readouterr().err
+
+
+def test_recording_onto_a_closed_ledger_adds_no_blank_line(tmp_path: Path) -> None:
+    """The repair must be conditional: a normal append is already well-formed, and padding every
+    one of them would rewrite the shape of a file other readers seek through by byte offset."""
+    t = UsageTracker(tmp_path / "usage")
+    t.record(_ev(run_id="a", cost_usd=0.01, status="exited_clean", source="native"))
+    t.record(_ev(run_id="b", cost_usd=0.01, status="exited_clean", source="native"))
+    raw = t.events_path.read_text(encoding="utf-8")
+    assert "\n\n" not in raw
+    assert len(raw.splitlines()) == 2
+
+
 def test_events_skips_torn_final_line_and_warns(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -9,6 +9,7 @@ optionally filtered to a `[since, until]` time window over each event's `ts`.
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -222,10 +223,35 @@ class UsageTracker:
         self.last_cursor: LedgerCursor = LedgerCursor(size=0, inode=0, mtime_ns=0)
         self.last_events: list[UsageEvent] = []
 
+    def _ends_mid_line(self) -> bool:
+        """True when the ledger's last byte is not a newline - i.e. a previous write was torn.
+
+        The reader already treats a fragment as one skipped line, deliberately. The writer is what
+        made that tear contagious: appending straight onto the fragment fuses it and the next
+        event into a single invalid line, so `_parse_event_lines` drops BOTH - a complete,
+        correctly-written event disappears because of the one before it. The ledger is append-only
+        and interpreted on read, so that spend is gone from `usage`, `report`, `routing` and
+        advisory budget totals for good, and the warning undercounts what was lost.
+        """
+        try:
+            with self.events_path.open("rb") as fh:
+                if fh.seek(0, os.SEEK_END) == 0:
+                    return False  # empty ledger - nothing to be mid-line in
+                fh.seek(-1, os.SEEK_END)
+                return fh.read(1) != b"\n"
+        except OSError:
+            # Whether the ledger is readable is the reader's question, and it fails closed on it
+            # (`read_events(strict=True)`). Here, refusing to append would lose the event outright.
+            return False
+
     def record(self, event: UsageEvent) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
+        # Closing newline and event in ONE write: as two calls, a concurrent appender could land
+        # between them. Racing the check itself is harmless - if the other writer closed the line
+        # first, this leaves a blank one, which the parser skips.
+        prefix = "\n" if self._ends_mid_line() else ""
         with self.events_path.open("a", encoding="utf-8") as f:
-            f.write(event.model_dump_json() + "\n")
+            f.write(prefix + event.model_dump_json() + "\n")
 
     def read_events(self, *, strict: bool = False) -> tuple[list[UsageEvent], LedgerCursor]:
         """Read the ledger once; return events plus a cursor for later O(tail) re-reads.
