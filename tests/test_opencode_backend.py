@@ -65,10 +65,60 @@ def test_permission_config_safe_edit_denies_question_and_curated() -> None:
     assert '"ask"' not in json.dumps(cfg)
 
 
-#: OpenCode's curated bash denies, written out rather than imported. The assertions above compare
-#: the emitted config against `SAFE_EDIT_BASH_DENIES`, which only proves the builder copies it -
-#: delete a pattern and both sides shrink together. The `read`/`edit` denies beside them are
-#: already pinned literally; these were not. Do not replace this with the import.
+#: The whole safe-edit permission policy, written out rather than imported. The assertions above
+#: compare the emitted config against `SAFE_EDIT_BASH_DENIES`, which only proves the builder
+#: copies it - delete a pattern and both sides shrink together. The `read`/`edit` maps were
+#: spot-checked by key, which left `*.env.*` on both and `.git/**` on edit asserted nowhere: the
+#: patterns covering dotted secret files and nested git internals could be deleted in silence.
+#: Snapshotting the whole block closes that and keeps it closed as the policy grows.
+#:
+#: The duplication is the point. Do not replace this with the import, and change it deliberately -
+#: in the same commit as the policy, with the reason.
+_PINNED_SAFE_EDIT_PERMISSION: dict[str, object] = {
+    "*": "allow",
+    "question": "deny",
+    "external_directory": "deny",
+    "bash": {
+        "*": "allow",
+        "rm": "deny",
+        "rm *": "deny",
+        "git config": "deny",
+        "git config *": "deny",
+        "*>*.env": "deny",
+        "*>*.env.*": "deny",
+        "*>*.git/*": "deny",
+        "tee *.env": "deny",
+        "tee *.env.*": "deny",
+        "tee *.git/*": "deny",
+        "sed *.env": "deny",
+        "sed *.env.*": "deny",
+        "sed *.git/*": "deny",
+    },
+    "edit": {
+        "*": "allow",
+        "*.env": "deny",
+        "*.env.*": "deny",
+        ".git/*": "deny",
+        ".git/**": "deny",
+    },
+    "read": {
+        "*": "allow",
+        "*.env": "deny",
+        "*.env.*": "deny",
+        "*.env.example": "allow",
+    },
+}
+
+
+def test_safe_edit_permission_block_matches_its_pinned_policy() -> None:
+    cfg = permission_config_for(PermissionMode.SAFE_EDIT)
+    assert cfg is not None
+    assert cfg["permission"] == _PINNED_SAFE_EDIT_PERMISSION, (
+        "the safe-edit permission policy changed; if that was deliberate, update "
+        "_PINNED_SAFE_EDIT_PERMISSION in the same commit and say why"
+    )
+
+
 _PINNED_BASH_DENIES: tuple[tuple[str, str], ...] = (
     ("rm", "deny"),
     ("rm *", "deny"),
