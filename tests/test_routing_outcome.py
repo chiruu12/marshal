@@ -279,3 +279,34 @@ def test_a_complete_ledger_still_recommends_normally(tmp_path: Path) -> None:
     assert ledger.cells[0].integration_rate == 0.5
     assert ledger.recommended == "worker"
     assert ledger.caveat is None
+
+
+def test_a_ledger_torn_mid_character_does_not_crash_routing(tmp_path: Path) -> None:
+    """REGRESSION: the strict pass decodes as UTF-8 and raises UnicodeDecodeError on a ledger a
+    crash tore mid-character. Only UnreadableUsageLedgerError was caught, so `routing` - a
+    REPORTING path whose documented posture is to degrade, not fail - died on a tear the lenient
+    read handles fine. Partiality is still reported; only the count is unavailable.
+    """
+    usage_dir = tmp_path / "usage"
+    usage_dir.mkdir()
+    good = _usage_event(run_id="r-ok").model_dump_json().encode("utf-8")
+    # A multibyte client name cut mid-character, exactly as an interrupted append leaves it.
+    # Ends on the FIRST byte of a 2-byte 'ö': a lone 0xC3 is not decodable UTF-8, which is what
+    # an append interrupted mid-character leaves behind. (Cutting an ASCII byte would still
+    # decode cleanly and only exercise the line-level tear the lenient path already handled.)
+    torn = '{"ts":"2026-06-19T00:00:00+00:00","run_id":"r-bad","client":"wö'.encode("utf-8")[:-1]
+    (usage_dir / "events.jsonl").write_bytes(good + b"\n" + torn + b"\n")
+
+    state = FleetState(tmp_path / "runs")
+    state.add(
+        RunRecord(
+            run_id="r-ok", task_id="t1", backend="echo", client="worker",
+            status="exited_clean", outcome="integrated",
+        )
+    )
+
+    ledger = build_routing(UsageTracker(usage_dir), state)  # must not raise
+
+    assert ledger.recommended is None
+    assert ledger.caveat is not None
+    assert "could not be counted" in ledger.caveat

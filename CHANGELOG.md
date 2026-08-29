@@ -46,11 +46,11 @@ versions may include breaking API changes until 1.0.
   survives. `cost: true` no longer becomes a native $1.00 either (`bool` is an `int` subclass);
   Goose already guarded that, OpenCode did not.
 
-- **A non-transient failure was retried up to three times.** `TRANSIENT_MARKERS` contained the
+- **A non-transient failure was retried until the retry budget ran out.** `TRANSIENT_MARKERS` contained the
   bare substring `"try again"`, and the Cursor and Claude Code failure paths put the agent's own
   prose into `AgentResult.error` - so "Unable to fix the test. Please try again with a clearer
-  assertion." was classified as an infrastructure blip and re-run, burning real money on a
-  failure no retry could fix. Also: `load_config` accepted any `timeout_s` an `int()` would take,
+  assertion." was classified as an infrastructure blip and re-run for every remaining attempt,
+  burning real money on a failure no retry could fix. Also: `load_config` accepted any `timeout_s` an `int()` would take,
   so `0` timed out every run immediately, `true` became 1 second, and `-1` raised from inside
   `proc.communicate` long after the config was declared valid. It now enforces the rules
   `resolve_duration` already applied, and names the client and key that failed.
@@ -83,14 +83,17 @@ versions may include breaking API changes until 1.0.
   usage ledger leniently, so a torn event line was dropped with a warning and never entered the
   denominator - one integrated run beside one dropped rejection read as 100% and produced a
   headline recommendation. Recommendations are now withheld when any line was skipped, and the
-  caveat says how many.
+  caveat says how many. Counting those lines must not itself break the report: the strict pass
+  decodes the ledger as UTF-8 and raises on one torn mid-character, so routing - a reporting
+  path, where the documented posture is to degrade rather than become unusable - now treats that
+  as partial-but-uncountable instead of letting the decode error escape.
 
 - **A wait could outlive the run it was waiting for, or die on a neighbour's bad id.**
   `wait_for_runs` polled `FleetState.get` directly: it never reconciled orphans, so a run whose
   supervisor was killed stayed `running` for the full timeout while every other read path already
   reported it reaped; and an unsafe run_id raised `ValueError` that aborted the entire batch
   rather than landing in `unknown` as documented. Each tick now goes through `get_run`, and a bad
-  id no longer destroys its nineteen healthy siblings. Separately, `job_request` was the only
+  id no longer destroys the healthy runs beside it. Separately, `job_request` was the only
   request builder that dropped `base_branch`, so a `run_many` job meant to chain off a prior
   run's branch was silently based on HEAD.
 
