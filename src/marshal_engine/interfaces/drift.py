@@ -16,10 +16,14 @@ Two signals, deliberately at different severities:
 * ``models`` **fails**. A model id in the adapter's own curated fallback that the live CLI no
   longer lists is a defect, not a notification - it means the path Marshal degrades to hands the
   caller an id guaranteed to fail the run. That is the exact shape of the Antigravity bug.
+* ``models`` **warns** (and ``ok`` is false). An installed CLI whose models probe failed could not
+  have its curated fallback verified - weaker than clean, not a confirmed lying fallback. Re-verify
+  with a real run; do not bump the baseline from the warning alone.
 * ``version`` **warns**. A CLI that is not the build the adapter was verified against is not
   broken; it is unverified. Some of these CLIs ship nightly, so a version finding that failed
   would be red every single day and read as noise within a week. It asks for a re-verify, and the
-  observed line is printed so recording the new baseline is a one-line edit.
+  observed line is printed so recording the new baseline is a one-line edit. Version drift alone
+  leaves ``ok`` true.
 
 Which is the whole design constraint: a drift check nobody reads catches nothing. Everything that
 cannot be acted on is ``info``, and only a lying fallback is allowed to fail the command.
@@ -74,7 +78,13 @@ class DriftFinding(BaseModel):
 
 
 class DriftReport(BaseModel):
-    """Per-backend findings plus a roll-up. ``ok`` is true when nothing failed."""
+    """Per-backend findings plus a roll-up.
+
+    ``ok`` is true only when nothing failed *and* every checked backend that can probe models
+    had its catalogue verified. An installed CLI whose models probe failed is weaker than a
+    clean check - that path is how a stale curated fallback reaches a run - so it is not ``ok``.
+    Version drift alone still warns without failing ``ok`` (nightly CLIs would otherwise stay red).
+    """
 
     findings: list[DriftFinding]
     checked: list[str]
@@ -121,9 +131,26 @@ def _version_finding(name: str, backend: CodingAgentBackend, observed: str) -> D
 
 def _models_finding(name: str, backend: CodingAgentBackend) -> DriftFinding:
     catalog = backend.available_models()
+    if catalog.source is ModelSource.PROBE_FAILED:
+        # Version answered, so the CLI is installed; the catalogue could not be verified. That is
+        # weaker than a clean check - the curated fallback is exactly the path that fails at
+        # runtime when upstream drops an id - and must not read as agreement.
+        return DriftFinding(
+            backend=name,
+            kind="models",
+            status=WARN,
+            detail=(
+                "CLI answered its version but the models probe failed; curated fallback was not "
+                "verified against the live catalogue"
+            ),
+            fix=(
+                "re-verify with a real run that pins a curated fallback id - do not bump the "
+                "baseline from this warning alone"
+            ),
+        )
     if catalog.source is not ModelSource.PROBED:
-        # STATIC means either "this CLI has no models probe" or "the probe just failed". The
-        # adapter cannot tell those apart and neither can this check, so it claims neither.
+        # STATIC (or UNAVAILABLE): this adapter has no live models probe, so there is nothing to
+        # claim. Distinct from PROBE_FAILED above - the adapter said so via ModelSource.
         return DriftFinding(
             backend=name,
             kind="models",
@@ -204,11 +231,14 @@ def detect_drift(
         findings.append(_models_finding(name, backend))
     fails = sum(1 for f in findings if f.status == FAIL)
     warns = sum(1 for f in findings if f.status == WARN)
+    # Version warns leave ok true (nightlies). A models warn means the catalogue of an installed
+    # CLI could not be verified - materially weaker than clean, so ok is false.
+    models_unverified = any(f.kind == "models" and f.status == WARN for f in findings)
     return DriftReport(
         findings=findings,
         checked=checked,
         skipped=skipped,
         fails=fails,
         warns=warns,
-        ok=fails == 0,
+        ok=fails == 0 and not models_unverified,
     )
