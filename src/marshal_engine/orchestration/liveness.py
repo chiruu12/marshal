@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -90,6 +91,54 @@ def _pid_alive(pid: int) -> bool:
 # `accounting/budgets.py` keeps its own copy of this marker (sibling layers must not import each
 # other); change both together, and see `test_liveness_inflight.py` for the guard that they agree.
 _PINNED_IDENTITY_PREFIX = "C/UTC|"
+
+#: How long a lock/claim written WITHOUT a start-time identity may block takeover.
+#:
+#: Long enough that a transient ``ps`` blip during claim/create does not lose the hold
+#: mid-flight; short enough that a recycled-pid wedge (live stranger, null start time)
+#: self-heals without manual intervention. Only consulted when identity is unverifiable
+#: AND no pinned start time was ever recorded - a stamped identity whose probe fails at
+#: read time stays held for as long as the pid lives (stealing a live supervisor's lock
+#: is the failure the fail-closed branch exists to prevent).
+_UNVERIFIABLE_HOLD_TTL_S = 300.0
+
+
+def _unverifiable_hold_still_active(payload: dict[str, object]) -> bool:
+    """True while an identity-less hold should still block takeover.
+
+    Missing/invalid ``written_at`` counts as still active: pre-TTL writers (and older
+    Marshal versions that never stamped a start time) must keep their hold while the pid
+    lives, or an upgrade would steal a live supervisor's lock. New writers that could not
+    probe a start time stamp ``written_at`` so this bound can eventually lift.
+    """
+    raw = payload.get("written_at")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return True
+    try:
+        written_at = float(raw)
+    except (TypeError, ValueError):
+        return True
+    return (time.time() - written_at) < _UNVERIFIABLE_HOLD_TTL_S
+
+
+def _unverifiable_supervisor_hold(payload: dict[str, object], recorded: str | None) -> bool:
+    """Whether an identity-unverifiable lock/claim should still be treated as held.
+
+    Two failure shapes look the same at the call site (``_identity_verdict`` is None) but
+    must not share a policy:
+
+    * A *pinned* start time is on disk and the probe just failed: assume still held. The
+      writer proved identity once; refusing takeover protects a live supervisor when ``ps``
+      is temporarily unavailable - the risk the fail-closed branch exists to prevent.
+    * No usable start time was ever recorded (null, missing, or a pre-pinning stamp): the
+      hold is bounded by ``written_at``. Honouring that forever is a hold no event can
+      lift once the pid is recycled - the wedge this module already documents for bare
+      pids. A bounded false hold self-heals; refusing to write the lock at all would
+      disable every Fleet on a host without ``ps``.
+    """
+    if isinstance(recorded, str) and recorded.startswith(_PINNED_IDENTITY_PREFIX):
+        return True
+    return _unverifiable_hold_still_active(payload)
 
 
 def _pid_start_time(pid: int) -> str | None:
@@ -280,9 +329,9 @@ def _another_fleet_active(lock_path: Path) -> bool:
     recorded = data.get("pid_start_time")
     verdict = _identity_verdict(pid, recorded if isinstance(recorded, str) else None)
     if verdict is None:
-        # Older lock, a pre-pinning stamp, or the probe is unavailable: assume still held rather
-        # than steal a live supervisor's lock.
-        return True
+        return _unverifiable_supervisor_hold(
+            data, recorded if isinstance(recorded, str) else None
+        )
     return verdict
 
 
@@ -336,13 +385,24 @@ def _claim_fleet_lock(lock_path: Path) -> bool:
 
 
 def _write_lock_payload(lock_path: Path) -> None:
-    """Write this process's pid to the lock atomically (temp + replace, never half-written)."""
+    """Write this process's pid to the lock atomically (temp + replace, never half-written).
+
+    Degrades like ``_supervisor_identity``: when the start-time probe fails we still publish
+    (a Fleet that cannot record supervision must not be disabled outright), but we stamp
+    ``written_at`` so readers can age out an unverifiable hold. Persisting a bare pid with a
+    permanent "assume held" reader is a hold no event can lift once that pid is recycled;
+    refusing to write is a refusal no event can lift on a host without ``ps``. The bounded
+    hold preserves both properties the forever-hold and the raise-on-probe-failure each lose.
+    """
     fd, tmp_str = tempfile.mkstemp(dir=str(lock_path.parent), prefix="fleet.lock.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            # Stamp the start time alongside the pid: a bare pid is not an identity here either,
-            # and a recycled one would make every later Fleet believe a live supervisor exists.
-            f.write(json.dumps({"pid": os.getpid(), "pid_start_time": _pid_start_time(os.getpid())}))
+            pid = os.getpid()
+            started = _pid_start_time(pid)
+            payload: dict[str, object] = {"pid": pid, "pid_start_time": started}
+            if started is None:
+                payload["written_at"] = time.time()
+            f.write(json.dumps(payload))
         os.replace(tmp_str, lock_path)
     except BaseException:
         with contextlib.suppress(OSError):

@@ -22,14 +22,19 @@ from pathlib import Path
 
 import pytest
 
+from marshal_engine.orchestration import inflight as inflight_mod
 from marshal_engine.orchestration import liveness as liveness_mod
 from marshal_engine.orchestration.inflight import (
     _creating_claim_held,
     _creating_claim_path,
+    _publish_pid,
+    _register_inflight_run,
+    _unregister_inflight_run,
     _write_creating_claim,
 )
 from marshal_engine.orchestration.liveness import _PINNED_IDENTITY_PREFIX as PINNED
 from marshal_engine.orchestration.liveness import (
+    _UNVERIFIABLE_HOLD_TTL_S,
     _another_fleet_active,
     _claim_fleet_lock,
     _pid_alive,
@@ -192,6 +197,45 @@ def test_write_creating_claim_leaves_no_temp_file_when_publishing_fails(
     assert not _creating_claim_path(tmp_path, "r1").exists()
 
 
+def test_unverifiable_claim_writer_stamps_written_at_instead_of_refusing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Probe failed: still write (a create must stay shielded), and stamp written_at so the hold
+    # can age out. Raising here would leave mid-create worktrees unprotected; omitting written_at
+    # would recreate the forever-hold wedge once the pid is recycled.
+    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid: None)
+    _write_creating_claim(tmp_path, "r1")
+    data = json.loads(_creating_claim_path(tmp_path, "r1").read_text(encoding="utf-8"))
+    assert data["pid"] == LIVE_PID
+    assert data["pid_start_time"] is None
+    assert isinstance(data["written_at"], (int, float))
+
+
+def test_fresh_unverifiable_claim_is_held(tmp_path: Path) -> None:
+    # Within the TTL a null-start-time claim must still spare a possibly-live create. Failing
+    # open immediately would delete a worktree mid-create on any host where ps blipped.
+    payload = {
+        "pid": LIVE_PID,
+        "pid_start_time": None,
+        "written_at": datetime.now(UTC).timestamp(),
+    }
+    _creating_claim_path(tmp_path, "r1").write_text(json.dumps(payload), encoding="utf-8")
+    assert _creating_claim_held(tmp_path, "r1") is True
+
+
+def test_stale_unverifiable_claim_does_not_shield_forever(tmp_path: Path) -> None:
+    # THE WEDGE: creator died, pid recycled to this live process, start time was null. Honouring
+    # that forever shields the orphan from every sweep. Ageing past the TTL lifts the hold.
+    # Mutation that reverts the reader to `return True` on unverifiable makes this fail.
+    payload = {
+        "pid": LIVE_PID,
+        "pid_start_time": None,
+        "written_at": datetime.now(UTC).timestamp() - _UNVERIFIABLE_HOLD_TTL_S - 1,
+    }
+    _creating_claim_path(tmp_path, "r1").write_text(json.dumps(payload), encoding="utf-8")
+    assert _creating_claim_held(tmp_path, "r1") is False
+
+
 # --------------------------------------------------------------------------------------
 # the fleet lock - "another Fleet is supervising this repo"
 # --------------------------------------------------------------------------------------
@@ -330,6 +374,83 @@ def test_write_lock_payload_leaves_no_temp_file_when_publishing_fails(
 
     assert not list(tmp_path.glob("*.tmp")), "a temp lock file was left behind"
     assert not lock.exists()
+
+
+def test_claim_succeeds_when_start_time_probe_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # OPPOSITE of the wedge fix: a host without `ps` must still claim the lock and supervise.
+    # The previous wrong fix raised from the writer; `_claim_fleet_lock` caught OSError and
+    # returned False, so Marshal supervised nothing. Degrade - publish with written_at.
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    lock = tmp_path / "fleet.lock"
+    assert _claim_fleet_lock(lock) is True
+    data = json.loads(lock.read_text(encoding="utf-8"))
+    assert data["pid"] == LIVE_PID
+    assert data["pid_start_time"] is None
+    assert isinstance(data["written_at"], (int, float))
+    # Own lock is never "another fleet".
+    assert _another_fleet_active(lock) is False
+
+
+def test_fresh_unverifiable_lock_is_assumed_held(tmp_path: Path) -> None:
+    # Within the TTL, do not steal from a supervisor that could not stamp a start time.
+    lock = tmp_path / "fleet.lock"
+    payload = {
+        "pid": 1,
+        "pid_start_time": None,
+        "written_at": datetime.now(UTC).timestamp(),
+    }
+    lock.write_text(json.dumps(payload), encoding="utf-8")
+    assert _another_fleet_active(lock) is True
+
+
+def test_stale_unverifiable_lock_does_not_block_takeover(tmp_path: Path) -> None:
+    # THE WEDGE for fleet.lock: dead supervisor's pid recycled to a long-lived stranger,
+    # start time null. Forever-held means every later Fleet declines the lock and never
+    # reaps. Past the TTL the hold lifts. Mutation: reader `return True` on unverifiable
+    # makes this fail.
+    lock = tmp_path / "fleet.lock"
+    payload = {
+        "pid": 1,
+        "pid_start_time": None,
+        "written_at": datetime.now(UTC).timestamp() - _UNVERIFIABLE_HOLD_TTL_S - 1,
+    }
+    lock.write_text(json.dumps(payload), encoding="utf-8")
+    assert _another_fleet_active(lock) is False
+    assert _claim_fleet_lock(lock) is True
+
+
+def test_publish_pid_records_a_just_forked_pid_when_start_time_probe_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Signalling a child Marshal just forked is provenance, not a theoretical recycle hazard:
+    # the OS holds the number until we reap. Refusing to stamp the pid turns cancel into a
+    # silent no-op. Mutation: `_publish_pid` skips setting handle.pid when started is None
+    # makes this fail.
+    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid: None)
+    handle = _register_inflight_run(tmp_path, "r.publish")
+    try:
+        pending = _publish_pid(handle, 4242)
+        assert pending is False
+        assert handle.pid == 4242, "just-forked pid must still be published for cancel"
+        assert handle.pid_start_time is None, "missing proof must stay explicit for cancel"
+    finally:
+        _unregister_inflight_run(tmp_path, "r.publish")
+
+
+def test_publish_pid_stamps_start_time_when_the_probe_works(tmp_path: Path) -> None:
+    # Opposite direction: when ps answers, cancel gets a verifiable identity - not a permanent
+    # None that would always take the provenance-only kill branch.
+    started = _pid_start_time(LIVE_PID)
+    assert started, "probe must work on this host for the positive control"
+    handle = _register_inflight_run(tmp_path, "r.publish.ok")
+    try:
+        _publish_pid(handle, LIVE_PID)
+        assert handle.pid == LIVE_PID
+        assert handle.pid_start_time == started
+    finally:
+        _unregister_inflight_run(tmp_path, "r.publish.ok")
 
 
 # --------------------------------------------------------------------------------------
