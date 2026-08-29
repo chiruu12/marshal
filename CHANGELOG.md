@@ -10,6 +10,17 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A credential in a client `env:` block was written verbatim to the run log.**
+  `RunLogStore.write` scrubbed values found in the parent environment only, so a secret that
+  reached the child solely through a per-client `env:` entry was never scanned. Secret-*shaped*
+  key names cannot live there - the config loader rejects them - but a real credential under an
+  allowed name (`PROVIDER_AUTH: sk-ant-...`) passes that filter, reaches the child, and was
+  persisted in full. The values the child received now travel to the redaction call as an
+  ordinary argument, keeping it a pure function of its inputs rather than depending on ambient
+  state that a parallel fleet would not propagate. Every client-supplied value clearing the
+  length guard is scrubbed, not only the ones that look secret-shaped: over-redacting a run's own
+  log is cheap, and leaking is not.
+
 - **A workflow whose only agent failed reported `completed`.** The `fan_out` branch already set
   `had_error` on a non-clean run status, with a comment recording why: a CI step wrapping a
   workflow passed green on total failure. The `run: agent` branch added beside it says "same
