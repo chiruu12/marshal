@@ -79,7 +79,7 @@ from ..runtime.worktree import WorktreeError
 from .doctor import DoctorReport, doctor_report, run_checks
 from .pull_requests import PullRequestRef, resolve_pr
 from .routing import OutcomeResult, build_routing, record_outcome
-from .waiting import DEFAULT_POLL_INTERVAL_S, WaitResult, wait_for_terminal
+from .waiting import DEFAULT_POLL_INTERVAL_S, WaitResult, fetch_each, wait_for_terminal
 
 _WORKER_PREAMBLE = (
     "You are a headless agent in a Marshal fleet, running in an isolated git worktree. "
@@ -261,18 +261,22 @@ class MarshalService:
             n for n, c in config.clients.items() if not _client_available(c)
         ]
         # Same facts, keyed for the driver: which client, on which backend, and why it is missing.
-        # `avail` is False both for a known backend whose CLI is absent and for a name that is not
-        # a backend at all - different problems with different fixes, so they are not collapsed.
+        # Three distinct problems, three fixes: unknown backend name, CLI absent from PATH, or a
+        # client's own `env:` override failing `available_for_client` while the CLI itself is fine.
+        # Collapsing the last into a PATH message tells the driver to install something already
+        # installed.
+        def _skip_reason(c: ClientConfig) -> str:
+            if c.backend not in backends:
+                return f"backend {c.backend!r} is not a known backend"
+            if c.env and avail.get(c.backend, False):
+                return (
+                    f"client env: override failed the {c.backend!r} availability probe "
+                    f"(the CLI is present; check this client's env: block)"
+                )
+            return f"the {c.backend!r} CLI is not available on PATH (or failed its probe)"
+
         self._skipped_detail: dict[str, SkippedClient] = {
-            n: SkippedClient(
-                name=n,
-                backend=c.backend,
-                reason=(
-                    f"backend {c.backend!r} is not a known backend"
-                    if c.backend not in backends
-                    else f"the {c.backend!r} CLI is not available on PATH (or failed its probe)"
-                ),
-            )
+            n: SkippedClient(name=n, backend=c.backend, reason=_skip_reason(c))
             for n, c in config.clients.items()
             if not _client_available(c)
         }
@@ -632,9 +636,11 @@ class MarshalService:
         """Validate a run_many job dict into a ``RunRequest`` (no agent spawn).
 
         Same fields as ``run_many`` jobs: ``{client?, goal, task_id?, task_kind?, context_files?,
-        read_paths?, artifacts_from?, model?, backend?, duration?, output_schema?}``. Strips ``then`` and
-        ``workspace`` (registry-only). Used by single-repo ``run_many`` and the registry's
-        cross-workspace fan-out so validation stays fail-fast before any worktree is created.
+        read_paths?, artifacts_from?, base_branch?, model?, backend?, duration?, output_schema?}``.
+        Strips ``then`` and ``workspace`` (registry-only). Used by single-repo ``run_many`` and the
+        registry's cross-workspace fan-out so validation stays fail-fast before any worktree is
+        created. Goes through ``_request_for`` - the same builder ``run_agent`` / ``spawn`` use -
+        so ``base_branch`` is not silently dropped when a job chains off a prior run's branch.
         """
         body = {k: v for k, v in job.items() if k not in ("then", "workspace")}
         return self._request_for(
@@ -644,6 +650,7 @@ class MarshalService:
             body.get("context_files"),
             body.get("read_paths"),
             artifacts_from=body.get("artifacts_from"),
+            base_branch=body.get("base_branch"),
             model=body.get("model"),
             backend=body.get("backend"),
             duration=body.get("duration"),
@@ -939,9 +946,15 @@ class MarshalService:
         Never raises on expiry; `WaitResult.pending` is the partial result and the caller re-calls.
         See `waiting.wait_for_terminal`. Single-repo, like the rest of this class; the MCP tool
         waits across workspaces by resolving each run first and sharing one deadline.
+
+        Each poll tick goes through ``get_run`` (reconcile orphans + liveness), not a bare
+        ``FleetState.get``: otherwise a run whose supervisor was killed stays ``running`` here
+        while every other read path already reports it reaped, and the wait burns its full
+        timeout. Unsafe ids map to ``unknown`` via ``fetch_each`` so one bad id cannot abort the
+        batch - the same contract MCP documents for the fan-out tool.
         """
         return wait_for_terminal(
-            lambda ids: {rid: self.fleet.state.get(rid) for rid in ids},
+            lambda ids: fetch_each(self.get_run, ids),
             run_ids,
             timeout_s=timeout_s,
             poll_interval_s=poll_interval_s,

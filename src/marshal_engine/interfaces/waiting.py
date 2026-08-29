@@ -27,6 +27,8 @@ from ..runtime.state import RunRecord
 
 #: Fetch the current record for each requested id. ``None`` means no such run - distinct from a
 #: record that exists and has not finished, because one can never settle and the other will.
+#: Callers that raise ``ValueError`` on an unsafe id (e.g. ``FleetState.get``) must map that to
+#: ``None`` here so one bad id cannot abort a batch; ``fetch_each`` does that.
 Fetch = Callable[[Sequence[str]], Mapping[str, "RunRecord | None"]]
 
 #: Hard ceiling on a single wait. The real ceiling is usually lower and not ours: MCP clients apply
@@ -76,8 +78,10 @@ def wait_for_terminal(
     (by this timeout or by its own client's) can act on the finished runs and re-call for the rest.
 
     A cancelled run is terminal, so cancelling something being waited on releases the wait on the
-    next tick. A run whose supervisor died still reads ``running`` forever, and only the timeout
-    ends that wait - `is_terminal` describes the record, not the process.
+    next tick. Terminality is whatever the fetch returns: a fetch that reconciles orphans (as
+    ``MarshalService.wait_for_runs`` does, matching ``get_run``) will see a reaped status on the
+    next tick; the loop itself only reads records. Ids the fetch maps to ``None`` - missing or
+    unusable - land in ``unknown`` and are never waited on.
     """
     ids = list(dict.fromkeys(run_ids))  # de-dup, keep the caller's order for a stable result
     deadline = monotonic() + max(0.0, min(timeout_s, MAX_WAIT_S))
@@ -103,3 +107,23 @@ def wait_for_terminal(
 
         # Never sleep past the deadline: overshooting would report a wait longer than was asked for.
         sleep(max(0.0, min(poll_interval_s, deadline - monotonic())))
+
+
+def fetch_each(
+    get: Callable[[str], RunRecord | None],
+    run_ids: Sequence[str],
+) -> dict[str, RunRecord | None]:
+    """Build the mapping ``wait_for_terminal`` expects from a one-id lookup.
+
+    ``get`` is typically ``MarshalService.get_run`` (reconcile + liveness). A ``ValueError`` - an
+    unsafe run_id that ``FleetState.get`` would raise on - becomes ``None`` (unknown) so one bad
+    id in a fan-out cannot abort the other nineteen. Path composition stays fail-closed: no path
+    is built from the bad id; only the wait batch contract softens the refusal into ``unknown``.
+    """
+    out: dict[str, RunRecord | None] = {}
+    for rid in run_ids:
+        try:
+            out[rid] = get(rid)
+        except ValueError:
+            out[rid] = None
+    return out

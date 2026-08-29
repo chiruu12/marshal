@@ -667,6 +667,17 @@ def test_job_request_threads_read_paths(repo: Path) -> None:
     assert req.task.read_paths == ["/tmp/x.md"]
 
 
+def test_job_request_threads_base_branch(repo: Path) -> None:
+    """REGRESSION: job_request forwarded every field except base_branch, so a run_many job meant
+    to chain off a prior run's branch was silently based on HEAD. Same shared builder as
+    run_agent/spawn/_request_for - not a parallel path."""
+    svc = _svc(repo)
+    req = svc.job_request(
+        {"client": "worker", "goal": "g", "base_branch": "marshal/prior.run"}
+    )
+    assert req.task.base_branch == "marshal/prior.run"
+
+
 def test_collect_run_surfaces_changed_files(repo: Path) -> None:
     svc = _svc(repo)
     rec = svc.run_agent("worker", "do something", task_id="t1")
@@ -1377,6 +1388,47 @@ def test_an_unknown_backend_reads_differently_from_an_uninstalled_one(repo: Path
     assert "not a known backend" in reason
 
 
+def test_skipped_client_env_override_failure_does_not_blame_path(repo: Path) -> None:
+    """REGRESSION: SkippedClient.reason always blamed PATH whenever the backend name was known,
+    even when the client was skipped only because its env: override failed available_for_client.
+    The driver was told to install a CLI that is already installed."""
+
+    class _EnvLauncher(CodingAgentBackend):
+        name = "envlauncher"
+        binary = "envlauncher"
+        capabilities = Capabilities()
+
+        def check_available(self) -> bool:
+            return True  # CLI present: the backend is globally fine
+
+        def available_for_client(self, client_env: dict[str, str] | None = None) -> bool:
+            return (client_env or {}).get("LAUNCHER") != "/broken/path"
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return []
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            return AgentResult(status=RunStatus.EXITED_CLEAN)
+
+    cfg = FleetConfig(
+        clients={
+            "broken": ClientConfig(
+                name="broken", backend="envlauncher", env={"LAUNCHER": "/broken/path"}
+            ),
+        }
+    )
+    svc = MarshalService(repo, cfg, backends={"envlauncher": _EnvLauncher()})
+    skipped = {s.name: s for s in svc.list_clients().skipped}
+    assert "broken" in skipped
+    reason = skipped["broken"].reason
+    assert "env:" in reason and "PATH" not in reason, (
+        f"blamed PATH for an env: override failure: {reason!r}"
+    )
+
+
 def test_integrate_message_reaches_the_commit(repo: Path) -> None:
     """REGRESSION (#75): the Fleet accepted `message`, but the service and the MCP tool both
     dropped it - so every integrate landed as "marshal: integrate <run_id>", describing the tooling
@@ -2027,3 +2079,43 @@ def test_wait_for_runs_hands_back_a_partial_result_on_expiry(repo: Path) -> None
     assert result.timed_out is True
     assert [r.run_id for r in result.settled] == [done.run_id]
     assert [r.run_id for r in result.pending] == ["stuck"]
+
+
+def test_wait_for_runs_reconciles_orphans_and_tolerates_a_malformed_id(repo: Path) -> None:
+    """REGRESSION: wait_for_runs polled FleetState.get directly, so (a) it never reconciled
+    orphans (a dead-supervisor run stayed `running` for the full timeout while get_run/status
+    already reported it reaped) and (b) one unsafe id raised ValueError and aborted the whole
+    batch. Match get_run: reconcile + liveness; map unsafe ids to unknown so good ones settle.
+    """
+    from datetime import datetime, timedelta
+
+    from marshal_engine.orchestration.reaping import _REAP_GRACE_S
+
+    svc = _svc(repo)
+    done = svc.run_agent("worker", "finished work")
+    # Aged orphan: supervisor gone, past the reap-grace window - get_run would stamp failed.
+    svc.fleet.state.add(
+        RunRecord(
+            run_id="orph.echo.x",
+            task_id="orph",
+            backend="echo",
+            status="running",
+            started_at=(datetime.now(UTC) - timedelta(seconds=_REAP_GRACE_S + 60)).isoformat(),
+        )
+    )
+
+    result = svc.wait_for_runs(
+        [done.run_id, "orph.echo.x", "../../etc/passwd"],
+        timeout_s=5.0,
+        poll_interval_s=0.05,
+    )
+
+    settled_ids = {r.run_id for r in result.settled}
+    assert done.run_id in settled_ids
+    assert "orph.echo.x" in settled_ids, (
+        "orphan stayed pending - wait never called reconcile_orphans"
+    )
+    assert result.unknown == ["../../etc/passwd"]
+    assert result.pending == []
+    assert result.timed_out is False
+    assert result.all_settled
