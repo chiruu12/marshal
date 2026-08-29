@@ -405,11 +405,26 @@ class FleetState:
         self._write(record)
         return record
 
+    def _load_record(self, path: Path) -> RunRecord | None:
+        """Parse one on-disk record, or None when the file is torn/foreign/unreadable."""
+        try:
+            return RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (ValidationError, OSError, ValueError):
+            # ValueError covers UnicodeDecodeError on a binary *.json.
+            return None
+
     def get(self, run_id: str) -> RunRecord | None:
         path = self._path(run_id)
         if not path.exists():
             return None
-        return RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        rec = self._load_record(path)
+        if rec is None:
+            # Return None, not raise: get_run and wait_for_runs already treat a missing record
+            # as absent/unknown. None is the honest API answer for "no readable record here",
+            # but stderr must warn - otherwise a driver treats corruption as definitively absent
+            # with no signal, the same record-disagrees-with-reality failure list() guards against.
+            print("[marshal] skipping 1 unreadable run record(s)", file=sys.stderr)
+        return rec
 
     def list(self) -> list[RunRecord]:
         if not self.dir.exists():
@@ -417,13 +432,13 @@ class FleetState:
         records: list[RunRecord] = []
         skipped = 0
         for path in sorted(self.dir.glob("*.json")):
-            try:
-                records.append(RunRecord.model_validate_json(path.read_text(encoding="utf-8")))
-            except (ValidationError, OSError, ValueError):
-                # Skip a torn/foreign/binary file (ValueError covers UnicodeDecodeError) rather
-                # than failing the whole listing; warn with the count so operators can find it.
+            rec = self._load_record(path)
+            if rec is None:
+                # Skip a torn/foreign/binary file rather than failing the whole listing; warn with
+                # the count so operators can find it.
                 skipped += 1
                 continue
+            records.append(rec)
         if skipped:
             print(
                 f"[marshal] skipping {skipped} unreadable run record(s)",
