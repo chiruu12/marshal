@@ -131,12 +131,35 @@ def _parse_amount_usd(value: object) -> float | None:
     return None
 
 
+def _parse_prompt_tokens(value: object) -> int | None:
+    """A usable integer ``prompt_tokens``, or None when absent/null/unparseable.
+
+    Explicit ``0`` is a real measurement (keep it) — a free/empty prompt can honestly report
+    zero. Missing or null must NOT coerce to ``0``: reconciliation tolerates a shortfall up to
+    ``max(200, 10% of input)``, so a fabricated prompt of 0 would reconcile whenever
+    ``input_tokens <= 200``, and a zero-coerced row sitting beside a real match would still
+    reconcile on the prompt sum while its ``amount_usd`` is folded into the stamped total.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+    return None
+
+
 def _parse_records(raw: str) -> tuple[list[_Rec], int]:
     """Usable records plus the RAW row count the page carried.
 
     Pagination must terminate on the raw count, not on the usable ones: a full page whose rows
-    were all skipped (no usable ``amount_usd``) would otherwise read as empty/short and stop the
-    walk before reaching later pages that do hold charges.
+    were all skipped (no usable ``amount_usd`` / ``prompt_tokens``) would otherwise read as
+    empty/short and stop the walk before reaching later pages that do hold charges.
     """
     try:
         data = json.loads(raw)
@@ -156,11 +179,17 @@ def _parse_records(raw: str) -> tuple[list[_Rec], int]:
         amount = _parse_amount_usd(r.get("amount_usd"))
         if amount is None:
             continue
+        # Same honesty for prompt_tokens: missing/null disqualifies the row. Do not coerce to 0.
+        if "prompt_tokens" not in r:
+            continue
+        prompt = _parse_prompt_tokens(r.get("prompt_tokens"))
+        if prompt is None:
+            continue
         out.append(
             _Rec(
                 model=str(r.get("model", "")),
                 amount=amount,
-                prompt=int(r.get("prompt_tokens", 0) or 0),
+                prompt=prompt,
                 completion=int(r.get("completion_tokens", 0) or 0),
                 reasoning=int(r.get("reasoning_tokens", 0) or 0),
                 created=_parse_dt(r.get("created_at")),
