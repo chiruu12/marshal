@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,7 +11,9 @@ import pytest
 from pydantic import ValidationError
 
 import marshal_engine.runtime.state as state_mod
+from marshal_engine.core.config import FleetConfig
 from marshal_engine.core.types import RunStatus
+from marshal_engine.interfaces.service import MarshalService
 from marshal_engine.runtime.state import FleetState, RunRecord
 
 # Sleep inside the locked RMW (between read and write) long enough that a one-shot wave of
@@ -316,6 +319,37 @@ def test_list_skips_torn_record_and_warns_with_count(
     assert [r.run_id for r in st.list()] == ["good"]
     err = capsys.readouterr().err
     assert "skipping 2 unreadable run record" in err
+
+    assert st.get("torn") is None
+    assert st.get("partial") is None
+    get_err = capsys.readouterr().err
+    assert get_err.count("skipping 1 unreadable run record") == 2
+
+
+def test_get_run_and_wait_for_runs_tolerate_corrupt_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Service paths that call state.get must not raise ValidationError on torn JSON."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "README.md").write_text("hi")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+    runs = repo / ".marshal" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "torn.json").write_text("{not json", encoding="utf-8")
+
+    svc = MarshalService(repo, FleetConfig(clients={}), backends={})
+    assert svc.get_run("torn") is None
+
+    result = svc.wait_for_runs(["torn", "no-such"], timeout_s=1)
+    assert result.unknown == ["torn", "no-such"]
+    assert result.settled == [] and result.pending == []
+    assert "skipping 1 unreadable run record" in capsys.readouterr().err
 
 
 def test_list_skips_binary_file_and_warns(
