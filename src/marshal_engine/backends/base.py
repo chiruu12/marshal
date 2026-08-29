@@ -233,14 +233,16 @@ class CodingAgentBackend(ABC):
         `cursor-agent models` to find out what it may configure - which is exactly what happened in
         the field, on both sides of a single day.
 
-        The `source` is the point. `PROBED` means the CLI answered just now; `STATIC` means the
-        CLI could not be asked and this is a curated list that may name a model the account
-        cannot actually run; `UNAVAILABLE` means there is nothing to report. Returning a bare
-        list conflated the first two, so a fallback printed by a backend that was not even
-        installed was indistinguishable from a live answer.
+        The `source` is the point. `PROBED` means the CLI answered just now; `STATIC` means no
+        live probe was attempted and this is a curated list that may name a model the account
+        cannot actually run; `PROBE_FAILED` means a probe ran and failed, so the same curated
+        list is returned but tagged as unverified; `UNAVAILABLE` means there is nothing to
+        report. Returning a bare list conflated live and curated answers, so a fallback printed
+        by a backend that was not even installed was indistinguishable from a live answer.
 
-        Implementations must be side-effect-light and never raise: degrade to `STATIC`, or to the
-        default `UNAVAILABLE`, on any failure (missing binary, unauthenticated, unparseable output).
+        Implementations must be side-effect-light and never raise: degrade to `STATIC` /
+        `PROBE_FAILED`, or to the default `UNAVAILABLE`, on any failure (missing binary,
+        unauthenticated, unparseable output).
 
         This never feeds routing. Clients own backend+model; this is a catalogue you read, and the
         distinction is what keeps a probe from quietly becoming configuration.
@@ -257,13 +259,15 @@ class CodingAgentBackend(ABC):
     ) -> ModelCatalog:
         """Shared probe-then-fall-back-to-curated path for adapters whose CLI can list models.
 
-        Every failure mode lands on the same answer - the curated list, tagged `STATIC` - so no
-        adapter has to remember to degrade honestly on its own. `parse` yielding nothing counts
-        as a failure: a CLI whose output shape changed upstream would otherwise report an empty
-        live catalogue, which reads as "this backend has no models".
+        Missing binary → curated list tagged ``STATIC`` (never asked). Any failure after the
+        binary is found → same list tagged ``PROBE_FAILED`` (asked, no answer). Callers such as
+        drift need that split; ``list_models`` still sees a non-live curated list either way.
+        ``parse`` yielding nothing counts as a failure: a CLI whose output shape changed upstream
+        would otherwise report an empty live catalogue, which reads as "this backend has no models".
         """
         if shutil.which(self.binary) is None:
             return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+        failed = ModelCatalog(models=list(static), source=ModelSource.PROBE_FAILED)
         try:
             proc = subprocess.run(
                 argv,
@@ -274,15 +278,15 @@ class CodingAgentBackend(ABC):
                 **DETACHED_STDIO,
             )
         except (OSError, subprocess.SubprocessError):
-            return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+            return failed
         if proc.returncode != 0:
-            return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+            return failed
         try:
             models = parse(proc.stdout or "")
         except Exception:  # noqa: BLE001 - a parser fault must not take the listing down
             models = []
         if not models:
-            return ModelCatalog(models=list(static), source=ModelSource.STATIC)
+            return failed
         return ModelCatalog(models=models, source=ModelSource.PROBED)
 
     def probe_version(self) -> str | None:
