@@ -271,8 +271,8 @@ def test_a_shortlist_still_fails_when_its_own_id_is_gone():
     assert _finding(report, "a", "models").status == FAIL
 
 
-def test_an_unprobeable_catalogue_claims_nothing():
-    """STATIC means either "no probe exists" or "the probe just failed"; neither is a verdict."""
+def test_a_genuinely_probeless_adapter_claims_nothing_and_stays_ok():
+    """STATIC means no live probe was attempted - drift claims neither pass nor fail."""
     report = detect_drift(
         {
             "a": _FakeBackend(
@@ -287,6 +287,87 @@ def test_an_unprobeable_catalogue_claims_nothing():
     f = _finding(report, "a", "models")
     assert f.status == INFO
     assert "cannot be checked" in f.detail
+    assert report.warns == 0
+    assert report.ok is True
+
+
+def test_a_failed_models_probe_on_an_installed_cli_is_not_ok():
+    """Version answered but the catalogue could not be verified - must not read as clean.
+
+    This is the defect class the check exists to catch: an installed CLI whose curated fallback
+    names a removed id would otherwise report ok while a degraded run fails at runtime.
+    """
+    report = detect_drift(
+        {
+            "a": _FakeBackend(
+                "a",
+                version="1.0",
+                verified="1.0",
+                static=("x",),
+                catalog=ModelCatalog(models=["x"], source=ModelSource.PROBE_FAILED),
+            )
+        }
+    )
+    f = _finding(report, "a", "models")
+    assert f.status == WARN
+    assert "models probe failed" in f.detail
+    assert "not verified" in f.detail
+    assert "real run" in f.fix
+    assert report.warns == 1
+    assert report.fails == 0
+    assert report.ok is False
+
+
+def test_probe_models_failure_after_version_answers_is_not_reported_clean(monkeypatch):
+    """End-to-end: `_probe_models` must tag PROBE_FAILED so drift does not treat it as STATIC.
+
+    Reverting either the base tag or the drift handling of that tag makes this green again wrongly.
+    """
+
+    class _ProbeCapable(CodingAgentBackend):
+        name = "probe-capable"
+        binary = "marshal-fake-probe-cli"
+        capabilities = Capabilities()
+        static_models = ("stale-model",)
+        verified_version = "1.0.0"
+
+        def probe_version(self) -> str | None:
+            return "1.0.0"
+
+        def available_models(self) -> ModelCatalog:
+            return self._probe_models(
+                [self.binary, "models"],
+                lambda _stdout: [],
+                self.static_models,
+            )
+
+        def check_available(self) -> bool:
+            return True
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            return [self.binary]
+
+        def map_permission(self, mode: PermissionMode) -> list[str]:
+            return []
+
+        def parse_output(self, stdout: str, stderr: str, exit_code: int) -> AgentResult:
+            raise NotImplementedError
+
+    monkeypatch.setattr(
+        "marshal_engine.backends.base.shutil.which",
+        lambda _b: "/usr/bin/marshal-fake-probe-cli",
+    )
+    monkeypatch.setattr(
+        "marshal_engine.backends.base.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess([], 1, "", "boom"),
+    )
+    backend = _ProbeCapable()
+    assert backend.available_models().source is ModelSource.PROBE_FAILED
+
+    report = detect_drift({"probe-capable": backend})
+    f = _finding(report, "probe-capable", "models")
+    assert f.status == WARN
+    assert report.ok is False
 
 
 def test_a_backend_with_no_curated_fallback_reports_the_live_size():

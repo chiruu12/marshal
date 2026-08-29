@@ -12,6 +12,7 @@ here - so the fail-open helper is the one to reach for outside provisioning.
 
 from __future__ import annotations
 
+import fcntl
 import subprocess
 from pathlib import Path
 
@@ -51,14 +52,21 @@ def append_git_exclude(checkout: Path, entry: str) -> None:
     # `ValueError` and so slips past an `OSError` guard, taking down a caller that was promised this
     # could not fail. Only an ASCII membership test is needed, and the append itself never decodes,
     # so replacement costs nothing and removes the failure mode rather than catching it later.
-    raw = exclude.read_bytes() if exclude.exists() else b""
-    existing = raw.decode("utf-8", errors="replace")
-    if entry in existing.splitlines():
-        return  # idempotent: re-running must not grow the file on every call
-    with exclude.open("a") as fh:
-        if existing and not existing.endswith("\n"):
-            fh.write("\n")
-        fh.write(f"{entry}\n")
+    # flock serializes the read-check-append so concurrent Fleet constructions cannot each miss the
+    # other's line and append duplicates.
+    with exclude.open("a+b") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.seek(0)
+            raw = fh.read()
+            existing = raw.decode("utf-8", errors="replace")
+            if entry in existing.splitlines():
+                return  # idempotent: re-running must not grow the file on every call
+            if existing and not existing.endswith("\n"):
+                fh.write(b"\n")
+            fh.write(f"{entry}\n".encode())
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def try_append_git_exclude(checkout: Path, entry: str) -> bool:

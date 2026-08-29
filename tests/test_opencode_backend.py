@@ -295,6 +295,49 @@ def test_parse_output_success_with_usage(backend: OpenCodeBackend) -> None:
     assert abs(res.usage.cost_usd - 0.012) < 1e-9
 
 
+def test_parse_output_malformed_usage_fields_degrade(
+    backend: OpenCodeBackend,
+) -> None:
+    # Live step-finish can emit nested cost/token shapes. Bare int()/float() would raise and
+    # turn an exit-0 run into an engine crash; parsing must drop the unusable fields instead.
+    out = "\n".join(
+        [
+            '{"part":{"type":"text","text":"still worked"}}',
+            (
+                '{"part":{"type":"step-finish","reason":"stop",'
+                '"cost":{"usd":0.01},'
+                '"tokens":{"input":[10],"output":{"total":20},'
+                '"cache":{"read":{"n":5},"write":0}}}}'
+            ),
+        ]
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "still worked"
+    assert res.usage is not None
+    assert res.usage.input_tokens == 0
+    assert res.usage.output_tokens == 0
+    assert res.usage.cache_read_tokens == 0
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
+def test_parse_output_cost_true_ignored(backend: OpenCodeBackend) -> None:
+    # bool is an int subclass; cost: true must not become native $1.0 (Goose parity).
+    out = (
+        '{"part":{"type":"text","text":"ok"}}'
+        '\n{"part":{"type":"step-finish","reason":"stop","cost":true,'
+        '"tokens":{"input":1,"output":1,"cache":{"read":0,"write":0}}}}'
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.usage is not None
+    assert res.usage.input_tokens == 1
+    assert res.usage.output_tokens == 1
+    assert res.usage.cost_usd == 0.0
+    assert res.usage.source is UsageSource.UNAVAILABLE
+
+
 def test_parse_output_error_event_is_failure(backend: OpenCodeBackend) -> None:
     out = '{"error":{"name":"RateLimit","data":{"message":"too many requests"}}}'
     res = backend.parse_output(out, "", 0)
@@ -403,6 +446,35 @@ def test_reconcile_zero_cost_keeps_unavailable(
     assert res.usage is not None
     assert res.usage.input_tokens == 100
     assert res.usage.source is UsageSource.UNAVAILABLE  # $0 cost -> still unknown, not "free"
+
+
+def test_reconcile_malformed_export_tokens_keeps_completed_run(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # _reconcile_from_export promises never to invalidate a completed run. Bare int() on
+    # nested export token fields would raise and break that contract — degrade instead.
+    out = (
+        '{"sessionID":"ses_x","part":{"type":"text","text":"done"}}'
+        '\n{"part":{"type":"step-finish","reason":"stop","cost":0.001,'
+        '"tokens":{"input":3,"output":2,"cache":{"read":0,"write":0}}}}'
+    )
+    export = {
+        "info": {
+            "id": "ses_x",
+            "tokens": {
+                "input": {"total": 10},
+                "output": [20],
+                "cache": {"read": {"n": 1}, "write": 0},
+            },
+            "cost": {"usd": 0.01},
+        },
+        "messages": [{"info": {}, "parts": [{"type": "text", "text": "export text"}]}],
+    }
+    _patch_export(monkeypatch, proc=_stub_export(export))
+    res = _finalize(backend, out)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "export text"
+    assert res.error is None
 
 
 def test_reconcile_missing_binary_is_noop(

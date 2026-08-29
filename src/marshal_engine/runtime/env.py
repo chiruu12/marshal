@@ -276,8 +276,16 @@ def credential_redactions(
     *,
     credential_names: Iterable[str] | None = None,
     min_len: int = _REDACT_MIN_VALUE_LEN,
+    extra_values: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """``(env_var_name, value)`` pairs to scrub from logs, longest values first.
+
+    Scans known credential names in ``environ`` (default: ``os.environ``). ``extra_values`` adds
+    another source — typically a per-client ``env:`` block — so credentials that reach the child
+    only via that block are scrubbed even when they never appear in the parent environment. Every
+    ``extra_values`` entry that clears ``min_len`` is included (not only secret-shaped names): a
+    client ``env:`` key like ``PROVIDER_AUTH`` can hold a real credential while passing the
+    secret-shaped-key filter at config load. Over-redacting a run's own log is cheap; leaking is not.
 
     Only values of length ``>= min_len`` are included so short tokens do not mangle ordinary text,
     and names in ``_NON_SECRET_CREDENTIAL_VARS`` are excluded entirely - they are allowlisted into a
@@ -295,6 +303,12 @@ def credential_redactions(
         value = env.get(name)
         if value is not None and len(value) >= min_len:
             pairs.append((name, value))
+    if extra_values:
+        for name, value in extra_values.items():
+            if name in _NON_SECRET_CREDENTIAL_VARS:
+                continue
+            if len(value) >= min_len:
+                pairs.append((name, value))
     # Longest first so a value that is a prefix of another is not partially replaced.
     pairs.sort(key=lambda item: len(item[1]), reverse=True)
     return pairs
@@ -306,13 +320,21 @@ def redact_secrets(
     *,
     credential_names: Iterable[str] | None = None,
     min_len: int = _REDACT_MIN_VALUE_LEN,
+    extra_values: Mapping[str, str] | None = None,
 ) -> str:
-    """Replace known credential *values* in ``text`` with ``[redacted:VAR]`` markers."""
+    """Replace known credential *values* in ``text`` with ``[redacted:VAR]`` markers.
+
+    ``extra_values`` is an additional name→value map to scrub (e.g. per-client ``env:``). Pure in
+    its arguments: no ambient/thread-local state.
+    """
     if not text:
         return text
     out = text
     for name, value in credential_redactions(
-        environ, credential_names=credential_names, min_len=min_len
+        environ,
+        credential_names=credential_names,
+        min_len=min_len,
+        extra_values=extra_values,
     ):
         if value in out:
             out = out.replace(value, f"[redacted:{name}]")

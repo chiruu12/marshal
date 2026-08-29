@@ -785,14 +785,42 @@ def test_runner_passes_the_path_scope_through_to_the_diff() -> None:
     assert "limited to src/" in svc.jobs[0]["goal"]
 
 
-@pytest.mark.parametrize("status", ["running", "queued", "cancelled"])
+@pytest.mark.parametrize("status", ["running", "queued"])
 def test_runner_refuses_to_review_a_run_still_in_flight(status: str) -> None:
-    """Not a stable snapshot. `cancelled` counts: the status is stamped right after the process
-    group is signalled, so the agent may still be exiting and writing."""
+    """Not a stable snapshot while the run is still queued or executing."""
     svc = StubService(_config("ro-a", "ro-b"), run_status=status)
     with pytest.raises(ConfigError, match="is " + status):
         _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
     assert svc.calls == []
+
+
+def test_runner_refuses_cancelled_run_whose_agent_may_still_be_writing() -> None:
+    """Cancellation is stamped before the agent is observed gone; refuse while it may still write."""
+    svc = StubService(_config("ro-a", "ro-b"), run_status="cancelled")
+    rec = svc.get_run("r9")
+    assert rec is not None
+    rec.pid = os.getpid()
+    rec.pid_start_time = _pid_start_time(rec.pid)
+    svc.get_run = lambda run_id: rec  # type: ignore[method-assign]
+    with pytest.raises(ConfigError, match="was cancelled but its agent is still alive"):
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert svc.calls == []
+
+
+def test_a_cancelled_run_whose_agent_has_exited_becomes_reviewable() -> None:
+    """The refusal lifts on its own once the pid probe shows the agent is gone."""
+    svc = StubService(_config("ro-a", "ro-b"), run_status="cancelled")
+    original = svc.get_run
+
+    def _dead_now(run_id: str) -> RunRecord | None:
+        rec = original(run_id)
+        assert rec is not None
+        rec.pid = 999_999_999  # a pid no process holds
+        return rec
+
+    svc.get_run = _dead_now  # type: ignore[method-assign]
+    result = _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    assert "run status cancelled" in result.subject_summary
 
 
 @pytest.mark.parametrize("status", ["failed", "timed_out", "verify_failed"])

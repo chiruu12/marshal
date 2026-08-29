@@ -907,6 +907,9 @@ class Fleet:
                             (r.raw_stdout or "", r.raw_stderr or "")
                             for r in (*abandoned, result)
                         ],
+                        # Same client env: the child received — scrub values that never appear in
+                        # os.environ (e.g. PROVIDER_AUTH under a non-secret-shaped key name).
+                        extra_values=req.client_env or None,
                     )
                 except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
                     print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)

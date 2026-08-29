@@ -84,6 +84,20 @@ def test_framed_status_codes_and_reason_phrases_are_transient(error: str) -> Non
     assert is_transient_failure(_failed(error))
 
 
+def test_agent_prose_try_again_is_not_transient() -> None:
+    """REGRESSION: bare "try again" in assistant prose must not burn retries.
+
+    Cursor/Claude Code put the agent's own message into AgentResult.error. A task failure that
+    says "please try again with a clearer assertion" is not an infra/transport blip — retrying
+    it wastes money. Other markers ("overloaded", "rate limit", …) still cover real provider
+    strings; this asserts the over-broad substring alone is gone.
+    """
+    prose = "Unable to fix the test. Please try again with a clearer assertion."
+    assert not is_transient_failure(_failed(prose))
+    # Sanity: the same sentence plus a real marker still counts as transient.
+    assert is_transient_failure(_failed(prose + " Provider overloaded."))
+
+
 def test_genuine_failure_is_not_transient() -> None:
     assert not is_transient_failure(_failed("AssertionError: expected 2 got 3"))
     assert not is_transient_failure(_failed(None))   # no error text -> not attributable to a cause

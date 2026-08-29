@@ -851,6 +851,51 @@ def test_create_refuses_a_taken_branch_and_leaves_its_work_untouched(repo: Path)
     assert "marshal/preexist" in git("branch", "--list", "marshal/preexist")
 
 
+def test_a_failed_publish_rolls_back_the_run_directory(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: a failed ``_publish`` must roll back the clone dir like clone/checkout do.
+
+    Without rollback, ``create`` leaves a half-built run directory Fleet cannot discard, and the
+    task id is stranded behind ``path.exists()`` even though nothing was published.
+    """
+    m = WorktreeManager(repo)
+
+    def fail_publish(wt: object, what: str) -> None:
+        raise WorktreeError("simulated publish fail")
+
+    monkeypatch.setattr(m, "_publish", fail_publish)
+    with pytest.raises(WorktreeError, match="simulated publish fail"):
+        m.create("pub_fail")
+
+    assert not (m.base_dir / "pub_fail").exists()
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "marshal/pub_fail"],
+        capture_output=True, text=True, check=False,
+    ).stdout
+    assert "marshal/pub_fail" not in branches
+
+    monkeypatch.undo()
+    wt = m.create("pub_fail")
+    assert wt.path.exists()
+    m.remove(wt)
+
+
+def test_rollback_does_not_delete_a_published_run_directory(repo: Path) -> None:
+    """REGRESSION: failed-create rollback must not rmtree a directory whose branch is already
+    published. Under concurrency a retried create may finish while an earlier attempt is still
+    unwinding; deleting by path alone would reach another run's worktree."""
+    m = WorktreeManager(repo)
+    victim = m.create("victim")
+    marker = victim.path / "KEEP"
+    marker.write_text("stay\n")
+
+    m._rollback_failed_create(victim.path, victim.branch)
+
+    assert victim.path.exists(), "a published run's directory must survive rollback"
+    assert marker.read_text() == "stay\n"
+
+
 def test_a_failed_create_leaves_no_branch_and_the_id_stays_reusable(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1294,6 +1339,62 @@ def test_diff_still_accepts_the_normal_exit_1_from_no_index(repo: Path) -> None:
     wt = m.create("task_diff_exit1")
     (wt.path / "new.txt").write_text("brand new\n")
     assert "brand new" in m.diff(wt)
+
+
+def test_diff_raises_when_untracked_listing_fails(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: ``git ls-files --others`` exit code was unchecked, so a failed listing read as
+    no untracked files and a run's new files vanished from its diff."""
+    m = WorktreeManager(repo)
+    wt = m.create("ls_fail")
+    (wt.path / "new.txt").write_text("brand new\n")
+    real_git = m._git
+
+    def flaky_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("ls-files", "--others"):
+            return subprocess.CompletedProcess(
+                args=list(args),
+                returncode=128,
+                stdout="",
+                stderr="fatal: simulated ls-files failure",
+            )
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(m, "_git", flaky_git)
+    with pytest.raises(WorktreeError, match="untracked|ls-files|simulated"):
+        m.diff(wt)
+
+
+def test_stale_remote_tracking_ref_does_not_vouch_for_base(repo: Path) -> None:
+    """REGRESSION: ``refs/remotes/*`` must not count as a user-owned ref keeping a base alive.
+
+    A stale remote-tracking ref can still contain a commit the user deleted locally, which would
+    otherwise silence the orphaned-base diagnosis."""
+    m = WorktreeManager(repo)
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("checkout", "-b", "feature")
+    (repo / "feature.txt").write_text("on feature\n")
+    git("add", "feature.txt")
+    git("commit", "-m", "feature work")
+    orphaned_sha = git("rev-parse", "HEAD")
+    git("checkout", "-")
+    git("branch", "-D", "feature")
+
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "update-ref",
+            "refs/remotes/origin/stale-base", orphaned_sha,
+        ],
+        check=True, capture_output=True,
+    )
+
+    assert not m.any_user_ref_contains(orphaned_sha)
 
 
 # --- discard reports a directory it could not remove ------------------------------------------

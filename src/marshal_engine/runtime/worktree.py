@@ -289,7 +289,7 @@ class WorktreeManager:
             str(self.repo_root), str(path),
         )
         if clone.returncode != 0:
-            shutil.rmtree(path, ignore_errors=True)  # a partial clone must not look like a run dir
+            self._rollback_failed_create(path, branch)
             raise WorktreeError(f"clone failed for {task_id!r}: {clone.stderr.strip()}")
 
         # The clone carries every branch the repo had, so an id whose branch is already taken fails
@@ -300,7 +300,7 @@ class WorktreeManager:
         wt = Worktree(task_id=task_id, path=path, branch=branch, base_commit=base_commit)
         checkout = self._git("checkout", "--quiet", "-b", branch, base_commit, cwd=path)
         if checkout.returncode != 0:
-            shutil.rmtree(path, ignore_errors=True)
+            self._rollback_failed_create(path, branch)
             raise WorktreeError(
                 f"could not start {task_id!r} from {base!r} ({base_commit[:12]}): "
                 f"{checkout.stderr.strip()}"
@@ -315,7 +315,11 @@ class WorktreeManager:
         # did when this was a linked worktree. Callers ask about it before the run has committed
         # anything - `branch_tip`, `has_unmerged_commits` - and a branch that materialised only on
         # first commit would make those fail rather than answer "no commits yet".
-        self._publish(wt, base_commit)
+        try:
+            self._publish(wt, base_commit)
+        except WorktreeError:
+            self._rollback_failed_create(path, branch)
+            raise
         return wt
 
     def agent_commit_count(self, wt: Worktree) -> int | None:
@@ -527,6 +531,10 @@ class WorktreeManager:
         if tracked.stdout:
             parts.append(tracked.stdout)
         listing = self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=wt.path)
+        if listing.returncode != 0:
+            raise WorktreeError(
+                f"could not list untracked files for {wt.task_id!r}: {listing.stderr.strip()}"
+            )
         for path in listing.stdout.split("\0"):
             if not path:
                 continue
@@ -575,6 +583,26 @@ class WorktreeManager:
         sha = self._git("rev-parse", "HEAD", cwd=wt.path).stdout.strip()
         self._publish(wt, sha)
         return sha
+
+    def _rollback_failed_create(self, path: Path, branch: str) -> None:
+        """Remove a partial run directory after ``create`` failed, but only when it is still ours.
+
+        Refuses to delete when the branch is already published in the driver's repo - a concurrent
+        or retried create may have finished while this attempt was failing - and when ``path`` is
+        outside ``base_dir`` or is a symlink (``rmtree`` would reach another run's tree).
+        """
+        if not path.exists():
+            return
+        try:
+            resolved = _ensure_under_base(path, self.base_dir)
+        except WorktreeError:
+            return
+        if resolved.is_symlink():
+            return
+        if self._git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+            return
+        _restore_writable_dirs(resolved)
+        shutil.rmtree(resolved, ignore_errors=True)
 
     def _inherit_identity(self, clone_path: Path) -> None:
         """Carry the repo's committer identity into a run's clone.
@@ -686,6 +714,11 @@ class WorktreeManager:
         diagnosis for all of them. That is the case this matters in: rewriting history under a
         1-run fleet is a nuisance, under an 8-run fleet it is eight confusing conflicts.
 
+        Only local branches and tags count as user-owned. ``refs/remotes/*`` is excluded: a stale
+        remote-tracking ref can still contain a commit the user deleted locally, which would
+        otherwise silence the orphaned-base diagnosis and leave the driver with the misleading
+        conflict list that diagnosis exists to replace.
+
         Deliberately ref-based, not object-based: the reflog keeps an orphaned commit alive as an
         object long after every ref has moved off it.
         """
@@ -694,7 +727,12 @@ class WorktreeManager:
             return False
         managed = f"refs/heads/{self.branch_prefix}/"
         return any(
-            ref.strip() and not ref.strip().startswith(managed)
+            ref.strip()
+            and not ref.strip().startswith(managed)
+            and (
+                ref.strip().startswith("refs/heads/")
+                or ref.strip().startswith("refs/tags/")
+            )
             for ref in proc.stdout.splitlines()
         )
 

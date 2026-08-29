@@ -84,6 +84,94 @@ def test_explicit_zero_amount_usd_still_attributes() -> None:
     assert ext.source is UsageSource.ADMIN_API
 
 
+def test_missing_prompt_tokens_does_not_fabricate_admin_api_cost() -> None:
+    # Honesty: a row with no usable prompt_tokens must not enter the match set. Zero-coercion
+    # would reconcile whenever input_tokens <= 200 (abs slack), stamping admin-api with a
+    # charge never accounted for by a real prompt count. Use input_tokens inside that slack
+    # so a revert to `int(r.get("prompt_tokens", 0) or 0)` fails this test.
+    for row in (
+        {  # missing prompt_tokens entirely
+            "model": "z-ai/glm-5.1",
+            "amount_usd": 0.005,
+            "completion_tokens": 150,
+            "reasoning_tokens": 0,
+            "created_at": "2026-06-28T12:00:05+00:00",
+        },
+        {  # explicit null
+            "model": "z-ai/glm-5.1",
+            "amount_usd": 0.005,
+            "prompt_tokens": None,
+            "completion_tokens": 150,
+            "reasoning_tokens": 0,
+            "created_at": "2026-06-28T12:00:05+00:00",
+        },
+    ):
+        ext = fetch_run_cost(
+            model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+            input_tokens=150,
+            api_key="sk-test", attempts=1, http=_getter(_usage(row)),  # type: ignore[arg-type]
+        )
+        assert ext is None, f"expected no attribution for row={row!r}"
+
+
+def test_missing_prompt_tokens_row_does_not_piggyback_on_good_match() -> None:
+    # A zero-coerced missing/null prompt row beside a real match still reconciles on the
+    # prompt sum (good.prompt + 0) while folding the bad row's amount into the total.
+    # Skipping the bad row keeps only the good charge.
+    good = _rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00")
+    for bad in (
+        {  # missing prompt_tokens
+            "model": "z-ai/glm-5.1",
+            "amount_usd": 0.99,
+            "completion_tokens": 10,
+            "reasoning_tokens": 0,
+            "created_at": "2026-06-28T12:00:06+00:00",
+        },
+        {  # explicit null
+            "model": "z-ai/glm-5.1",
+            "amount_usd": 0.99,
+            "prompt_tokens": None,
+            "completion_tokens": 10,
+            "reasoning_tokens": 0,
+            "created_at": "2026-06-28T12:00:06+00:00",
+        },
+    ):
+        ext = fetch_run_cost(
+            model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+            input_tokens=7000,
+            api_key="sk-test", attempts=1, http=_getter(_usage(good, bad)),  # type: ignore[arg-type]
+        )
+        assert ext is not None
+        assert ext.cost_usd == 0.005, f"bad row amount must not fold in; bad={bad!r}"
+        assert ext.matched_records == 1
+        assert ext.prompt_tokens == 7000
+
+
+def test_explicit_zero_prompt_tokens_still_attributes() -> None:
+    # An explicitly reported 0 is a real measurement — keep admin-api attribution when the
+    # run's own input is also 0-slack-compatible. Here input_tokens=1 with prompt=0 is short
+    # by 1 (<= abs 200), so reconciliation succeeds on an honest zero.
+    body = _usage(
+        {
+            "model": "z-ai/glm-5.1",
+            "amount_usd": 0.0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "reasoning_tokens": 0,
+            "created_at": "2026-06-28T12:00:05+00:00",
+        }
+    )
+    ext = fetch_run_cost(
+        model="z-ai/glm-5.1", start_iso=_START, end_iso=_END,
+        input_tokens=1,
+        api_key="sk-test", attempts=1, http=_getter(body),  # type: ignore[arg-type]
+    )
+    assert ext is not None
+    assert ext.cost_usd == 0.0
+    assert ext.prompt_tokens == 0
+    assert ext.source is UsageSource.ADMIN_API
+
+
 def test_happy_path_real_cost() -> None:
     body = _usage(
         _rec("z-ai/glm-5.1", 0.005, 7000, 150, "2026-06-28T12:00:05+00:00"),

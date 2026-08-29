@@ -161,10 +161,16 @@ class ModelSource(str, Enum):
     route at needs to know whether the CLI said this *just now* or whether Marshal is reciting
     what a doc said months ago: a static list can name a model the account cannot actually run,
     and a run that fails on an unknown model id is a wasted worktree and a confusing error.
+
+    ``STATIC`` and ``PROBE_FAILED`` both carry a curated list that may be stale; they differ in
+    whether a live probe was attempted. ``list_models`` treats ``static`` as "not live evidence"
+    either way; drift needs the distinction so an installed CLI whose probe just failed is not
+    mistaken for an adapter that never had a probe.
     """
 
     PROBED = "probed"            # this backend's CLI reported these ids just now
-    STATIC = "static"            # curated list; the CLI could not be asked, or did not answer
+    STATIC = "static"            # curated list; no live probe was attempted (or CLI absent)
+    PROBE_FAILED = "probe-failed"  # live probe ran and failed; models are the curated fallback
     UNAVAILABLE = "unavailable"  # nothing to report at all
 
 
@@ -173,7 +179,8 @@ class ModelCatalog(BaseModel):
 
     Carrying the provenance inline is what lets ``UNAVAILABLE`` mean "could not ask" without
     overloading an empty list or a null to mean it - the ambiguity that let a static fallback
-    read as a live probe.
+    read as a live probe. ``PROBE_FAILED`` is the third state: the adapter tried and the CLI did
+    not answer, so the curated ids are present but unverified.
     """
 
     model_config = ConfigDict(frozen=True)

@@ -574,3 +574,26 @@ def test_runner_survives_service_run_agent_failure() -> None:
     impl = result.phases[0]
     assert any("client vanished" in n for n in impl.notes)
     assert any("client vanished" in a for a in result.next_actions)
+    assert result.status == "error"
+
+
+def test_single_agent_non_clean_status_is_workflow_error() -> None:
+    """`run: agent` must match fan_out: a non-clean run status reaches workflow `error`.
+
+    Without setting `had_error` on the status path (exception path already did), a lone
+    failed/timed-out agent stamped `completed`, and `cli/recipes.py` maps that to exit 0.
+    """
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[PhaseSpec(name="impl", run="agent", client="a", goal="{t}")],
+    )
+    svc = StubService(_config("a"), statuses={"a": "timed_out"})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+
+    assert result.status == "error"
+    # recipes.py: `return 0 if result.status == "completed" else 1`
+    assert (0 if result.status == "completed" else 1) != 0
+    impl = result.phases[0]
+    assert any("a.1" in n and "did not succeed" in n for n in impl.notes)
+    assert any("a.1" in a and "timed_out" in a for a in result.next_actions)

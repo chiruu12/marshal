@@ -10,9 +10,11 @@ precisely what someone diagnosing a flaky backend is looking for. Writes are ato
 (unique temp + `os.replace`, same idiom as FleetState) so a torn read never sees partial content;
 the Fleet guards them defensively (a log write failure must never break a run).
 
-Before persistence, known credential *values* from the parent environment are replaced with
+Before persistence, known credential *values* from the parent environment — and, when the caller
+passes them, from the per-client ``env:`` block that child received — are replaced with
 ``[redacted:VAR]`` markers (see ``env.redact_secrets``). Key-name-only filters miss ``env`` output
-and ``echo $VAR``; value-based redaction covers those.
+and ``echo $VAR``; value-based redaction covers those. The client values travel as an ordinary
+argument so redaction stays a pure function of its inputs (safe under parallel fleet runs).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .env import redact_secrets
@@ -43,15 +45,29 @@ class RunLogStore:
         """Where this run's log would be stored (does not create it)."""
         return self._path(run_id)
 
-    def write(self, run_id: str, stdout: str, stderr: str) -> None:
+    def write(
+        self,
+        run_id: str,
+        stdout: str,
+        stderr: str,
+        *,
+        extra_values: Mapping[str, str] | None = None,
+    ) -> None:
         """Persist one attempt's stdout and stderr as a single, headed file (atomic).
 
-        Credential values present in the parent environment are redacted before the write.
+        Credential values present in the parent environment (and in ``extra_values``, typically the
+        per-client ``env:`` that child received) are redacted before the write.
         Overwrites any prior log for the same run_id - the run has a new outcome to record.
         """
-        self.write_attempts(run_id, [(stdout, stderr)])
+        self.write_attempts(run_id, [(stdout, stderr)], extra_values=extra_values)
 
-    def write_attempts(self, run_id: str, attempts: Sequence[tuple[str, str]]) -> None:
+    def write_attempts(
+        self,
+        run_id: str,
+        attempts: Sequence[tuple[str, str]],
+        *,
+        extra_values: Mapping[str, str] | None = None,
+    ) -> None:
         """Persist EVERY attempt's stdout/stderr for a run as one headed file (atomic).
 
         A retried run has more than one attempt, and the retried-away ones are the whole point of
@@ -76,9 +92,9 @@ class RunLogStore:
                     if total > 1:
                         fh.write(f"--- attempt {index}/{total} ---\n")
                     fh.write("--- stdout ---\n")
-                    fh.write(redact_secrets(stdout))
+                    fh.write(redact_secrets(stdout, extra_values=extra_values))
                     fh.write("\n--- stderr ---\n")
-                    fh.write(redact_secrets(stderr))
+                    fh.write(redact_secrets(stderr, extra_values=extra_values))
                     if total > 1 and index < total:
                         fh.write("\n")
             os.replace(tmp, path)  # atomic: a reader sees either the old file or the whole new one

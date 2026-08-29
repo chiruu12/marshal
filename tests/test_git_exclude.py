@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,29 @@ def test_an_existing_exclude_file_is_preserved(tmp_path: Path) -> None:
 
     lines = _exclude_text(tmp_path).splitlines()
     assert lines == ["*.log", "build/", ".marshal/"]
+
+
+def test_concurrent_appends_do_not_duplicate_the_entry(tmp_path: Path) -> None:
+    """REGRESSION: read-check-append without a lock let concurrent writers each miss the other's
+    line and append duplicates, breaking the idempotency the function documents."""
+    _init(tmp_path)
+    barrier = threading.Barrier(8)
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            append_git_exclude(tmp_path, ".marshal/")
+        except BaseException as exc:  # noqa: BLE001 - collect for the main thread
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, f"workers failed: {errors!r}"
+    assert _exclude_text(tmp_path).splitlines().count(".marshal/") == 1
 
 
 def test_a_directory_that_is_not_a_repo_is_reported_not_raised(tmp_path: Path) -> None:

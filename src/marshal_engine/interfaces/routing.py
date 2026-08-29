@@ -20,7 +20,12 @@ from typing import Literal
 from pydantic import BaseModel
 
 from ..accounting.ledger import RoutingLedger, summarize_routing
-from ..accounting.usage import UsageTracker, UsageWindow, usage_window_since
+from ..accounting.usage import (
+    UnreadableUsageLedgerError,
+    UsageTracker,
+    UsageWindow,
+    usage_window_since,
+)
 from ..core.types import RunOutcome, is_terminal
 from ..runtime.state import FleetState, RunRecord
 
@@ -171,6 +176,56 @@ def record_outcome(
     )
 
 
+_LEDGER_FULLY_READABLE = 0
+#: Sentinel: the ledger is partial but the dropped lines could not be counted.
+_LEDGER_PARTIAL_UNCOUNTED = -1
+
+
+def _ledger_skipped_lines(usage: UsageTracker) -> int:
+    """How many event lines the lenient reader dropped.
+
+    ``0`` when the ledger is fully readable, a positive count when whole lines were skipped, and
+    ``_LEDGER_PARTIAL_UNCOUNTED`` when it is partial in a way the strict pass cannot enumerate.
+
+    That last case is real: the strict read decodes the file as UTF-8 and raises
+    ``UnicodeDecodeError`` when a crash tore the ledger mid-character, because a ledger that
+    cannot be read exactly must not be used to enforce a budget cap. Routing is a REPORTING path,
+    where the documented posture is the opposite - degrade rather than become unusable - so that
+    decode error must not escape and take `routing` down with it. Partiality is still the honest
+    verdict; only the count is unavailable, and the caveat says so rather than inventing one.
+    """
+    try:
+        usage.read_events(strict=True)
+    except UnreadableUsageLedgerError as exc:
+        return exc.skipped
+    except UnicodeDecodeError:
+        return _LEDGER_PARTIAL_UNCOUNTED
+    return _LEDGER_FULLY_READABLE
+
+
+def _caveat_partial_ledger(ledger: RoutingLedger, skipped: int) -> RoutingLedger:
+    """Withhold headline recommendations when rates are knowingly incomplete."""
+    scope = (
+        "unreadable content that could not be counted (the ledger is torn mid-character)"
+        if skipped == _LEDGER_PARTIAL_UNCOUNTED
+        else f"{skipped} unreadable event(s)"
+    )
+    partial = (
+        f"usage ledger has {scope}; "
+        "rates and recommendations are computed over incomplete history - "
+        "repair or remove the torn line(s) before trusting routing"
+    )
+    caveat = f"{partial}. {ledger.caveat}" if ledger.caveat else partial
+    return ledger.model_copy(
+        update={
+            "recommended": None,
+            "recommended_by_task_kind": {},
+            "recommended_task_kind": None,
+            "caveat": caveat,
+        }
+    )
+
+
 def build_routing(
     usage: UsageTracker,
     state: FleetState,
@@ -187,13 +242,19 @@ def build_routing(
     other, so the outcome mapping is assembled here and handed down.
 
     Reporting posture, matching every other read path: `strict=False`, so a torn or malformed
-    ledger line is skipped with a warning rather than taking the whole report down.
+    ledger line is skipped with a warning rather than taking the whole report down. When any line
+    was skipped, headline recommendations are withheld - a rate over partial data must not read as
+    a rate over all of it.
     """
     moment = now or datetime.now(UTC)
     since = usage_window_since(window, session_start=session_start or moment, now=moment)
-    return summarize_routing(
+    ledger = summarize_routing(
         usage.events(),
         outcome_index(state),
         since=since,
         task_kind=task_kind,
     )
+    skipped = _ledger_skipped_lines(usage)
+    if skipped != _LEDGER_FULLY_READABLE:
+        return _caveat_partial_ledger(ledger, skipped)
+    return ledger

@@ -66,28 +66,24 @@ TargetKind = Literal["run", "plan", "range", "audit"]
 MAX_SUBJECT_CHARS = 120_000
 
 #: Run states whose worktree cannot be trusted as a stable snapshot to review.
-#: `running`/`queued` are obvious. `cancelled` is here for a subtler reason: cancellation records
-#: the status immediately after signalling the process group, so the agent may still be exiting
-#: and writing when the record already reads terminal - a review would race a live writer.
-_UNSTABLE_FOR_REVIEW = frozenset(
-    {RunStatus.RUNNING.value, RunStatus.QUEUED.value, RunStatus.CANCELLED.value}
-)
+#: `running`/`queued` are obvious. `cancelled` is NOT listed here: like `timed_out`, it may still
+#: be writing only while its agent process survives - ``_agent_may_still_be_writing`` re-probes
+#: that, the same guard the write paths use, so a settled cancellation becomes reviewable.
+_UNSTABLE_FOR_REVIEW = frozenset({RunStatus.RUNNING.value, RunStatus.QUEUED.value})
 
 
 def _review_instability(run_id: str, rec: RunRecord | None) -> str | None:
     """Why this run's worktree is not a stable snapshot, as a message - or None when it is.
 
-    Status alone does not answer it. A timed-out run is normally settled, because the timeout path
-    signals the agent's process group and confirms it died; when that confirmation fails the agent
-    is still writing, which is the same situation ``cancelled`` is refused for. The two need
-    different advice, though - a cancelled run settles on its own, and this one settles only when
-    somebody stops the process - so the reason and the remedy are built together rather than
-    shared.
+    Status alone does not answer it. A timed-out or cancelled run is normally settled once its
+    agent process is gone; while the process survives the worktree is still being written. The
+    two terminal statuses need different advice when the agent outlives the stamp - a cancelled
+    run settles on its own, a timed-out survivor may not - so the reason and the remedy are built
+    together rather than shared.
 
-    Delegates the timed-out case to ``_agent_may_still_be_writing`` rather than reading the flag
-    directly, so this agrees with what the write paths do. Reading the flag alone would refuse for
-    good: the flag is what was observed at kill time, and only the pid probe behind that helper can
-    ever say the process has since gone.
+    Delegates to ``_agent_may_still_be_writing`` rather than reading ``agent_survived_kill`` or
+    the status alone, so this agrees with what the write paths do. Reading those alone would
+    refuse for good: only the pid probe behind that helper can say the process has since gone.
     """
     if rec is None:
         return None  # unknown run: `collect_run` below raises the error that names it
@@ -97,6 +93,12 @@ def _review_instability(run_id: str, rec: RunRecord | None) -> str | None:
             "of it describes nothing. Wait for the run to settle before reviewing."
         )
     if _agent_may_still_be_writing(rec):
+        if rec.status == RunStatus.CANCELLED.value:
+            return (
+                f"run {run_id} was cancelled but its agent is still alive and writing to the "
+                "worktree, so a review of it describes a moving target. Wait for the process to "
+                "exit before reviewing."
+            )
         return (
             f"run {run_id} timed out and its agent did not stop - Marshal signalled its process "
             "group and the process was still alive afterwards. Its worktree is being written to, "
