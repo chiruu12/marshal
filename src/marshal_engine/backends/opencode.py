@@ -297,17 +297,20 @@ class OpenCodeBackend(CodingAgentBackend):
                 tokens: dict[str, Any] = tokens_raw if isinstance(tokens_raw, dict) else {}
                 cache_raw = tokens.get("cache")
                 cache: dict[str, Any] = cache_raw if isinstance(cache_raw, dict) else {}
-                usage.input_tokens += int(tokens.get("input", 0) or 0)
-                usage.output_tokens += int(tokens.get("output", 0) or 0)
-                usage.cache_read_tokens += int(cache.get("read", 0) or 0)
-                cost = part.get("cost")
+                # Guarded casts: a nested/bool/string token field must drop that field, never
+                # raise — usage is nice-to-have; an exit-0 run's result is not.
+                out_tok = _as_int(tokens.get("output"))
+                usage.input_tokens += _as_int(tokens.get("input"))
+                usage.output_tokens += out_tok
+                usage.cache_read_tokens += _as_int(cache.get("read"))
+                cost = _as_float(part.get("cost"))
                 if cost is not None:
-                    usage.cost_usd += float(cost or 0)
+                    usage.cost_usd += cost
                     found_cost = True
                 found_usage = True
                 reason = part.get("reason")
                 last_step_reason = str(reason) if reason is not None else None
-                last_step_had_output = int(tokens.get("output", 0) or 0) > 0
+                last_step_had_output = out_tok > 0
 
         # NATIVE only when the backend reported a POSITIVE cost. A reported $0 alongside consumed
         # tokens means the model is unpriced (e.g. a custom OpenAI-compatible provider opencode has no
@@ -369,7 +372,11 @@ class OpenCodeBackend(CodingAgentBackend):
         data = self._parse_export_payload(proc.stdout)
         if not isinstance(data, dict):
             return None
-        return self._export_to_patch(data)
+        # Defense in depth: export shape drift must never invalidate a completed run.
+        try:
+            return self._export_to_patch(data)
+        except Exception:
+            return None
 
     @staticmethod
     def _parse_export_payload(raw: str) -> dict[str, Any] | None:
@@ -422,7 +429,10 @@ class OpenCodeBackend(CodingAgentBackend):
             if isinstance(tokens_raw, dict):
                 cache_raw = tokens_raw.get("cache")
                 cache: dict[str, Any] = cache_raw if isinstance(cache_raw, dict) else {}
-                cost = float(cost_raw) if isinstance(cost_raw, (int, float)) else 0.0
+                # Same guarded numeric rule as the live stream: bool/nested shapes drop the
+                # field (cost → 0 / tokens → 0) rather than raising on a completed run.
+                parsed_cost = _as_float(cost_raw)
+                cost = parsed_cost if parsed_cost is not None else 0.0
                 model_id = (
                     model_raw.get("id") if isinstance(model_raw, dict) else None
                 )
@@ -433,15 +443,37 @@ class OpenCodeBackend(CodingAgentBackend):
                     backend="opencode",
                     source=UsageSource.NATIVE if cost > 0 else UsageSource.UNAVAILABLE,
                     model=model_id if isinstance(model_id, str) else None,
-                    input_tokens=int(tokens_raw.get("input", 0) or 0),
-                    output_tokens=int(tokens_raw.get("output", 0) or 0),
-                    cache_read_tokens=int(cache.get("read", 0) or 0) if isinstance(cache, dict) else 0,
+                    input_tokens=_as_int(tokens_raw.get("input")),
+                    output_tokens=_as_int(tokens_raw.get("output")),
+                    cache_read_tokens=_as_int(cache.get("read")),
                     cost_usd=cost,
                 )
 
         if final_text is None and usage is None:
             return None
         return {"text": final_text, "usage": usage}
+
+
+def _as_int(value: object) -> int:
+    """Non-negative int from a loosely-typed JSON number. 0 for anything else.
+
+    Excludes bool (True/False are int subclasses) so a token count of ``true`` cannot become 1.
+    Nested objects/lists/strings return 0 rather than raising — usage parsing must degrade.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
+def _as_float(value: object) -> float | None:
+    """Real float from a JSON number, or None when unusable.
+
+    Excludes bool so ``cost: true`` cannot become native $1.00. Dict/list/str/None → None
+    (caller skips the field) rather than raising on a successful run.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _parse_auth_list(raw: str) -> dict[str, str] | None:
