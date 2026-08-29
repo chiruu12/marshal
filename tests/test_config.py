@@ -302,6 +302,45 @@ def test_verify_wrong_type_raises(tmp_path: Path) -> None:
         load_config(p)
 
 
+def test_timeout_s_zero_raises(tmp_path: Path) -> None:
+    """REGRESSION: timeout_s: 0 must fail at load (would TIMED_OUT every run immediately)."""
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "clients:\n"
+        "  x:\n"
+        "    backend: cursor\n"
+        "    timeout_s: 0\n"
+    )
+    with pytest.raises(ConfigError, match=r"timeout_s.*must be > 0"):
+        load_config(p)
+
+
+def test_timeout_s_negative_raises(tmp_path: Path) -> None:
+    """REGRESSION: timeout_s: -1 must fail at load (not deep in proc.communicate)."""
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "clients:\n"
+        "  x:\n"
+        "    backend: cursor\n"
+        "    timeout_s: -1\n"
+    )
+    with pytest.raises(ConfigError, match=r"timeout_s.*must be > 0"):
+        load_config(p)
+
+
+def test_timeout_s_bool_raises(tmp_path: Path) -> None:
+    """REGRESSION: timeout_s: true must fail at load (int(True) would become 1 second)."""
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(
+        "clients:\n"
+        "  x:\n"
+        "    backend: cursor\n"
+        "    timeout_s: true\n"
+    )
+    with pytest.raises(ConfigError, match=r"timeout_s.*got bool"):
+        load_config(p)
+
+
 def test_retries_defaults_to_two(tmp_path: Path) -> None:
     p = tmp_path / "fleet.config.yaml"
     p.write_text(_YAML)

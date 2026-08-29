@@ -38,7 +38,6 @@ TRANSIENT_MARKERS: tuple[str, ...] = (
     "connection reset",
     "connection refused",
     "econnreset",
-    "try again",
 )
 
 # Status codes only with HTTP/provider framing, or a word-bounded code next to a reason phrase.
