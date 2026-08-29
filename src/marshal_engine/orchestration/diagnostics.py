@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ..runtime.state import RunRecord
 from ..runtime.worktree import WorktreeError, WorktreeManager
+from .liveness import _pid_is_verifiably_ours
 
 
 def _base_branch_drift_warning(rec: RunRecord | None, target: str) -> tuple[bool, str]:
@@ -98,9 +99,16 @@ def _live_agent_message(rec: RunRecord) -> str:
         else "a terminal status can be stamped without the process having been signalled at all "
         "(a cancel from another Marshal process cannot signal it)"
     )
+    if _pid_is_verifiably_ours(rec):
+        identity = f"its agent is still alive at pid {rec.pid}"
+        action = "Wait for the process to exit or stop it yourself, then retry."
+    else:
+        identity = (
+            f"something is still alive at pid {rec.pid}, but Marshal cannot confirm it is the agent"
+        )
+        action = "Verify the process before ending it, then retry."
     return (
-        f"run {rec.run_id!r} reads {rec.status!r}, but its agent is still alive at pid {rec.pid}. "
+        f"run {rec.run_id!r} reads {rec.status!r}, but {identity}. "
         f"This happens because {cause}, so the worktree may still be mid-write and committing it "
-        f"now could capture half-written files. Wait for the process to exit or stop it yourself, "
-        f"then retry."
+        f"now could capture half-written files. {action}"
     )
