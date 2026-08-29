@@ -10,6 +10,116 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A workflow whose only agent failed reported `completed`.** The `fan_out` branch already set
+  `had_error` on a non-clean run status, with a comment recording why: a CI step wrapping a
+  workflow passed green on total failure. The `run: agent` branch added beside it says "same
+  survival contract as fan_out" and set the flag on the exception path only - so a single
+  failed or timed-out agent left the flag alone, the workflow stamped `completed`, and
+  `cli/recipes.py` mapped that to exit 0. The same defect the earlier comment describes, one
+  branch over.
+
+- **EastRouter invented a prompt count and then called the cost measured.** `_parse_records`
+  coerced a missing or null `prompt_tokens` to `0`, unlike `amount_usd`, which correctly skips a
+  row it cannot read. Reconciliation tolerates a shortfall of up to `max(200, 10%)` on the under
+  side, so a fabricated zero reconciled whenever the run's own input was small - and a
+  zero-coerced row sitting beside a legitimate match still reconciled on the good row's prompt
+  count while its own `amount_usd` was folded into the total. The run was then stamped
+  `admin-api`: a verdict of "this cost is measured" over a number nothing accounted for. Missing
+  and null now disqualify the row; an explicitly reported `0` is a real measurement and is kept.
+
+- **A successful OpenCode run could be recorded as an engine crash.** The live `step-finish`
+  handler cast token and cost fields with bare `int()`/`float()`, so a nested or unexpected shape
+  raised out of `parse_output` after the CLI had already exited 0, losing the work. The same
+  unguarded cast defeated `_reconcile_from_export`, whose docstring promises that recovery never
+  invalidates a completed run. Usage parsing now degrades - an unusable field is dropped, the run
+  survives. `cost: true` no longer becomes a native $1.00 either (`bool` is an `int` subclass);
+  Goose already guarded that, OpenCode did not.
+
+- **A non-transient failure was retried up to three times.** `TRANSIENT_MARKERS` contained the
+  bare substring `"try again"`, and the Cursor and Claude Code failure paths put the agent's own
+  prose into `AgentResult.error` - so "Unable to fix the test. Please try again with a clearer
+  assertion." was classified as an infrastructure blip and re-run, burning real money on a
+  failure no retry could fix. Also: `load_config` accepted any `timeout_s` an `int()` would take,
+  so `0` timed out every run immediately, `true` became 1 second, and `-1` raised from inside
+  `proc.communicate` long after the config was declared valid. It now enforces the rules
+  `resolve_duration` already applied, and names the client and key that failed.
+
+- **One corrupt run record took down a whole poll.** `FleetState.list()` skips an unreadable
+  record and warns with a count; `FleetState.get()` parsed it unguarded, so a torn
+  `runs/<id>.json` raised `ValidationError` out through `get_run` and `wait_for_runs` and across
+  the MCP boundary. A point lookup now reports the record absent and warns on stderr, so
+  corruption is visible rather than silently indistinguishable from a run that never existed.
+
+- **A diagnostic named an agent Marshal could not identify.** `_live_agent_message` said "its
+  agent is still alive at pid N" whenever `_agent_may_still_be_writing` was true - but that
+  helper fails *open* on an unverifiable identity, so a cancelled run whose pid had been recycled
+  told the driver to wait for or kill a process that was never the agent. It now hedges exactly
+  as `cancel_run` already does when it cannot confirm, using the fail-closed
+  `_pid_is_verifiably_ours`, and keeps the confident wording when identity checks out.
+
+- **`read_paths` accepted hardlinks and case-variant secret names.** The module docstring claimed
+  hardlinks were refused; nothing checked `st_nlink`, so an innocently-named hardlink to a secret
+  inode was copied into the worktree. The secret-name filter was case-sensitive (`fnmatch` does
+  not fold case on POSIX, and the directory check used exact membership), so `.ENV`, `ID_RSA` and
+  `.SSH/` passed a filter whose whole purpose is to stop them. `harvest_artifacts` skipped
+  symlinks but not hardlinks, making the artifact channel a worktree escape. Destination writes
+  now happen relative to a pinned directory fd (`mkdirat`/`openat`), closing the window where a
+  swapped intermediate directory could redirect a copy. The `_make_readonly` docstring no longer
+  claims `0o555` stops the owning agent from mutating enclosed files - it cannot; it is a soft
+  guard, and now says so.
+
+- **Routing reported a rate over history it knew was incomplete.** `build_routing` reads the
+  usage ledger leniently, so a torn event line was dropped with a warning and never entered the
+  denominator - one integrated run beside one dropped rejection read as 100% and produced a
+  headline recommendation. Recommendations are now withheld when any line was skipped, and the
+  caveat says how many.
+
+- **A wait could outlive the run it was waiting for, or die on a neighbour's bad id.**
+  `wait_for_runs` polled `FleetState.get` directly: it never reconciled orphans, so a run whose
+  supervisor was killed stayed `running` for the full timeout while every other read path already
+  reported it reaped; and an unsafe run_id raised `ValueError` that aborted the entire batch
+  rather than landing in `unknown` as documented. Each tick now goes through `get_run`, and a bad
+  id no longer destroys its nineteen healthy siblings. Separately, `job_request` was the only
+  request builder that dropped `base_branch`, so a `run_many` job meant to chain off a prior
+  run's branch was silently based on HEAD.
+
+- **A failed worktree create left a directory nothing could discard.** `create()` rolled back on
+  clone and checkout failure but not when `_publish` failed. Rollback now refuses to delete a
+  path outside `base_dir`, a symlink, or one whose branch is already published - a retried create
+  may have finished while an earlier attempt was still unwinding, and deleting by path alone
+  reaches another run's tree. `diff()` never checked the exit code of `git ls-files --others`, so
+  a failed listing read as "no untracked files" and a run's new files vanished from the diff a
+  driver reviews before integrating. `any_user_ref_contains` counted `refs/remotes/*` as
+  user-owned, so a stale remote-tracking ref silenced the orphaned-base diagnosis; it now counts
+  only what the diagnosis message claims - a branch or a tag. `append_git_exclude` serialises its
+  read-check-append under `flock`, restoring the idempotency it documents.
+
+- **A settled cancelled run could never be reviewed.** `run_team` refused `cancelled` on the
+  status label alone, a condition nothing could ever clear, so post-mortem review of cancelled
+  work was permanently impossible. It now asks `_agent_may_still_be_writing` - the same
+  re-probing guard the write paths use - so the refusal holds while the agent is alive and lifts
+  once it exits.
+
+- **An unverifiable supervisor identity blocked takeover for good.** `_supervisor_identity`
+  returns a pid and a start time both-or-neither, because a pid without one reads as a live
+  supervisor for ever once the number is recycled. `fleet.lock` and the `.creating` claim
+  persisted `pid_start_time: null` anyway when the `ps` probe failed, and their readers honour an
+  unverifiable hold *permanently* - so a recycled pid stopped every later Fleet from claiming the
+  lock, and `_reap_orphaned_runs` never ran again. Refusing to write the lock would have been
+  worse: the claim path treats that as "stand down", disabling Marshal entirely on a host without
+  a working `ps`. An identity-less hold is now stamped with `written_at` and bounded, so it ages
+  out and self-heals; a hold that *was* pinned once and merely cannot be re-probed stays held, as
+  before, because stealing a live supervisor's lock is the failure that branch exists to prevent.
+
+- **`marshal drift` reported clean when it had verified nothing.** Once a backend's version probe
+  answered, a failed *models* probe degraded to `STATIC` and emitted only INFO, leaving
+  `DriftReport.ok` true - so an installed CLI whose curated fallback names an id upstream has
+  removed passed the check, and the degraded run failed later at runtime. That is the exact
+  defect class this check exists to catch. `STATIC` conflated "this adapter has no probe" with
+  "the probe just failed", which no caller could tell apart; adapters now report the second as
+  `ModelSource.PROBE_FAILED`, and drift warns and drops `ok` for it. Version drift alone still
+  only warns - some of these CLIs ship nightly.
+
 - **A run that timed out reported the agent stopped without ever checking.** `base.run()`
   signalled the process group and then declared the run over - but signalling is not dying, and
   nothing on that path could tell the difference. `_kill_process_group` swallows every signalling

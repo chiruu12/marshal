@@ -113,9 +113,13 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
   can say about the models it runs, populated **only when no `models:` catalog is configured**.
   `source` is one of:
   - `probed` — the backend's CLI answered just now. This is live evidence.
-  - `static` — a curated list from `docs/model-playbook.md`, used because the CLI could not be
-    asked (not installed, probe failed, output shape changed) or has no model-list command at all.
+  - `static` — a curated list from `docs/model-playbook.md`, used because no live probe was
+    attempted: the CLI is not installed, or the adapter has no model-list command at all.
     It may name a model the account cannot actually run; do not treat it as a capability check.
+  - `probe-failed` — a live probe ran and did not answer (non-zero exit, unparseable output,
+    empty result), so the same curated list is returned but tagged as unverified. Read it exactly
+    as cautiously as `static`; the distinction is that the CLI *was* asked, which is what lets
+    `marshal drift` tell an installed-but-unverifiable backend from one that never had a probe.
   - `unavailable` — nothing to report.
 
   Kept separate from `models` on purpose: the catalog is curated metadata a human wrote, this is
