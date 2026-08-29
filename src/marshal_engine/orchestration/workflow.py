@@ -403,6 +403,11 @@ class WorkflowRunner:
                 status_by_run[rec.run_id] = rec.status
                 notes = []
                 if rec.status != RunStatus.EXITED_CLEAN.value:
+                    # Same survival contract as fan_out: a non-clean agent status is a workflow
+                    # that did not do what it was asked, so it must reach `status`. Leaving the
+                    # flag alone stamped `completed` (CLI exit 0) for a single failed/timed-out
+                    # `run: agent` phase - the fan_out fix, reintroduced one branch over.
+                    had_error = True
                     notes.append(f"{rec.run_id}: run did not succeed ({rec.status})")
                     next_actions.append(
                         f"inspect failed run: {rec.run_id} (client {rec.client}, {rec.status})"
