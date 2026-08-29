@@ -10,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from marshal_engine.accounting.usage import UsageEvent, UsageTracker
 from marshal_engine.interfaces.routing import (
     MAX_OUTCOME_NOTE_LEN,
+    build_routing,
     outcome_index,
     record_outcome,
 )
@@ -175,3 +177,105 @@ def test_the_reported_status_comes_from_the_locked_read(state: FleetState) -> No
     assert result.previous == "rejected"
     assert result.outcome == "abandoned"
     assert result.status == "recorded"
+
+
+# --- build_routing: partial ledger must not recommend ----------------------------------------
+
+
+def _usage_event(**fields: object) -> UsageEvent:
+    base = {
+        "ts": "2026-06-19T00:00:00+00:00",
+        "run_id": "r-ok",
+        "backend": "echo",
+        "client": "worker",
+        "task_kind": "refactor",
+        "cost_usd": 0.5,
+        "source": "native",
+        "duration_ms": 1000,
+        "status": "exited_clean",
+    }
+    base.update(fields)
+    return UsageEvent(**base)
+
+
+def test_a_torn_ledger_line_withholds_recommendations(tmp_path: Path) -> None:
+    """A skipped event must not inflate integration_rate and mint a headline recommendation."""
+    usage_dir = tmp_path / "usage"
+    usage_dir.mkdir()
+    events_path = usage_dir / "events.jsonl"
+    events_path.write_text(
+        _usage_event(run_id="r-ok").model_dump_json() + "\n"
+        '{"ts":"2026-06-19T00:00:00+00:00","run_id":"r-bad","backend":"echo","clie'  # torn
+        + "\n",
+        encoding="utf-8",
+    )
+    state = FleetState(tmp_path / "runs")
+    state.add(
+        RunRecord(
+            run_id="r-ok",
+            task_id="t1",
+            backend="echo",
+            client="worker",
+            status="exited_clean",
+            outcome="integrated",
+        )
+    )
+    state.add(
+        RunRecord(
+            run_id="r-bad",
+            task_id="t2",
+            backend="echo",
+            client="worker",
+            status="exited_clean",
+            outcome="rejected",
+        )
+    )
+
+    ledger = build_routing(UsageTracker(usage_dir), state)
+
+    assert ledger.cells[0].n_judged == 1
+    assert ledger.cells[0].integration_rate == 1.0
+    assert ledger.recommended is None
+    assert ledger.recommended_by_task_kind == {}
+    assert ledger.caveat is not None
+    assert "unreadable event" in ledger.caveat
+
+
+def test_a_complete_ledger_still_recommends_normally(tmp_path: Path) -> None:
+    """Partiality caveats apply only when the reader actually skipped lines."""
+    usage_dir = tmp_path / "usage"
+    usage_dir.mkdir()
+    (usage_dir / "events.jsonl").write_text(
+        _usage_event(run_id="r-ok").model_dump_json() + "\n"
+        + _usage_event(run_id="r-bad", cost_usd=0.2).model_dump_json()
+        + "\n",
+        encoding="utf-8",
+    )
+    state = FleetState(tmp_path / "runs")
+    state.add(
+        RunRecord(
+            run_id="r-ok",
+            task_id="t1",
+            backend="echo",
+            client="worker",
+            status="exited_clean",
+            outcome="integrated",
+        )
+    )
+    state.add(
+        RunRecord(
+            run_id="r-bad",
+            task_id="t2",
+            backend="echo",
+            client="worker",
+            status="exited_clean",
+            outcome="rejected",
+        )
+    )
+
+    ledger = build_routing(UsageTracker(usage_dir), state)
+
+    assert ledger.cells[0].n_judged == 2
+    assert ledger.cells[0].integration_rate == 0.5
+    assert ledger.recommended == "worker"
+    assert ledger.caveat is None

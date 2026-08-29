@@ -20,7 +20,12 @@ from typing import Literal
 from pydantic import BaseModel
 
 from ..accounting.ledger import RoutingLedger, summarize_routing
-from ..accounting.usage import UsageTracker, UsageWindow, usage_window_since
+from ..accounting.usage import (
+    UnreadableUsageLedgerError,
+    UsageTracker,
+    UsageWindow,
+    usage_window_since,
+)
 from ..core.types import RunOutcome, is_terminal
 from ..runtime.state import FleetState, RunRecord
 
@@ -171,6 +176,33 @@ def record_outcome(
     )
 
 
+def _ledger_skipped_lines(usage: UsageTracker) -> int:
+    """How many event lines the lenient reader dropped (0 when the ledger is fully readable)."""
+    try:
+        usage.read_events(strict=True)
+    except UnreadableUsageLedgerError as exc:
+        return exc.skipped
+    return 0
+
+
+def _caveat_partial_ledger(ledger: RoutingLedger, skipped: int) -> RoutingLedger:
+    """Withhold headline recommendations when rates are knowingly incomplete."""
+    partial = (
+        f"usage ledger has {skipped} unreadable event(s); "
+        "rates and recommendations are computed over incomplete history - "
+        "repair or remove the torn line(s) before trusting routing"
+    )
+    caveat = f"{partial}. {ledger.caveat}" if ledger.caveat else partial
+    return ledger.model_copy(
+        update={
+            "recommended": None,
+            "recommended_by_task_kind": {},
+            "recommended_task_kind": None,
+            "caveat": caveat,
+        }
+    )
+
+
 def build_routing(
     usage: UsageTracker,
     state: FleetState,
@@ -187,13 +219,19 @@ def build_routing(
     other, so the outcome mapping is assembled here and handed down.
 
     Reporting posture, matching every other read path: `strict=False`, so a torn or malformed
-    ledger line is skipped with a warning rather than taking the whole report down.
+    ledger line is skipped with a warning rather than taking the whole report down. When any line
+    was skipped, headline recommendations are withheld - a rate over partial data must not read as
+    a rate over all of it.
     """
     moment = now or datetime.now(UTC)
     since = usage_window_since(window, session_start=session_start or moment, now=moment)
-    return summarize_routing(
+    ledger = summarize_routing(
         usage.events(),
         outcome_index(state),
         since=since,
         task_kind=task_kind,
     )
+    skipped = _ledger_skipped_lines(usage)
+    if skipped:
+        return _caveat_partial_ledger(ledger, skipped)
+    return ledger
