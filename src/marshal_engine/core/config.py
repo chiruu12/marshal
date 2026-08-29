@@ -265,7 +265,7 @@ def load_config(path: Path | str) -> FleetConfig:
             backend=str(merged["backend"]),
             model=str(merged["model"]) if merged.get("model") else None,
             permission=PermissionMode(str(merged.get("permission", "safe-edit"))),
-            timeout_s=int(merged.get("timeout_s", 600)),
+            timeout_s=_parse_timeout_s(merged.get("timeout_s"), client=name),
             env=_parse_client_env(merged.get("env"), client=name),
             secret_ref=str(merged["secret_ref"]) if merged.get("secret_ref") else None,
             usage_api=str(merged["usage_api"]) if merged.get("usage_api") else None,
@@ -442,6 +442,33 @@ def _parse_models(value: Any) -> list[ModelSpec]:
             )
         )
     return out
+
+
+def _parse_timeout_s(value: Any, *, client: str) -> int:
+    """Normalize a client's ``timeout_s`` (default 600). Same rules as ``resolve_duration``.
+
+    Rejects bools (``True`` would otherwise coerce to 1 via ``int``) and non-positive values
+    (``0`` times out immediately; negatives raise deep in ``proc.communicate``). Fail at load
+    so the error names the client and key that caused it.
+    """
+    if value is None:
+        return 600
+    if isinstance(value, bool):
+        # ``bool`` is a subclass of ``int``; ``int(True)`` would silently become 1 second.
+        raise ConfigError(
+            f"client {client!r}: timeout_s must be a positive integer of seconds, "
+            f"got bool: {value!r}"
+        )
+    if not isinstance(value, int):
+        raise ConfigError(
+            f"client {client!r}: timeout_s must be a positive integer of seconds, "
+            f"got {type(value).__name__}"
+        )
+    if value <= 0:
+        raise ConfigError(
+            f"client {client!r}: timeout_s must be > 0 seconds, got {value}"
+        )
+    return value
 
 
 def _parse_retries(value: Any) -> int:
