@@ -755,6 +755,90 @@ def test_run_log_store_redacts_credential_in_stdout(
     assert "--- stderr ---\nok" in text
 
 
+def test_client_env_only_secret_is_redacted_from_run_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: a credential under an ALLOWED client env: key (e.g. PROVIDER_AUTH) never
+    appears in os.environ, so parent-env redaction alone left it verbatim in the persisted log.
+    The value must travel as an explicit argument — this test fails if write ignores extra_values.
+    """
+    secret = "sk-ant-client-only-secret-xx"
+    monkeypatch.delenv("PROVIDER_AUTH", raising=False)
+    # Not a known credential name: parent-env scanning alone cannot see it.
+    assert "PROVIDER_AUTH" not in env_mod.KNOWN_CREDENTIAL_ENV_VARS
+    store = RunLogStore(tmp_path / "logs")
+    store.write(
+        "r1",
+        f"auth dump: PROVIDER_AUTH={secret}\n",
+        "ok\n",
+        extra_values={"PROVIDER_AUTH": secret},
+    )
+    text = store.read("r1")
+    assert text is not None
+    assert secret not in text, "client-env-only secret leaked into the persisted log"
+    assert "[redacted:PROVIDER_AUTH]" in text
+    assert "auth dump:" in text
+
+
+def test_client_env_redaction_does_not_depend_on_ambient_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: redaction must be a pure function of its arguments. A ContextVar / ambient
+    spawn-side effect fails under parallel fleet runs when the log write runs on another thread
+    (or after a different client's spawn). Writing on a DIFFERENT thread from env construction
+    must still scrub the secret.
+    """
+    import threading
+
+    secret = "sk-ant-cross-thread-secret-xx"
+    monkeypatch.delenv("PROVIDER_AUTH", raising=False)
+    client_env = {"PROVIDER_AUTH": secret}
+    # Construct the values on this thread (as Fleet does when building RunOpts).
+    assert client_env["PROVIDER_AUTH"] == secret
+    store = RunLogStore(tmp_path / "logs")
+    held: dict[str, str | None] = {}
+    barrier = threading.Barrier(2)
+
+    def _write_on_other_thread() -> None:
+        barrier.wait()
+        store.write(
+            "r-thread",
+            f"leaked={secret}\n",
+            "",
+            extra_values=client_env,
+        )
+        held["log"] = store.read("r-thread")
+
+    worker = threading.Thread(target=_write_on_other_thread)
+    worker.start()
+    barrier.wait()  # release the writer only after this thread is past env construction
+    worker.join()
+    log = held["log"]
+    assert log is not None
+    assert secret not in log, "cross-thread log write leaked a client-env-only secret"
+    assert "[redacted:PROVIDER_AUTH]" in log
+
+
+def test_extra_values_redaction_skips_short_and_non_secret_names() -> None:
+    """Length guard and _NON_SECRET_CREDENTIAL_VARS still apply to client-supplied values."""
+    text = "anthropic routes to claude-sonnet-4-5; short=ab; keep=sk-keep-me-please-xx"
+    out = redact_secrets(
+        text,
+        environ={},
+        credential_names=[],
+        extra_values={
+            "GOOSE_PROVIDER": "anthropic",
+            "GOOSE_MODEL": "claude-sonnet-4-5",
+            "TINY": "ab",  # < min_len
+            "PROVIDER_AUTH": "sk-keep-me-please-xx",
+        },
+    )
+    assert "anthropic" in out and "claude-sonnet-4-5" in out
+    assert "short=ab" in out
+    assert "sk-keep-me-please-xx" not in out
+    assert "[redacted:PROVIDER_AUTH]" in out
+
+
 def test_redact_before_truncate_removes_boundary_straddle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
