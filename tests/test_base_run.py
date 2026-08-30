@@ -27,6 +27,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.core.types import ProgressTimeout
 
 
 class _Dummy(CodingAgentBackend):
@@ -551,3 +552,81 @@ def test_a_clean_timeout_is_not_reported_as_a_survivor(tmp_path: Path) -> None:
 
     assert res.status is RunStatus.TIMED_OUT
     assert res.agent_survived_kill is False
+
+
+# --- progress-aware timeout (#276) -------------------------------------------------------
+#
+# The hard ceiling is the invariant and is asserted in every one of these: the policy may only
+# move a kill EARLIER or extend BELOW the ceiling, never past it.
+
+def _sleeper(seconds: float) -> _Dummy:
+    """A child that produces no output and touches nothing - i.e. reads as stalled."""
+    return _Dummy([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+
+
+def _writer(seconds: float, path: Path) -> _Dummy:
+    """A child that keeps writing to its worktree - i.e. reads as making progress."""
+    code = (
+        "import time, sys\n"
+        f"end = time.time() + {seconds}\n"
+        "i = 0\n"
+        "while time.time() < end:\n"
+        f"    open({str(path)!r} + str(i % 3), 'w').write(str(i))\n"
+        "    i += 1\n"
+        "    time.sleep(0.2)\n"
+    )
+    return _Dummy([sys.executable, "-c", code])
+
+
+def test_a_stalled_run_is_killed_before_its_cap(tmp_path: Path) -> None:
+    """The whole point: a run that stopped working must not burn the rest of the clock.
+
+    Today every timeout in the ledger sits at the wall - the mechanism has never once ended a
+    run for lack of progress, only for running out of time.
+    """
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=30)
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    elapsed = time.monotonic() - started
+
+    assert res.status is RunStatus.TIMED_OUT
+    assert elapsed < 15, f"killed at {elapsed:.1f}s; should be seconds, not the 30s cap"
+
+
+def test_a_run_making_progress_survives_past_the_soft_deadline(tmp_path: Path) -> None:
+    """A productive run at the cap is exactly the case whose tokens are spent for nothing."""
+    policy = ProgressTimeout(
+        enabled=True, stall_s=10, soft_deadline_s=1, hard_ceiling_s=30, poll_interval_s=1
+    )
+    res = _writer(4, tmp_path / "w").run(
+        _task(), RunOpts(cwd=tmp_path, timeout_s=1, progress=policy)
+    )
+
+    # Without the extension a 1s soft deadline would have killed a run that ran for ~4s.
+    assert res.status is RunStatus.EXITED_CLEAN
+
+
+def test_the_hard_ceiling_still_kills_a_busy_run(tmp_path: Path) -> None:
+    """The invariant: a run is never extended past the ceiling, however productive it looks."""
+    policy = ProgressTimeout(
+        enabled=True, stall_s=30, soft_deadline_s=1, hard_ceiling_s=2, poll_interval_s=1
+    )
+    started = time.monotonic()
+    res = _writer(30, tmp_path / "w").run(
+        _task(), RunOpts(cwd=tmp_path, timeout_s=1, progress=policy)
+    )
+    elapsed = time.monotonic() - started
+
+    assert res.status is RunStatus.TIMED_OUT
+    assert elapsed < 20, f"ran {elapsed:.1f}s; the 2s ceiling must bound it"
+
+
+def test_no_policy_leaves_the_wall_clock_exactly_as_before(tmp_path: Path) -> None:
+    """Anti-blanket control: the default path must not acquire progress behaviour."""
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=2))
+    elapsed = time.monotonic() - started
+
+    assert res.status is RunStatus.TIMED_OUT
+    # Killed by the plain cap at ~2s, NOT early by a stall detector that should not be running.
+    assert 1.0 < elapsed < 15

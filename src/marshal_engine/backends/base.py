@@ -25,6 +25,7 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any, ClassVar
 
 from ..core.types import (
@@ -430,7 +431,7 @@ class CodingAgentBackend(ABC):
                 print(f"[marshal] {self.name}: on_exit callback failed: {exc}", file=sys.stderr)
 
         try:
-            out, err = proc.communicate(timeout=opts.timeout_s)
+            out, err = _wait_for_child(proc, opts)
         except subprocess.TimeoutExpired:
             _kill_process_group(pgid)
             out, err, drained = _drain(proc)  # bounded: a pipe-holder that escaped can't hang us
@@ -496,6 +497,80 @@ class CodingAgentBackend(ABC):
             return self.parse_output(stdout, stderr, 0).usage
         except Exception:  # noqa: BLE001 - recovery is best-effort and must not mask the timeout
             return None
+
+
+def _newest_mtime(root: Path) -> float:
+    """Newest mtime anywhere under ``root``, or 0.0 when nothing can be read.
+
+    Skips ``.git``: git writes index/lock files on its own schedule, so counting them would
+    report progress for a run that has done nothing. Errors are swallowed - a progress probe
+    must never be able to end a run by failing.
+    """
+    newest = 0.0
+    stack = [root]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name != ".git":
+                                stack.append(Path(entry.path))
+                            continue
+                        newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return newest
+
+
+def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, str]:
+    """Wait for the child, ending it early if it stalls and extending it while it works.
+
+    Without a policy this is exactly ``communicate(timeout=opts.timeout_s)`` - the previous
+    behaviour, byte for byte. `communicate` is kept in both paths deliberately: it owns the
+    concurrent draining of stdout and stderr, and replacing it with hand-rolled incremental
+    reads is precisely where a pipe-buffer deadlock comes from. Repeated calls are safe here
+    because stdin is DEVNULL, so no input is ever pending between slices.
+
+    Raises ``TimeoutExpired`` for the caller to handle, exactly as before, in both the stalled
+    and the ceiling cases - a run that is ended for lack of progress IS a timeout, and gets the
+    same kill, the same status and the same partial-usage recovery.
+    """
+    policy = opts.progress
+    if policy is None or not policy.enabled:
+        return proc.communicate(timeout=opts.timeout_s)
+
+    hard_ceiling = policy.hard_ceiling_s or opts.timeout_s
+    soft_deadline = policy.soft_deadline_s or opts.timeout_s
+    started = time.monotonic()
+    last_progress = started
+    seen_mtime = _newest_mtime(opts.cwd)
+
+    while True:
+        elapsed = time.monotonic() - started
+        remaining_hard = hard_ceiling - elapsed
+        if remaining_hard <= 0:
+            raise subprocess.TimeoutExpired(proc.args, hard_ceiling)
+        # Never sleep past the ceiling, and never past the next progress measurement.
+        slice_s = min(policy.poll_interval_s, remaining_hard)
+        # Below the soft deadline there is nothing to extend, so wake no more often than needed.
+        if elapsed < soft_deadline:
+            slice_s = min(slice_s, max(soft_deadline - elapsed, 1.0), policy.poll_interval_s)
+        try:
+            return proc.communicate(timeout=slice_s)
+        except subprocess.TimeoutExpired:
+            pass
+        mtime = _newest_mtime(opts.cwd)
+        if mtime > seen_mtime:
+            seen_mtime = mtime
+            last_progress = time.monotonic()
+        if time.monotonic() - last_progress >= policy.stall_s:
+            # Nothing has changed under the worktree for `stall_s`. Ending now returns the
+            # failure sooner and hands the rest of the cap back, instead of waiting out a clock
+            # that was never evidence either way.
+            raise subprocess.TimeoutExpired(proc.args, policy.stall_s)
 
 
 def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:

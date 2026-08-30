@@ -295,6 +295,7 @@ class MarshalService:
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
             budgets=config.budgets,
+            progress_timeout=config.progress_timeout,
             # Pass-through injection (default None keeps Fleet's own defaults): the workspace
             # registry supplies a durable per-repo gate + session clock so a config hot-reload
             # rebuild doesn't fork enforce-budget state or reset session-window accounting.

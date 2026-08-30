@@ -733,3 +733,62 @@ def test_client_env_value_must_be_string(tmp_path: Path) -> None:
     p.write_text("clients:\n  x:\n    backend: codex\n    env:\n      FOO: 42\n")
     with pytest.raises(ConfigError, match="must be a string"):
         load_config(p)
+
+
+def _write(tmp_path: Path, body: str) -> Path:
+    """Write a minimal fleet config and return its path."""
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(body)
+    return p
+
+
+def test_progress_timeout_is_absent_by_default(tmp_path: Path) -> None:
+    """The whole feature must be invisible to every config that does not ask for it."""
+    cfg = _write(tmp_path, "clients:\n  a:\n    backend: opencode\n")
+
+    assert load_config(cfg).progress_timeout.enabled is False
+
+
+def test_progress_timeout_parses_its_block(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\n"
+        "progress_timeout:\n  enabled: true\n  stall_s: 120\n"
+        "  soft_deadline_s: 900\n  hard_ceiling_s: 1800\n",
+    )
+    policy = load_config(cfg).progress_timeout
+
+    assert policy.enabled is True
+    assert (policy.stall_s, policy.soft_deadline_s, policy.hard_ceiling_s) == (120, 900, 1800)
+
+
+def test_progress_timeout_rejects_a_soft_deadline_past_the_ceiling(tmp_path: Path) -> None:
+    """A soft deadline above the backstop could never be reached - that is a typo, not a policy."""
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\n"
+        "progress_timeout:\n  enabled: true\n  soft_deadline_s: 1800\n  hard_ceiling_s: 900\n",
+    )
+    with pytest.raises(ConfigError, match="above"):
+        load_config(cfg)
+
+
+def test_progress_timeout_rejects_a_nonsense_threshold(tmp_path: Path) -> None:
+    """Zero or negative would either kill instantly or never fire; both read as a broken feature."""
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\nprogress_timeout:\n  enabled: true\n  stall_s: 0\n",
+    )
+    with pytest.raises(ConfigError, match="stall_s"):
+        load_config(cfg)
+
+
+def test_progress_timeout_rejects_an_unknown_setting(tmp_path: Path) -> None:
+    """A misspelled key must not silently disable the guard the user thought they configured."""
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\n"
+        "progress_timeout:\n  enabled: true\n  stall_seconds: 120\n",
+    )
+    with pytest.raises(ConfigError, match="stall_seconds"):
+        load_config(cfg)

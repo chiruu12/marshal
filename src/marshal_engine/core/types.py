@@ -258,6 +258,34 @@ class TaskSpec(BaseModel):
         return v
 
 
+class ProgressTimeout(BaseModel):
+    """Opt-in policy for ending a run on evidence of progress rather than on the clock alone.
+
+    A single wall-clock number treats two opposite situations identically: a run that stalled at
+    30s burns its whole cap before anyone notices, and a run still working at the cap is killed
+    with its tokens already spent. Elapsed time is not evidence about whether work is happening.
+
+    The hard ceiling is NEVER removed - a silent, hung process must always die, which is the
+    invariant this sits underneath. This policy only decides EARLIER kills (a stalled run) and
+    BOUNDED extensions (a productive one), always below `hard_ceiling_s`.
+
+    Progress is measured as the newest mtime under the run's worktree: backend-independent, and
+    it needs no per-backend calibration. The known blind spot is deliberate: an agent that
+    reasons for a long time without writing anything looks idle, which is why `stall_s` must sit
+    well above however long a backend legitimately stays quiet, and why this is opt-in.
+    """
+
+    enabled: bool = False
+    #: Kill once nothing under the worktree has changed for this long.
+    stall_s: int = 300
+    #: First deadline. A run still making progress here is extended, not killed. None = timeout_s.
+    soft_deadline_s: int | None = None
+    #: The backstop. Never exceeded, whatever progress says. None = timeout_s (no extension).
+    hard_ceiling_s: int | None = None
+    #: How often to re-measure progress.
+    poll_interval_s: int = 15
+
+
 class RunOpts(BaseModel):
     """How to run a TaskSpec. Backend-agnostic; adapters translate these to native flags."""
 
@@ -272,6 +300,8 @@ class RunOpts(BaseModel):
     # Called by base.run() once the child has been REAPED. Until then the OS cannot reuse its pid,
     # so this is what tells a canceller that signalling that pid is no longer safe.
     on_exit: Callable[[], None] | None = None
+    #: Opt-in progress policy. None (the default) keeps the plain `timeout_s` wall clock.
+    progress: ProgressTimeout | None = None
 
 
 class UsageRecord(BaseModel):

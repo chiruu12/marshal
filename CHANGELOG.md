@@ -8,6 +8,17 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in progress-aware run timeout (#276).** A new `progress_timeout:` block ends a run on
+  evidence of progress rather than on the clock alone: a stalled run is killed early instead of
+  burning the rest of its cap, and a run still making progress at its soft deadline is extended
+  below a hard ceiling. Progress is the newest mtime under the worktree, which is
+  backend-independent; `communicate()` and its pipe handling are untouched, so no new deadlock
+  surface. **Off by default** - absent or `enabled: false` leaves `timeout_s` behaving exactly as
+  before. The hard ceiling is never removed: a silent, hung process still always dies, and a run
+  ended for lack of progress is reported as `timed_out` like any other. See `docs/config.md`.
+
 ### Fixed
 
 - **A run that broke after its agent finished vanished from the ledger.** Everything between

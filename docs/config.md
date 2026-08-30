@@ -100,6 +100,43 @@ Optional catalog the driver reads via `list_models` / `marshal models`. Pure met
 | `quota_type` | string | `""` | Billing shape hint (`metered`, `subscription`, `unavailable`). | `quota_type: subscription` |
 | `notes` | string | `""` | Free-form note for the driver. | `notes: Go subscription` |
 
+### `progress_timeout`
+
+**Off by default.** Optional, opt-in: end a run on evidence of progress rather than on the clock
+alone. Absent or `enabled: false` leaves `timeout_s` behaving exactly as it always has.
+
+A single wall-clock number treats two opposite situations identically — a run that stalled early
+burns its whole cap before anyone notices, and a run still working at the cap is killed with its
+tokens already spent. Elapsed time is not evidence about whether work is happening.
+
+Progress is measured as the **newest mtime under the run's worktree** (`.git` excluded, since git
+writes on its own schedule). That signal is backend-independent and needs no per-backend
+calibration. Its blind spot is deliberate: an agent that reasons for a long time *without writing
+anything* looks idle, which is why `stall_s` must sit comfortably above however long your
+backends legitimately stay quiet — and why this is opt-in rather than the default.
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `false` | Master switch. When false, nothing below applies. |
+| `stall_s` | `300` | Kill once nothing under the worktree has changed for this long. |
+| `soft_deadline_s` | `timeout_s` | First deadline. A run still making progress here is extended rather than killed. |
+| `hard_ceiling_s` | `timeout_s` | The backstop. Never exceeded, whatever progress says. |
+| `poll_interval_s` | `15` | How often progress is re-measured. |
+
+```yaml
+progress_timeout:
+  enabled: true
+  stall_s: 120
+  soft_deadline_s: 900
+  hard_ceiling_s: 1800
+```
+
+**The hard ceiling never goes away.** A silent, hung process must always die — that is the
+invariant this sits underneath, not a replacement for it. The policy may only move a kill
+*earlier* (a stalled run) or extend one *below* the ceiling (a productive run). A run ended for
+lack of progress is reported as `timed_out`, with the same kill, status and partial-usage
+recovery as any other timeout.
+
 ### `budgets[]`
 
 Optional dollar caps **per workspace** (that repo's `fleet.config.yaml` + `.marshal` ledger — no

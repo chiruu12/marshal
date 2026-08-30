@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
-from .types import PermissionMode
+from .types import PermissionMode, ProgressTimeout
 
 DEFAULT_OPENCODE_MODEL = "opencode-go/glm-5.2"
 
@@ -244,6 +244,48 @@ class FleetConfig(BaseModel):
     # Optional advisory $ budgets per scope (backend / client / global) and time window
     # (session / week / month). Absent/empty = no budgets, no behavior change. See BudgetSpec.
     budgets: list[BudgetSpec] = []
+    # Optional opt-in progress-aware timeout. Absent/disabled (the default) = the plain
+    # `timeout_s` wall clock, unchanged. See ProgressTimeout.
+    progress_timeout: ProgressTimeout = ProgressTimeout()
+
+
+def _parse_progress_timeout(value: Any) -> ProgressTimeout:
+    """Normalize the optional ``progress_timeout:`` block. Absent => disabled.
+
+    Every duration is validated the same way `timeout_s` is - a positive integer of seconds -
+    because a zero or negative threshold here would either kill instantly or never fire, and
+    both read as "the feature is broken" rather than as a config error.
+    """
+    if value is None:
+        return ProgressTimeout()
+    if not isinstance(value, dict):
+        raise ConfigError("progress_timeout: must be a mapping of settings")
+    known = {"enabled", "stall_s", "soft_deadline_s", "hard_ceiling_s", "poll_interval_s"}
+    unknown = set(value) - known
+    if unknown:
+        raise ConfigError(
+            f"progress_timeout: unknown setting(s) {sorted(unknown)}; known: {sorted(known)}"
+        )
+    fields: dict[str, Any] = {
+        "enabled": _parse_bool_flag(value.get("enabled"), "progress_timeout.enabled")
+    }
+    for key in ("stall_s", "soft_deadline_s", "hard_ceiling_s", "poll_interval_s"):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        fields[key] = _parse_timeout_s(raw, client=f"progress_timeout.{key}")
+    policy = ProgressTimeout(**fields)
+    if (
+        policy.soft_deadline_s is not None
+        and policy.hard_ceiling_s is not None
+        and policy.soft_deadline_s > policy.hard_ceiling_s
+    ):
+        raise ConfigError(
+            f"progress_timeout: soft_deadline_s ({policy.soft_deadline_s}) is above "
+            f"hard_ceiling_s ({policy.hard_ceiling_s}); the ceiling is the backstop and a "
+            "soft deadline past it could never be reached"
+        )
+    return policy
 
 
 def load_config(path: Path | str) -> FleetConfig:
@@ -302,6 +344,7 @@ def load_config(path: Path | str) -> FleetConfig:
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
         budgets=_parse_budgets(raw.get("budgets")),
+        progress_timeout=_parse_progress_timeout(raw.get("progress_timeout")),
     )
 
 

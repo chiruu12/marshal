@@ -43,6 +43,7 @@ from ..core.retry import RetryPolicy, is_transient_failure
 from ..core.types import (
     AgentResult,
     PermissionMode,
+    ProgressTimeout,
     RunOpts,
     RunOutcome,
     RunStatus,
@@ -209,6 +210,7 @@ class Fleet:
         budgets: list[BudgetSpec] | None = None,
         budget_gate: EnforceBudgetGate | None = None,
         session_start: datetime | None = None,
+        progress_timeout: ProgressTimeout | None = None,
     ) -> None:
         # Recover the user's interactive PATH so a Fleet constructed in a context that didn't
         # source the user's rc files (an MCP server with a stripped PATH) still spawns agent
@@ -264,6 +266,10 @@ class Fleet:
         # None / [] = no budgets. Default is soft-warn; enforce=true raises BudgetExceeded and
         # serializes matching in-flight spawns via EnforceBudgetGate (see budgets.py).
         self.budgets: list[BudgetSpec] = list(budgets) if budgets else []
+        # Opt-in progress-aware timeout. Default (None / disabled) keeps the plain `timeout_s`
+        # wall clock, so a bare Fleet behaves exactly as before; the service turns it on from
+        # config, the same way `retries` works.
+        self.progress_timeout = progress_timeout or ProgressTimeout()
         # The gate is injectable (like run_gate) so a layer that REBUILDS Fleets over the same
         # ledger - the workspace registry on config hot-reload - can keep ONE gate per repo:
         # in-flight runs on the evicted Fleet still hold slots the replacement consults, and the
@@ -776,6 +782,7 @@ class Fleet:
                 client_env=req.client_env,
                 on_pid=_record_pid,
                 on_exit=_record_exit,
+                progress=self.progress_timeout if self.progress_timeout.enabled else None,
             )
             # Hold a slot for the agent run (the heavy, memory-hungry part) - including any transient
             # retry backoff, since the run is still in flight. Worktree creation/provision in _start
