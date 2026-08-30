@@ -61,7 +61,9 @@ _DESC_OUTPUT_SCHEMA = (
     "Optional JSON Schema (object) for the agent's FINAL MESSAGE. When set, the engine requires "
     "exactly one conforming JSON object, surfaces it as `structured` on the run/collect result, "
     "and fails the run (status failed, error prefixed `structured_output:`) if the reply is "
-    "missing or invalid. Omit for today's prose behaviour."
+    "missing or invalid. Narration BEFORE the object is tolerated (some CLIs always narrate); "
+    "prose after it, or more than one top-level object, is refused rather than guessed at. "
+    "Omit for today's prose behaviour."
 )
 _DESC_RUN_ID = "A run id returned by run_agent / spawn / run_many."
 _DESC_WORKSPACE = "Target workspace name (from list_workspaces); defaults to the primary workspace."

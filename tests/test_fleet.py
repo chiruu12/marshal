@@ -6807,3 +6807,106 @@ def test_a_failed_job_reports_an_addressable_run_id(repo: Path) -> None:
     # The id must resolve to a real record.
     assert fleet.state.get(primary.run_id) is not None
     assert primary.run_id in {r.run_id for r in fleet.state.list()}
+
+
+def test_structured_output_accepts_narration_before_the_object(repo: Path) -> None:
+    """REGRESSION (#328): 11 of 14 audit runs were stamped `failed` for doing exactly this.
+
+    The Cursor CLI narrates as part of its final message; the conforming object followed the
+    prose and was sitting in `text` the whole time. With one object present there is nothing to
+    choose between, so refusing was strictness that bought no safety and cost a whole fan-out.
+    """
+    narrated = (
+        "I'll audit the liveness area read-only: conventions first, then those three files."
+        'Checking how these helpers are used for cancel/reap.{"score": 4}'
+    )
+    fleet = Fleet(repo, {"talker": _Talker(narrated)})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-lead", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.structured == {"score": 4}
+    assert rec.error is None
+
+
+def test_structured_output_still_refuses_when_several_objects_are_present(repo: Path) -> None:
+    """The property the strictness actually protects: never guess which object was meant."""
+    fleet = Fleet(repo, {"talker": _Talker('First draft {"score": 1} but actually {"score": 9}')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-many", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None
+    assert rec.error is not None and "cannot tell which one" in rec.error
+
+
+def test_structured_output_still_refuses_prose_after_a_narrated_object(repo: Path) -> None:
+    """Leading prose is now fine; trailing prose is still a refusal, and both can co-occur."""
+    fleet = Fleet(repo, {"talker": _Talker('Here you go: {"score": 4}\nHope that helps!')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-both", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.error is not None and "trailing prose" in rec.error
+
+
+def test_a_brace_in_narration_does_not_defeat_extraction(repo: Path) -> None:
+    """A brace in prose is not a JSON object; it must not read as a second candidate."""
+    fleet = Fleet(repo, {"talker": _Talker('Pass {} to reset, then: {"score": 2}')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-brace", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    # `{}` IS a valid top-level object, so this is genuinely ambiguous and must refuse - the
+    # honest outcome, and the reason the refusal counts objects rather than guessing the last.
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.error is not None and "cannot tell which one" in rec.error
+
+
+def test_a_run_that_broke_after_the_agent_still_reaches_the_ledger(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: the failure path stamped `failed` and wrote no ledger line.
+
+    Everything between `backend.run` and `usage.record` can raise - the verify gate, the commit
+    count, the event build. The agent's tokens were spent regardless, and the run then vanished
+    from every cost, budget and routing figure. One line per run, including runs that broke.
+    """
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    # Raises at line 797, BEFORE usage.record at 822 - the window where the line was lost.
+    def explode(*a: object, **kw: object) -> object:
+        raise RuntimeError("status classification exploded")
+
+    monkeypatch.setattr(fleet, "_authoritative_status", explode)
+
+    with pytest.raises(RuntimeError):
+        fleet.run("selfcommit", TaskSpec(id="lost-ledger", goal="x"))
+
+    events, _ = fleet.usage.read_events(strict=True)
+    lost = [e for e in events if e.run_id.startswith("lost-ledger")]
+    assert len(lost) == 1, "the broken run must still have exactly one ledger line"
+    assert lost[0].status == RunStatus.FAILED.value
+
+
+def test_a_run_that_broke_after_recording_is_not_counted_twice(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction, which is worse: never bill one run's spend twice."""
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    real_update = fleet.state.update_if
+
+    def explode_after_recording(*a: object, **kw: object) -> object:
+        raise RuntimeError("stamp exploded")
+
+    monkeypatch.setattr(fleet.state, "update_if", explode_after_recording)
+
+    with pytest.raises(RuntimeError):
+        fleet.run("selfcommit", TaskSpec(id="double-bill", goal="x"))
+
+    events, _ = fleet.usage.read_events(strict=True)
+    billed = [e for e in events if e.run_id.startswith("double-bill")]
+    assert len(billed) == 1, "usage.record already ran; the failure path must not add a second"
+    assert real_update is not None

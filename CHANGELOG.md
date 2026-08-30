@@ -10,6 +10,23 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A run that broke after its agent finished vanished from the ledger.** Everything between
+  `backend.run` and `usage.record` can raise - the verify gate, the commit count, the event build
+  - and the failure path stamped `failed` without writing a usage line. The agent's tokens and
+  dollars were spent regardless, so the run disappeared from every cost, budget and routing
+  figure while its record sat there saying it had run. The ledger's contract is one line per run,
+  and a run that broke is still a run. The line is now written on that path too, guarded so a
+  failure *after* the record cannot bill the same run twice.
+
+- **`output_schema` rejected a valid object when the agent narrated before it (#328).** Extraction
+  required the object at character 0, but for at least one backend the narration is not an
+  occasional lapse - it is the shape of every final message, which made the feature effectively
+  unusable there. Eleven of fourteen runs in one audit fan-out were stamped `failed` while the
+  conforming object sat in `text`, so the fan-out had to be re-run to recover output already in
+  hand. Leading prose is now accepted when exactly one top-level object is present. The refusals
+  that protect a real property are kept: prose *after* the object, and more than one top-level
+  object, are still refused, because those are the cases where picking one would be a guess.
+
 - **An Antigravity run that failed reported success.** `agy` exits 0 whether the turn worked or
   not and puts the verdict in the envelope's `status`; `parse_output` read only the exit code.
   That defeated the reason `--print-timeout` is set just INSIDE the run timeout - the point of

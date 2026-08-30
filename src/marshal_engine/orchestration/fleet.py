@@ -731,6 +731,9 @@ class Fleet:
         # can reach it even when the run died before the loop ran.
         abandoned: list[AgentResult] = []
         record: RunRecord | None = None
+        # Whether this run's line already reached the ledger, so the failure path can add one
+        # when it did not - and never a second one when it did.
+        usage_recorded = False
         try:
             if deferred_provisioning:
                 early = self._run_deferred_provisioning(req, run_id, wt)
@@ -817,6 +820,7 @@ class Fleet:
             )
             event.status = status.value              # report the authoritative process status (incl. EMPTY)
             self.usage.record(event)
+            usage_recorded = True
             # Harvest BEFORE the terminal stamp so the record names its artifacts in the same write
             # that makes it terminal. Landing them afterwards would publish a finished run whose
             # artifact list is still empty, and a driver polling for terminal-then-reading would
@@ -869,6 +873,14 @@ class Fleet:
             )
             self._ensure_artifacts_recorded(run_id, record, artifacts)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
+            # The agent's spend belongs in the ledger even when the bookkeeping AFTER it failed.
+            # Everything between `backend.run` and `usage.record` - the verify gate, the commit
+            # count, the event build - can raise, and the run then reached `failed` with no ledger
+            # line at all: real tokens and real dollars, spent and invisible to every cost, budget
+            # and routing figure. The ledger's contract is one line per run; a run that broke is
+            # still a run. Guarded by the flag so a failure AFTER the record cannot double-count.
+            if result is not None and not usage_recorded:
+                self._record_usage_best_effort(run_id, req, result, ts, usage)
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
             # only if still running, so a concurrent cancel's terminal status wins.
             # Harvest here too: a run that died partway may still have written the findings that
@@ -1140,6 +1152,35 @@ class Fleet:
             return "primary run has no branch"
         return None
 
+
+
+    def _record_usage_best_effort(
+        self,
+        run_id: str,
+        req: RunRequest,
+        result: AgentResult,
+        ts: str,
+        usage: UsageRecord | None,
+    ) -> None:
+        """Write this run's ledger line on the failure path. Never raises.
+
+        Best-effort by construction: this runs while an exception is already unwinding, and a
+        second failure here must not replace the original one the driver needs to see.
+        """
+        try:
+            event = UsageEvent.from_result(
+                result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
+                client=req.client, model=req.model,
+                task_kind=req.task.task_kind,
+                goal_digest=goal_digest(req.task.goal),
+            )
+            event.status = RunStatus.FAILED.value
+            self.usage.record(event)
+        except Exception as exc:  # noqa: BLE001 - the original failure must survive this
+            print(
+                f"[marshal] {run_id}: failed to record usage for a failed run: {exc}",
+                file=sys.stderr,
+            )
 
     def _persist_run_log(
         self,
