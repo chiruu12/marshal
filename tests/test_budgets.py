@@ -1416,3 +1416,128 @@ def test_the_reservation_probe_reads_one_identity_across_timezones() -> None:
     assert utc not in ("", "None"), "the probe could not read a live pid at all"
     assert utc.startswith(PINNED)
     assert utc == kolkata, "the same live pid rendered as two identities"
+
+
+def test_an_unreadable_ledger_does_not_read_as_an_empty_tail(tmp_path: Path, monkeypatch) -> None:
+    """REGRESSION: `events_after` is the UNDER-LOCK recheck, and it decided with `exists()`.
+
+    `exists()` swallows ENOTDIR and ELOOP (a path component replaced by a file, a symlink loop)
+    and reports a plain False, while `read_events` - rewritten precisely to stop conflating
+    "no ledger yet" with "cannot read it" - propagates them. So the outside-lock read could
+    correctly find no ledger, and the under-lock recheck could then meet an unreadable one and
+    call it an empty tail: $0 of new spend, and the enforced cap admits the spawn. Fail-open,
+    in the one mode whose entire job is to refuse.
+
+    (Note EACCES is NOT the trigger: `Path.exists` propagates that one.)
+    """
+    tracker = _tracker(tmp_path)
+    # Cold baseline: no ledger at the outside-lock read, exactly as a first spawn sees it.
+    _, cursor = tracker.read_events(strict=True)
+    assert cursor.size == 0
+
+    real_stat = Path.stat
+
+    def unreadable(self, *a, **kw):
+        if self.name == "events.jsonl":
+            raise NotADirectoryError(20, "Not a directory")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", unreadable)
+
+    with pytest.raises(OSError):
+        tracker.events_after(cursor, strict=True)
+
+
+def test_a_cold_ledger_still_reads_as_an_empty_tail(tmp_path: Path) -> None:
+    """Anti-blanket control: the legitimate cold start must survive the fix."""
+    tracker = _tracker(tmp_path)
+    _, cursor = tracker.read_events(strict=True)
+
+    assert tracker.events_after(cursor, strict=True) == []
+
+
+def test_an_unreadable_run_count_does_not_report_a_full_remaining_cap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The runs side degraded to 0, i.e. to "the whole cap is still available".
+
+    The dollar side directly above it already gets this right via `spent_known`. Reporting a
+    measured-looking `remaining_runs` at the moment nobody can read the ledger tells a driver
+    the cap is clear when it may be fully spent.
+    """
+    tracker = _tracker(tmp_path)
+    monkeypatch.setattr(type(tracker), "events", lambda self: (_ for _ in ()).throw(OSError("boom")))
+
+    rows = compute_budget_status(
+        tracker, SESSION, [BudgetSpec(window="week", limit_runs=10, enforce=True)], datetime.now(UTC)
+    )
+
+    assert rows[0].runs_known is False
+    assert rows[0].remaining_runs is None    # never a fake "10 still available"
+
+
+def test_a_readable_run_count_is_still_reported_as_measured(tmp_path: Path) -> None:
+    """Anti-blanket control: the ordinary path keeps a real count and a real remainder."""
+    tracker = _tracker(tmp_path)
+    rows = compute_budget_status(
+        tracker, SESSION, [BudgetSpec(window="week", limit_runs=10)], datetime.now(UTC)
+    )
+
+    assert rows[0].runs_known is True
+    assert rows[0].remaining_runs == 10
+
+
+def test_bind_refuses_a_slot_that_aged_out_and_was_released(tmp_path: Path) -> None:
+    """REGRESSION: the `entry is None` branch re-took the slot claiming to be "under the cap".
+
+    A peer can reclaim an aged-out placeholder, run, record spend that meets the cap, and
+    release - leaving the slot absent rather than held. `bind` holds no tracker and no budget
+    specs, so it cannot re-read the ledger to show the cap is still clear; re-acquiring anyway
+    let a hard cap be overshot by a full run's cost while a comment asserted the opposite.
+    """
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+
+    # The peer took the aged-out slot, ran, and released it: the entry is simply gone.
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    disk["held"].pop(keys[0])
+    path.write_text(json.dumps(disk), encoding="utf-8")
+
+    with pytest.raises(BudgetExceeded, match="aged out before bind"):
+        gate.bind(keys, "run-a-slow")
+    assert keys[0] not in gate._held
+
+
+def test_the_cursor_describes_one_instant_of_the_ledger(tmp_path: Path, monkeypatch) -> None:
+    """REGRESSION: size came from AFTER the read, mtime from BEFORE it.
+
+    A `record()` landing between those two syscalls is captured by the read but not by the
+    mtime, minting a cursor the file never had: size S+B paired with the mtime of size S.
+    `events_after` then sees equal size and a newer mtime, reads that as proof of an in-place
+    rewrite, and refuses an under-cap spawn - sending the driver to repair a healthy ledger.
+    """
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=1.0)
+
+    real_stat = Path.stat
+    fired = {"done": False}
+
+    def stat_then_append(self, *a, **kw):
+        st = real_stat(self, *a, **kw)
+        if self.name == "events.jsonl" and not fired["done"]:
+            fired["done"] = True
+            # A concurrent recorder appends AFTER our stat but before our read.
+            _seed(tracker, cost=2.0)
+        return st
+
+    monkeypatch.setattr(Path, "stat", stat_then_append)
+    _, cursor = tracker.read_events(strict=True)
+    monkeypatch.undo()
+
+    # Nothing was appended after the read, so the tail is empty - and must NOT be reported as
+    # an in-place rewrite.
+    assert tracker.events_after(cursor, strict=True) == []

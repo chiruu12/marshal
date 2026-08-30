@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..core.config import ConfigError, FleetConfig
 from ..core.types import RunStatus
+from ..runtime.worktree import WorktreeError
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
     from ..runtime.state import RunRecord
@@ -428,7 +429,14 @@ class WorkflowRunner:
                 for rid in source_ids:
                     try:
                         cr = self.service.collect_run(rid)
-                    except ValueError as exc:  # a run with no worktree to resolve; record, continue
+                    except (ValueError, WorktreeError, OSError) as exc:
+                        # The same three-shape race `teams.py` documents on this exact call: a
+                        # concurrent `clean` can remove the worktree between the status read and
+                        # this one, and each shape is a different point in it - ValueError (gone
+                        # at resolution), WorktreeError (vanished after, git failed), OSError
+                        # (vanished before the git process started, so spawning with a deleted
+                        # cwd raises FileNotFoundError). Catching only the first let the other two
+                        # escape the runner and discard every phase result collected so far.
                         notes.append(f"{rid}: {exc}")
                         continue
                     collected.append(cr.model_dump(mode="json"))
@@ -461,7 +469,20 @@ class WorkflowRunner:
                         needs_review = True
                 else:
                     for rid in candidates:
-                        ir = self.service.integrate(rid)
+                        # Same survival contract as every other phase. This loop was the one
+                        # exception - and the comment above claiming collect/integrate "were
+                        # already wrapped" was false for integrate. An escaping exception here
+                        # discarded the whole WorkflowResult *after* earlier candidates may
+                        # already have merged, leaving the driver to reconstruct from `status`
+                        # which merges had landed.
+                        try:
+                            ir = self.service.integrate(rid)
+                        except Exception as exc:  # noqa: BLE001
+                            had_error = True
+                            next_actions.append(
+                                f"integrate raised (human needed): {rid}: {exc}"
+                            )
+                            continue
                         pr.integrations.append(ir.model_dump(mode="json"))
                         if ir.status == "error":
                             had_error = True
@@ -479,7 +500,16 @@ class WorkflowRunner:
                         elif ir.status == RunStatus.EMPTY.value:
                             # nothing landed and nothing to review - informational, not a gate.
                             pr.notes.append(f"{rid}: nothing to integrate (empty)")
-                        # "merged" → no follow-up needed
+                        elif ir.base_branch_drift:
+                            # A merge DID land, but onto a branch the run was not based on - the
+                            # checkout moved while the agent worked. `Fleet.integrate` exists in
+                            # part to detect this; dropping it here reported `completed` with an
+                            # empty `next_actions`, which is the driver's whole contract for
+                            # "nothing left to do", about work that landed somewhere unintended.
+                            needs_review = True
+                            pr.notes.append(f"{rid}: {ir.message}")
+                            next_actions.append(f"verify the merge target: {rid}: {ir.message}")
+                        # "merged" onto the expected base → no follow-up needed
                 phases.append(pr)
 
         status: Literal["completed", "awaiting_review", "error"] = (

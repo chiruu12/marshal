@@ -10,6 +10,74 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **An Antigravity run that failed reported success.** `agy` exits 0 whether the turn worked or
+  not and puts the verdict in the envelope's `status`; `parse_output` read only the exit code.
+  That defeated the reason `--print-timeout` is set just INSIDE the run timeout - the point of
+  that ordering is for agy to answer with a parseable envelope (`status=ERROR`, `error="timeout
+  waiting for response"`, plus tokens spent) rather than be hard-killed - so a deliberate,
+  well-behaved timeout came back as `exited_clean`, carrying PARTIAL response text a driver
+  could integrate believing the turn was complete. Any status that is not `SUCCESS` is now a
+  failure, fail-closed on an unrecognised value; partial text and usage are kept, because a
+  truncated turn still spent those tokens.
+
+- **The under-lock budget recheck could read an unreadable ledger as an empty tail.**
+  `read_events` was rewritten to tell "no ledger yet" from "cannot read it"; `events_after` - the
+  recheck every *enforced* budget runs while holding the lock - still decided with `exists()`,
+  which reports a plain False for `ENOTDIR` and `ELOOP`. The recheck then added no spend and the
+  cap admitted the spawn: the same fail-open, on the same file, in the one mode whose entire job
+  is to refuse. It now stats, treats only `FileNotFoundError` as the empty case, and lets every
+  other error become a refusal.
+
+- **A concurrent append could make the ledger look rewritten.** The cursor took its size from
+  after the read and its mtime from before it, so a `record()` landing between the two syscalls
+  minted a cursor the file never had. `events_after` reads same-size-with-newer-mtime as proof of
+  an in-place rewrite, so an under-cap spawn was refused and the driver sent to repair a
+  perfectly healthy ledger. The cursor now describes one instant.
+
+- **A budget's run cap reported a full remainder when nobody could count the runs.** A ledger
+  lookup failure left `runs_unmeasured` at 0 and therefore `remaining_runs` at the whole cap -
+  "all clear" at the exact moment the spend is unknowable. The dollar side of the same function
+  already got this right via `spent_known`. The runs side now carries `runs_known` and reports a
+  null remainder rather than a measured-looking one.
+
+- **The budget gate re-took an aged-out reservation without showing it was still under the cap.**
+  A peer can reclaim the slot, run, record spend that meets the cap, and release it, leaving the
+  entry absent rather than held. `bind` holds no tracker and no budget specs, so it cannot re-read
+  the ledger - yet it re-acquired anyway, under a comment asserting a cap compliance nothing
+  verified, letting a hard cap be overshot by a full run's cost. It now refuses, exactly as the
+  neighbouring peer-holds branch does.
+
+- **A git timeout while counting commits deleted the run from the ledger.**
+  `agent_commit_count` documents "None when git failed", but a timeout raises through it. Its
+  sibling `changed_files` call was guarded and it was not, so a slow git turned a clean, finished
+  run into `failed` - and, because the count happens before `usage.record`, the run never reached
+  the ledger at all, vanishing from every cost, budget and routing figure.
+
+- **A failed `run_many` job handed back a run id that addressed nothing.** The synthesized record
+  used `<task>.<backend>`, without the suffix every real id carries, so a driver could not
+  `get_run`, `collect_run` or `set_outcome` the failure - and therefore could never judge it -
+  while the genuine failed record sat in the ledger under its real id. The real record is now
+  returned whenever the run got far enough to be stamped.
+
+- **A finished run could report having no diagnostics.** The run log was written after the
+  terminal stamp, so a driver polling for terminal-then-reading could see `log: null` - documented
+  to mean "the backend crashed before producing one" - for a run whose full output landed a moment
+  later. Artifacts are harvested before the stamp for exactly this reason; the log now follows the
+  same rule, with the `finally` write kept as the backstop.
+
+- **A workflow's integrate phase could discard the whole run.** The integrate loop was the one
+  phase with no guard - and the comment above it claiming collect/integrate "were already wrapped"
+  was false for integrate. A `clean` racing the merge made the service raise, which escaped the
+  runner and threw away every phase result *after* earlier candidates had already merged, leaving
+  no record of which merges landed. The collect phase had a related gap: it caught only
+  `ValueError`, while `teams.py` documents three shapes for this exact race on this exact call.
+
+- **A merge onto a drifted base was reported as `completed` with nothing left to do.** When the
+  checkout moves while agents work, `Fleet.integrate` flags that the merge target is not the
+  branch the run was based on. The workflow dropped that flag, so `status` said `completed` and
+  `next_actions` was empty - the driver's whole contract for "done" - about work that landed
+  somewhere unintended.
+
 - **An Antigravity run blocked by a headless permission auto-deny read as an ordinary empty run.**
   `agy` exits 0 and reports `status=SUCCESS` even when a tool needed a permission that headless
   mode cannot prompt for, in which case the whole run collapses to an empty `response` - it says

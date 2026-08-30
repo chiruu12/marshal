@@ -170,7 +170,8 @@ clients:
   The MCP `usage` tool's response (and `marshal usage --config fleet.config.yaml --json`) includes
   a `budgets` list with `scope / window / spent_usd / limit_usd / remaining_usd / enforce /
   spent_known` per budget, so the driver can see how much room is left alongside the spend.
-  When `spent_known` is false, treat `spent_usd` / `remaining_usd` as unknown.
+  When `spent_known` is false, treat `spent_usd` / `remaining_usd` as unknown; when `runs_known`
+  is false, the run count could not be read and `remaining_runs` is null.
 - **Missing backend CLI → the client is skipped, not fatal.** At startup Marshal probes each
   configured backend's CLI; a client whose CLI is unavailable is **skipped** with a stderr warning
   (and listed under `skipped_clients`) so the rest of the fleet still runs - a missing CLI never fails
@@ -294,7 +295,7 @@ the default workspace.
 | `set_outcome(run_id, outcome, note?)` | Record whether a finished run's work was any good: `rejected` (reviewed and wrong/off-scope) or `abandoned` (given up on). `integrated` is written for you by `integrate` and is **sticky** — overwriting it returns `conflict`, not an error. **Record your rejections:** declining to integrate leaves no trace, so an unjudged run and one you threw away look identical, and every `routing` rate is computed over judged runs only. Status ∈ `recorded` / `unchanged` / `conflict`. |
 | `clean(scope?, run_ids?, older_than_hours?, dry_run?)` | Tear down finished runs' worktrees + branches (ledger + run history kept). Never a running run. `scope` ∈ `merged`/`finished`/`all`. Scope-mode cleans also reap orphaned worktree dirs (`orphans_removed`). Returns `{removed, orphans_removed, skipped, errors, dry_run}`. |
 | `status()` | List all runs with status + cost (status ∈ `exited_clean`/`empty`/`failed`/`timed_out`/`cancelled`/`verify_failed`). |
-| `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read/cache-write token columns and a native/admin-api cost split). `window` ∈ `session` (since the MCP server started) \| `day` (last 24h) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger) — same set as `marshal usage --window`. The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd / enforce / spent_known` (soft-warn by default; `enforce: true` refuses over-cap spawns and serializes matching in-flight spawns). `spent_known: false` means spend is unknown — do not treat `spent_usd` / `remaining_usd` as measured. |
+| `usage(window?)` | Per-provider usage summary (totals + by backend/client/model/backend×model, with input/output/cache-read/cache-write token columns and a native/admin-api cost split). `window` ∈ `session` (since the MCP server started) \| `day` (last 24h) \| `week` (7d) \| `month` (30d) \| `all` (default; the full ledger) — same set as `marshal usage --window`. The resolved `window` and `since` are echoed back. When the workspace's config declares `budgets:`, the response also includes a `budgets` list with per-budget `scope / window / spent_usd / limit_usd / remaining_usd / enforce / spent_known` (soft-warn by default; `enforce: true` refuses over-cap spawns and serializes matching in-flight spawns). `spent_known: false` means spend is unknown — do not treat `spent_usd` / `remaining_usd` as measured; `runs_known: false` is the same caveat for the run cap (`remaining_runs` is null). |
 | `get_run_log(run_id)` | The full raw stdout/stderr persisted for a run (under `<base>/logs/<run_id>.log`), or `null` when no log was written. The 16KB-truncated `text` on the run record is the agent's *final message*; the log preserves the *whole* stream so a driver can inspect what the agent actually did (esp. on a failure). |
 | `list_workflows()` | List declarative workflow recipes found in `<repo>/workflows/`. Returns `{workflows, errors, workspace}` — malformed recipe files land in `errors` (filename → message). |
 | `run_workflow(name, inputs?)` | Run a workflow recipe; integration is gated off by default. |
@@ -409,7 +410,7 @@ used to filter.
 Add `--config fleet.config.yaml` to also surface any `budgets:` declared there. The human output
 gets a `budgets` table with columns `scope · window · spent · limit · remaining · mode`
 (`mode` is `enforce` or `soft-warn`; aligned via `_align_rows`); the JSON output adds a `budgets`
-list (including `enforce` and `spent_known`). No `budgets:` configured = no `budgets` section / key (the "no behavior
+list (including `enforce`, `spent_known` and `runs_known`). No `budgets:` configured = no `budgets` section / key (the "no behavior
 change" contract for users who don't opt in). Default is soft-warn (stderr when a cap is met; the
 run proceeds); `enforce: true` refuses matching over-cap spawns and serializes matching in-flight
 spawns (see [`config.md`](config.md)). Budgets are only meaningful for backends that report cost —

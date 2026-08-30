@@ -139,7 +139,7 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
             _format_budget_amount(r.spent_usd, known=r.spent_known) if r.limit_usd is not None else "-",
             f"${r.limit_usd:.4f}" if r.limit_usd is not None else "-",
             _format_budget_remaining(r),
-            str(r.runs_unmeasured) if r.limit_runs is not None else "-",
+            _format_unmeasured_runs(r),
             str(r.limit_runs) if r.limit_runs is not None else "-",
             "enforce" if r.enforce else "soft-warn",
         )
@@ -147,6 +147,15 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
     ]
     for line in _align_rows(header, table_rows):
         print(f"  {line}")
+
+
+def _format_unmeasured_runs(r: BudgetStatus) -> str:
+    """Unmeasured runs for this budget, or an honest "unknown" - never a fake zero."""
+    if r.limit_runs is None:
+        return "-"                    # dollars-only budget: no run cap to count against
+    if not r.runs_known:
+        return "unavailable"          # the count could not be read; 0 would read as "all clear"
+    return str(r.runs_unmeasured)
 
 
 def _format_budget_remaining(r: BudgetStatus) -> str:

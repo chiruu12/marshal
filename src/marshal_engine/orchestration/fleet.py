@@ -822,6 +822,8 @@ class Fleet:
             # artifact list is still empty, and a driver polling for terminal-then-reading would
             # see a run that produced nothing.
             artifacts = self._harvest_artifacts(wt, run_id)
+            # Same ordering rule as the harvest above, and for the same reason.
+            self._persist_run_log(run_id, req, abandoned, result)
             # Stamp the terminal record ONLY if the run is still running, so a `cancel_run` that
             # already marked it `cancelled` (the common cancel-wins-first race) is preserved rather
             # than clobbered by this thread returning from the SIGTERM-killed subprocess. The usage
@@ -872,6 +874,8 @@ class Fleet:
             # Harvest here too: a run that died partway may still have written the findings that
             # explain why, and those are exactly what the next round needs.
             failed_artifacts = self._harvest_artifacts(wt, run_id)
+            if result is not None:
+                self._persist_run_log(run_id, req, abandoned, result)
             # Same ordering as the success path (#278): never publish a terminal record while the
             # enforce slot is still held. A run that failed before `usage.record` has no spend to
             # overshoot with; one that failed after has already recorded it.
@@ -881,6 +885,10 @@ class Fleet:
                 error=f"fleet: {exc}", artifacts=failed_artifacts,
             )
             self._ensure_artifacts_recorded(run_id, failed_rec, failed_artifacts)
+            # The record above is the real one for this run. Carry its id out with the exception
+            # so a batch caller can hand the driver an addressable handle instead of a synthetic
+            # id that resolves to nothing.
+            exc._marshal_run_id = run_id  # type: ignore[attr-defined]
             raise
         finally:
             # Backstop release. Both terminal-stamp paths above release first, so that a record
@@ -900,19 +908,7 @@ class Fleet:
             # exactly the evidence being looked for. Same reasoning as the cost ledger, which
             # already folds in what the abandoned attempts spent.
             if result is not None:
-                try:
-                    self.logs.write_attempts(
-                        run_id,
-                        [
-                            (r.raw_stdout or "", r.raw_stderr or "")
-                            for r in (*abandoned, result)
-                        ],
-                        # Same client env: the child received — scrub values that never appear in
-                        # os.environ (e.g. PROVIDER_AUTH under a non-secret-shaped key name).
-                        extra_values=req.client_env or None,
-                    )
-                except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
-                    print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
+                self._persist_run_log(run_id, req, abandoned, result)
 
         if cleanup and _agent_may_still_be_writing(record):
             # Deleting a worktree out from under a live writer destroys the partial work AND the
@@ -1144,11 +1140,49 @@ class Fleet:
             return "primary run has no branch"
         return None
 
+
+    def _persist_run_log(
+        self,
+        run_id: str,
+        req: RunRequest,
+        abandoned: list[AgentResult],
+        result: AgentResult,
+    ) -> None:
+        """Write the run's full stdout/stderr. Idempotent, so it is safe to call more than once.
+
+        Called BEFORE the terminal stamp, for the same reason artifacts are harvested before it:
+        a driver polling for terminal-then-reading must never see a finished run whose diagnostics
+        are not on disk yet. `get_run_log` returning null is documented to mean "the backend
+        crashed before producing one", so the gap between the stamp and this write turned a
+        transient ordering into a durable wrong conclusion. The `finally` call remains as the
+        backstop for paths that never reach the stamp at all.
+        """
+        try:
+            self.logs.write_attempts(
+                run_id,
+                [(r.raw_stdout or "", r.raw_stderr or "") for r in (*abandoned, result)],
+                # Same client env: the child received — scrub values that never appear in
+                # os.environ (e.g. PROVIDER_AUTH under a non-secret-shaped key name).
+                extra_values=req.client_env or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
+            print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
+
     def _run_request(self, req: RunRequest) -> RunRecord:
         """run_request one request, capturing any failure as a FAILED record so a batch survives it."""
         try:
             return self.run_request(req)
         except Exception as exc:  # noqa: BLE001 - one job's failure must not abort the batch
+            # If the run got far enough to be stamped, hand back the REAL record. Synthesizing
+            # one here minted `<task>.<backend>` - an id with no uuid suffix, matching nothing in
+            # the ledger - so a driver given it as `primary.run_id` could not `get_run`,
+            # `collect_run` or `set_outcome` the failure, while the genuine failed record sat
+            # unreachable under the id it was actually written with.
+            stamped_id = getattr(exc, "_marshal_run_id", None)
+            if isinstance(stamped_id, str):
+                stamped = self.state.get(stamped_id)
+                if stamped is not None:
+                    return stamped
             return RunRecord(
                 run_id=f"{req.task.id}.{req.backend_name}",
                 task_id=req.task.id,
@@ -1273,7 +1307,15 @@ class Fleet:
         """
         if self._worktree_has_changes(wt):
             return True
-        committed = self.worktrees.agent_commit_count(wt)
+        # `agent_commit_count` documents "None when git failed", but a git TIMEOUT raises
+        # `WorktreeError` straight through it (and a dead cwd raises OSError from Popen). The
+        # sibling `changed_files` call is guarded; this one was not, so a slow git turned a
+        # clean, expensive run into `failed` - and, because this runs before `usage.record`,
+        # dropped its ledger line entirely.
+        try:
+            committed = self.worktrees.agent_commit_count(wt)
+        except (WorktreeError, OSError):
+            return True  # cannot tell -> assume the agent wrote, the safe direction
         return committed is None or committed > 0
 
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
@@ -1292,7 +1334,10 @@ class Fleet:
         # uncommitted behind it. Stamping EMPTY there put the record at odds with `collect_run`,
         # which reports those commits - and a driver polling status would discard work that is
         # sitting on the branch (#250). None = could not tell, which must not read as zero.
-        committed = self.worktrees.agent_commit_count(wt)
+        try:
+            committed = self.worktrees.agent_commit_count(wt)
+        except (WorktreeError, OSError):
+            return RunStatus.EXITED_CLEAN  # same "can't tell -> don't mislabel" rule as above
         if committed is None or committed > 0:
             return RunStatus.EXITED_CLEAN
         return RunStatus.EMPTY

@@ -336,9 +336,12 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
         breakdown and token totals) for one workspace. Time-windowed via `window`; default is the
         full ledger. `by_backend_model` is keyed like 'opencode/<model-a>'. When the target
         workspace's fleet config declares `budgets:`, a `budgets` list is included with per-budget
-        scope / window / windowed spend / limit / remaining / enforce / spent_known (soft-warn by
-        default; `enforce: true` may refuse subsequent matching spawns on that workspace).
-        `spent_known: false` means spend is unknown — do not treat spent/remaining as measured."""
+        scope / window / windowed spend / limit / remaining / enforce / spent_known / runs_known
+        (soft-warn by default; `enforce: true` may refuse subsequent matching spawns on that
+        workspace). `spent_known: false` means spend is unknown — do not treat spent/remaining as
+        measured. `runs_known: false` is the same caveat for the run cap: the unmeasured-run count
+        could not be read, so `runs_unmeasured` is not a measurement and `remaining_runs` is
+        null."""
         svc = await offload(registry.get, workspace)
         now = datetime.now(UTC)
         since = usage_window_since(window, session_start=svc.session_start, now=now)

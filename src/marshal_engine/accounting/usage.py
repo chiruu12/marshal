@@ -283,7 +283,16 @@ class UsageTracker:
             return [], cursor
         # Any other OSError propagates: unknown spend must never present as no spend.
         data = self.events_path.read_bytes()
-        cursor = LedgerCursor(size=len(data), inode=st.st_ino, mtime_ns=st.st_mtime_ns)
+        # Re-stat AFTER the read so size and mtime describe the same instant. Pairing a size
+        # measured after the read with an mtime measured before it let a concurrent `record()`
+        # landing between the two syscalls mint a cursor the file never had; `events_after` then
+        # read same-size-plus-newer-mtime as proof of an in-place rewrite and refused an
+        # under-cap spawn, sending the driver to repair a perfectly healthy ledger.
+        try:
+            st_after = self.events_path.stat()
+        except OSError:
+            st_after = st
+        cursor = LedgerCursor(size=len(data), inode=st.st_ino, mtime_ns=st_after.st_mtime_ns)
         # A crash-torn final line can tear INSIDE a multibyte character - reachable because a
         # `client` name may be non-ASCII and is not escaped on write. Decoding the whole file
         # strictly made that a hard failure for every reader, so the torn-line tolerance the
@@ -315,13 +324,21 @@ class UsageTracker:
         ledger did not exist at the outside-lock snapshot — bounded by what one spawn window
         could have written, and keeps the under-lock call graph on ``events_after`` alone.
         """
-        if not self.events_path.exists():
+        # `stat`, never `exists()` - for exactly the reason spelled out in `read_events` above.
+        # `exists()` answers False for "no ledger yet" AND for "cannot stat it", and THIS is the
+        # under-lock recheck every enforced budget runs, so collapsing them let an unreadable
+        # ledger read as an empty tail: the recheck added $0 of spend and admitted the spawn.
+        # The cap failed open in the one mode whose entire job is to refuse - the same hole
+        # `read_events` was rewritten to close, reintroduced one method later.
+        try:
+            st = self.events_path.stat()
+        except FileNotFoundError:
             if cursor.size == 0:
                 return []
             raise UnreadableUsageLedgerError(
                 self.events_path, reason="ledger disappeared after the baseline read"
-            )
-        st = self.events_path.stat()
+            ) from None
+        # Any other OSError propagates: `_recheck_enforce_from_tail` turns it into a refusal.
         if cursor.size == 0 and cursor.inode == 0:
             # Empty baseline → file appeared. Read bytes from offset 0 as the "tail".
             with self.events_path.open("rb") as f:

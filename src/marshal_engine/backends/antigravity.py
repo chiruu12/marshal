@@ -490,6 +490,20 @@ class AntigravityBackend(CodingAgentBackend):
             )
         _apply_agy_usage(usage, envelope.get("usage"))
         text = _agy_response_text(envelope)
+        # Exit 0 is not the verdict - the envelope's `status` is. Partial text and usage are kept
+        # either way: a truncated turn still spent those tokens, and they belong in the ledger.
+        failure = _agy_envelope_failure(envelope)
+        if failure is not None:
+            return AgentResult(
+                status=RunStatus.FAILED,
+                text=text,
+                session_id=_agy_conversation_id(envelope),
+                usage=usage,
+                error=failure,
+                exit_code=exit_code,
+                raw_stdout=raw_stdout,
+                raw_stderr=raw_stderr,
+            )
         return AgentResult(
             status=RunStatus.EXITED_CLEAN,
             text=text,
@@ -500,6 +514,30 @@ class AntigravityBackend(CodingAgentBackend):
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _agy_envelope_failure(envelope: dict[str, Any]) -> str | None:
+    """The envelope's own failure reason, when agy reports one alongside exit 0.
+
+    agy exits 0 whether the turn succeeded or not and puts the verdict in the envelope's
+    ``status`` field. Ignoring it defeated the very reason `--print-timeout` is set just INSIDE
+    the run timeout: the point of that ordering is for agy to return a parseable envelope
+    (``status=ERROR``, ``error="timeout waiting for response"``, plus the tokens spent) rather
+    than be hard-killed by Marshal's external kill. Reading only the exit code turned that
+    deliberate, well-behaved timeout back into a reported success - and one carrying PARTIAL
+    response text, so a driver could integrate a truncated turn believing it was complete.
+
+    Any status that is not ``SUCCESS`` is a failure. Fail-closed on an unrecognised value, the
+    same bar `_parse_agy_usage_command` already applies: a false failure costs a re-run, a false
+    success costs whatever the driver merges on top of it.
+    """
+    status = envelope.get("status")
+    if isinstance(status, str) and status.strip().upper() == "SUCCESS":
+        return None
+    error = envelope.get("error")
+    if isinstance(error, str) and error.strip():
+        return f"agy reported status={status!r}: {error.strip()}"
+    return f"agy reported status={status!r} with no error detail"
 
 
 def _agy_silent_reason(text: str, raw_stderr: str) -> str | None:

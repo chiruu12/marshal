@@ -236,13 +236,20 @@ def compute_budget_status(
             spent = 0.0
             spent_known = False  # error => spend unknown, never claim a known $0
         runs_unmeasured = 0
+        runs_known = True
         if b.limit_runs is not None:
             try:
                 runs_unmeasured = _unmeasured_runs_from_events(
                     tracker.events(), b, session_start=session_start, now=now
                 )
             except Exception:  # noqa: BLE001 - display never fails a usage query
+                # Degrade to UNKNOWN, not to zero. The dollar side directly above already gets
+                # this right (`spent_known = False`, "never claim a known $0"); the runs side
+                # silently reported 0 unmeasured runs and therefore a full `remaining_runs`,
+                # which reads as "the whole cap is still available" at the exact moment nobody
+                # can tell how much of it was spent.
                 runs_unmeasured = 0
+                runs_known = False
         out.append(
             BudgetStatus(
                 scope=_budget_scope_label(b),
@@ -255,9 +262,12 @@ def compute_budget_status(
                 runs_unmeasured=runs_unmeasured,
                 limit_runs=b.limit_runs,
                 remaining_runs=(
-                    None if b.limit_runs is None else max(0, b.limit_runs - runs_unmeasured)
+                    None
+                    if b.limit_runs is None or not runs_known
+                    else max(0, b.limit_runs - runs_unmeasured)
                 ),
                 enforce=b.enforce,
+                runs_known=runs_known,
                 spent_known=spent_known,
             )
         )
@@ -278,6 +288,14 @@ class BudgetStatus(BaseModel):
     limit_runs: int | None = None
     remaining_runs: int | None = None
     enforce: bool = False
+    runs_known: bool = Field(
+        default=True,
+        description=(
+            "False when the unmeasured-run count could not be determined (ledger lookup "
+            "failure). Machine consumers (MCP / --json) must read this before treating "
+            "runs_unmeasured / remaining_runs as measured."
+        ),
+    )
     spent_known: bool = Field(
         default=True,
         description=(
@@ -952,8 +970,27 @@ class EnforceBudgetGate:
                                 "refusing spawn because enforce=true. Retry shortly."
                             )
                         if entry is None:
-                            # Reclaimed and not taken — slot is free; re-acquire under the cap.
-                            disk[key] = _new_reservation_entry(run_id, token=token)
+                            # Reclaimed and not taken. The slot LOOKS free, but "free" is not the
+                            # same as "under the cap": while our placeholder was aged out, a peer
+                            # could have taken the slot, run, recorded spend that met the cap, and
+                            # released it. `bind` holds no tracker and no budget specs, so it
+                            # cannot re-read the ledger to find out - and the old comment here
+                            # claimed a cap compliance ("re-acquire under the cap") that no code
+                            # verified, silently re-admitting a run that could overshoot a hard
+                            # cap by a full run's cost.
+                            #
+                            # So refuse, exactly as the peer-holds branch above already does.
+                            # This is the enforce path, whose entire job is to refuse when it
+                            # cannot prove otherwise; the cost of being wrong here is one retry.
+                            for k in keys:
+                                self._held.pop(k, None)
+                                self._tokens.pop(k, None)
+                            raise BudgetExceeded(
+                                f"budget gate reservation aged out before bind "
+                                f"({path}, key {key}); the slot was released and this run's "
+                                "spend can no longer be shown to be under the cap. Refusing "
+                                "spawn because enforce=true. Retry shortly."
+                            )
                         else:
                             entry["run_id"] = run_id
                             disk[key] = entry

@@ -6764,3 +6764,46 @@ def test_cleanup_still_removes_the_worktree_of_a_settled_run(repo: Path) -> None
 
     assert rec.status == RunStatus.EXITED_CLEAN.value
     assert not (rec.worktree and Path(rec.worktree).exists()), "cleanup stopped removing worktrees"
+
+
+def test_a_git_timeout_counting_commits_does_not_lose_the_run(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: `agent_commit_count` promises None on git failure, but a TIMEOUT raises.
+
+    The sibling `changed_files` call is guarded; this one was not. Because it runs before
+    `usage.record`, a slow git turned a clean run into `failed` AND dropped its ledger line -
+    the run vanished from every cost, budget and routing figure.
+    """
+    def boom(wt: object) -> int:
+        raise WorktreeError("git 'rev-list ...' timed out after 120s")
+
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    monkeypatch.setattr(fleet.worktrees, "agent_commit_count", boom)
+
+    rec = fleet.run("selfcommit", TaskSpec(id="sc-timeout", goal="x"))
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    events = [e for e in fleet.usage.read_events(strict=True)[0] if e.run_id == rec.run_id]
+    assert len(events) == 1, "the run must still have exactly one ledger line"
+
+
+def test_a_failed_job_reports_an_addressable_run_id(repo: Path) -> None:
+    """REGRESSION: run_many synthesized `<task>.<backend>`, an id matching no record.
+
+    The driver was handed that as `primary.run_id`, so it could not get_run / collect_run /
+    set_outcome the failure, while the genuine failed record sat in the ledger under the id it
+    was really written with.
+    """
+    from marshal_engine.orchestration.fleet import RunManyJob
+
+    fleet = Fleet(repo, {"boom": _Exploder()})
+    results = fleet.run_many(
+        [RunManyJob(request=RunRequest(backend_name="boom", task=TaskSpec(id="bad", goal="x")))]
+    )
+
+    primary = results[0].primary
+    assert primary.status == RunStatus.FAILED.value
+    # The id must resolve to a real record.
+    assert fleet.state.get(primary.run_id) is not None
+    assert primary.run_id in {r.run_id for r in fleet.state.list()}

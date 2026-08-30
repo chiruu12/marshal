@@ -1076,3 +1076,48 @@ def test_exit_zero_with_real_response_carries_no_error(backend: AntigravityBacke
     assert result.status is RunStatus.EXITED_CLEAN
     assert result.text == "NO FINDINGS"
     assert result.error is None
+
+
+def test_error_envelope_on_exit_zero_is_a_failure(backend: AntigravityBackend) -> None:
+    """agy's print-timeout returns status=ERROR with exit 0; that is a failed run, not a clean one.
+
+    `--print-timeout` is deliberately set just inside the run timeout so agy answers with a
+    parseable envelope instead of being hard-killed. Reading only the exit code turned that
+    well-behaved timeout into a reported success carrying PARTIAL text.
+    """
+    stdout = json.dumps(
+        {
+            "conversation_id": "c1",
+            "status": "ERROR",
+            "error": "timeout waiting for response",
+            "response": "I began refactoring the parser and",
+            "usage": {"input_tokens": 900, "output_tokens": 40},
+        }
+    )
+    result = backend.parse_output(stdout, "", 0)
+
+    assert result.status is RunStatus.FAILED
+    assert result.error is not None
+    assert "timeout waiting for response" in result.error
+    # The partial turn still spent these tokens - they belong in the ledger.
+    assert result.usage.input_tokens == 900
+    assert result.text.startswith("I began refactoring")
+
+
+def test_unrecognised_envelope_status_fails_closed(backend: AntigravityBackend) -> None:
+    """An unknown status is a failure: a false failure costs a re-run, a false success costs more."""
+    stdout = json.dumps({"conversation_id": "c1", "status": "PARTIAL", "response": "half a turn"})
+    result = backend.parse_output(stdout, "", 0)
+
+    assert result.status is RunStatus.FAILED
+    assert result.error is not None and "PARTIAL" in result.error
+
+
+def test_success_envelope_is_still_clean(backend: AntigravityBackend) -> None:
+    """Anti-blanket control: the ordinary SUCCESS path must not be swept into the failure branch."""
+    stdout = json.dumps({"conversation_id": "c1", "status": "SUCCESS", "response": "done"})
+    result = backend.parse_output(stdout, "", 0)
+
+    assert result.status is RunStatus.EXITED_CLEAN
+    assert result.error is None
+    assert result.text == "done"
