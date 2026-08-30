@@ -483,20 +483,47 @@ class AntigravityBackend(CodingAgentBackend):
                 status=RunStatus.EXITED_CLEAN,
                 text=raw_stdout.strip(),
                 usage=usage,
+                error=_agy_silent_reason(raw_stdout, raw_stderr),
                 exit_code=exit_code,
                 raw_stdout=raw_stdout,
                 raw_stderr=raw_stderr,
             )
         _apply_agy_usage(usage, envelope.get("usage"))
+        text = _agy_response_text(envelope)
         return AgentResult(
             status=RunStatus.EXITED_CLEAN,
-            text=_agy_response_text(envelope),
+            text=text,
             session_id=_agy_conversation_id(envelope),
             usage=usage,
+            error=_agy_silent_reason(text, raw_stderr),
             exit_code=exit_code,
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _agy_silent_reason(text: str, raw_stderr: str) -> str | None:
+    """Why an exit-0 agy run produced no text, when agy itself said why on stderr.
+
+    agy exits 0 and reports ``status=SUCCESS`` even when it did nothing at all - the headless
+    auto-deny path is the common case, where a tool needed a permission that cannot be prompted
+    for and the whole run collapses to an empty ``response``. The envelope alone cannot tell those
+    two situations apart, and they call for opposite responses from a driver: "the agent looked and
+    found nothing" is a RESULT, while "the agent was never allowed to look" is a misconfiguration
+    to fix and re-run. Without this the record carried ``error=None``, so the second read exactly
+    like the first and a read-only review reported NO FINDINGS having read nothing.
+
+    Only the *reason* is carried; the status is left alone, because what was observed - exited 0,
+    produced nothing - is still accurately `EMPTY`. Attaching it never turns a run into a failure:
+    `is_transient_failure` is gated on `RunStatus.FAILED`, so an explanatory error on a clean
+    result cannot trigger a retry.
+    """
+    if text.strip():
+        return None
+    reason = raw_stderr.strip()
+    if not reason:
+        return None
+    return f"agy exited 0 but produced no response: {reason}"
 
 
 # --- module helpers ----------------------------------------------------------------------

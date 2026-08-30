@@ -10,6 +10,17 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **An Antigravity run blocked by a headless permission auto-deny read as an ordinary empty run.**
+  `agy` exits 0 and reports `status=SUCCESS` even when a tool needed a permission that headless
+  mode cannot prompt for, in which case the whole run collapses to an empty `response` - it says
+  so on stderr, but `parse_output` discarded stderr on the exit-0 path, so the record carried
+  `error=None`. That made "the agent looked and found nothing" and "the agent was never allowed to
+  look" indistinguishable, and they call for opposite responses: the first is a result, the second
+  is a misconfiguration to fix and re-run. A read-only reviewer hitting it reported no findings
+  having read nothing, after spending its full input budget. The reason agy gave now travels on the
+  record. Only the reason - the status stays `empty`, which is still an accurate account of what
+  was observed.
+
 - **A credential in a client `env:` block was written verbatim to the run log.**
   `RunLogStore.write` scrubbed values found in the parent environment only, so a secret that
   reached the child solely through a per-client `env:` entry was never scanned. Secret-*shaped*

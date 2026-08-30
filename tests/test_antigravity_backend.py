@@ -1036,3 +1036,43 @@ def test_read_only_slash_check_sees_the_composed_prompt(backend: AntigravityBack
             TaskSpec(id="t1", goal="/usage", context_files=["a.py"]),
             _opts(permission=PermissionMode.READ_ONLY),
         )
+
+
+def test_exit_zero_with_empty_response_carries_agys_own_reason(
+    backend: AntigravityBackend,
+) -> None:
+    """A headless auto-deny exits 0 with an empty response; the driver must see WHY.
+
+    Without the reason the record is indistinguishable from an agent that genuinely found
+    nothing, so a read-only review reads as NO FINDINGS having read nothing at all.
+    """
+    stdout = json.dumps(
+        {
+            "conversation_id": "c1",
+            "status": "SUCCESS",
+            "response": "",
+            "usage": {"input_tokens": 126599, "output_tokens": 3592},
+        }
+    )
+    stderr = (
+        'jetski: no output produced — a tool required the "command" permission that headless '
+        "mode cannot prompt for, so it was auto-denied."
+    )
+    result = backend.parse_output(stdout, stderr, 0)
+
+    assert result.status is RunStatus.EXITED_CLEAN
+    assert result.text == ""
+    assert result.error is not None
+    assert "auto-denied" in result.error
+    # The tokens were still spent and must reach the ledger.
+    assert result.usage.input_tokens == 126599
+
+
+def test_exit_zero_with_real_response_carries_no_error(backend: AntigravityBackend) -> None:
+    """The anti-blanket control: a run that produced text is not annotated with stderr noise."""
+    stdout = json.dumps({"conversation_id": "c1", "status": "SUCCESS", "response": "NO FINDINGS"})
+    result = backend.parse_output(stdout, "some harmless warning on stderr", 0)
+
+    assert result.status is RunStatus.EXITED_CLEAN
+    assert result.text == "NO FINDINGS"
+    assert result.error is None
