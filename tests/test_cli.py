@@ -1607,3 +1607,38 @@ def test_team_run_pr_reports_a_missing_gh_before_spawning_reviewers(
     ])
     assert code == 1
     assert "GitHub CLI" in capsys.readouterr().err
+
+
+def test_an_advisory_only_client_never_renders_as_a_zero_percent_row() -> None:
+    """The table must not print `0%` where the ledger deliberately declined to compute a rate.
+
+    `integration_rate` is `None` for a client whose judged runs all merged nothing. Rendering that
+    as `0%` in the CLI would reintroduce, at the display layer, the exact defamation the `None`
+    exists to prevent - and the CLI is where a human actually reads the number.
+    """
+    from marshal_engine.accounting.ledger import RoutingCell
+
+    cell = RoutingCell(
+        task_kind="review", client="oc-readonly",
+        n_runs=3, n_judged=3, n_advisory=3, n_integrable=0,
+    )
+    rendered = cli_fmt._format_integration_rate(cell)
+
+    assert "0%" not in rendered
+    assert "advisory" in rendered
+
+
+def test_a_mixed_client_shows_the_rate_over_integrable_runs_with_advisory_beside_it() -> None:
+    """Both numbers travel together: the rate's real denominator, and what was excluded from it."""
+    from marshal_engine.accounting.ledger import RoutingCell
+
+    cell = RoutingCell(
+        task_kind="review", client="grok",
+        n_runs=5, n_judged=5, n_integrated=1, n_advisory=3, n_integrable=2,
+        integration_rate=0.5,
+    )
+    rendered = cli_fmt._format_integration_rate(cell)
+
+    assert "50%" in rendered
+    assert "1/2 integrable" in rendered
+    assert "3 advisory" in rendered

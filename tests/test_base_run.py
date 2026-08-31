@@ -630,3 +630,46 @@ def test_no_policy_leaves_the_wall_clock_exactly_as_before(tmp_path: Path) -> No
     assert res.status is RunStatus.TIMED_OUT
     # Killed by the plain cap at ~2s, NOT early by a stall detector that should not be running.
     assert 1.0 < elapsed < 15
+
+
+def test_git_writes_do_not_count_as_agent_progress(tmp_path: Path) -> None:
+    """`.git` is skipped, so a stalled agent cannot be kept alive by git's own bookkeeping.
+
+    The progress signal is "the worktree changed". Git writes into `.git` constantly - index
+    refreshes, lock files, gc - none of which is the agent doing work. If those counted, a hung
+    run would look busy for as long as anything touched the repo, and the stall detector would
+    never fire: the exact failure it exists to catch.
+    """
+    from marshal_engine.backends.base import _newest_mtime
+
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "index").write_text("x")
+    nested = git / "refs" / "heads"
+    nested.mkdir(parents=True)
+    (nested / "main").write_text("x")
+
+    assert _newest_mtime(tmp_path) == 0.0  # nothing outside .git has been written
+
+    tracked = tmp_path / "src.py"
+    tracked.write_text("x")
+    assert _newest_mtime(tmp_path) > 0.0  # ... and a real file still registers
+
+
+def test_an_unreadable_directory_is_not_read_as_progress(tmp_path: Path) -> None:
+    """A directory we cannot scan yields no mtime rather than an exception.
+
+    `_newest_mtime` runs on every poll of a live run. Raising here would turn a permission quirk
+    into a killed run, so the walk degrades to "saw nothing" - which is the safe direction: the
+    stall detector fires, and the hard ceiling is still underneath it either way.
+    """
+    from marshal_engine.backends.base import _newest_mtime
+
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "f").write_text("x")
+    blocked.chmod(0o000)
+    try:
+        assert _newest_mtime(tmp_path) == 0.0
+    finally:
+        blocked.chmod(0o755)

@@ -96,6 +96,12 @@ Only after **INTEGRATE**: `integrate(candidate_run_id, cleanup?)`, one run at a 
 `marshal-orchestrate` step 5 for handling `merged` / `conflict` / `blocked` / `empty` / `error`.
 Worktree isolation means main is untouched until this step.
 
+Then judge the **reviewers**, not just the candidate: `set_outcome(<reviewer_run_id>, "advisory")`
+for each gate reviewer whose verdict you used. A reviewer merges nothing, so `advisory` is what
+fits - `abandoned` reads as giving up and would count a review you relied on against that client's
+integration rate. Without this the gate's own reviewers never accumulate a `routing` record, and
+you cannot tell which of them is worth the spend.
+
 ## Invariants to respect
 - Reviewers are headless - the rubric + diff in the prompt is all they get; no questions are possible.
 - Independent means parallel + isolated; never show a reviewer a peer's verdict.
