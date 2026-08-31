@@ -10,6 +10,15 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **New `advisory` run outcome.** The other three verdicts all assume the work was a diff, so a
+  read-only review, audit or plan panel - whose findings get used while nothing merges - could only
+  be recorded `abandoned`: a judged non-integration that reads as "gave up" and drove the client's
+  integration rate toward zero for merges it was never eligible to produce. `advisory` says the
+  work was used and there was nothing to merge. `routing` counts it as judged, reports it as
+  `n_advisory`, and keeps it out of the integration rate's denominator (`n_integrable` = judged
+  minus advisory) rather than counting it as a failure; a client whose judged runs are all advisory
+  is listed with its counts and left unranked, never at 0%.
+
 - **Opt-in progress-aware run timeout (#276).** A new `progress_timeout:` block ends a run on
   evidence of progress rather than on the clock alone: a stalled run is killed early instead of
   burning the rest of its cap, and a run still making progress at its soft deadline is extended

@@ -154,8 +154,12 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
         usage ledger joined to recorded outcomes; nothing is stored.
 
         Read the numbers honestly, because the ledger will not flatter you:
-        - `integration_rate` is over JUDGED runs only, and is `null` when nothing has been judged -
-          that is "unknown", not 0%. `n_judged` sits beside it; a rate without its n is not evidence.
+        - `integration_rate` is over INTEGRABLE runs only (`n_integrable` = judged minus
+          advisory), and is `null` when there are none - that is "unknown", not 0%. The n sits
+          beside it; a rate without its n is not evidence.
+        - `advisory` runs (read-only reviews, audits, plan panels) are judged but merge nothing, so
+          they are kept out of that denominator instead of counted as failures. A client whose
+          judged runs are all advisory is listed with its counts and left unranked.
         - If you record integrations but never rejections (`set_outcome`), every rate reads 100%
           and this tool is decorative. `caveat` says so when nothing has been judged at all.
         - `mean_cost_per_integrated` is `null`, never 0, when no integrated run reported real cost.

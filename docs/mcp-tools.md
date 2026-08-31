@@ -605,9 +605,12 @@ total_judged, events_without_record, task_kind_filter, caveat, window, workspace
 Derived on read by joining the usage ledger to recorded run outcomes; nothing is stored. Each
 cell is one `(task_kind, client)` pair:
 
-- `integration_rate`: integrated ÷ **judged** runs. `null` when nothing has been judged — that is
-  *unknown*, not 0%. `n_judged`, `n_unjudged` and `n_no_record` are all reported so a rate is never
-  read without its denominator.
+- `integration_rate`: integrated ÷ **integrable** runs (`n_integrable` = judged minus advisory).
+  `null` when there are none — that is *unknown*, not 0%. `n_judged`, `n_integrable`, `n_advisory`,
+  `n_unjudged` and `n_no_record` are all reported so a rate is never read without its denominator.
+- `n_advisory`: judged runs that merged nothing because there was nothing to merge (read-only
+  reviews, audits, plan panels). Kept **out** of the rate's denominator rather than counted as
+  failures; a client whose judged runs are all advisory is listed with its counts and left unranked.
 - `mean_cost_per_integrated`: `null`, **never 0**, when no integrated run reported a measured cost
   (`native` / `admin-api`). Compare against `measured_cost_all_usd`, which includes money spent on
   runs you rejected — cost-per-integrated alone flatters a client that burns four rejects per keeper.
@@ -632,7 +635,7 @@ rejections, every rate reads 100%.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `run_id` | string | — | The run to judge. |
-| `outcome` | `integrated` \| `rejected` \| `abandoned` | — | Your judgment about the **work**. |
+| `outcome` | `integrated` \| `rejected` \| `abandoned` \| `advisory` | — | Your judgment about the **work**. `advisory` = findings you used, nothing to merge — use it instead of `abandoned` for read-only reviews, audits and plan panels, which otherwise read as "gave up" and count against the client's integration rate. |
 | `note` | string \| null | `null` | Short reason, kept with the record. Truncated at 2000 chars. |
 | `workspace` | string \| null | `null` | Workspace hint; the run's owning workspace is resolved from `run_id`. |
 
@@ -762,7 +765,7 @@ Judgment about the work is not on this line: it arrives later, so successful `in
 | `ended_at` | string \| null | ISO-8601. |
 | `error` | string \| null | Failure detail. |
 | `merged_into` | string \| null | Branch after integrate. |
-| `outcome` | string \| null | Judgment about the work, **distinct from** process `status`: `integrated` / `rejected` / `abandoned`. Successful `integrate` stamps `integrated` here (late judgment — the usage event is not rewritten). Absence means no judgment yet; never infer `rejected` from a clean-but-unintegrated run. |
+| `outcome` | string \| null | Judgment about the work, **distinct from** process `status`: `integrated` / `rejected` / `abandoned` / `advisory`. Successful `integrate` stamps `integrated` here (late judgment — the usage event is not rewritten). Absence means no judgment yet; never infer `rejected` from a clean-but-unintegrated run. |
 | `commit` | string \| null | Branch tip after `commit_run`. |
 | `pid` | int \| null | Agent subprocess pid (while running). |
 | `pid_start_time` | string \| null | OS-reported start time of `pid`. A pid alone is not an identity — the OS reuses pids — so startup reconciliation verifies the pair before deciding a recorded run is still alive. Rendered under a pinned locale and timezone and prefixed to say so, because the process that writes it is not always the one that checks it; an unprefixed value was written by an older Marshal and is treated as unverifiable rather than as a different process. |

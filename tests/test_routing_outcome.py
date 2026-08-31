@@ -55,7 +55,7 @@ def test_an_unknown_run_is_an_error_and_creates_nothing(state: FleetState) -> No
 
 def test_an_invalid_outcome_names_the_legal_set_and_writes_nothing(state: FleetState) -> None:
     _run(state)
-    with pytest.raises(ValueError, match="abandoned, integrated, rejected"):
+    with pytest.raises(ValueError, match="abandoned, advisory, integrated, rejected"):
         record_outcome(state, "r1", "sort-of-ok")
     rec = state.get("r1")
     assert rec is not None and rec.outcome is None

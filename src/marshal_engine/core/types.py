@@ -136,14 +136,25 @@ class RunOutcome(str, Enum):
     That verdict arrives later, from whoever reviewed it, and is stamped on the run record.
 
     `INTEGRATED` is a mechanical fact - a merge commit exists - so it is never overwritten. The
-    other two are opinions and may be revised. Absence of an outcome means "not judged yet", which
-    is emphatically not the same as `REJECTED`: every routing number is a ratio over *judged* runs,
-    and conflating the two would silently count work nobody has looked at as work someone refused.
+    other three are opinions and may be revised. Absence of an outcome means "not judged yet",
+    which is emphatically not the same as `REJECTED`: every routing number is a ratio over
+    *judged* runs, and conflating the two would silently count work nobody has looked at as work
+    someone refused.
+
+    `ADVISORY` exists because the other three all assume the work was a diff. A read-only
+    reviewer, an audit, or a plan-consensus panel produces findings that get *used* while merging
+    nothing, and the only verdict that previously fit was `ABANDONED` - which reads as "gave up"
+    and, being a judged non-integration, drove the client's integration rate toward zero for work
+    it was never eligible to win. `ADVISORY` says the work was used and there was nothing to
+    merge; the routing ledger counts it as judged but keeps it out of the integration-rate
+    denominator. It is a verdict about the work, so it is not for a run that merely produced no
+    diff - that is `empty`, a status, or `REJECTED` if the findings were wrong.
     """
 
     INTEGRATED = "integrated"
     REJECTED = "rejected"
     ABANDONED = "abandoned"
+    ADVISORY = "advisory"
 
 
 class UsageSource(str, Enum):

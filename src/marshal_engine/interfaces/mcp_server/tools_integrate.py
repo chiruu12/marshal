@@ -38,12 +38,16 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
     @app.tool()
     async def set_outcome(
         run_id: Annotated[str, Field(description=_DESC_RUN_ID)],
-        outcome: Annotated[Literal["integrated", "rejected", "abandoned"], Field(description=(
-            "Your judgment about the WORK, distinct from the run's process `status`. "
-            "`rejected` = you reviewed it and it was wrong or off-scope; `abandoned` = you gave "
-            "up on it (superseded, no longer needed). `integrated` is written for you by "
-            "`integrate`; passing it here is refused unless a merge actually landed."
-        ))],
+        outcome: Annotated[
+            Literal["integrated", "rejected", "abandoned", "advisory"], Field(description=(
+                "Your judgment about the WORK, distinct from the run's process `status`. "
+                "`rejected` = you reviewed it and it was wrong or off-scope; `abandoned` = you "
+                "gave up on it (superseded, no longer needed); `advisory` = it produced findings "
+                "you USED and there was nothing to merge (a read-only review, audit, or plan "
+                "panel) - use it instead of `abandoned` there, which reads as giving up and "
+                "counts against the client's integration rate. `integrated` is written for you "
+                "by `integrate`; passing it here is refused unless a merge actually landed."
+            ))],
         note: Annotated[str | None, Field(description=(
             "Short reason, for your future self reading `routing`. Truncated at 2000 chars."
         ))] = None,

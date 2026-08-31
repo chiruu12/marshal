@@ -175,8 +175,14 @@ def _format_integration_rate(cell: RoutingCell) -> str:
     failed, it has not been looked at.
     """
     if cell.integration_rate is None:
+        if cell.n_advisory:
+            return f"advisory ({cell.n_advisory} of {cell.n_runs}, nothing to merge)"
         return f"unknown (0 of {cell.n_runs} judged)"
-    return f"{cell.integration_rate * 100:.0f}% ({cell.n_integrated}/{cell.n_judged} judged)"
+    suffix = f", {cell.n_advisory} advisory" if cell.n_advisory else ""
+    return (
+        f"{cell.integration_rate * 100:.0f}% "
+        f"({cell.n_integrated}/{cell.n_integrable} integrable{suffix})"
+    )
 
 
 def _format_cell_cost(cell: RoutingCell) -> str:
