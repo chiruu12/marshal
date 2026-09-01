@@ -94,8 +94,10 @@ integrate), and `verify_failed` (changes exist but the workspace gate rejected t
 
 `integrate(run_id)` merges into the branch you have checked out. Outcomes: `merged`, `conflict`
 (aborted, repo left clean), `blocked` (dirty or detached target; fix and retry, the work is safe
-on its branch), `empty`, `error` (read `message`, do not blindly retry), and `base_branch_drift`
-on a merge that landed somewhere you may not have intended.
+on its branch), `empty`, and `error` (read `message`, do not blindly retry). `base_branch_drift` is **not** a
+status: it is a bool on an otherwise `merged` result, set when the run was spawned off a
+different branch than the one you merged into. The merge landed; read both branches and decide
+whether that is what you meant.
 
 Never merge a second run before reviewing it. Worktree isolation means the target branch is
 untouched until this step, and that is the only safety net there is.

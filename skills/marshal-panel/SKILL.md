@@ -59,7 +59,7 @@ same paragraph twice. Three roles on one client is three samples of one opinion.
 
 A panel that has earned its keep:
 
-| Lens | Ask it for | Route to |
+| Lens | Ask it for | Model to route it to |
 |---|---|---|
 | tests | Per test: would this fail if the fix were deleted? Which of these pin nothing? | A strong reasoning model. This lens has repeatedly been the only one to catch a real behaviour flip. |
 | contract | Every call site enumerated, not sampled. In-repo precedent that justifies or kills the design. | The model with the best evidence discipline you have. |
@@ -85,7 +85,39 @@ A role told to "review this" returns a polite paragraph that reads exactly like 
   something blocking only with a cited rule clause or a concrete failing input."
 - **Read-only clients only.** A reviewer that can edit is not a reviewer.
 
-## 4. Reading the panel
+## 4. Run it
+
+`list_teams()` shows the declared panels and each role's client. A team lives in
+`<repo>/teams/<name>.yaml`, one lens per role:
+
+```yaml
+description: what this panel is for
+target: range          # run | plan | range | audit - must match what you pass
+roles:
+  - name: tests
+    client: <a read-only client from this workspace's fleet.config.yaml>
+    rubric: |
+      <the lens, written per section 3>
+```
+
+Then:
+
+```
+run_team(name="<team>", target="range", base="<base>", head="HEAD", paths=[...])
+run_team(name="<team>", target="run",   run_id="<candidate>")
+run_team(name="<team>", target="plan",  text="<the plan>")
+run_team(name="<team>", target="range", pr=<number>)
+```
+
+All roles go out under one task id, blind to each other. Expect a real panel to outlive a tool
+timeout and land as a background task.
+
+**Section 2 names models, not clients.** `roles[].client` must be a client declared in the
+workspace's `fleet.config.yaml`, so every lens you want needs a `permission: read-only` entry
+there pointing at the model you want holding it. A workspace with two read-only clients runs a
+two-lens panel no matter how many rows the table has.
+
+## 5. Reading the panel
 
 Read `unified_report` to orient, then the individual reports for any objection that matters.
 
@@ -94,7 +126,9 @@ Three checks before trusting any of it:
 - `incomplete_roles` - that lens is **missing**, not satisfied.
 - `truncated` - the subject was cut at the tail, and git orders paths alphabetically, so `src/`
   and `tests/` are what get lost on a large diff. Scope with `PATHS` or split the review.
-- `has_text` per role - see above.
+- `completed` and `status` per role - a role that did not finish is a missing lens. `has_text`
+  is not on the panel payload; to check a role's run for emptiness, take its `run_id` and read
+  `has_text` from `get_run`.
 
 Then the part nothing automates:
 
@@ -108,7 +142,7 @@ Then the part nothing automates:
 
 The repo's own rules outrank the panel every time. So does the issue text.
 
-## 5. If the subject is a fleet run's diff
+## 6. If the subject is a fleet run's diff
 
 A passing suite is not evidence. **Mutation-test the tests before integrating:** invert the rule
 the task was about and re-run. One branch from a strong model had 11 tests that all still passed
@@ -116,7 +150,7 @@ after its central invariant was inverted, because they sat behind a guard that n
 free-tier sibling failed 6 of 9 on the same treatment, which is what real tests do. Model tier
 did not predict which was which.
 
-## 6. Close it out
+## 7. Close it out
 
 - `set_outcome(run_id, "rejected"|"abandoned", note)` on everything you did not integrate.
   Declining to integrate leaves no trace, so a run you reviewed and binned looks identical to one
