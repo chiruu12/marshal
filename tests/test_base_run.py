@@ -638,6 +638,25 @@ def test_no_policy_leaves_the_wall_clock_exactly_as_before(tmp_path: Path) -> No
     assert 1.0 < elapsed < 15
 
 
+def test_a_future_dated_file_cannot_pin_the_progress_signal(tmp_path: Path) -> None:
+    """A file stamped ahead of the clock would otherwise be the newest mtime forever, so every
+    real write compares lower and a productive run is killed as stalled."""
+    import os
+
+    from marshal_engine.backends.base import _newest_mtime
+
+    future = tmp_path / "from-the-future"
+    future.write_text("x")
+    ahead = time.time() + 86_400
+    os.utime(future, (ahead, ahead))
+    assert _newest_mtime(tmp_path) == 0.0, "a future stamp was read as progress"
+    real = tmp_path / "real.py"
+    real.write_text("x")
+    newest = _newest_mtime(tmp_path)
+    assert 0.0 < newest < ahead
+    assert newest == real.stat().st_mtime
+
+
 def test_git_writes_do_not_count_as_agent_progress(tmp_path: Path) -> None:
     """`.git` is skipped, so a stalled agent cannot be kept alive by git's own bookkeeping.
 

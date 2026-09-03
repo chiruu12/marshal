@@ -1186,7 +1186,11 @@ class Fleet:
                 task_kind=req.task.task_kind,
                 goal_digest=goal_digest(req.task.goal),
             )
-            event.status = RunStatus.FAILED.value
+            # A concurrent cancel that already won the record keeps its status on the ledger
+            # too; `failed` here would leave the two histories disagreeing about the same run.
+            current = self.state.get(run_id)
+            terminal = current is not None and current.status != RunStatus.RUNNING.value
+            event.status = current.status if terminal and current else RunStatus.FAILED.value
             self.usage.record(event)
         except Exception as exc:  # noqa: BLE001 - the original failure must survive this
             print(

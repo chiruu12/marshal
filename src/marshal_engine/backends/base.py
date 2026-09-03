@@ -26,7 +26,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 from ..core.types import (
     AgentResult,
@@ -499,6 +499,10 @@ class CodingAgentBackend(ABC):
             return None
 
 
+#: How far ahead of the clock an mtime may sit before the progress probe stops trusting it.
+_FUTURE_MTIME_TOLERANCE_S: Final[float] = 60.0
+
+
 def _newest_mtime(root: Path) -> float:
     """Newest mtime anywhere under ``root``, or 0.0 when nothing can be read.
 
@@ -507,6 +511,10 @@ def _newest_mtime(root: Path) -> float:
     must never be able to end a run by failing.
     """
     newest = 0.0
+    # A file stamped ahead of the clock (clock skew, an extracted archive) would otherwise sit
+    # at the top forever: every real write compares lower, so a productive run reads as stalled
+    # and is killed. Anything ahead of now, beyond a small tolerance, is not evidence of work.
+    horizon = time.time() + _FUTURE_MTIME_TOLERANCE_S
     stack = [root]
     while stack:
         try:
@@ -517,7 +525,9 @@ def _newest_mtime(root: Path) -> float:
                             if entry.name != ".git":
                                 stack.append(Path(entry.path))
                             continue
-                        newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+                        mtime = entry.stat(follow_symlinks=False).st_mtime
+                        if mtime <= horizon:
+                            newest = max(newest, mtime)
                     except OSError:
                         continue
         except OSError:

@@ -30,6 +30,15 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A file stamped ahead of the clock can no longer make a productive run read as stalled.** The
+  progress probe took the newest mtime under the worktree, so one future-dated file (clock skew,
+  an extracted archive) sat at the top forever and every real write compared lower. Timestamps
+  ahead of the clock beyond a small tolerance are now ignored.
+- **A run cancelled while its failure path was unwinding keeps `cancelled` on the ledger.** The
+  failure path stamped the run's usage event `failed` even when a concurrent cancel had already
+  won the record, so the two histories disagreed about the same run. The event now carries the
+  record's terminal status.
+
 - **A failure between the agent finishing and its usage being read no longer strands the run as
   `running`.** The fleet's failure path wrote the run's ledger line whenever the agent had
   returned a result, but the `usage` it passed was first bound only after `extract_usage` - a

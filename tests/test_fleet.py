@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -930,6 +931,33 @@ def test_a_failure_after_the_agent_finished_still_stamps_failed_and_keeps_the_er
     # The run spent real tokens; its ledger line must exist even though it broke.
     events = "".join(f.read_text() for f in Path(repo).rglob("events.jsonl"))
     assert "ub1" in events
+
+
+def test_a_cancel_that_won_the_record_keeps_its_status_on_the_ledger(repo: Path) -> None:
+    """The failure path writes the run's ledger line with status `failed`, but a concurrent
+    cancel may already have terminal-stamped the record `cancelled` - and `update_if` rightly
+    leaves that alone. The ledger must say the same thing as the record it describes."""
+    fleet = Fleet(repo, {"usageboom": _UsageExploder("done")})
+
+    def cancel_then_raise(result: AgentResult) -> UsageRecord | None:
+        (running,) = fleet.state.list()  # the run id is minted by the fleet, not the task
+        fleet.state.update_if(
+            running.run_id, lambda r: True, status=RunStatus.CANCELLED.value, ended_at="now"
+        )
+        raise RuntimeError("admin api down")
+
+    fleet.backends["usageboom"].extract_usage = cancel_then_raise  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="admin api down"):
+        fleet.run("usageboom", TaskSpec(id="cx1", goal="x"))
+    (rec,) = fleet.state.list()
+    assert rec.status == "cancelled"
+    lines = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+        if "cx1" in line
+    ]
+    assert lines and all(ev["status"] == "cancelled" for ev in lines), lines
 
 
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------

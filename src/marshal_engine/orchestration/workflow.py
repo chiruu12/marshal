@@ -430,7 +430,7 @@ class WorkflowRunner:
                     try:
                         cr = self.service.collect_run(rid)
                     except (ValueError, WorktreeError, OSError) as exc:
-                        # The same three-shape race `teams.py` documents on this exact call: a
+                        # The same race `teams.py` documents on this exact call: a
                         # concurrent `clean` can remove the worktree between the status read and
                         # this one, and each shape is a different point in it - ValueError (gone
                         # at resolution), WorktreeError (vanished after, git failed), OSError
