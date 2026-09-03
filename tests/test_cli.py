@@ -1099,20 +1099,19 @@ def test_models_json_carries_the_probe_result(
     assert data["backend_models"] == {"cursor": {"models": ["composer"], "source": "static"}}
 
 
-def test_models_unknown_backend_reports_an_error_not_a_traceback(
+def test_models_unknown_backend_is_skipped_not_fatal(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Going through the service resolves backends, which reading the config never did.
-
-    An unknown backend name raises from the registry during service construction; catching only
-    ConfigError would surface a raw traceback for a plain config typo.
-    """
+    """A backend name the registry does not know skips that client with a reason on stderr; it
+    is neither a traceback nor a failed command. The same construction path boots the MCP server,
+    where a fatal here took every workspace down over one typo."""
     cfg = tmp_path / "fleet.config.yaml"
     cfg.write_text("clients:\n  a:\n    backend: nonexistent\n")
     ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg)])
-    assert ret == 1
+    assert ret == 0
     err = capsys.readouterr()[1]
-    assert "unknown backend" in err and "nonexistent" in err
+    assert "skipping client 'a': backend 'nonexistent' is not a known backend" in err
+    assert "Traceback" not in err
 
 
 def test_models_malformed_config_returns_error(

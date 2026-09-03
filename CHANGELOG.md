@@ -30,6 +30,16 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **One unknown backend name no longer takes the MCP server down.** `MarshalService` built every
+  configured client's backend up front and raised on a name the registry does not know, and the
+  server builds the default workspace at boot - so a fleet config with a client written for a newer
+  Marshal (or a plain typo) killed the server for every workspace and every healthy client, with
+  the only evidence a traceback in the host's MCP log. The client is now skipped with the reason
+  `list_clients` already had for it (`backend 'x' is not a known backend`), the stderr line says
+  the same instead of blaming an "unavailable CLI", and resolving that client for a run repeats the
+  reason rather than telling you to install something that is fine. `marshal doctor` still FAILs
+  the name.
+
 - **A run that broke after its agent finished vanished from the ledger.** Everything between
   `backend.run` and `usage.record` can raise - the verify gate, the commit count, the event build
   - and the failure path stamped `failed` without writing a usage line. The agent's tokens and

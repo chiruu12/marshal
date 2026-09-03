@@ -222,8 +222,18 @@ class MarshalService:
         # Where the config was loaded from - the preflight re-checks this file parses on disk.
         self.config_path = Path(config_path) if config_path else self.repo_root / "fleet.config.yaml"
         if backends is None:
-            names = {c.backend for c in config.clients.values()}
-            backends = {name: make_backend(name) for name in names}
+            # A client naming a backend the registry does not know is skipped with a reason that
+            # says so (see _skip_reason), never a construction failure. The MCP server builds the
+            # default workspace at boot, so raising here took the whole server down - every
+            # workspace, every healthy client - over one typo or one client written for a newer
+            # Marshal than the one running. Doctor still FAILs the name loudly.
+            built: dict[str, CodingAgentBackend] = {}
+            for name in {c.backend for c in config.clients.values()}:
+                try:
+                    built[name] = make_backend(name)
+                except ValueError:
+                    continue
+            backends = built
         # Keep the FULL backend set on the Fleet (doctor probes every configured backend, even
         # ones whose CLI is currently unavailable). Partition clients by availability so a missing
         # CLI skips that client instead of failing mid-run.
@@ -282,7 +292,9 @@ class MarshalService:
         }
         for n, c in config.clients.items():
             if not _client_available(c):
-                print(f"marshal: skipping client {n!r} (backend {c.backend!r} CLI unavailable)", file=sys.stderr)
+                # The same reason the driver sees in list_clients - a stderr line blaming the CLI
+                # for a misspelled backend name sends a human to install something that is fine.
+                print(f"marshal: skipping client {n!r}: {_skip_reason(c)}", file=sys.stderr)
         self.fleet = Fleet(
             repo_root,
             backends,
@@ -532,11 +544,16 @@ class MarshalService:
         - config loaded but the name is simply not declared
         """
         if client_name in self.skipped_clients:
-            skipped = self.config.clients[client_name]
+            detail = self._skipped_detail.get(client_name)
+            reason = (
+                detail.reason
+                if detail is not None
+                else f"backend {self.config.clients[client_name].backend!r} CLI unavailable"
+            )
             return ValueError(
-                f"client {client_name!r} skipped: backend {skipped.backend!r} CLI unavailable; "
-                f"hint: install/authenticate the backend and re-run `marshal doctor` "
-                f"(config: {self.config_path})"
+                f"client {client_name!r} skipped: {reason}; "
+                f"hint: fix the client's backend name or install/authenticate its CLI, then "
+                f"re-run `marshal doctor` (config: {self.config_path})"
             )
         known = ", ".join(self._clients) or "(none configured)"
         parts = [f"no such client: {client_name!r}", f"known: {known}"]
@@ -552,7 +569,7 @@ class MarshalService:
             parts.append(f"config: {self.config_path}")
             if self.skipped_clients:
                 parts.append(
-                    f"skipped (CLI unavailable): {', '.join(self.skipped_clients)}"
+                    f"skipped (list_clients gives each reason): {', '.join(self.skipped_clients)}"
                 )
         parts.append(
             "hint: pass backend=<name> (with optional model=) for an ad-hoc run, or "
