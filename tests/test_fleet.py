@@ -904,6 +904,34 @@ def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
     assert runs[0].error and "kaboom" in runs[0].error
 
 
+class _UsageExploder(_Talker):
+    """The agent finishes cleanly; the usage seam raises afterwards (a provider admin-API fetch
+    is exactly that kind of seam). The failure path then runs with a real `result` in hand."""
+
+    name = "usageboom"
+
+    def extract_usage(self, result: AgentResult) -> UsageRecord | None:
+        raise RuntimeError("admin api down")
+
+
+def test_a_failure_after_the_agent_finished_still_stamps_failed_and_keeps_the_error(
+    repo: Path,
+) -> None:
+    """REGRESSION: `usage` was first bound AFTER `extract_usage`, and the failure path read it
+    whenever `result` was set. A seam raising between the two replaced the real exception with
+    an UnboundLocalError inside the except block - so the terminal stamp never ran and the record
+    stayed `running` forever, with the actual cause gone."""
+    fleet = Fleet(repo, {"usageboom": _UsageExploder("done")})
+    with pytest.raises(RuntimeError, match="admin api down"):
+        fleet.run("usageboom", TaskSpec(id="ub1", goal="x"))
+    (rec,) = fleet.state.list()
+    assert rec.status == "failed", "left stranded as running"
+    assert rec.error and "admin api down" in rec.error
+    # The run spent real tokens; its ledger line must exist even though it broke.
+    events = "".join(f.read_text() for f in Path(repo).rglob("events.jsonl"))
+    assert "ub1" in events
+
+
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
 
 

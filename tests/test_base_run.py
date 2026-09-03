@@ -594,9 +594,15 @@ def test_a_stalled_run_is_killed_before_its_cap(tmp_path: Path) -> None:
 
 
 def test_a_run_making_progress_survives_past_the_soft_deadline(tmp_path: Path) -> None:
-    """A productive run at the cap is exactly the case whose tokens are spent for nothing."""
+    """A productive run at the cap is exactly the case whose tokens are spent for nothing.
+
+    `stall_s` is shorter than the run on purpose: the run survives ONLY because its writes keep
+    resetting the stall clock. Take the progress signal away (stop reading mtimes, or stop
+    resetting `last_progress`) and this run stalls out at 2s instead of finishing - so the test
+    is evidence for the extension, not merely for the hard ceiling being far away.
+    """
     policy = ProgressTimeout(
-        enabled=True, stall_s=10, soft_deadline_s=1, hard_ceiling_s=30, poll_interval_s=1
+        enabled=True, stall_s=2, soft_deadline_s=1, hard_ceiling_s=30, poll_interval_s=1
     )
     res = _writer(4, tmp_path / "w").run(
         _task(), RunOpts(cwd=tmp_path, timeout_s=1, progress=policy)

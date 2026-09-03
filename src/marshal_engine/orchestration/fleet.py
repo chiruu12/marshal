@@ -740,6 +740,11 @@ class Fleet:
         # Whether this run's line already reached the ledger, so the failure path can add one
         # when it did not - and never a second one when it did.
         usage_recorded = False
+        # Bound before the try because the failure path reads it: `extract_usage` is a backend
+        # seam and can raise, and an unbound name there would replace the real exception with an
+        # UnboundLocalError inside the except block - skipping the terminal stamp and leaving the
+        # record `running` forever.
+        usage: UsageRecord | None = None
         try:
             if deferred_provisioning:
                 early = self._run_deferred_provisioning(req, run_id, wt)

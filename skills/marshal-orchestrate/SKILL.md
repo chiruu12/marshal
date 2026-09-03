@@ -173,8 +173,9 @@ merge**:
 
 Why it matters: declining to integrate leaves **no trace**, so a run you reviewed and threw away is
 indistinguishable from one nobody has looked at. `routing` computes every rate over *judged* runs
-only - if you record integrations and never rejections, it reports a 100% success rate for every
-client and tells you nothing.
+only (the integration rate over the judged runs that could have merged - `advisory` ones are kept
+out of it) - if you record integrations and never rejections, it reports a 100% success rate for
+every client and tells you nothing.
 
 Add a `note` when the reason is not obvious from the diff; it is what your future self reads out of
 `routing`. `integrated` is sticky (a merge commit is a fact, not an opinion) - trying to overwrite

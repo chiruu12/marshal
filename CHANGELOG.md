@@ -30,6 +30,14 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A failure between the agent finishing and its usage being read no longer strands the run as
+  `running`.** The fleet's failure path wrote the run's ledger line whenever the agent had
+  returned a result, but the `usage` it passed was first bound only after `extract_usage` - a
+  backend seam that can raise. A failure there replaced the real exception with an
+  `UnboundLocalError` inside the except block, so the terminal stamp never ran: the record stayed
+  `running` forever and the actual cause was lost. The run now reaches `failed` with the original
+  error, and its ledger line is still written.
+
 - **A malformed default `fleet.config.yaml` no longer stops the MCP server from starting.** The
   eager default-workspace build at boot raised on a parse error, so one bad file killed the server
   for every registered workspace and left a traceback in the host's MCP log as the only evidence.
