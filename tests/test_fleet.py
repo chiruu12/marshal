@@ -5548,9 +5548,17 @@ def test_integrate_and_collect_on_setup_failed_run(repo: Path) -> None:
         assert integrated.status == "error"
         assert rec.error and rec.error in integrated.message
 
+        # The record is stamped `failed` a few lines before the run thread unregisters itself,
+        # and clean deliberately skips a run still in flight in this process. Wait for the
+        # handoff, or this races on a slow runner and reads the skip as a failure to reap.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and fleet_mod._inflight_in_this_process(
+            fleet.state.dir, run_id
+        ):
+            time.sleep(0.05)
         # clean reaps setup-failed runs like other terminal non-success statuses
         cleaned = fleet.clean(scope="finished")
-        assert run_id in cleaned.removed
+        assert run_id in cleaned.removed, cleaned.skipped
     finally:
         fleet.shutdown()
 

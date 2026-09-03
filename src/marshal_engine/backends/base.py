@@ -500,7 +500,9 @@ class CodingAgentBackend(ABC):
 
 
 #: How far ahead of the clock an mtime may sit before the progress probe stops trusting it.
-_FUTURE_MTIME_TOLERANCE_S: Final[float] = 60.0
+#: Only filesystem clock granularity needs covering; anything wider would let a slightly-ahead
+#: file hide real writes for that long, which is a stall's worth on a short `stall_s`.
+_FUTURE_MTIME_TOLERANCE_S: Final[float] = 2.0
 
 
 def _newest_mtime(root: Path) -> float:
