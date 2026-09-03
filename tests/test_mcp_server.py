@@ -1272,6 +1272,78 @@ def test_stdio_transport_still_detaches(monkeypatch: pytest.MonkeyPatch) -> None
     assert ran == [((), {})], "stdio must run the default transport, with no HTTP kwargs"
 
 
+def test_main_serves_when_the_default_workspace_config_is_malformed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """REGRESSION: the eager default-workspace build at boot raised on a malformed
+    fleet.config.yaml, so one bad file killed the server for every registered workspace, with a
+    traceback in the host's MCP log as the only evidence. The tool layer already reports a broken
+    config per call and re-reads the file once fixed, so boot must warn and keep serving."""
+
+    class _Broken:
+        def get(self, _name: str) -> object:
+            raise ConfigError("models must be a list, got int")
+
+    monkeypatch.setattr(server_mod, "detach_from_host_terminal", lambda: True)
+    monkeypatch.setattr(server_mod, "merge_user_path", lambda: False)
+    monkeypatch.setattr(server_mod.WorkspaceRegistry, "from_env", lambda: _Broken())
+    ran: list[tuple[object, ...]] = []
+    monkeypatch.setattr(server_mod, "build_app", lambda _r: _StubApp(ran))
+    server_mod.main()
+    assert ran, "the server never started serving"
+    err = capsys.readouterr()[1]
+    assert "config error: models must be a list, got int" in err
+    assert "no restart needed" in err
+
+
+def test_a_tool_call_on_a_broken_default_config_returns_the_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the boot-time message promises: after a tolerated boot, a call on the broken workspace
+    reports the config error itself, not "no such client" or a bare failure, and the next call
+    after the file is fixed succeeds without a restart."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.interfaces.workspaces import WorkspaceRegistry
+
+    repo = _repo_with_config(tmp_path)
+    cfg = repo / "fleet.config.yaml"
+    good = cfg.read_text()
+    cfg.write_text("models: 42\nclients: {}\n")
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    registry = WorkspaceRegistry.from_env()
+    with pytest.raises(ConfigError):
+        registry.get()  # the boot-time build - tolerated by main(), see the test above
+    app = build_app(registry)
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    # The SDK wraps it, but the driver-facing text carries the config message itself.
+    with pytest.raises(ToolError, match="models must be a list"):
+        asyncio.run(app.call_tool("list_clients", {}))
+    cfg.write_text(good)  # fixed on disk: the hot-reload must pick it up on the next call
+    structured = asyncio.run(app.call_tool("list_clients", {})).structured_content
+    payload = structured.get("result", structured) if isinstance(structured, dict) else structured
+    assert "clients" in payload
+
+
+def test_main_still_fails_on_a_non_config_startup_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control: tolerating a bad config must not mask a genuinely broken startup."""
+
+    class _Broken:
+        def get(self, _name: str) -> object:
+            raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(server_mod, "detach_from_host_terminal", lambda: True)
+    monkeypatch.setattr(server_mod, "merge_user_path", lambda: False)
+    monkeypatch.setattr(server_mod.WorkspaceRegistry, "from_env", lambda: _Broken())
+    monkeypatch.setattr(server_mod, "build_app", lambda _r: _StubApp([]))
+    with pytest.raises(RuntimeError, match="disk on fire"):
+        server_mod.main()
+
+
 class _StubRegistry:
     def get(self, _name: str) -> object:
         return object()

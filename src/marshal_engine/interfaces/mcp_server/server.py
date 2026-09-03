@@ -233,8 +233,21 @@ def main(
     merge_user_path()
     registry = WorkspaceRegistry.from_env()
     # Build the default workspace eagerly so the connect-time config message + warnings still fire at
-    # startup (named workspaces build lazily on first touch).
-    registry.get(DEFAULT_WORKSPACE)
+    # startup (named workspaces build lazily on first touch). A malformed default config is
+    # reported and NOT fatal: this one process serves every registered workspace, and the tool
+    # layer already turns a broken config into a per-call error (see tools_runs) that clears on
+    # the hot-reload once the file is fixed. Dying here instead left the host's MCP log as the
+    # only evidence and took the healthy workspaces down with the broken one. Anything other than
+    # a config error is still a real startup failure and propagates.
+    try:
+        registry.get(DEFAULT_WORKSPACE)
+    except ConfigError as exc:
+        print(
+            f"[marshal] workspace {DEFAULT_WORKSPACE!r} config error: {exc}. The server is up, "
+            "but calls on this workspace fail with that message until the file is fixed "
+            "(re-read on the next call; no restart needed). Other workspaces are unaffected.",
+            file=sys.stderr,
+        )
     app = build_app(registry)
     if transport == "http":
         # Announced on stderr, not stdout: stdout is the protocol stream under stdio, and the two

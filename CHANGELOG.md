@@ -30,6 +30,13 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A malformed default `fleet.config.yaml` no longer stops the MCP server from starting.** The
+  eager default-workspace build at boot raised on a parse error, so one bad file killed the server
+  for every registered workspace and left a traceback in the host's MCP log as the only evidence.
+  Boot now reports the error on stderr and keeps serving; calls on that workspace return the same
+  error until the file is fixed, which the hot-reload picks up on the next call without a restart.
+  Other workspaces are unaffected. Any non-config startup failure still propagates.
+
 - **One unknown backend name no longer takes the MCP server down.** `MarshalService` built every
   configured client's backend up front and raised on a name the registry does not know, and the
   server builds the default workspace at boot - so a fleet config with a client written for a newer
