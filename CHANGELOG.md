@@ -30,6 +30,47 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A PR's metadata is read from the same remote its refs are fetched from.** `gh pr view` ran with
+  no `--repo`, so it resolved the number against gh's own configured default - on a fork clone
+  usually the upstream - while the refs always came from `origin`. The two then disagreed about
+  which repository the PR belongs to, and the failure read as "the PR does not exist".
+- **`docs/usage.md` no longer understates the Antigravity adapter.** It said the backend has no
+  read-only tier and no auth probe; it has both, so a driver was told Antigravity could not serve
+  as a review-team reviewer and that a green doctor line did not imply login.
+
+- **The progress scan is bounded, so the hard ceiling still holds.** The walk of the worktree ran
+  between the waiter's ceiling checks with no limit, so on a large tree (`node_modules`, a build
+  directory) a run could stay alive past `hard_ceiling_s` - the one deadline that must always hold.
+  It now stops at the first entry newer than the last reading and gives up on a short budget; a
+  scan that could not finish reports "progress unknown" and no stall is concluded from it.
+- **`soft_deadline_s` now ends a run that has made no progress.** It is documented as the first
+  deadline, at which a run "still making progress is extended rather than killed" - but nothing
+  ever killed at it, so the key only sized the poll interval and any value below `stall_s` was
+  decorative.
+- **A Cursor restore failure no longer disarms the still-writing guard.** Rewriting a timed-out
+  run's status to `failed` cleared the condition `clean` / `commit_run` / `integrate` check before
+  touching a worktree whose agent survived the kill - the one case that guard exists for. The
+  restore failure is still reported.
+- **`set_outcome` reconciles orphaned runs like every other read path.** A run whose supervisor had
+  died was refused with "still running; wait for it to finish", naming a run that never would,
+  while the same run read as `failed` from `get_run` and `status`.
+- **An empty `model` is no longer treated as a model override.** `model=""` discarded the client's
+  configured model, skipped the OpenCode subscription default and the metered-provider advisory,
+  and left the backend to run whatever its own config defaults to while the record said `""`.
+- **A worktree-side rename no longer produces a path that does not exist.** The old-path field was
+  skipped only when the index column reported the rename, so the form `git add -N` produces on a
+  moved file left the old path to be parsed as a status record and truncated by three characters.
+- **`artifacts_from` refusals name `artifacts_from`.** A harvested artifact with a credential-shaped
+  name refused the whole mount with a message naming `read_paths`, a setting the driver had not
+  used, and listing a stale subset of the patterns that actually refuse. The list is now read from
+  the patterns themselves.
+- **Antigravity's dead-trust sweep works under a custom `MARSHAL_HOME`.** It recognised only the
+  legacy in-repo worktree path, so with the documented setting in use the self-healing sweep never
+  fired and dead paths accumulated in the host's global trust list.
+- **A `gh` or `git fetch` that hangs during PR resolution fails as a config error.** The timeout
+  existed so a prompting command fails fast; the raw `TimeoutExpired` escaping it instead produced
+  a traceback from the CLI, which catches only that error type.
+
 - **A cancelled run keeps the facts it measured, and its ledger line agrees with it.** On the
   ordinary cancel path the terminal stamp is refused so the cancel keeps the status - but the run's
   cost, tokens and duration were refused with it, so `get_run` said nothing had been measured for a

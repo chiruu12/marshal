@@ -6568,6 +6568,44 @@ def test_an_artifact_written_in_one_run_reaches_the_next(repo: Path) -> None:
     assert second.text == "the bug is on line 12", "round 2 could not read round 1's report"
 
 
+def test_a_denylisted_artifact_blames_artifacts_from_not_read_paths(repo: Path) -> None:
+    """REGRESSION (P2): the artifact mount reuses the read_paths copier, so a harvested artifact
+    with a credential-shaped name refused the whole mount with a message naming `read_paths` - a
+    setting the driver had not used - and listing a stale subset of the patterns that actually
+    refuse. Harvest stores any file the agent wrote, so this is reachable without any misuse."""
+
+    class _WritesEnvExample(_Reporter):
+        name = "envwriter"
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            script = (
+                "import os; os.makedirs('.marshal-artifacts', exist_ok=True);"
+                "open('.marshal-artifacts/.env.example','w').write('EXAMPLE=1');"
+                "open('.marshal-artifacts/report.md','w').write('fine'); print('done')"
+            )
+            return [sys.executable, "-c", script]
+
+    fleet = Fleet(repo, {"envwriter": _WritesEnvExample(), "reader": _Reader()})
+    first = fleet.run("envwriter", TaskSpec(id="artdeny", goal="write"))
+    assert ".env.example" in first.artifacts
+
+    with pytest.raises(ValueError) as exc:
+        fleet.run("reader", TaskSpec(id="artdeny2", goal="x", artifacts_from=[first.run_id]))
+    msg = str(exc.value)
+    assert "artifacts_from refuses" in msg, msg
+    assert "read_paths refuses" not in msg
+    assert ".netrc" in msg, "the message still lists a stale subset of the real patterns"
+
+
+def test_a_denylisted_read_path_still_blames_read_paths(repo: Path) -> None:
+    """Anti-blanket control: naming the caller must not relabel the read_paths refusal itself."""
+    secret = repo / ".env.local"
+    secret.write_text("TOKEN=1")
+    fleet = Fleet(repo, {"reader": _Reader()})
+    with pytest.raises(ValueError, match="read_paths refuses"):
+        fleet.run("reader", TaskSpec(id="rpdeny", goal="x", read_paths=[".env.local"]))
+
+
 def test_an_artifact_survives_the_worktree_it_was_written_in(repo: Path) -> None:
     """Artifacts exist because worktrees do not: cleanup must not take the report with it."""
     fleet = Fleet(repo, {"reporter": _Reporter()})

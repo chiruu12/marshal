@@ -668,6 +668,26 @@ def test_hooks_are_not_copied_when_the_operator_did_not_opt_in(repo: Path) -> No
     assert not (wt.path / ".git" / "hooks" / "pre-commit").exists()
 
 
+def test_changed_files_handles_a_worktree_side_rename(repo: Path) -> None:
+    """REGRESSION (P2): the old-path field was skipped only when the INDEX column said R/C. A
+    rename detected on the worktree side (` R`, what `git add -N` on a moved file produces) left
+    the old path in the stream, where it was parsed as a status record and truncated by three
+    characters - so the driver was shown a file that does not exist."""
+    m = WorktreeManager(repo)
+    wt = m.create("renamed")
+    old = wt.path / "old name.txt"
+    old.write_text("contents that survive the move\n")
+    _git(wt.path, "add", "-A")
+    _git(wt.path, "commit", "-q", "--no-verify", "-m", "seed")
+    old.rename(wt.path / "new name.txt")
+    _git(wt.path, "add", "-N", "new name.txt")
+
+    files = m.changed_files(wt)
+    assert all((wt.path / f).exists() or f == "old name.txt" for f in files), files
+    assert "new name.txt" in files
+    assert " name.txt" not in files, "a truncated, non-existent path was reported as changed"
+
+
 def test_merge_leaves_an_operators_in_progress_merge_alone_and_reports_blocked(repo: Path) -> None:
     """REGRESSION (P1): merge() used to `git merge --abort` a merge the OPERATOR had started.
 

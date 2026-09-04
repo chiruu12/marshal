@@ -496,7 +496,12 @@ class MarshalService:
                 client = self._clients.get(client_name)
             if client is None:
                 raise self._unknown_client_error(client_name)
-            resolved_model = model if model is not None else resolve_model(client)
+            # `""` is not an override: it discarded the client's configured model, skipped the
+            # OpenCode subscription default and the metered-provider advisory (both truthiness
+            # tests), and left the backend to run whatever its own config defaults to - billed,
+            # with the record and ledger saying the model was "". Drivers emit "" for "no
+            # override", so it is read as one.
+            resolved_model = model if model else resolve_model(client)
             # A model override never passes through load_config/validate, so the metered-provider
             # advisory would otherwise be silent on exactly the path that starts the billed run.
             self._warn_if_metered(client.backend, client.name, resolved_model)
@@ -950,6 +955,10 @@ class MarshalService:
         Thin delegation on purpose: the CLI reaches the same function without needing a config,
         so the two surfaces cannot drift apart.
         """
+        # Reconcile first: every other read path (get_run, status, wait_for_runs) does, so a run
+        # whose supervisor died was reported here as still running - "wait for it to finish"
+        # naming a run that never will - while the same run read as `failed` everywhere else.
+        self.fleet.reconcile_orphans()
         return record_outcome(self.fleet.state, run_id, outcome, note=note)
 
     def wait_for_runs(

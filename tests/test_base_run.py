@@ -578,6 +578,60 @@ def _writer(seconds: float, path: Path) -> _Dummy:
     return _Dummy([sys.executable, "-c", code])
 
 
+def test_the_progress_scan_is_bounded_so_the_hard_ceiling_still_holds(tmp_path: Path) -> None:
+    """The scan sits between the waiter's ceiling checks, so an unbounded walk of a big worktree
+    would hold the run past `hard_ceiling_s` - the one deadline that must always hold. It stops
+    on the first newer entry, and gives up on a budget either way."""
+    from marshal_engine.backends.base import _newest_mtime
+
+    deep = tmp_path
+    for i in range(40):
+        deep = deep / f"d{i}"
+    deep.mkdir(parents=True)
+    for i in range(300):
+        (deep / f"f{i}.txt").write_text("x")
+    started = time.monotonic()
+    mtime, complete = _newest_mtime(tmp_path, budget_s=0.0)
+    assert time.monotonic() - started < 1.0
+    assert complete is False, "an exhausted budget must report the scan as incomplete"
+    assert mtime == 0.0
+
+    # A scan that CAN finish still answers, and stops early once it has its answer.
+    found, done = _newest_mtime(tmp_path)
+    assert done is True and found > 0.0
+
+
+def test_an_unfinished_scan_is_not_read_as_a_stall(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """`complete=False` means "progress unknown", not "no progress". Killing a run for a stall on
+    a scan that never finished would be a verdict the code did not earn."""
+    from marshal_engine.backends import base as base_mod
+
+    monkeypatch.setattr(base_mod, "_newest_mtime", lambda *a, **k: (0.0, False))
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=3)
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    elapsed = time.monotonic() - started
+    # Not killed at stall_s (1s) on unknown evidence; the ceiling (3s) still ends it.
+    assert res.status is RunStatus.TIMED_OUT
+    assert "hard ceiling" in (res.error or ""), res.error
+    assert 2.0 < elapsed < 20.0, elapsed
+
+
+def test_a_run_with_no_progress_ends_at_its_soft_deadline(tmp_path: Path) -> None:
+    """REGRESSION (P2): `soft_deadline_s` is documented as the FIRST deadline, at which a run
+    "still making progress is extended rather than killed" - but no branch ever killed at it, so
+    the key only sized the poll slice and any soft deadline below `stall_s` was decorative."""
+    policy = ProgressTimeout(
+        enabled=True, stall_s=30, soft_deadline_s=1, hard_ceiling_s=30, poll_interval_s=1
+    )
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    elapsed = time.monotonic() - started
+    assert res.status is RunStatus.TIMED_OUT
+    assert "soft deadline" in (res.error or ""), res.error
+    assert elapsed < 15, f"ran {elapsed:.1f}s; the 1s soft deadline should have ended it"
+
+
 def test_a_stalled_run_is_killed_before_its_cap(tmp_path: Path) -> None:
     """The whole point: a run that stopped working must not burn the rest of the clock.
 
@@ -679,10 +733,10 @@ def test_a_future_dated_file_cannot_pin_the_progress_signal(tmp_path: Path) -> N
     future.write_text("x")
     ahead = time.time() + 86_400
     os.utime(future, (ahead, ahead))
-    assert _newest_mtime(tmp_path) == 0.0, "a future stamp was read as progress"
+    assert _newest_mtime(tmp_path)[0] == 0.0, "a future stamp was read as progress"
     real = tmp_path / "real.py"
     real.write_text("x")
-    newest = _newest_mtime(tmp_path)
+    newest = _newest_mtime(tmp_path)[0]
     assert 0.0 < newest < ahead
     assert newest == real.stat().st_mtime
 
@@ -704,11 +758,11 @@ def test_git_writes_do_not_count_as_agent_progress(tmp_path: Path) -> None:
     nested.mkdir(parents=True)
     (nested / "main").write_text("x")
 
-    assert _newest_mtime(tmp_path) == 0.0  # nothing outside .git has been written
+    assert _newest_mtime(tmp_path)[0] == 0.0  # nothing outside .git has been written
 
     tracked = tmp_path / "src.py"
     tracked.write_text("x")
-    assert _newest_mtime(tmp_path) > 0.0  # ... and a real file still registers
+    assert _newest_mtime(tmp_path)[0] > 0.0  # ... and a real file still registers
 
 
 def test_an_unreadable_directory_is_not_read_as_progress(tmp_path: Path) -> None:
@@ -725,6 +779,6 @@ def test_an_unreadable_directory_is_not_read_as_progress(tmp_path: Path) -> None
     (blocked / "f").write_text("x")
     blocked.chmod(0o000)
     try:
-        assert _newest_mtime(tmp_path) == 0.0
+        assert _newest_mtime(tmp_path)[0] == 0.0
     finally:
         blocked.chmod(0o755)

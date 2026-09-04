@@ -1379,6 +1379,42 @@ def test_list_clients_names_the_clients_it_dropped_and_why(repo: Path) -> None:
     assert "not available on PATH" in dropped["ghost"].reason
 
 
+def test_set_outcome_reconciles_a_dead_supervisors_run_before_judging_it(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P2): every other read path reconciles orphans, but set_outcome judged the raw
+    state - so a run whose supervisor had died was refused with "still running; wait for it to
+    finish", naming a run that never would. A get_run in between flipped it to failed and the
+    identical call then succeeded."""
+    cfg = FleetConfig(clients={"w": ClientConfig(name="w", backend="echo")})
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    svc.fleet.state.add(
+        RunRecord(
+            run_id="orphan.echo.deadbeef", task_id="orphan", backend="echo",
+            status="running", supervisor_pid=999_999, started_at="2020-01-01T00:00:00+00:00",
+        )
+    )
+    result = svc.set_outcome("orphan.echo.deadbeef", "rejected", note="reviewed, wrong")
+    assert result.status == "recorded", result.message
+    rec = svc.fleet.state.get("orphan.echo.deadbeef")
+    assert rec is not None and rec.status != "running"
+
+
+def test_an_empty_model_override_is_not_an_override(repo: Path) -> None:
+    """REGRESSION (P2): `model=""` was treated as an override, discarding the client's configured
+    model - so the backend ran whatever its own config defaults to (possibly a metered provider,
+    with no billing advisory) while the record and ledger said the model was "". Drivers emit ""
+    for "no override"."""
+    cfg = FleetConfig(
+        clients={"w": ClientConfig(name="w", backend="echo", model="opencode-go/kimi-k2.5")}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    req = svc._request_for("w", "goal", None, None, None, model="")
+    assert req.model == "opencode-go/kimi-k2.5", "an empty override erased the configured model"
+    # A real override still overrides.
+    assert svc._request_for("w", "goal", None, None, None, model="other").model == "other"
+
+
 def test_an_unknown_backend_reads_differently_from_an_uninstalled_one(repo: Path) -> None:
     """"You typed a backend that does not exist" and "that CLI is not installed" have different
     fixes; collapsing them to one message makes the driver guess which it is."""

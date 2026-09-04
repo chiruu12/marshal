@@ -540,7 +540,12 @@ class WorktreeManager:
             status, path = tok[:2], tok[3:]
             if path:
                 files.append(path)
-            i += 2 if status and status[0] in ("R", "C") else 1  # rename/copy: skip the old-path field
+            # A rename/copy emits the old path as its own field, which must be skipped or it is
+            # parsed as a status record and truncated by three characters into a path that does
+            # not exist. Git reports it in EITHER column: index-side (`R `) and worktree-side
+            # (` R`, what `git add -N` on a moved file produces) both carry the extra field, and
+            # testing only the index column let the worktree-side form through.
+            i += 2 if any(c in ("R", "C") for c in status) else 1
         return files
 
     def diff(self, wt: Worktree) -> str:

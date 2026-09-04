@@ -972,6 +972,24 @@ def test_build_invocation_derives_print_timeout_from_opts(
     assert argv[argv.index("--print-timeout") + 1] == "1795s"
 
 
+def test_the_dead_trust_sweep_recognises_a_run_tree_under_a_custom_marshal_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P2): the sweep matched only the literal `/.marshal/worktrees/` segment, but run
+    trees live under `<MARSHAL_HOME>/worktrees/<repo>-<digest>/` - and `MARSHAL_HOME` is a
+    documented setting. With one configured, the self-healing sweep never fired and dead paths
+    accumulated in the host's global agy trust list forever."""
+    from marshal_engine.backends.antigravity import _is_marshal_worktree
+
+    monkeypatch.setenv("MARSHAL_HOME", str(tmp_path / "scratch"))
+    run_tree = str(tmp_path / "scratch" / "worktrees" / "repo-abc123def456" / "t1.agy.deadbeef")
+    assert _is_marshal_worktree(run_tree)
+    # The legacy in-repo layout still matches...
+    assert _is_marshal_worktree("/Users/x/proj/.marshal/worktrees/t1")
+    # ...and a path that is simply the user's own is still left alone.
+    assert not _is_marshal_worktree(str(tmp_path / "my-project"))
+
+
 def test_print_timeout_follows_the_progress_ceiling_not_the_base_timeout() -> None:
     """REGRESSION (P1): agy's own print deadline was derived from `timeout_s`, so with a progress
     policy enabled a productive run self-terminated inside the very window the policy grants -

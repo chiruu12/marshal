@@ -133,6 +133,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..core.layout import marshal_home
 from ..core.types import (
     AgentResult,
     Capabilities,
@@ -801,7 +802,15 @@ def _is_marshal_worktree(path: str) -> bool:
     (unmounted volume, external drive, network share); deleting it because it does not exist right
     now silently destroys their agy trust config. Only Marshal's own leftovers are swept.
     """
-    return f"{os.sep}.marshal{os.sep}worktrees{os.sep}" in path
+    # Two layouts, and the sweep must know both: the legacy in-repo `<repo>/.marshal/worktrees/`
+    # and the current `<MARSHAL_HOME>/worktrees/<repo>-<digest>/`. Matching only the literal
+    # `.marshal` segment meant that with a configured MARSHAL_HOME - which docs/config.md
+    # documents - the self-healing sweep never fired, and dead paths accumulated in the host's
+    # global agy trust list forever.
+    if f"{os.sep}.marshal{os.sep}worktrees{os.sep}" in path:
+        return True
+    home = str(marshal_home())
+    return path.startswith(f"{home.rstrip(os.sep)}{os.sep}worktrees{os.sep}")
 
 
 def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> bool:
