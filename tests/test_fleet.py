@@ -1357,6 +1357,38 @@ def test_a_cancel_that_wins_the_record_keeps_the_runs_measured_facts(repo: Path)
     assert event["status"] == "cancelled", "the ledger disagreed with the record about the run"
 
 
+def test_a_client_env_credential_is_redacted_from_the_run_record(repo: Path) -> None:
+    """REGRESSION (P1): a per-client `env:` credential is not in THIS process's environment, so
+    the ambient scrub cannot see it. The run LOG was passed it explicitly and the record was not -
+    so the value the log was careful to hide was persisted in `text` and handed straight back to
+    the driver by `get_run` and `collect_run`."""
+    secret = "sk-client-env-secret-value-123456"
+
+    class _Echoes(_Talker):
+        name = "echoes"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            return AgentResult(
+                status=RunStatus.EXITED_CLEAN,
+                text=f"I used the key {secret} to authenticate",
+                error=f"and again in the error: {secret}",
+                structured={"note": f"and in structured output: {secret}"},
+            )
+
+    fleet = Fleet(repo, {"echoes": _Echoes("x")})
+    rec = fleet.run_request(
+        RunRequest(
+            backend_name="echoes",
+            task=TaskSpec(id="leak", goal="x"),
+            client_env={"PROVIDER_AUTH": secret},
+        )
+    )
+    assert secret not in rec.text
+    assert secret not in (rec.error or "")
+    assert secret not in json.dumps(rec.structured or {})
+    assert "[redacted:" in rec.text
+
+
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
 
 

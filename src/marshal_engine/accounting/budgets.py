@@ -541,6 +541,28 @@ def _pid_alive(pid: int) -> bool:
 # change both together - `test_liveness_inflight.py` fails if the two markers drift apart.
 _PINNED_IDENTITY_PREFIX = "C/UTC|"
 
+#: Duplicated for the same reason, and for the same drift: on Linux ``ps -o lstart=`` moves when
+#: the wall clock is stepped, so a LIVE reservation holder rendered a different start time and its
+#: slot was reclaimed - admitting a second run under a cap that exists to stop exactly that.
+#: ``/proc/<pid>/stat`` field 22 counts from boot and does not move.
+_PROC_IDENTITY_PREFIX = "proc/starttime|"
+
+
+def _proc_start_ticks(pid: int) -> str | None:
+    """Linux: ``/proc/<pid>/stat`` field 22 (start time in ticks since boot). None elsewhere."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    close = raw.rfind(")")  # comm is parenthesised and may contain spaces or ')'
+    if close == -1:
+        return None
+    fields = raw[close + 2 :].split()
+    if len(fields) < 20 or not fields[19].isdigit():
+        return None
+    return _PROC_IDENTITY_PREFIX + fields[19]
+
 
 def _pid_start_time(pid: int) -> str | None:
     """OS-reported start time of ``pid``, or None when unverifiable (same idiom as fleet.lock).
@@ -548,6 +570,9 @@ def _pid_start_time(pid: int) -> str | None:
     Rendered under a pinned ``LC_ALL``/``TZ`` and returned prefixed, so two processes that
     disagree about either still read one live pid as one identity.
     """
+    ticks = _proc_start_ticks(pid)
+    if ticks is not None:
+        return ticks
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
@@ -574,11 +599,15 @@ def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
     The accounting-layer twin of ``liveness._identity_verdict``; see it for why an unpinned stamp
     is unverifiable rather than different.
     """
-    if not recorded or not recorded.startswith(_PINNED_IDENTITY_PREFIX):
+    if not recorded or not recorded.startswith(
+        (_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX)
+    ):
         return None
     now = _pid_start_time(pid)
     if now is None:
         return None
+    if now.split("|", 1)[0] != recorded.split("|", 1)[0]:
+        return None  # two different clocks: not comparable, so "cannot check"
     return now == recorded
 
 

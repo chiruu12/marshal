@@ -27,11 +27,14 @@ class _EnvProbe(CodingAgentBackend):
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
         var = task.id
-        return [
-            sys.executable,
-            "-c",
-            f"import os; print(os.environ.get({var!r}, 'UNSET'))",
-        ]
+        # Also written into the worktree: the run RECORD redacts a client's `env:` values (they
+        # may be credentials), so a per-client value has to be read back from the agent's own
+        # output to prove each client received its OWN.
+        script = (
+            f"import os; v = os.environ.get({var!r}, 'UNSET'); print(v);"
+            " open('seen.txt', 'w').write(v)"
+        )
+        return [sys.executable, "-c", script]
 
     def map_permission(self, mode: PermissionMode) -> list[str]:
         return []
@@ -92,7 +95,10 @@ def test_spawn_sets_client_env_in_child(repo: Path) -> None:
         assert live is not None
         if live.status != "running":
             assert live.status == "exited_clean"
-            assert live.text == "from-spawn"
+            # The child echoed the value, so the env arrived - and the record shows the redaction
+            # marker rather than the value, because a client's `env:` may hold a credential and
+            # the record is durable state the driver reads back. Both halves are the point.
+            assert live.text == "[redacted:FOO]"
             return
         time.sleep(0.05)
     pytest.fail("spawn did not finish in time")
@@ -139,8 +145,12 @@ def test_two_codex_clients_do_not_leak_env(repo: Path, tmp_path: Path) -> None:
     )
     r1 = svc.run_agent("codex-stock", goal="x", task_id="CODEX_HOME")
     r2 = svc.run_agent("codex-eastrouter", goal="y", task_id="CODEX_HOME")
-    assert r1.text == str(stock.resolve())
-    assert r2.text == str(east.resolve())
+    # Redacted on the record - a client's `env:` may be a credential - so each client's own
+    # value is read back from what its agent wrote in its own worktree.
+    assert r1.text == "[redacted:CODEX_HOME]"
+    assert (Path(r1.worktree or "") / "seen.txt").read_text() == str(stock.resolve())
+    assert r2.text == "[redacted:CODEX_HOME]"
+    assert (Path(r2.worktree or "") / "seen.txt").read_text() == str(east.resolve())
 
 
 def test_load_config_env_reaches_child_via_service(
@@ -162,7 +172,8 @@ def test_load_config_env_reaches_child_via_service(
         repo, cfg, backends={"envprobe": _EnvProbe()}, config_path=cfg_path
     )
     rec = svc.run_agent("router", goal="x", task_id="CODEX_HOME")
-    assert rec.text == expected
+    assert rec.text == "[redacted:CODEX_HOME]"
+    assert (Path(rec.worktree or "") / "seen.txt").read_text() == expected
 
 
 def test_a_client_env_launcher_is_honoured_on_every_availability_path(tmp_path: Path) -> None:

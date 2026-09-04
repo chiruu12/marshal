@@ -27,6 +27,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..core.config import ConfigError, FleetConfig
+from ..core.ids import MAX_TASK_ID_LEN, validate_worktree_id
 from ..core.types import RunStatus
 from ..runtime.worktree import WorktreeError
 
@@ -162,6 +163,12 @@ def resolve_source(spec: WorkflowSpec, phase_index: int) -> int:
     )
 
 
+#: Length of the per-run prefix a phase's task id carries (`<hex>.`), so validation can bound a
+#: phase name against the room actually left for it.
+_WORKFLOW_RUN_ID_LEN = 8
+_RUN_ID_PREFIX_LEN = _WORKFLOW_RUN_ID_LEN + 1
+
+
 def validate_workflow(spec: WorkflowSpec, config: FleetConfig) -> None:
     """Raise ConfigError on any structural problem - BEFORE any agent runs (fail-fast like run_many)."""
     if not spec.phases:
@@ -169,6 +176,21 @@ def validate_workflow(spec: WorkflowSpec, config: FleetConfig) -> None:
     known = set(config.clients)
     declared = set(spec.inputs)
     for idx, phase in enumerate(spec.phases):
+        # The phase label becomes part of a task id at run time, so an illegal one (a space, a
+        # slash, `..`, or simply too long) used to pass validation and blow up mid-run - after
+        # earlier phases had already spent real money. This function promises fail-fast; that
+        # promise has to include the ids it is about to mint.
+        label = phase.name or f"{phase.run}{idx}"
+        try:
+            # The run-time id is `<8 hex>.<label>`, so the label's budget is what is left of the
+            # task-id limit after that prefix - validating the label alone still let an over-long
+            # one through to fail mid-run.
+            validate_worktree_id(label, max_len=MAX_TASK_ID_LEN - _RUN_ID_PREFIX_LEN)
+        except ValueError as exc:
+            raise ConfigError(
+                f"phase {idx}: name {label!r} cannot be part of a task id ({exc}); "
+                "use letters, digits, '.', '_' or '-', starting with a letter or digit"
+            ) from exc
         if phase.run in _GENERATIVE:
             if not phase.goal:
                 raise ConfigError(f"phase {idx} ({phase.run}): missing 'goal'")
@@ -303,7 +325,7 @@ class WorkflowRunner:
         if missing:
             raise ConfigError(f"workflow {spec.name!r}: missing input(s): {', '.join(missing)}")
 
-        workflow_run_id = uuid.uuid4().hex[:8]
+        workflow_run_id = uuid.uuid4().hex[:_WORKFLOW_RUN_ID_LEN]
         runs_by_index: dict[int, list[str]] = {}
         status_by_run: dict[str, str] = {}
         phases: list[PhaseResult] = []

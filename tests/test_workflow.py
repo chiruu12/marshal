@@ -111,6 +111,31 @@ class StubService:
 # --- pure: render / resolve / validate ---------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "bad", ["step one", "a/b", "../x", "-lead", "x" * 60, ".hidden"]
+)
+def test_a_phase_name_that_cannot_be_a_task_id_is_refused_up_front(bad: str) -> None:
+    """REGRESSION (P1): a phase label becomes part of a task id at run time, so an illegal one
+    passed `validate_workflow` - which promises to raise BEFORE any agent runs - and blew up
+    mid-run, after earlier phases had already spent real money."""
+    spec = WorkflowSpec(
+        name="w", phases=[{"run": "fan_out", "name": bad, "goal": "g", "clients": ["a"]}]
+    )
+    cfg = FleetConfig(clients={"a": ClientConfig(name="a", backend="opencode")})
+    with pytest.raises(ConfigError, match="task id"):
+        validate_workflow(spec, cfg)
+
+
+def test_an_ordinary_phase_name_is_still_accepted() -> None:
+    """Anti-blanket control: the names recipes actually use must keep working."""
+    cfg = FleetConfig(clients={"a": ClientConfig(name="a", backend="opencode")})
+    for good in ("review", "fan_out-1", "phase.2", "Draft_v3"):
+        spec = WorkflowSpec(
+            name="w", phases=[{"run": "fan_out", "name": good, "goal": "g", "clients": ["a"]}]
+        )
+        validate_workflow(spec, cfg)
+
+
 def test_render_goal_strict() -> None:
     assert render_goal("review {target}", {"target": "src/x.py"}) == "review src/x.py"
     assert render_goal("literal {{braces}}", {}) == "literal {braces}"

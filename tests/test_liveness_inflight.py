@@ -60,6 +60,53 @@ def _dead_pid() -> int:
 # --------------------------------------------------------------------------------------
 
 
+def test_a_linux_identity_is_boot_relative_and_survives_a_clock_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1, Linux): `ps -o lstart=` is derived from the CURRENT boot-time estimate, so
+    an NTP correction re-renders the start time of a process that never restarted. The identity
+    check then read a LIVE agent as "somebody else's pid" - the one reading that authorises
+    reaping it. `/proc/<pid>/stat` field 22 counts from boot and cannot drift with the clock."""
+    from marshal_engine.orchestration import liveness as liveness_mod
+
+    proc_dir = tmp_path / "proc" / "4242"
+    proc_dir.mkdir(parents=True)
+    # A comm containing spaces and a ')' - the shape that breaks naive field splitting.
+    (proc_dir / "stat").write_text(
+        "4242 (my weird ) name) S 1 4242 4242 0 -1 4194304 0 0 0 0 1 2 0 0 20 0 1 0 987654 0 0\n"
+    )
+    real_open = open
+
+    def fake_open(path, *a, **kw):  # noqa: ANN001, ANN202
+        if str(path) == "/proc/4242/stat":
+            return real_open(proc_dir / "stat", *a, **kw)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    stamped = liveness_mod._pid_start_time(4242)
+    assert stamped is not None and stamped.startswith(liveness_mod._PROC_IDENTITY_PREFIX)
+    assert stamped.endswith("987654"), stamped
+
+    # The clock steps; ps would now render a different lstart. The boot-relative value does not
+    # move, so the identity still verifies as the same process.
+    monkeypatch.setattr(liveness_mod, "_pid_alive", lambda _pid: True)
+    assert liveness_mod._identity_verdict(4242, stamped) is True
+
+
+def test_a_stamp_from_another_identity_source_is_unverifiable_not_different(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Across an upgrade (or a record copied between hosts) the two sources are not comparable.
+    That must read as "cannot check", never as "different process"."""
+    from marshal_engine.orchestration import liveness as liveness_mod
+
+    monkeypatch.setattr(
+        liveness_mod, "_pid_start_time", lambda _pid: f"{liveness_mod._PROC_IDENTITY_PREFIX}123"
+    )
+    old_stamp = f"{liveness_mod._PINNED_IDENTITY_PREFIX}Thu Jan  1 00:00:00 1970"
+    assert liveness_mod._identity_verdict(4242, old_stamp) is None
+
+
 def test_pid_alive_assumes_alive_when_the_probe_is_denied(monkeypatch: pytest.MonkeyPatch) -> None:
     # A pid owned by another user answers EPERM, not ESRCH - the process EXISTS, we just may not
     # signal it. Reading that ambiguity as "dead" would reap a live run, so the only safe reading
@@ -563,9 +610,14 @@ def test_both_layers_mark_a_pinned_start_time_the_same_way() -> None:
     two never read each other's stamps - and the last time this probe was corrected, only one of
     the two copies got the fix."""
     from marshal_engine.accounting.budgets import _PINNED_IDENTITY_PREFIX as BUDGETS_PINNED
+    from marshal_engine.accounting.budgets import _PROC_IDENTITY_PREFIX as BUDGETS_PROC
+    from marshal_engine.orchestration.liveness import _PROC_IDENTITY_PREFIX as LIVENESS_PROC
 
     assert BUDGETS_PINNED == PINNED
-    assert _pid_start_time(LIVE_PID).startswith(PINNED)  # type: ignore[union-attr]
+    # Both markers, for the same reason: the Linux probe was added to one copy first, and the
+    # two never read each other's stamps, so nothing else would notice the drift.
+    assert BUDGETS_PROC == LIVENESS_PROC
+    assert _pid_start_time(LIVE_PID).startswith((PINNED, LIVENESS_PROC))  # type: ignore[union-attr]
 
 
 def test_a_timed_out_run_whose_kill_landed_is_writable() -> None:

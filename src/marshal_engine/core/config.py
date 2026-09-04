@@ -288,17 +288,58 @@ def _parse_progress_timeout(value: Any) -> ProgressTimeout:
     return policy
 
 
+def _parse_permission(value: Any, *, client: str) -> PermissionMode:
+    """Permission mode, or a ConfigError naming the legal set. Pure.
+
+    A typo here used to escape as a bare ``ValueError`` from the enum - which reads as a bug in
+    Marshal rather than a typo in the operator's file, and which no caller was catching.
+    """
+    try:
+        return PermissionMode(str(value))
+    except ValueError as exc:
+        legal = ", ".join(sorted(m.value for m in PermissionMode))
+        raise ConfigError(
+            f"client {client!r}: unknown permission {str(value)!r}; expected one of {legal}"
+        ) from exc
+
+
 def load_config(path: Path | str) -> FleetConfig:
     p = Path(path)
     if not p.exists():
         raise ConfigError(
             f"no fleet config at {p}; scaffold one with `marshal init`, then edit it"
         )
-    raw_any: Any = yaml.safe_load(p.read_text(encoding="utf-8"))
+    # Every failure below leaves this function as a ConfigError. A malformed config is an ordinary
+    # operator mistake - a typo, a stray indent - and the callers treat ConfigError as the shape
+    # they can report: the CLI prints it, and the MCP server keeps serving and answers with it.
+    # Anything else (a YAML ParserError, a ValueError from an enum, an AttributeError from a
+    # non-mapping) escaped as a traceback and killed the server at startup for every workspace.
+    try:
+        raw_any: Any = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{p} is not valid YAML: {exc}") from exc
+    if raw_any is not None and not isinstance(raw_any, dict):
+        raise ConfigError(
+            f"{p} must be a mapping at the top level, got {type(raw_any).__name__}"
+        )
     raw: dict[str, Any] = raw_any or {}
-    defaults: dict[str, Any] = raw.get("defaults") or {}
+    defaults_any = raw.get("defaults") or {}
+    if not isinstance(defaults_any, dict):
+        raise ConfigError(f"{p}: 'defaults' must be a mapping, got {type(defaults_any).__name__}")
+    defaults: dict[str, Any] = defaults_any
+    clients_any = raw.get("clients") or {}
+    if not isinstance(clients_any, dict):
+        raise ConfigError(
+            f"{p}: 'clients' must be a mapping of name -> settings, got "
+            f"{type(clients_any).__name__}"
+        )
     clients: dict[str, ClientConfig] = {}
-    for name, spec in (raw.get("clients") or {}).items():
+    for name, spec in clients_any.items():
+        if spec is not None and not isinstance(spec, dict):
+            raise ConfigError(
+                f"{p}: client {name!r} must be a mapping of settings, got "
+                f"{type(spec).__name__}"
+            )
         merged: dict[str, Any] = {**defaults, **(spec or {})}
         if "backend" not in merged:
             raise ConfigError(f"client {name!r}: missing required 'backend'")
@@ -306,7 +347,7 @@ def load_config(path: Path | str) -> FleetConfig:
             name=name,
             backend=str(merged["backend"]),
             model=str(merged["model"]) if merged.get("model") else None,
-            permission=PermissionMode(str(merged.get("permission", "safe-edit"))),
+            permission=_parse_permission(merged.get("permission", "safe-edit"), client=name),
             timeout_s=_parse_timeout_s(merged.get("timeout_s"), client=name),
             env=_parse_client_env(merged.get("env"), client=name),
             secret_ref=str(merged["secret_ref"]) if merged.get("secret_ref") else None,

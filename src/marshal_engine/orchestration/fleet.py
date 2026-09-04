@@ -889,7 +889,11 @@ class Fleet:
             # Redact first (value-based scrub needs the whole secret present), then cap - and
             # record that the cap fired. A driver reading `text` as a finished product cannot see
             # the cut from the string alone; see RunRecord.text_truncated.
-            _redacted_text = redact_secrets(result.text)
+            # `extra_values`: a client's own `env:` credential is not in THIS process's
+            # environment, so the ambient scrub cannot see it. The run log already passed it; the
+            # record did not, so the value the log was careful to hide was persisted in `text`
+            # and handed straight back to the driver by `get_run` / `collect_run`.
+            _redacted_text = redact_secrets(result.text, extra_values=req.client_env or None)
             _capped_text, _text_truncated, _text_full_len = _cap_text(_redacted_text)
             # Release the enforce slot BEFORE publishing a record that says the run is over.
             # Stamping first left a window where a run read as terminal while still holding its
@@ -913,9 +917,15 @@ class Fleet:
                 text=_capped_text,
                 text_truncated=_text_truncated,
                 text_full_len=_text_full_len,
-                structured=_redact_structured(result.structured),
+                structured=_redact_structured(
+                    result.structured, extra_values=req.client_env or None
+                ),
                 ended_at=_now(),
-                error=redact_secrets(result.error) if result.error else result.error,
+                error=(
+                    redact_secrets(result.error, extra_values=req.client_env or None)
+                    if result.error
+                    else result.error
+                ),
                 attempts=attempts,
                 verify_passed=verify_passed,
                 verify_output=verify_output,

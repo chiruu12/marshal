@@ -30,6 +30,27 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **Every malformed `fleet.config.yaml` now raises a config error instead of a traceback.** Four
+  ordinary operator mistakes escaped the loader as raw exceptions - a permission typo as a bare
+  `ValueError` from the enum, invalid YAML as a parser error, a non-mapping `clients:` as an
+  `AttributeError`, a string client spec as a `TypeError`. Each one killed the MCP server at
+  startup for every workspace, and each is now reported with the file and the problem named.
+  `list_workspaces` degrades per repo for all of them too.
+- **A per-client `env:` credential no longer reaches the run record.** Such a value is not in
+  Marshal's own environment, so the ambient scrub cannot see it; the run log was passed it
+  explicitly and the record was not, so the value the log was careful to hide was persisted in
+  `text` (and `error`, and structured output) and handed back by `get_run` and `collect_run`.
+- **Process identity on Linux no longer moves when the clock does.** It was read from
+  `ps -o lstart=`, which is derived from the current boot-time estimate and re-renders whenever the
+  wall clock is stepped - an NTP correction is enough - so a LIVE agent read as "somebody else's
+  pid", the one reading that authorises reaping it, and a live budget reservation could be
+  reclaimed out from under its holder. Linux now uses the boot-relative start time from
+  `/proc/<pid>/stat`; a stamp written by the other source reads as unverifiable, never as
+  different.
+- **An unusable workflow phase name is refused before anything runs.** The label becomes part of a
+  task id, so a space, a slash or an over-long name passed `validate_workflow` - which promises to
+  raise before any agent runs - and failed mid-run, after earlier phases had spent real money.
+
 - **A PR's metadata is read from the same remote its refs are fetched from.** `gh pr view` ran with
   no `--repo`, so it resolved the number against gh's own configured default - on a fork clone
   usually the upstream - while the refs always came from `origin`. The two then disagreed about

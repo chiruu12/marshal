@@ -37,6 +37,45 @@ clients:
 """
 
 
+def test_every_malformed_config_raises_config_error_not_a_traceback(tmp_path: Path) -> None:
+    """REGRESSION (P0/P1): four ordinary operator mistakes escaped `load_config` as raw exceptions
+    - a permission typo as ValueError, bad YAML as ParserError, a non-mapping `clients` as
+    AttributeError, a string client spec as TypeError. Callers treat ConfigError as the shape they
+    can report, so each of these instead produced a traceback and killed the MCP server at startup
+    for every workspace."""
+    cases = {
+        "permission typo": "clients:\n  a:\n    backend: opencode\n    permission: read-onlyy\n",
+        "bad yaml": "clients:\n  a:\n   backend: [unclosed\n",
+        "clients not a mapping": "clients: 42\n",
+        "client spec is a string": "clients:\n  a: notamapping\n",
+        "top level not a mapping": "- just\n- a list\n",
+        "defaults not a mapping": "defaults: 7\nclients: {}\n",
+    }
+    for name, text in cases.items():
+        cfg = tmp_path / f"{name.replace(' ', '_')}.yaml"
+        cfg.write_text(text)
+        with pytest.raises(ConfigError) as exc:
+            load_config(cfg)
+        assert str(exc.value), f"{name}: empty message"
+
+
+def test_a_permission_typo_names_the_legal_modes(tmp_path: Path) -> None:
+    """The message has to be actionable: which client, what it said, and what is allowed."""
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  worker:\n    backend: opencode\n    permission: readonly\n")
+    with pytest.raises(ConfigError) as exc:
+        load_config(cfg)
+    msg = str(exc.value)
+    assert "worker" in msg and "readonly" in msg and "read-only" in msg and "safe-edit" in msg
+
+
+def test_a_valid_permission_is_still_accepted(tmp_path: Path) -> None:
+    """Anti-blanket control: tightening the error must not start refusing good configs."""
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  worker:\n    backend: opencode\n    permission: read-only\n")
+    assert load_config(cfg).clients["worker"].permission.value == "read-only"
+
+
 def test_load_merges_defaults(tmp_path: Path) -> None:
     p = tmp_path / "fleet.config.yaml"
     p.write_text(_YAML)

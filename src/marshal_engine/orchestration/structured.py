@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 
 import jsonschema
@@ -141,14 +142,20 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     return obj
 
 
-def _redact_structured(obj: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Value-scrub string leaves of a structured payload (same markers as run-record text)."""
+def _redact_structured(
+    obj: dict[str, Any] | None, *, extra_values: Mapping[str, str] | None = None
+) -> dict[str, Any] | None:
+    """Value-scrub string leaves of a structured payload (same markers as run-record text).
+
+    ``extra_values`` carries a client's own ``env:`` credentials, which never appear in this
+    process's environment and so are invisible to the ambient scrub.
+    """
     if obj is None:
         return None
 
     def _walk(value: Any) -> Any:
         if isinstance(value, str):
-            return redact_secrets(value)
+            return redact_secrets(value, extra_values=extra_values)
         if isinstance(value, dict):
             return {k: _walk(v) for k, v in value.items()}
         if isinstance(value, list):
