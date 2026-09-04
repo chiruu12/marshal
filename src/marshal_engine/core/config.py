@@ -539,6 +539,18 @@ def _parse_models(value: Any) -> list[ModelSpec]:
     return out
 
 
+def _duration_subject(client: str) -> str:
+    """How to name whatever is carrying a duration, for the error message. Pure.
+
+    The same parser serves a client's ``timeout_s`` and the fleet-level ``progress_timeout.*``
+    keys, and phrasing every failure as "client 'progress_timeout.stall_s': timeout_s must be..."
+    named a client that does not exist and a key the operator did not write.
+    """
+    if client.startswith("progress_timeout."):
+        return f"{client}"
+    return f"client {client!r}: timeout_s"
+
+
 def _parse_timeout_s(value: Any, *, client: str) -> int:
     """Normalize a client's ``timeout_s`` (default 600). Same rules as ``resolve_duration``.
 
@@ -551,17 +563,17 @@ def _parse_timeout_s(value: Any, *, client: str) -> int:
     if isinstance(value, bool):
         # ``bool`` is a subclass of ``int``; ``int(True)`` would silently become 1 second.
         raise ConfigError(
-            f"client {client!r}: timeout_s must be a positive integer of seconds, "
+            f"{_duration_subject(client)} must be a positive integer of seconds, "
             f"got bool: {value!r}"
         )
     if not isinstance(value, int):
         raise ConfigError(
-            f"client {client!r}: timeout_s must be a positive integer of seconds, "
+            f"{_duration_subject(client)} must be a positive integer of seconds, "
             f"got {type(value).__name__}"
         )
     if value <= 0:
         raise ConfigError(
-            f"client {client!r}: timeout_s must be > 0 seconds, got {value}"
+            f"{_duration_subject(client)} must be > 0 seconds, got {value}"
         )
     return value
 

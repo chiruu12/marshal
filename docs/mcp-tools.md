@@ -277,7 +277,7 @@ Race the same goal through several configured clients.
 
 **Returns:** `{ teams, errors, workspace }`
 
-- `teams`: `[{ name, description, target, roles: [{ name, client }], decision }]`
+- `teams`: `[{ name, description, target, roles: [{ name, client }] }]` — no `decision`, `score` or tally, deliberately: judging the panel is the driver's job, and a verdict parsed out of reviewer prose is both a layering violation and something a reviewed diff could influence.
 - `errors`: `{ "<filename>": "<message>" }` — malformed team files
 
 ### `run_team`

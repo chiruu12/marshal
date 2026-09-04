@@ -46,11 +46,12 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
             "non_code_runs": (
                 "A run that only reads and reasons DOES return its work: its final message is on "
                 "the record as `text`, and the run is `exited_clean`. collect_run reports which "
-                "artifact it was via `produced` (`diff` | `text` | `nothing`) and returns the "
+                "artifact it was via `produced` (`diff` | `text` | `nothing` | `unavailable`) and returns the "
                 "message itself for a text run; get_run (or status(view='full')) gives you the raw "
                 "record if you want it. `empty` is an outcome, not a fault: the process exited 0 "
-                "with neither text nor file changes - nothing to integrate. What Marshal lacks "
-                "is STRUCTURED output: the result is prose you parse. Where a backend truncates "
+                "with neither text nor file changes - nothing to integrate. What a run gives you "
+                "is nothing else: pass `output_schema` when you want a validated JSON object back "
+                "instead of prose, and it arrives as `structured`. Where a backend truncates "
                 "long final messages (Cursor does), have the agent write its report to a file "
                 "instead - that is why the built-in review teams do so."
             ),
@@ -221,9 +222,9 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
         a `=== run <id> ===` header, a `--- stdout ---` section, and a `--- stderr ---` section -
         the FULL streams, not the 16KB-truncated `text` on the run record - including EVERY attempt of
         a retried run, each under `--- attempt N/M ---`. `log` is null when the run
-        exists but wrote no log (a run that pre-dates log storage, or a backend that crashed before
-        producing one) - never as an answer to "no such run", which raises, naming the registered
-        workspaces. The owning workspace is resolved by the same scan as `get_run`, with the same
+        exists but wrote no log (a run that pre-dates log storage, a backend that crashed before
+        producing one, or a run whose log `clean` has since reclaimed along with its worktree) -
+        never as an answer to "no such run", which raises, naming the registered workspaces. The owning workspace is resolved by the same scan as `get_run`, with the same
         `workspace` hint."""
         # `require_run`, not `resolve_run`: an unknown id is an error, not a null log. Returning
         # `{log: null}` here made "no such run" byte-identical to "this run wrote no log" apart
@@ -241,7 +242,11 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
         workspace: Annotated[str | None, Field(description=_DESC_WS_HINT)] = None,
     ) -> dict[str, Any]:
         """Reads WHAT ONE RUN PRODUCED: diff/changed files and/or final text, tagged by `produced`
-        (read-only; nothing is merged). Branch on `produced` (`diff` | `text` | `nothing`)."""
+        (read-only; nothing is merged). Branch on `produced`: `diff` | `text` | `nothing` |
+        `unavailable`. The last is NOT `nothing` - the work could not be read (the worktree is
+        gone, the run is still going, the agent left its work on another branch), which is not
+        evidence there is none. `unavailable_reason` says which; rejecting on it would record a
+        permanent verdict against a client whose run may have succeeded."""
         return await run_call(run_id, workspace, lambda svc: svc.collect_run(run_id))
 
     @app.tool()

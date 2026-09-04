@@ -1344,6 +1344,22 @@ def test_main_still_fails_on_a_non_config_startup_error(monkeypatch: pytest.Monk
         server_mod.main()
 
 
+def test_the_run_many_job_models_carry_every_field_the_engine_reads() -> None:
+    """REGRESSION (P2): `job_request`'s docstring lists the fields a job may set and promises
+    `base_branch` is "not silently dropped when a job chains off a prior run's branch" - but the
+    MCP model had no such field, so pydantic stripped it before the engine ever saw it. Pinned
+    against the engine's own list so the next added field cannot go missing the same way."""
+    import inspect as _inspect
+
+    from marshal_engine.interfaces.service import MarshalService
+
+    doc = _inspect.getdoc(MarshalService.job_request) or ""
+    listed = {f.strip().rstrip("?") for f in doc.split("``{")[1].split("}``")[0].split(",")}
+    for model in (Job, ThenJob):
+        missing = listed - set(model.model_fields)
+        assert not missing, f"{model.__name__} drops {sorted(missing)} the engine reads"
+
+
 class _StubRegistry:
     def get(self, _name: str) -> object:
         return object()

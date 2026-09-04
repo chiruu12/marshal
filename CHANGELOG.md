@@ -30,6 +30,19 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **`run_many` jobs accept `base_branch` over MCP again.** The engine's job builder documents the
+  field and promises it is "not silently dropped when a job chains off a prior run's branch", but
+  the MCP job model never declared it, so it was stripped before the engine saw it. A parity test
+  now pins both job models against the field list the engine actually reads.
+- **Driver-facing docs corrected where they contradicted the code.** `collect_run` and the
+  quickstart enumerated `produced` without `unavailable` - the one value that means "I cannot tell
+  you", which a driver must not read as "it did nothing"; the quickstart said Marshal has no
+  structured output, which `output_schema` has provided for some time; `list_teams` was documented
+  as returning a `decision` field the design deliberately refuses to compute; `get_run_log` listed
+  two causes for a null log and not the third (`clean` reclaims logs); a duration error on a
+  `progress_timeout` key was phrased as a client's `timeout_s`; and SETUP.md said a Fireworks model
+  is rejected at load when it loads with a billing warning.
+
 - **An explicitly relative `worktree_setup` / `verify` command needs the unsafe opt-in again.** The
   refusal compared a `Path`, and pathlib normalises `./pytest` to `pytest` - so the form that
   resolves inside the worktree the agent writes to compared equal to a bare basename and ran

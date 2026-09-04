@@ -93,6 +93,7 @@ class Job(BaseModel):
     artifacts_from: Annotated[
         list[str] | None, Field(description=_DESC_ARTIFACTS_FROM)
     ] = None
+    base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
@@ -139,6 +140,16 @@ class ThenJob(BaseModel):
     read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None
     artifacts_from: Annotated[
         list[str] | None, Field(description=_DESC_ARTIFACTS_FROM)
+    ] = None
+    base_branch: Annotated[
+        str | None,
+        Field(
+            description=(
+                _DESC_BASE_BRANCH
+                + " On a `then` stage this is overridden by the primary's branch, which is the "
+                "point of chaining - set it only if you know why."
+            )
+        ),
     ] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
