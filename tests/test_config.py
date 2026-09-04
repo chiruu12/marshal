@@ -37,6 +37,27 @@ clients:
 """
 
 
+@pytest.mark.parametrize("argv0", ["./pytest", "./make", "../bin/pytest", ".venv/bin/python"])
+def test_an_explicitly_relative_command_needs_the_unsafe_opt_in(argv0: str) -> None:
+    """REGRESSION (P2): the refusal compared a `Path`, and pathlib normalises `./pytest` to
+    `pytest` - so the explicitly-relative form, which resolves inside the worktree the agent
+    writes to, compared equal to a bare basename and ran without the opt-in."""
+    from marshal_engine.core.config import setup_command_refusal
+
+    reason = setup_command_refusal([argv0], allow_unsafe=False)
+    assert reason is not None and "relative path" in reason
+    assert setup_command_refusal([argv0], allow_unsafe=True) is None
+
+
+@pytest.mark.parametrize("argv0", ["pytest", "uv", "/usr/bin/pytest", "python3.12"])
+def test_a_bare_or_absolute_allowlisted_command_still_runs(argv0: str) -> None:
+    """Anti-blanket control: a bare name resolves through PATH and an absolute path is checked by
+    basename - tightening the relative case must not start refusing those."""
+    from marshal_engine.core.config import setup_command_refusal
+
+    assert setup_command_refusal([argv0], allow_unsafe=False) is None
+
+
 def test_every_malformed_config_raises_config_error_not_a_traceback(tmp_path: Path) -> None:
     """REGRESSION (P0/P1): four ordinary operator mistakes escaped `load_config` as raw exceptions
     - a permission typo as ValueError, bad YAML as ParserError, a non-mapping `clients` as

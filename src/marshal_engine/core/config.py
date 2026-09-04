@@ -398,7 +398,18 @@ def setup_command_basename(argv0: str) -> str:
 
 
 def is_relative_setup_argv0(argv0: str) -> bool:
-    """True when ``argv0`` is a relative path (resolves against worktree cwd), not a bare name."""
+    """True when ``argv0`` is a relative path (resolves against worktree cwd), not a bare name.
+
+    Tested on the RAW string, not on a ``Path``: pathlib normalises ``./pytest`` to ``pytest``, so
+    the explicitly-relative form compared equal to a bare basename and was allowed - while
+    ``.venv/bin/python``, which is no more dangerous, was refused. A bare name resolves through
+    PATH; anything with a separator, or an explicit leading ``./`` or ``../``, resolves inside the
+    worktree, which is where the agent writes.
+    """
+    if not argv0:
+        return False
+    if argv0.startswith(("./", "../")):
+        return True
     path = Path(argv0)
     if path == Path(path.name):
         return False

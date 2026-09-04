@@ -23,6 +23,11 @@ class GitExcludeError(RuntimeError):
     """The checkout's exclude file could not be located."""
 
 
+#: Deadline for the one git call this module makes. `git rev-parse --git-path` is pure local
+#: metadata, so anything approaching this is a stuck repo, not slow work.
+_GIT_PATH_TIMEOUT_S = 30
+
+
 def append_git_exclude(checkout: Path, entry: str) -> None:
     """Add ``entry`` to ``checkout``'s ``info/exclude`` if it is not already listed.
 
@@ -31,13 +36,23 @@ def append_git_exclude(checkout: Path, entry: str) -> None:
     ``GitExcludeError`` when git cannot answer - use ``try_append_git_exclude`` where the entry is a
     nicety and a failure must not surface.
     """
-    proc = subprocess.run(
-        ["git", "-C", str(checkout), "rev-parse", "--git-path", "info/exclude"],
-        capture_output=True,
-        text=True,
-        check=False,
-        **DETACHED_STDIO,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "--git-path", "info/exclude"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_PATH_TIMEOUT_S,
+            **DETACHED_STDIO,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Every other subprocess in the engine carries a deadline; this one did not, and a git
+        # that hangs (a stuck index.lock, a credential helper, an unresponsive network mount)
+        # would have hung the caller with it - during worktree creation, holding the create lock.
+        raise GitExcludeError(
+            f"git rev-parse timed out after {_GIT_PATH_TIMEOUT_S}s resolving the exclude file "
+            f"for {checkout}"
+        ) from exc
     if proc.returncode != 0:
         raise GitExcludeError(
             f"could not resolve exclude file for {checkout}: "

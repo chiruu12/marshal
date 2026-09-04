@@ -110,6 +110,7 @@ class StubService:
         self.agent_survived_kill = agent_survived_kill
         self.collect_raises = collect_raises
         self.collect_unavailable: str | None = None
+        self.missing_run = False
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
         self.calls.append("run_many")
@@ -136,6 +137,8 @@ class StubService:
         return [RunManyJobResult(primary=r) for r in out]
 
     def get_run(self, run_id: str) -> RunRecord | None:
+        if self.missing_run:
+            return None
         # A surviving agent means a LIVE pid: the guard re-probes it, so a record without one
         # reads as settled no matter what the flag says. Use this process, which is alive for the
         # duration of the test and whose start time the real probe can read.
@@ -837,6 +840,19 @@ def test_runner_reviews_an_unsuccessful_run_but_says_so(status: str) -> None:
     assert f"run status {status}" in result.subject_summary
     assert f"run status {status}" in svc.jobs[0]["goal"]
     assert f"run status {status}" in result.unified_report if result.unified_report else True
+
+
+def test_runner_says_no_such_run_rather_than_blaming_clean(tmp_path: Path) -> None:
+    """REGRESSION (P2): an unknown run id fell through to the worktree-vanished handler and was
+    reported as "its worktree was removed (most likely by `clean`)" - a confident wrong cause for
+    what is usually a typo or a run in another workspace."""
+    svc = StubService(_config("ro-a", "ro-b"))
+    svc.missing_run = True
+    with pytest.raises(ConfigError) as exc:
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="typo9"), team_run_id="t1")
+    msg = str(exc.value)
+    assert "no such run" in msg and "typo9" in msg
+    assert "clean" not in msg
 
 
 def test_runner_says_unreadable_not_empty_for_a_run_whose_work_cannot_be_read() -> None:

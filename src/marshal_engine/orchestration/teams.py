@@ -614,7 +614,16 @@ class TeamRunner:
             # legitimate), but its status rides in the summary - and therefore into every
             # reviewer's prompt and the unified report - so nobody mistakes it for a candidate.
             rec = self.service.get_run(run_id)
-            status = rec.status if rec is not None else ""
+            if rec is None:
+                # No record at all. Falling through let `collect_run`'s "no such run" be caught
+                # below and reported as "its worktree was removed (most likely by `clean`)" - a
+                # confident wrong cause for what is usually a typo or a run in another workspace,
+                # and the exact failure the diagnostics module exists to avoid.
+                raise ConfigError(
+                    f"no such run: {run_id!r}. Check the id (and the workspace it belongs to) - "
+                    "nothing is recorded under it, so there is nothing to review."
+                )
+            status = rec.status
             unstable = _review_instability(run_id, rec)
             if unstable is not None:
                 raise ConfigError(unstable)

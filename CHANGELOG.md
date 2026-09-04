@@ -30,6 +30,16 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **An explicitly relative `worktree_setup` / `verify` command needs the unsafe opt-in again.** The
+  refusal compared a `Path`, and pathlib normalises `./pytest` to `pytest` - so the form that
+  resolves inside the worktree the agent writes to compared equal to a bare basename and ran
+  without `allow_unsafe_commands`, while `.venv/bin/python` was refused.
+- **`run_team` on an unknown run id says so.** The id fell through to the worktree-vanished
+  handler and was reported as "its worktree was removed (most likely by `clean`)" - a confident
+  wrong cause for what is usually a typo or a run in another workspace.
+- **The last unbounded git call now has a deadline.** `append_git_exclude` ran `git rev-parse`
+  with no timeout during worktree creation, holding the create lock if git hung.
+
 - **Every malformed `fleet.config.yaml` now raises a config error instead of a traceback.** Four
   ordinary operator mistakes escaped the loader as raw exceptions - a permission typo as a bare
   `ValueError` from the enum, invalid YAML as a parser error, a non-mapping `clients:` as an
