@@ -1154,6 +1154,209 @@ def test_a_read_only_run_is_never_given_the_progress_policy(repo: Path) -> None:
     assert seen[1] is policy, "a writing run must still get the policy"
 
 
+class _RetryingTokened(CodingAgentBackend):
+    """Fails transiently twice, each attempt reporting native usage, then succeeds."""
+
+    name = "retrytok"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "pass"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        raise AssertionError("run() is overridden")
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        self.calls += 1
+        usage = UsageRecord(
+            backend="retrytok", input_tokens=100, output_tokens=10, cost_usd=0.02,
+            source=UsageSource.NATIVE,
+        )
+        if self.calls < 3:
+            return AgentResult(
+                status=RunStatus.FAILED, error="connection reset by peer",
+                usage=usage, duration_ms=1000,
+            )
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN, text="done",
+            usage=UsageRecord(
+                backend="retrytok", input_tokens=7, output_tokens=3, cost_usd=0.005,
+                source=UsageSource.NATIVE,
+            ),
+            duration_ms=500,
+        )
+
+
+def test_a_retried_runs_ledger_duration_covers_every_attempt(repo: Path) -> None:
+    """REGRESSION (P2): tokens and cost were folded across retried attempts but duration was the
+    LAST attempt's alone, so the run's own numbers disagreed - and `routing` ranks clients on the
+    mean of this column, making a client whose runs retry look faster than one whose runs do not."""
+    fleet = Fleet(repo, {"retrytok": _RetryingTokened()}, retries=RetryPolicy(max_attempts=3))
+    rec = fleet.run("retrytok", TaskSpec(id="retdur", goal="x"))
+    assert rec.status == "exited_clean" and rec.attempts == 3
+    assert rec.duration_ms == 2500, "duration excluded the retried-away attempts"
+    events = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+    ]
+    (event,) = [e for e in events if e["run_id"] == rec.run_id]
+    assert event["duration_ms"] == 2500
+    assert event["input_tokens"] == 207, "tokens were already folded; duration must match"
+
+
+def test_a_measured_admin_api_cost_is_not_discarded(repo: Path) -> None:
+    """REGRESSION (P2): `_price_usage` kept only `native`, so a backend using the documented
+    `extract_usage` extension point to report a real provider cost had it rewritten to $0 /
+    unavailable. "Never fabricate cost" has an inverse, and throwing a measured one away is it."""
+
+    class _AdminPriced(_Talker):
+        name = "adminpriced"
+
+        def extract_usage(self, result: AgentResult) -> UsageRecord | None:
+            return UsageRecord(
+                backend="adminpriced", input_tokens=5, output_tokens=1, cost_usd=0.42,
+                source=UsageSource.ADMIN_API,
+            )
+
+    fleet = Fleet(repo, {"adminpriced": _AdminPriced("ok")})
+    rec = fleet.run("adminpriced", TaskSpec(id="adminp", goal="x"))
+    assert rec.cost_usd == 0.42 and rec.source == "admin-api"
+
+
+def test_collect_run_on_a_running_run_does_not_claim_it_produced_nothing(repo: Path) -> None:
+    """REGRESSION (P2): collect_run had no status guard, so an in-flight run was read mid-write
+    and reported `produced="nothing"` - documented as "the run genuinely produced neither" -
+    seconds before the same run reported a diff."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="stillrunning", goal="x"))
+    fleet.state.update(rec.run_id, status="running", ended_at=None)
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "unavailable"
+    assert collected.unavailable_reason and "still running" in collected.unavailable_reason
+
+
+def test_collect_run_reason_says_why_the_work_could_not_be_read(repo: Path) -> None:
+    """REGRESSION (P2): `unavailable_reason` preferred the run's own `error`, so a cleaned run
+    answered "why is there no diff" with "the agent timed out" - a true sentence about a
+    different question, and the actual reason was discarded."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cleaned", goal="x"))
+    fleet.state.update(rec.run_id, error="agent run timed out after 600s")
+    fleet.clean(run_ids=[rec.run_id])
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "unavailable"
+    reason = collected.unavailable_reason or ""
+    assert "timed out" in reason, "the run's own error is worth carrying, as context"
+    assert reason != "agent run timed out after 600s", (
+        "the reason still answers 'why did the run end' instead of 'why can the work not be read'"
+    )
+    assert "worktree" in reason or "no longer exists" in reason, reason
+
+
+def test_a_failure_after_the_agent_ran_records_what_the_run_actually_did(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P2, two of them): when the bookkeeping broke after the agent had run, the
+    failure path recorded only the FINAL attempt's usage - a partial figure stamped `native`, the
+    measured-looking undercount "never fabricate cost" exists to prevent - and left the record at
+    its defaults, `attempts: 1` and `duration_ms: null`, which the docs define as "the run never
+    reached a backend" for a run whose agent had run three times."""
+    backend = _RetryingTokened()
+    fleet = Fleet(repo, {"retrytok": backend}, retries=RetryPolicy(max_attempts=3))
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("bookkeeping exploded")
+
+    # Raises after the agent ran, before any usage was gathered - the window the failure path
+    # has to cover on its own.
+    monkeypatch.setattr(fleet_mod, "_apply_structured_output", boom)
+    with pytest.raises(RuntimeError, match="bookkeeping exploded"):
+        fleet.run("retrytok", TaskSpec(id="failfold", goal="x"))
+
+    (rec,) = fleet.state.list()
+    assert rec.status == "failed"
+    assert rec.attempts == 3, "the record said the backend was invoked once"
+    assert rec.duration_ms == 2500, "the record said the run never reached a backend"
+    events = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+    ]
+    (event,) = [e for e in events if e["run_id"] == rec.run_id]
+    assert event["input_tokens"] == 207, "the ledger line omitted the retried-away attempts"
+    assert event["output_tokens"] == 23
+
+
+def test_a_cancel_that_wins_the_record_keeps_the_runs_measured_facts(repo: Path) -> None:
+    """REGRESSION (P2): on the ordinary cancel path the terminal stamp is refused, and the run's
+    measured cost, tokens and duration were refused with it - so `get_run` said nothing had been
+    measured for a run the ledger prices. The ledger also kept the backend's exit status, so the
+    two histories of one run disagreed about what happened to it."""
+    started = threading.Event()
+    release = threading.Event()
+
+    class _WritesAndCounts(_Writer):
+        """Writes a file (so the verify gate runs) and reports usage."""
+
+        name = "wc"
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            res = super().parse_output(raw_stdout, raw_stderr, exit_code)
+            return res.model_copy(update={
+                "usage": UsageRecord(
+                    backend="wc", input_tokens=11, output_tokens=2, cost_usd=0.01,
+                    source=UsageSource.NATIVE,
+                ),
+                "duration_ms": 1234,
+            })
+
+    fleet = Fleet(repo, {"wc": _WritesAndCounts()}, verify=[sys.executable, "-c", "pass"])
+    real_verify = fleet.worktrees.verify
+
+    def slow_verify(wt: object) -> object:
+        started.set()
+        release.wait(timeout=10)
+        return real_verify(wt)  # type: ignore[arg-type]
+
+    fleet.worktrees.verify = slow_verify  # type: ignore[method-assign]
+    run_id = fleet.spawn(RunRequest(backend_name="wc", task=TaskSpec(id="cancelfacts", goal="x")))
+    assert started.wait(timeout=15), "the run never reached the verify gate"
+    # Another process's cancel: stamp the record terminal while this one is still finalizing.
+    fleet.state.update_if(
+        run_id, lambda r: r.status == "running", status="cancelled",
+        ended_at=fleet_mod._now(),
+    )
+    release.set()
+    deadline = time.monotonic() + 15
+    rec = None
+    while time.monotonic() < deadline:
+        rec = fleet.state.get(run_id)
+        if rec and rec.status != "running" and rec.cost_usd is not None:
+            break
+        time.sleep(0.05)
+    assert rec is not None and rec.status == "cancelled", rec
+    assert rec.cost_usd is not None, "the run's measured spend was dropped with the status"
+    assert rec.input_tokens is not None and rec.duration_ms is not None
+    events = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+    ]
+    (event,) = [e for e in events if e["run_id"] == run_id]
+    assert event["status"] == "cancelled", "the ledger disagreed with the record about the run"
+
+
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
 
 

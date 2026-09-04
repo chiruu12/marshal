@@ -30,6 +30,35 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A cancelled run keeps the facts it measured, and its ledger line agrees with it.** On the
+  ordinary cancel path the terminal stamp is refused so the cancel keeps the status - but the run's
+  cost, tokens and duration were refused with it, so `get_run` said nothing had been measured for a
+  run the ledger prices. The ledger line also carried the backend's exit status (`failed`, from the
+  SIGTERM) while the record said `cancelled`, so one run had two histories that disagreed. The
+  measurements are now written without touching the status, and the ledger takes the record's.
+- **A run's recorded duration covers every attempt.** Tokens and cost were folded across retried
+  attempts but duration was the last attempt's alone, so the ledger's own numbers disagreed - and
+  `routing` ranks on the mean of that column, which made a client whose runs retry look faster than
+  one whose runs do not.
+- **A break after the agent ran no longer records a partial figure as a measurement, or claims the
+  backend was never reached.** The failure path wrote one attempt's usage - a partial number tagged
+  `native`, the measured-looking undercount the cost invariant exists to prevent - and left the
+  record at `attempts: 1` with `duration_ms: null`, which the docs define as "the run never reached
+  a backend", for a run whose agent had run several times.
+- **A reported `admin-api` cost is no longer thrown away.** Pricing kept only `native`, so a backend
+  using the documented `extract_usage` extension point to report a real provider cost had it
+  rewritten to `$0 / unavailable`. "Never fabricate cost" has an inverse, and discarding a measured
+  one is it.
+- **`collect_run` no longer says a running run produced nothing.** It had no status guard, so an
+  in-flight run was read mid-write and reported as `nothing` - documented as "the run genuinely
+  produced neither" - seconds before the same run reported a diff. It now reports `unavailable`
+  with the reason, which is what "I cannot tell you yet" means.
+- **"Why the work could not be read" is no longer answered with why the run ended.** For any
+  terminal run carrying an error, `unavailable_reason` (and the same message from `commit_run` /
+  `integrate`) repeated that error - a true sentence about a different question, which hid that the
+  worktree was simply gone. The reason now leads with what blocked the read and carries the run's
+  own error as context.
+
 - **A read-only run is never put under the progress timeout.** The only progress signal is the
   worktree's newest mtime, and a read-only agent writes nothing by construction - so an actively
   working reviewer registered no progress and was killed at `stall_s`. That was every reviewer in

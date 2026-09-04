@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -136,6 +137,17 @@ def _cap_text(text: str) -> tuple[str, bool, int | None]:
     if len(text) <= _TEXT_CAP:
         return text, False, None
     return text[:_TEXT_CAP], True, len(text)
+
+
+def _total_duration_ms(result: AgentResult, abandoned: list[AgentResult]) -> int | None:
+    """Wall clock across every attempt of one run, or None when nothing was timed.
+
+    A retried run occupied the fleet for all of its attempts. Tokens and cost are already folded
+    across them, so reporting the final attempt's duration alone made the run's own numbers
+    disagree - and `routing` ranks on the mean of this column.
+    """
+    parts = [r.duration_ms for r in [result, *abandoned] if r.duration_ms is not None]
+    return sum(parts) if parts else None
 
 
 def _still_running(rec: RunRecord) -> bool:
@@ -745,6 +757,10 @@ class Fleet:
         # UnboundLocalError inside the except block - skipping the terminal stamp and leaving the
         # record `running` forever.
         usage: UsageRecord | None = None
+        # Bound here for the same reason as `usage`: the failure path reads both, and an unbound
+        # name there would replace the real exception with an UnboundLocalError.
+        attempts = 1
+        usage_folded = False
         try:
             if deferred_provisioning:
                 early = self._run_deferred_provisioning(req, run_id, wt)
@@ -810,10 +826,11 @@ class Fleet:
                     backend, run_task, opts, run_id, wt
                 )
                 result = _apply_structured_output(req.task, result)
-            usage = backend.extract_usage(result)    # the seam (default: result.usage)
+            usage = backend.extract_usage(result)  # noqa: F841 - read again on the failure path    # the seam (default: result.usage)
             self._price_usage(usage, req.model)      # normalize cost + source (unavailable unless native)
             # Fold in what the retried-away attempts spent, so the run's line is the run's total.
             usage = self._fold_abandoned_attempts(usage, abandoned, req.model, backend)
+            usage_folded = True
             self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
             # The workspace's optional verify gate: only a would-be-SUCCEEDED run that actually
@@ -839,7 +856,23 @@ class Fleet:
                 # suffix is applied later on a copy). Never the raw text — ledger is long-lived.
                 goal_digest=goal_digest(req.task.goal),
             )
-            event.status = status.value              # report the authoritative process status (incl. EMPTY)
+            # The run occupied the fleet for every attempt, not just the last one. Tokens and cost
+            # are already folded across attempts; leaving duration at the final attempt's made the
+            # ledger's own numbers disagree with each other, and `routing` ranks on the mean of
+            # this column - so a client whose runs retry looked faster than one whose runs do not.
+            total_duration_ms = _total_duration_ms(result, abandoned)
+            if total_duration_ms is not None:
+                # The event's convention is a plain int (its `source` column carries provenance);
+                # the RECORD keeps None, which is how it says "nobody timed this".
+                event.duration_ms = total_duration_ms
+            # A cancel may already have won the record. The ledger then carried the backend's exit
+            # status (`failed`, from the SIGTERM) for a run whose record says `cancelled`, so the
+            # two histories of one run disagreed about what happened to it.
+            current = self.state.get(run_id)
+            already_terminal = current is not None and current.status != RunStatus.RUNNING.value
+            event.status = (
+                current.status if already_terminal and current is not None else status.value
+            )
             self.usage.record(event)
             usage_recorded = True
             # Harvest BEFORE the terminal stamp so the record names its artifacts in the same write
@@ -866,11 +899,7 @@ class Fleet:
             # ledger, which is what the next spawn re-checks. The `finally` below still calls this
             # as the backstop for paths that never reach here; `release_run` is idempotent.
             self._budget_gate.release_run(run_id)
-            record = self.state.update_if(
-                run_id,
-                _still_running,
-                status=status.value,
-                artifacts=artifacts,
+            measured: dict[str, Any] = dict(
                 cost_usd=event.cost_usd,
                 # From the usage RECORD, not the ledger event: the event defaults absent counts to
                 # 0 (it is the facts ledger, and its `source` column carries the provenance), while
@@ -878,7 +907,7 @@ class Fleet:
                 # the backend reported nothing; a record with 0 in it is a measured zero.
                 input_tokens=usage.input_tokens if usage is not None else None,
                 output_tokens=usage.output_tokens if usage is not None else None,
-                duration_ms=result.duration_ms,
+                duration_ms=total_duration_ms,
                 source=event.source,
                 # Redact before the 16KB cut: value-based scrub needs the whole secret present.
                 text=_capped_text,
@@ -892,6 +921,15 @@ class Fleet:
                 verify_output=verify_output,
                 agent_survived_kill=result.agent_survived_kill,
             )
+            record = self.state.update_if(
+                run_id, _still_running, status=status.value, artifacts=artifacts, **measured
+            )
+            if record.status != status.value:
+                # A cancel won the status, and it keeps it - but the spend, the tokens and the
+                # duration are facts this thread measured, and dropping them left the record
+                # saying nothing was measured for a run the ledger prices. Write the measurements
+                # without touching the terminal status anyone else chose.
+                record = self.state.update_if(run_id, lambda _r: True, **measured)
             self._ensure_artifacts_recorded(run_id, record, artifacts)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
             # The agent's spend belongs in the ledger even when the bookkeeping AFTER it failed.
@@ -901,6 +939,17 @@ class Fleet:
             # and routing figure. The ledger's contract is one line per run; a run that broke is
             # still a run. Guarded by the flag so a failure AFTER the record cannot double-count.
             if result is not None and not usage_recorded:
+                if not usage_folded:
+                    # Same reason the success path folds: every attempt's tokens and cost are
+                    # spend that happened. Recording one attempt's figure wrote a partial number
+                    # tagged `native` - a measured-looking undercount, the exact shape "never
+                    # fabricate cost" exists to prevent. The final attempt is read here too, since
+                    # the break may have come before the success path ever asked for it.
+                    with contextlib.suppress(Exception):
+                        if usage is None:
+                            usage = backend.extract_usage(result)
+                            self._price_usage(usage, req.model)
+                        usage = self._fold_abandoned_attempts(usage, abandoned, req.model, backend)
                 self._record_usage_best_effort(run_id, req, result, ts, usage)
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
             # only if still running, so a concurrent cancel's terminal status wins.
@@ -913,9 +962,18 @@ class Fleet:
             # enforce slot is still held. A run that failed before `usage.record` has no spend to
             # overshoot with; one that failed after has already recorded it.
             self._budget_gate.release_run(run_id)
+            # What the run actually did, when it got far enough to do it. Leaving these at their
+            # defaults said `attempts: 1, duration_ms: null` - which the docs define as "the run
+            # never reached a backend" - for a run whose agent had run, possibly several times.
+            ran: dict[str, Any] = {}
+            if result is not None:
+                ran = {
+                    "attempts": attempts,
+                    "duration_ms": _total_duration_ms(result, abandoned),
+                }
             failed_rec = self.state.update_if(
                 run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(),
-                error=f"fleet: {exc}", artifacts=failed_artifacts,
+                error=f"fleet: {exc}", artifacts=failed_artifacts, **ran,
             )
             self._ensure_artifacts_recorded(run_id, failed_rec, failed_artifacts)
             # The record above is the real one for this run. Carry its id out with the exception
@@ -1279,8 +1337,12 @@ class Fleet:
         """Normalize cost + source in place: keep native cost, else unavailable (tokens kept)."""
         if usage is None:
             return
-        if usage.source is UsageSource.NATIVE:
-            return  # backend authoritatively reported the cost (a real $0 included) - never override
+        if usage.source in (UsageSource.NATIVE, UsageSource.ADMIN_API):
+            # Both are REPORTED costs (a real $0 included) - never overridden. `admin-api` is the
+            # documented `extract_usage` extension point, and zeroing it discarded a measured
+            # figure: the inverse of fabricating one, and just as wrong for every cost, budget and
+            # routing number downstream.
+            return
         usage.cost_usd = 0.0
         usage.source = UsageSource.UNAVAILABLE
 
@@ -1462,9 +1524,15 @@ class Fleet:
             raise ValueError(f"no such run: {run_id!r}")
 
         def _gone(detail: str | None = None) -> CollectResult:
-            text = _worktree_gone_message(rec)
-            if detail and not rec.error:
-                text = detail
+            # `detail` is why the work could not be READ, which is what this field is for. The
+            # run's own `error` says why the RUN ended - a different question, and preferring it
+            # answered "why is there no diff" with "the agent timed out", discarding the git
+            # failure or the torn-down-worktree message that actually explains the emptiness.
+            text = detail or _worktree_gone_message(rec)
+            if detail and rec.error:
+                text = f"{detail} (the run itself ended with: {rec.error})"
+            # `text` on the result is the agent's final message for a run that produced one; for
+            # an unreadable run there is none, so the reason stands in for it (unchanged).
             return CollectResult(
                 run_id=run_id,
                 branch=rec.branch or None,
@@ -1481,6 +1549,16 @@ class Fleet:
                 structured=rec.structured,
             )
 
+        if rec.status == RunStatus.RUNNING.value:
+            # No status guard here let a driver read a half-written worktree and be told the run
+            # "genuinely produced neither" - the documented meaning of `nothing` - seconds before
+            # the same run reported a diff. `commit_run` and `integrate` already refuse a running
+            # run; this one reports rather than refuses, because reading is safe.
+            return _gone(
+                f"run {run_id!r} is still running, so its work is not finished and cannot be "
+                "read as a result yet. Wait for a terminal status (wait_for_runs) and collect "
+                "again."
+            )
         try:
             wt = self._worktree_for(run_id)
         except ValueError:
