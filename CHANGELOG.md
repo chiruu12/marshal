@@ -87,11 +87,13 @@ versions may include breaking API changes until 1.0.
   read-only tier and no auth probe; it has both, so a driver was told Antigravity could not serve
   as a review-team reviewer and that a green doctor line did not imply login.
 
-- **The progress scan is bounded, so the hard ceiling still holds.** The walk of the worktree ran
+- **The progress scan is bounded by what is LEFT of the ceiling, so the hard ceiling still holds.** The walk of the worktree ran
   between the waiter's ceiling checks with no limit, so on a large tree (`node_modules`, a build
   directory) a run could stay alive past `hard_ceiling_s` - the one deadline that must always hold.
-  It now stops at the first entry newer than the last reading and gives up on a short budget; a
-  scan that could not finish reports "progress unknown" and no stall is concluded from it.
+  It now stops at the first entry newer than the last reading and gives up on a budget that is
+  itself capped by the time remaining to the ceiling, so a scan starting near the deadline cannot
+  overrun it; a scan that could not finish reports "progress unknown" and no stall is concluded
+  from it.
 - **`soft_deadline_s` now ends a run that has made no progress.** It is documented as the first
   deadline, at which a run "still making progress is extended rather than killed" - but nothing
   ever killed at it, so the key only sized the poll interval and any value below `stall_s` was

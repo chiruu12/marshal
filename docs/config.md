@@ -126,7 +126,7 @@ backends legitimately stay quiet — and why this is opt-in rather than the defa
 | `enabled` | `false` | Master switch. When false, nothing below applies. |
 | `stall_s` | `300` | Kill once nothing under the worktree has changed for this long. |
 | `soft_deadline_s` | `timeout_s` | First deadline. A run still making progress here is extended rather than killed. |
-| `hard_ceiling_s` | `timeout_s` | The backstop. Never exceeded, whatever progress says. |
+| `hard_ceiling_s` | `timeout_s` | The backstop. Never exceeded, whatever progress says — so a `soft_deadline_s` above it never fires. Leave it unset and the client's `timeout_s` is the ceiling. |
 | `poll_interval_s` | `15` | How often progress is re-measured. |
 
 `hard_ceiling_s` is the run's effective outer deadline, so a backend that carries a deadline of

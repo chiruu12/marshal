@@ -541,6 +541,10 @@ def _newest_mtime(
     # A file stamped ahead of the clock (clock skew, an extracted archive) would otherwise sit
     # at the top forever: every real write compares lower, so a productive run reads as stalled
     # and is killed. Anything ahead of now, beyond a small tolerance, is not evidence of work.
+    # Residual, deliberately accepted: a stamp between now and the tolerance IS taken, so it can
+    # mask real writes until the clock passes it. Bounded by the tolerance (2s) and therefore far
+    # below any usable `stall_s`, where dropping the tolerance entirely would discard legitimate
+    # writes whose filesystem timestamp rounds slightly ahead.
     horizon = time.time() + _FUTURE_MTIME_TOLERANCE_S
     deadline = time.monotonic() + budget_s
     stack = [root]
@@ -585,6 +589,9 @@ def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, st
         return proc.communicate(timeout=opts.timeout_s)
 
     hard_ceiling = policy.hard_ceiling_s or opts.timeout_s
+    # A soft deadline above the effective ceiling never fires, because the ceiling ends the run
+    # first - by design, and `docs/config.md` says so. Not clamped: clamping changes no behaviour
+    # (both fire at the same instant) and would only make the reported reason less specific.
     soft_deadline = policy.soft_deadline_s or opts.timeout_s
     started = time.monotonic()
     last_progress = started
@@ -604,7 +611,14 @@ def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, st
             return proc.communicate(timeout=slice_s)
         except subprocess.TimeoutExpired:
             pass
-        mtime, complete = _newest_mtime(opts.cwd, newer_than=seen_mtime)
+        # Bounded by whatever is LEFT of the ceiling, not just by its own budget: a full-budget
+        # scan starting near the deadline would run past it, and the ceiling is the one deadline
+        # that must always hold.
+        mtime, complete = _newest_mtime(
+            opts.cwd,
+            newer_than=seen_mtime,
+            budget_s=min(_PROGRESS_SCAN_BUDGET_S, max(hard_ceiling - (time.monotonic() - started), 0.0)),
+        )
         if mtime > seen_mtime:
             seen_mtime = mtime
             last_progress = time.monotonic()

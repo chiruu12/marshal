@@ -617,6 +617,35 @@ def test_an_unfinished_scan_is_not_read_as_a_stall(tmp_path: Path, monkeypatch) 
     assert 2.0 < elapsed < 20.0, elapsed
 
 
+def test_the_progress_scan_cannot_run_past_the_ceiling(tmp_path: Path) -> None:
+    """A scan starting near the deadline must be bounded by what is LEFT of the ceiling, not by
+    its own budget - otherwise the child outlives the one deadline that must always hold."""
+    seen: list[float] = []
+    from marshal_engine.backends import base as base_mod
+
+    real = base_mod._newest_mtime
+
+    def recording(root, **kw):  # noqa: ANN001, ANN202
+        seen.append(kw.get("budget_s", base_mod._PROGRESS_SCAN_BUDGET_S))
+        return real(root, **kw)
+
+    policy = ProgressTimeout(enabled=True, stall_s=30, hard_ceiling_s=2, poll_interval_s=1)
+    started = time.monotonic()
+    try:
+        base_mod._newest_mtime = recording  # type: ignore[assignment]
+        res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    finally:
+        base_mod._newest_mtime = real  # type: ignore[assignment]
+    elapsed = time.monotonic() - started
+    assert res.status is RunStatus.TIMED_OUT
+    assert elapsed < 15, elapsed
+    assert seen, "the scan never ran"
+    assert all(b <= base_mod._PROGRESS_SCAN_BUDGET_S + 0.01 for b in seen)
+    assert seen[-1] < base_mod._PROGRESS_SCAN_BUDGET_S, (
+        "the last scan before the ceiling was given its full budget, so it could overrun"
+    )
+
+
 def test_a_run_with_no_progress_ends_at_its_soft_deadline(tmp_path: Path) -> None:
     """REGRESSION (P2): `soft_deadline_s` is documented as the FIRST deadline, at which a run
     "still making progress is extended rather than killed" - but no branch ever killed at it, so
