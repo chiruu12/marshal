@@ -139,9 +139,21 @@ def test_pid_alive_is_false_for_a_genuinely_absent_process() -> None:
     assert _pid_alive(_dead_pid()) is False
 
 
+def _no_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the /proc reading, so the `ps` fallback is the one under test.
+
+    On Linux /proc answers first (and should: a working /proc must not be defeated by a broken
+    `ps`), so these three only reach `ps` once it is out of the way. The property they pin is
+    "NO source could answer, therefore None" - unverifiable, which every caller must read as
+    "spare it", never as "different, therefore reapable".
+    """
+    monkeypatch.setattr(liveness_mod, "_proc_start_ticks", lambda _pid: None)
+
+
 def test_pid_start_time_is_none_when_ps_cannot_be_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    # No `ps` on PATH, or a fork that fails under load. None means "unverifiable", and every
-    # caller is required to treat that as "spare it", never as "different, therefore reapable".
+    # No `ps` on PATH, or a fork that fails under load.
+    _no_proc(monkeypatch)
+
     def no_ps(*args: object, **kwargs: object) -> None:
         raise OSError(2, "No such file or directory: 'ps'")
 
@@ -150,6 +162,8 @@ def test_pid_start_time_is_none_when_ps_cannot_be_run(monkeypatch: pytest.Monkey
 
 
 def test_pid_start_time_is_none_when_ps_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_proc(monkeypatch)
+
     def slow_ps(*args: object, **kwargs: object) -> None:
         raise subprocess.TimeoutExpired(cmd="ps", timeout=5)
 
@@ -160,9 +174,59 @@ def test_pid_start_time_is_none_when_ps_times_out(monkeypatch: pytest.MonkeyPatc
 def test_pid_start_time_is_none_when_ps_prints_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     # `ps -p <gone>` exits non-zero with empty stdout. An empty string must not be returned as a
     # start time: two unverifiable pids would then compare EQUAL and impersonate each other.
+    _no_proc(monkeypatch)
     completed = subprocess.CompletedProcess(args=["ps"], returncode=1, stdout="  \n", stderr="")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: completed)
     assert _pid_start_time(LIVE_PID) is None
+
+
+@pytest.mark.parametrize("module", ["liveness", "budgets"])
+def test_the_linux_identity_path_end_to_end_in_both_copies(
+    module: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercises the Linux-only branch on any host, in BOTH copies of the probe.
+
+    Written because this branch was developed on macOS, where nothing runs it: the first two
+    attempts at it were wrong in ways only Linux CI could see. It pins the two properties that
+    matter - a new stamp verifies against itself, and a stamp written by the OLD source still
+    compares (False here), rather than becoming unverifiable, which would fail open and leave
+    stale locks, claims and reservations that nothing reclaims.
+    """
+    from marshal_engine.accounting import budgets as budgets_mod
+
+    mod = liveness_mod if module == "liveness" else budgets_mod
+    stat = tmp_path / "stat"
+    # A comm containing spaces and a ')' - the shape that breaks naive field splitting.
+    stat.write_text("4242 (my weird ) name) S 1 4242 4242 0 -1 0 0 0 0 0 1 2 0 0 20 0 1 0 987654 0 0\n")
+    real_open = open
+
+    def fake_open(path, *a, **kw):  # noqa: ANN001, ANN202
+        return real_open(stat if str(path).startswith("/proc/") else path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    stamped = mod._pid_start_time(LIVE_PID)
+    assert stamped == f"{mod._PROC_IDENTITY_PREFIX}987654"
+    assert mod._identity_verdict(LIVE_PID, stamped) is True
+
+    old_stamp = f"{mod._PINNED_IDENTITY_PREFIX}Thu Jan  1 00:00:00 1970"
+    assert mod._identity_verdict(LIVE_PID, old_stamp) is False, (
+        "a pre-upgrade stamp became unverifiable instead of comparing - that fails open"
+    )
+
+
+def test_a_working_proc_reading_is_not_defeated_by_a_broken_ps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The converse, and the reason the three above needed changing: where /proc answers, a `ps`
+    that is missing, slow or silent must not turn a verifiable identity into an unverifiable one -
+    unverifiable fails open, so it is not a free direction."""
+    monkeypatch.setattr(liveness_mod, "_proc_start_ticks", lambda _pid: "proc/starttime|4242")
+
+    def no_ps(*args: object, **kwargs: object) -> None:
+        raise OSError(2, "No such file or directory: 'ps'")
+
+    monkeypatch.setattr(subprocess, "run", no_ps)
+    assert _pid_start_time(LIVE_PID) == "proc/starttime|4242"
 
 
 def test_pid_start_time_reads_the_real_start_time_of_a_live_process() -> None:
