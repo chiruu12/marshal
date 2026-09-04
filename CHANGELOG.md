@@ -63,13 +63,18 @@ versions may include breaking API changes until 1.0.
   Marshal's own environment, so the ambient scrub cannot see it; the run log was passed it
   explicitly and the record was not, so the value the log was careful to hide was persisted in
   `text` (and `error`, and structured output) and handed back by `get_run` and `collect_run`.
+- **A retried run's total is not called measured when the final attempt reported nothing.** The
+  fold took an earlier attempt's record as its base and kept its `native` label, stating a
+  measured total missing the last attempt's spend entirely - the same undercount-presented-as-a-
+  measurement the fold exists to prevent, arriving from the other end.
 - **Process identity on Linux no longer moves when the clock does.** It was read from
   `ps -o lstart=`, which is derived from the current boot-time estimate and re-renders whenever the
   wall clock is stepped - an NTP correction is enough - so a LIVE agent read as "somebody else's
   pid", the one reading that authorises reaping it, and a live budget reservation could be
   reclaimed out from under its holder. Linux now uses the boot-relative start time from
-  `/proc/<pid>/stat`; a stamp written by the other source reads as unverifiable, never as
-  different.
+  `/proc/<pid>/stat`, and every stamp is re-read with the source that wrote it - so records
+  written before the change keep verifying instead of all becoming unverifiable at once, which
+  would have left stale locks, claims and reservations that nothing reclaims.
 - **An unusable workflow phase name is refused before anything runs.** The label becomes part of a
   task id, so a space, a slash or an over-long name passed `validate_workflow` - which promises to
   raise before any agent runs - and failed mid-run, after earlier phases had spent real money.

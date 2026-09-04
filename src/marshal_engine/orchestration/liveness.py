@@ -176,7 +176,7 @@ def _proc_start_ticks(pid: int) -> str | None:
     return _PROC_IDENTITY_PREFIX + fields[19]
 
 
-def _pid_start_time(pid: int) -> str | None:
+def _pid_start_time(pid: int, like: str | None = None) -> str | None:
     """The OS-reported start time of ``pid``, or None when it cannot be determined.
 
     A pid alone is not an identity: the OS reuses pids, so "something is alive at pid 4242" does
@@ -188,9 +188,22 @@ def _pid_start_time(pid: int) -> str | None:
     thing to whoever reads it next - see ``_PINNED_IDENTITY_PREFIX``. ``worktree.py`` pins
     ``LC_ALL`` for the same reason.
     """
+    if like is not None and like.startswith(_PINNED_IDENTITY_PREFIX):
+        # Re-read with the SOURCE THAT WROTE the stamp. Probing with the preferred source and
+        # comparing across sources would make every pre-upgrade record unverifiable, which fails
+        # open: stale locks, claims and reservations that nothing ever reclaims.
+        return _ps_start_time(pid)
     ticks = _proc_start_ticks(pid)
     if ticks is not None:
         return ticks
+    return _ps_start_time(pid)
+
+
+def _ps_start_time(pid: int) -> str | None:
+    """The ``ps -o lstart=`` reading, prefixed. Kept as its own function so a stamp written by it
+    stays re-readable: a record written before the Linux probe existed must still verify against
+    the same source it came from, or every pre-existing stamp would read "unverifiable" after an
+    upgrade and nothing stale would ever be reclaimed."""
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
@@ -226,13 +239,12 @@ def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
         (_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX)
     ):
         return None  # never stamped, or stamped with the un-comparable ambient rendering
-    now = _pid_start_time(pid)
+    # Re-read with the SAME source that wrote the stamp. Probing with the preferred source and
+    # comparing across sources would make every pre-upgrade record unverifiable, which fails open:
+    # stale locks, claims and reservations that nothing reclaims.
+    now = _pid_start_time(pid, like=recorded)
     if now is None:
         return None  # probe unavailable (non-POSIX, permission)
-    if now.split("|", 1)[0] != recorded.split("|", 1)[0]:
-        # Two different clocks (an upgrade that changed the source, or a stamp copied between
-        # hosts). Not comparable, so "cannot check" - never "different process".
-        return None
     return now == recorded
 
 

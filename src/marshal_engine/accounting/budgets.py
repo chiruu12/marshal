@@ -564,15 +564,28 @@ def _proc_start_ticks(pid: int) -> str | None:
     return _PROC_IDENTITY_PREFIX + fields[19]
 
 
-def _pid_start_time(pid: int) -> str | None:
+def _pid_start_time(pid: int, like: str | None = None) -> str | None:
     """OS-reported start time of ``pid``, or None when unverifiable (same idiom as fleet.lock).
 
     Rendered under a pinned ``LC_ALL``/``TZ`` and returned prefixed, so two processes that
     disagree about either still read one live pid as one identity.
     """
+    if like is not None and like.startswith(_PINNED_IDENTITY_PREFIX):
+        # Re-read with the SOURCE THAT WROTE the stamp. Probing with the preferred source and
+        # comparing across sources would make every pre-upgrade record unverifiable, which fails
+        # open: stale locks, claims and reservations that nothing ever reclaims.
+        return _ps_start_time(pid)
     ticks = _proc_start_ticks(pid)
     if ticks is not None:
         return ticks
+    return _ps_start_time(pid)
+
+
+def _ps_start_time(pid: int) -> str | None:
+    """The ``ps -o lstart=`` reading, prefixed. Kept as its own function so a stamp written by it
+    stays re-readable: a record written before the Linux probe existed must still verify against
+    the same source it came from, or every pre-existing stamp would read "unverifiable" after an
+    upgrade and nothing stale would ever be reclaimed."""
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
@@ -603,11 +616,12 @@ def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
         (_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX)
     ):
         return None
-    now = _pid_start_time(pid)
+    # Re-read with the SAME source that wrote the stamp. Probing with the preferred source and
+    # comparing across sources would make every pre-upgrade record unverifiable, which fails open:
+    # stale locks, claims and reservations that nothing reclaims.
+    now = _pid_start_time(pid, like=recorded)
     if now is None:
         return None
-    if now.split("|", 1)[0] != recorded.split("|", 1)[0]:
-        return None  # two different clocks: not comparable, so "cannot check"
     return now == recorded
 
 

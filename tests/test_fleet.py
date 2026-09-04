@@ -821,10 +821,10 @@ def test_a_cancel_during_the_backoff_sleep_stops_the_retry(
     real_start = liveness_mod._pid_start_time
     unconfirm = {"active": False}
 
-    def probe(pid: int) -> str | None:
+    def probe(pid: int, like: str | None = None) -> str | None:
         if unconfirm["active"]:
             return None
-        return real_start(pid)
+        return real_start(pid, like)
 
     # Patched on `liveness`, the module that owns the probe: `_identity_verdict` looks it up
     # there, so the toggle reaches the cancel comparison and nothing else. The stamping paths
@@ -1387,6 +1387,36 @@ def test_a_client_env_credential_is_redacted_from_the_run_record(repo: Path) -> 
     assert secret not in (rec.error or "")
     assert secret not in json.dumps(rec.structured or {})
     assert "[redacted:" in rec.text
+
+
+def test_a_total_is_not_called_measured_when_the_final_attempt_reported_nothing(
+    repo: Path,
+) -> None:
+    """REGRESSION (P2): if the final attempt reported no usage while an earlier one did, the fold
+    took the earlier record as its base and kept its `native` label - stating a measured total
+    that is missing the last attempt's spend entirely. That is the same undercount-presented-as-a-
+    measurement the fold exists to prevent, arriving from the other end."""
+
+    class _LastAttemptSilent(_RetryingTokened):
+        name = "lastsilent"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            self.calls += 1
+            if self.calls < 3:
+                return AgentResult(
+                    status=RunStatus.FAILED, error="connection reset by peer", duration_ms=1000,
+                    usage=UsageRecord(
+                        backend="lastsilent", input_tokens=100, output_tokens=10,
+                        cost_usd=0.02, source=UsageSource.NATIVE,
+                    ),
+                )
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="done", duration_ms=500)
+
+    fleet = Fleet(repo, {"lastsilent": _LastAttemptSilent()}, retries=RetryPolicy(max_attempts=3))
+    rec = fleet.run("lastsilent", TaskSpec(id="silentlast", goal="x"))
+    assert rec.attempts == 3
+    assert rec.source == "unavailable", "a partial total was labelled a measurement"
+    assert rec.cost_usd is None or rec.cost_usd == 0.0
 
 
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
@@ -2573,7 +2603,7 @@ def test_cancel_unconfirmed_when_identity_probe_fails(
 
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     monkeypatch.setattr(fleet_mod, "_pid_alive", lambda pid: True)
 
     fleet = Fleet(repo, {"writer": _Writer()})
@@ -2613,7 +2643,7 @@ def test_cancel_of_verified_live_run_still_signals_and_stamps_cancelled(
         _os, "killpg", lambda pgid, sig: killed.append((pgid, sig))
     )
     started = f"{PINNED}Mon Jan  1 00:00:00 2026"
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: started)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: started)
 
     fleet = Fleet(repo, {"writer": _Writer()})
     run_id = "verifcancel.writer.deadbeef"
@@ -3256,7 +3286,7 @@ def test_supervisor_identity_is_stamped_whole_or_not_at_all(
 ) -> None:
     """A pid without a verifiable start time is worse than no pid: it would be trusted on bare
     liveness, and after a reboot recycles the number it reads as a live supervisor forever."""
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     assert _supervisor_identity() == (None, None)
 
 
@@ -4027,9 +4057,15 @@ def test_a_run_records_its_pid_start_time(repo: Path) -> None:
     rec = fleet.run("writer", TaskSpec(id="pst1", goal="x"))
     stored = fleet.state.get(rec.run_id)
     # A run that reached a live pid must have stamped the identity pair (pid + start time).
-    # `ps -o lstart=` shape is a non-empty string with a clock (`HH:MM:SS`).
+    # The reading is marked with its source - `ps -o lstart=`, or `/proc` on Linux - and the
+    # marker is the part that matters: it is what lets a later reader know how to compare it.
+    from marshal_engine.orchestration.liveness import (
+        _PINNED_IDENTITY_PREFIX,
+        _PROC_IDENTITY_PREFIX,
+    )
+
     assert isinstance(stored.pid_start_time, str) and stored.pid_start_time.strip()
-    assert ":" in stored.pid_start_time
+    assert stored.pid_start_time.startswith((_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX))
 
 
 def test_cancel_before_the_pid_is_known_still_stops_the_agent(
@@ -4536,7 +4572,7 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
     )
     monkey = pytest.MonkeyPatch()
     monkey.setattr(liveness_mod, "_pid_alive", lambda pid: True)  # the process exists...
-    monkey.setattr(liveness_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
+    monkey.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)  # ...but cannot be identified
     try:
         assert liveness_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
         assert liveness_mod._pid_is_verifiably_ours(rec) is False

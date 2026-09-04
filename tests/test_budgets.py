@@ -1465,8 +1465,12 @@ def test_the_reservation_probe_reads_one_identity_across_timezones() -> None:
     utc = _budgets_probe_in_a_child(os.getpid(), TZ="UTC", LC_ALL="C")
     kolkata = _budgets_probe_in_a_child(os.getpid(), TZ="Asia/Kolkata", LC_ALL="C")
 
+    from marshal_engine.accounting.budgets import _PROC_IDENTITY_PREFIX as BUDGETS_PROC
+
     assert utc not in ("", "None"), "the probe could not read a live pid at all"
-    assert utc.startswith(PINNED)
+    # Either source, marked: `ps -o lstart=` where that is all there is, `/proc` on Linux (where
+    # lstart moves with the wall clock). The marker is what makes the reading comparable.
+    assert utc.startswith((PINNED, BUDGETS_PROC))
     assert utc == kolkata, "the same live pid rendered as two identities"
 
 

@@ -93,18 +93,34 @@ def test_a_linux_identity_is_boot_relative_and_survives_a_clock_step(
     assert liveness_mod._identity_verdict(4242, stamped) is True
 
 
-def test_a_stamp_from_another_identity_source_is_unverifiable_not_different(
+def test_a_stamp_is_re_read_with_the_source_that_wrote_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Across an upgrade (or a record copied between hosts) the two sources are not comparable.
-    That must read as "cannot check", never as "different process"."""
+    """An upgrade changes which source writes new stamps, and the records already on disk keep
+    theirs. Probing with the preferred source and comparing across the two would make every
+    pre-upgrade record unverifiable - which fails OPEN, leaving stale locks, claims and
+    reservations that nothing ever reclaims. Each stamp is re-read with its own source."""
     from marshal_engine.orchestration import liveness as liveness_mod
 
+    asked: list[str] = []
     monkeypatch.setattr(
-        liveness_mod, "_pid_start_time", lambda _pid: f"{liveness_mod._PROC_IDENTITY_PREFIX}123"
+        liveness_mod,
+        "_ps_start_time",
+        lambda pid: (asked.append("ps"), f"{liveness_mod._PINNED_IDENTITY_PREFIX}stamp")[1],
     )
-    old_stamp = f"{liveness_mod._PINNED_IDENTITY_PREFIX}Thu Jan  1 00:00:00 1970"
-    assert liveness_mod._identity_verdict(4242, old_stamp) is None
+    monkeypatch.setattr(
+        liveness_mod,
+        "_proc_start_ticks",
+        lambda pid: (asked.append("proc"), f"{liveness_mod._PROC_IDENTITY_PREFIX}123")[1],
+    )
+    old_stamp = f"{liveness_mod._PINNED_IDENTITY_PREFIX}stamp"
+    assert liveness_mod._identity_verdict(4242, old_stamp) is True
+    assert asked == ["ps"], "a pre-upgrade stamp was checked against the wrong source"
+
+    asked.clear()
+    new_stamp = f"{liveness_mod._PROC_IDENTITY_PREFIX}123"
+    assert liveness_mod._identity_verdict(4242, new_stamp) is True
+    assert asked == ["proc"]
 
 
 def test_pid_alive_assumes_alive_when_the_probe_is_denied(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,7 +239,7 @@ def test_claim_with_an_unprobeable_start_time_is_held(
     # Unverifiable errs toward sparing: deleting a possibly-live create is the worse mistake.
     payload = {"pid": LIVE_PID, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     _creating_claim_path(tmp_path, "r1").write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     assert _creating_claim_held(tmp_path, "r1") is True
 
 
@@ -250,7 +266,7 @@ def test_unverifiable_claim_writer_stamps_written_at_instead_of_refusing(
     # Probe failed: still write (a create must stay shielded), and stamp written_at so the hold
     # can age out. Raising here would leave mid-create worktrees unprotected; omitting written_at
     # would recreate the forever-hold wedge once the pid is recycled.
-    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid, like=None: None)
     _write_creating_claim(tmp_path, "r1")
     data = json.loads(_creating_claim_path(tmp_path, "r1").read_text(encoding="utf-8"))
     assert data["pid"] == LIVE_PID
@@ -312,7 +328,7 @@ def test_live_holder_with_an_unprobeable_start_time_is_assumed_held(
     lock = tmp_path / "fleet.lock"
     payload = {"pid": 1, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     lock.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     assert _another_fleet_active(lock) is True
 
 
@@ -327,7 +343,11 @@ def test_recycled_pid_does_not_impersonate_the_lock_holder(
     lock = tmp_path / "fleet.lock"
     payload = {"pid": 1, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     lock.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: f"{PINNED}Fri Jan  2 00:00:00 1970")
+    monkeypatch.setattr(
+        liveness_mod,
+        "_pid_start_time",
+        lambda pid, like=None: f"{PINNED}Fri Jan  2 00:00:00 1970",
+    )
     assert _another_fleet_active(lock) is False
 
 
@@ -429,7 +449,7 @@ def test_claim_succeeds_when_start_time_probe_is_unavailable(
     # OPPOSITE of the wedge fix: a host without `ps` must still claim the lock and supervise.
     # The previous wrong fix raised from the writer; `_claim_fleet_lock` caught OSError and
     # returned False, so Marshal supervised nothing. Degrade - publish with written_at.
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     lock = tmp_path / "fleet.lock"
     assert _claim_fleet_lock(lock) is True
     data = json.loads(lock.read_text(encoding="utf-8"))
@@ -475,7 +495,7 @@ def test_publish_pid_records_a_just_forked_pid_when_start_time_probe_fails(
     # the OS holds the number until we reap. Refusing to stamp the pid turns cancel into a
     # silent no-op. Mutation: `_publish_pid` skips setting handle.pid when started is None
     # makes this fail.
-    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid, like=None: None)
     handle = _register_inflight_run(tmp_path, "r.publish")
     try:
         pending = _publish_pid(handle, 4242)

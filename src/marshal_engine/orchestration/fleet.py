@@ -1389,9 +1389,14 @@ class Fleet:
             priors.append(prior)
         if not priors:
             return usage
+        # The FINAL attempt reported nothing at all, while some earlier one did. Its tokens and
+        # cost are simply unknown, so no total over the run can be called measured - the same
+        # undercount-presented-as-a-measurement this function exists to prevent, arriving from the
+        # other end.
+        final_unreported = usage is None
         if usage is None:
             usage = priors.pop(0)
-        measured = usage.source is UsageSource.NATIVE
+        measured = usage.source is UsageSource.NATIVE and not final_unreported
         for prior in priors:
             usage.input_tokens += prior.input_tokens
             usage.output_tokens += prior.output_tokens
