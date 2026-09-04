@@ -1974,6 +1974,24 @@ class Fleet:
                 message=_orphaned_base_diagnosis(self.worktrees, rec, target),
             )
 
+        # `merged` is a claim about the target branch, so check the target before making it:
+        # git reports success for a merge that had nothing to bring in ("Already up to date"),
+        # and stamping `integrated` on that would be a permanent verdict for a merge that never
+        # happened. The commit this run lands must now be reachable from the target.
+        if commit and not self.worktrees.is_ancestor(commit, target):
+            return IntegrateResult(
+                run_id=run_id,
+                status="error",
+                branch=wt.branch,
+                merged_into=target,
+                commit=commit,
+                message=(
+                    f"git reported the merge as successful, but {commit[:12]} is not reachable "
+                    f"from {target!r}: nothing was integrated, and the run is not recorded as "
+                    "integrated. The run branch and its clone disagree about where the work is; "
+                    "inspect the worktree before retrying."
+                ),
+            )
         # Judgment lands on the run record (not a second usage event): events.jsonl is one line
         # per run for cost rollups, and rewriting that line would break ledger immutability.
         # `outcome_note` is cleared because it explains the verdict being replaced: a run that was

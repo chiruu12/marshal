@@ -116,6 +116,12 @@ class Worktree(BaseModel):
     base_commit: str | None = None
 
 
+#: Config overrides for every git call made INSIDE a run's clone (see `WorktreeManager._git`).
+#: `core.fsmonitor` names a program git runs on every status/diff; the clone's config is
+#: agent-writable, so it is never honoured there (it is an optimisation Marshal does not need).
+_CLONE_SIDE_GIT_OVERRIDES: tuple[str, ...] = ("-c", "core.fsmonitor=false")
+
+
 class MergeResult(BaseModel):
     """Outcome of merging a worktree branch back into the current branch."""
 
@@ -202,17 +208,36 @@ class WorktreeManager:
         return self._git(*args)
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        # These git calls run on the driver's checkout (commit/merge/status), so they get the same
-        # headless guards as agent runs: stdin closed + a hard timeout so a credential/lock/hook
-        # prompt fails fast instead of hanging the driver. GIT_TERMINAL_PROMPT=0 turns an auth
-        # prompt into an error rather than a wait.
+        # These git calls get the same headless guards as agent runs: stdin closed + a hard
+        # timeout so a credential/lock/hook prompt fails fast instead of hanging the driver.
+        # GIT_TERMINAL_PROMPT=0 turns an auth prompt into an error rather than a wait.
+        #
+        # A call with `cwd` runs INSIDE a run's clone, and the clone is agent-controlled: its
+        # `.git/config` and `.git/hooks` are plain files the agent can write, and git will execute
+        # what they name (core.fsmonitor on every `status`, post-commit on every commit, external
+        # diff drivers on `diff`) - as Marshal, at collect/commit/integrate time, long after the
+        # run ended. So clone-side git gets the same allowlisted environment the agent got (the
+        # driver's credentials never reach code the agent wrote) and the execution hooks git
+        # honours from repo config are switched off; opting into `integrate_run_hooks` keeps hooks
+        # and only hooks. Driver-side calls (no `cwd`) run against the operator's own checkout and
+        # keep the full environment.
+        # LC_ALL=C keeps git's messages in English so stderr matching (e.g. the blocked-merge
+        # detection in merge()) is stable across locales.
+        headless = {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+        if cwd is None:
+            argv = ["git", "-C", str(self.repo_root), *args]
+            env: Mapping[str, str] = {**os.environ, **headless}
+        else:
+            argv = ["git", "-C", str(cwd), *_CLONE_SIDE_GIT_OVERRIDES]
+            if not self.integrate_run_hooks:
+                argv += ["-c", f"core.hooksPath={os.devnull}"]
+            argv += list(args)
+            env = child_env(headless)
         try:
             return _run_group(
-                ["git", "-C", str(cwd or self.repo_root), *args],
+                argv,
                 cwd=cwd or self.repo_root,
-                # LC_ALL=C keeps git's messages in English so stderr matching (e.g. the
-                # blocked-merge detection in merge()) is stable across locales.
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
+                env=env,
                 timeout=self.git_timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
@@ -525,7 +550,9 @@ class WorktreeManager:
         those are appended as against-/dev/null diffs. Read-only: the index is not modified.
         """
         parts: list[str] = []
-        tracked = self._git("diff", "HEAD", cwd=wt.path)
+        # `--no-ext-diff --no-textconv`: both name programs from repo config + .gitattributes, and
+        # both are agent-writable in the clone.
+        tracked = self._git("diff", "--no-ext-diff", "--no-textconv", "HEAD", cwd=wt.path)
         if tracked.returncode != 0:
             raise WorktreeError(f"diff failed for {wt.task_id!r}: {tracked.stderr.strip()}")
         if tracked.stdout:
@@ -545,7 +572,10 @@ class WorktreeManager:
             # `changed_files` while contributing no hunk - a driver then reviews a filename with
             # no content and either integrates it unread or rejects the run for producing an
             # empty file. A diff that is silently incomplete is worse than one that fails loudly.
-            added = self._git("diff", "--no-index", "--", "/dev/null", path, cwd=wt.path)
+            added = self._git(
+                "diff", "--no-ext-diff", "--no-textconv", "--no-index", "--", "/dev/null", path,
+                cwd=wt.path,
+            )
             if added.returncode > 1:
                 raise WorktreeError(
                     f"diff failed for {wt.task_id!r} on new file {path!r}: "
@@ -563,6 +593,7 @@ class WorktreeManager:
         so possibly agent-modified hook scripts are not executed; set
         ``integrate_run_hooks=True`` only for non-interactive hooks with trusted provenance.
         """
+        self._require_on_run_branch(wt)
         add = self._git("add", "-A", cwd=wt.path)
         if add.returncode != 0:
             raise WorktreeError(f"add failed for {wt.task_id!r}: {add.stderr.strip()}")
@@ -631,6 +662,36 @@ class WorktreeManager:
         itself, which never pass through `commit_all` - exist only in the clone until this runs.
         """
         self._publish(wt, "publish")
+
+    def _require_on_run_branch(self, wt: Worktree) -> None:
+        """Refuse to commit or publish unless the clone's HEAD is its own run branch.
+
+        Only `refs/heads/<run branch>` is ever published to the repo. An agent that ran
+        `git checkout -b feature` (or was stopped mid-rebase, leaving HEAD detached) has its work
+        on a ref that publishing never looks at: committing it would land on that other ref, the
+        run branch would still point at the base, and integrate would then merge nothing, report
+        `merged`, stamp `integrated`, and - with cleanup - delete the only copy. Refusing here
+        keeps the work where it is and tells the driver exactly where. Publishing itself is not
+        gated: fetching the (unchanged) run branch is harmless, and `collect_run` publishes
+        before it reads the diff - the driver must still be able to SEE off-branch work.
+        """
+        head = self._git("symbolic-ref", "-q", "HEAD", cwd=wt.path)
+        sha = self._git("rev-parse", "--short=12", "HEAD", cwd=wt.path).stdout.strip()
+        expected = f"refs/heads/{wt.branch}"
+        if head.returncode == 0 and head.stdout.strip() == expected:
+            return
+        where = (
+            f"branch {head.stdout.strip().removeprefix('refs/heads/')!r}"
+            if head.returncode == 0
+            else f"a detached HEAD at {sha}"
+        )
+        raise WorktreeError(
+            f"run {wt.task_id!r} left its clone on {where} instead of its run branch "
+            f"{wt.branch!r}; only the run branch is published to the repo, so committing or "
+            f"integrating from here would land nothing and report success. The work is at {sha} in "
+            f"{wt.path}: commit it there and `git checkout {wt.branch}` + cherry-pick it onto the "
+            "run branch (or re-run the task), then retry."
+        )
 
     def _publish(self, wt: Worktree, what: str) -> None:
         """Copy the run's branch out of its clone and into the driver's repo.

@@ -194,6 +194,35 @@ class _Sleeper(CodingAgentBackend):
             return self._inflight
 
 
+class _BranchSwitcher(CodingAgentBackend):
+    """Does its work on a branch it created inside the clone, the way an agent asked to
+    "open a PR" routinely does."""
+
+    name = "switcher"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; s.run(['git','checkout','-q','-b','feature'],check=True);"
+            "open('feature.txt','w').write('the work'); print('done')"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
 class _SelfCommitter(CodingAgentBackend):
     """Commits its work onto the run branch before exiting (like Cursor / Claude Code)."""
 
@@ -958,6 +987,51 @@ def test_a_cancel_that_won_the_record_keeps_its_status_on_the_ledger(repo: Path)
         if "cx1" in line
     ]
     assert lines and all(ev["status"] == "cancelled" for ev in lines), lines
+
+
+def test_integrate_refuses_work_left_on_another_branch_instead_of_claiming_merged(
+    repo: Path,
+) -> None:
+    """REGRESSION (P0): the agent's uncommitted work sat on a branch it created in its clone.
+    commit_all committed it there, publish moved nothing, `merge` said "Already up to date" with
+    ok=True, and integrate returned `merged`, stamped the sticky `integrated` outcome, and (with
+    cleanup) deleted the only copy of the work. Now: a structured refusal that says where the
+    work is, nothing stamped, worktree kept."""
+    fleet = Fleet(repo, {"switcher": _BranchSwitcher()})
+    rec = fleet.run("switcher", TaskSpec(id="offbranch", goal="x"))
+    assert rec.status == "exited_clean"
+    collected = fleet.collect_run(rec.run_id)
+    assert "feature.txt" in collected.changed_files  # the work exists and is visible
+
+    result = fleet.integrate(rec.run_id)
+    assert result.status == "error", result
+    assert "feature" in result.message and rec.branch in result.message
+    after = fleet.state.get(rec.run_id)
+    assert after is not None and after.outcome is None and after.merged_into is None
+    assert Path(rec.worktree or "").exists(), "the only copy of the work was deleted"
+    tip = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert tip == rec.base_commit, "the target moved although nothing was integrated"
+
+
+def test_integrate_does_not_stamp_integrated_when_the_merge_landed_nothing(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt and braces under the refusal above: if git ever reports success for a merge that
+    left the target without the run's commit, `merged` and the sticky outcome are refused."""
+    from marshal_engine.runtime.worktree import MergeResult
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="phantom", goal="x"))
+    wt = fleet.worktrees
+    monkeypatch.setattr(wt, "commit_all", lambda w, m: "0" * 40)  # a sha the target never gets
+    monkeypatch.setattr(wt, "merged_diff_files", lambda b, t: [])
+    monkeypatch.setattr(wt, "merge", lambda b, **k: MergeResult(ok=True, message="Already up to date."))
+    result = fleet.integrate(rec.run_id)
+    assert result.status == "error" and "not reachable" in result.message
+    after = fleet.state.get(rec.run_id)
+    assert after is not None and after.outcome is None
 
 
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------

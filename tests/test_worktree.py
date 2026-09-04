@@ -668,6 +668,98 @@ def test_abort_merge_raises_when_abort_fails(repo: Path, monkeypatch: pytest.Mon
         m._abort_merge("marshal/whatever")
 
 
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("leave_clone", ["branch", "detached"])
+def test_commit_all_refuses_when_the_clone_is_off_its_run_branch(
+    repo: Path, leave_clone: str
+) -> None:
+    """REGRESSION (P0): commit_all committed whatever HEAD the clone was on and published only the
+    run branch. An agent that ran `git checkout -b feature` (or was stopped mid-rebase, detached)
+    had its commit land on a ref publishing never reads; the run branch still pointed at the base,
+    integrate merged nothing and reported `merged`, and cleanup deleted the only copy."""
+    m = WorktreeManager(repo)
+    wt = m.create("offbranch")
+    if leave_clone == "branch":
+        _git(wt.path, "checkout", "-q", "-b", "feature")
+    else:
+        _git(wt.path, "checkout", "-q", "--detach")
+    (wt.path / "work.txt").write_text("the work")
+    with pytest.raises(WorktreeError) as exc:
+        m.commit_all(wt, "should refuse")
+    msg = str(exc.value)
+    assert wt.branch in msg and ("'feature'" in msg or "detached HEAD" in msg)
+    # Nothing was committed anywhere and the work is still in the clone, where the message says.
+    assert (wt.path / "work.txt").read_text() == "the work"
+    assert m.branch_tip(wt.branch) == wt.base_commit
+    assert _git(wt.path, "status", "--porcelain") != ""
+
+
+def test_publish_refuses_self_commits_made_off_the_run_branch(repo: Path) -> None:
+    """The self-committed path publishes too, and must not read a commit on another branch as
+    "no changes" (the run branch is untouched, so it would look clean)."""
+    m = WorktreeManager(repo)
+    wt = m.create("offbranch-self")
+    _git(wt.path, "checkout", "-q", "-b", "feature")
+    (wt.path / "work.txt").write_text("x")
+    _git(wt.path, "add", "work.txt")
+    _git(wt.path, "commit", "-q", "--no-verify", "-m", "agent commit on feature")
+    with pytest.raises(WorktreeError, match="feature"):
+        m.commit_all(wt, "self-committed elsewhere")
+
+
+def test_clone_side_git_never_runs_agent_authored_hooks_or_fsmonitor(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P0): collect/commit/integrate ran git inside the clone with the driver's full
+    environment and the clone's own config honoured. An agent that wrote `core.fsmonitor` or a
+    post-commit hook into its clone got code executed AS MARSHAL at collect time, with the
+    ANTHROPIC_API_KEY / GH_TOKEN that child_env deliberately withholds from the agent."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SECRET-DRIVER-ONLY")
+    m = WorktreeManager(repo)
+    wt = m.create("evil")
+    marker = wt.path.parent / "evil.marker"
+    script = wt.path / ".git" / "payload.sh"
+    script.write_text(f"#!/bin/sh\necho \"ran ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY\" >> {marker}\n")
+    script.chmod(0o755)
+    _git(wt.path, "config", "core.fsmonitor", str(script))
+    hooks = wt.path / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "post-commit").write_text(script.read_text())
+    (hooks / "post-commit").chmod(0o755)
+    (wt.path / "b.txt").write_text("x")
+
+    assert m.changed_files(wt) == ["b.txt"]
+    assert "b.txt" in m.diff(wt)
+    assert m.commit_all(wt, "commit")
+    assert not marker.exists(), marker.read_text() if marker.exists() else ""
+
+
+def test_opted_in_hooks_run_without_the_drivers_credentials(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`integrate_run_hooks: true` keeps hooks, and only hooks: the clone-side environment is
+    still the allowlist, so a hook the agent could have edited never sees the driver's secrets."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SECRET-DRIVER-ONLY")
+    m = WorktreeManager(repo, integrate_run_hooks=True)
+    wt = m.create("hooked-env")
+    dump = wt.path.parent / "hook-env.txt"
+    hooks = wt.path / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "post-commit").write_text(f"#!/bin/sh\nenv > {dump}\n")
+    (hooks / "post-commit").chmod(0o755)
+    (wt.path / "f.txt").write_text("x")
+    assert m.commit_all(wt, "commit with hooks on")
+    assert dump.exists(), "the opted-in hook did not run"
+    seen = dump.read_text()
+    assert "PATH=" in seen, "the hook needs the operational environment"
+    assert "ANTHROPIC_API_KEY" not in seen and "SECRET-DRIVER-ONLY" not in seen
+
+
 def test_commit_all_skips_pre_commit_hook(repo: Path) -> None:
     # A prompting/failing pre-commit hook would block a headless run; commit_all passes --no-verify.
     hook = repo / ".git" / "hooks" / "pre-commit"

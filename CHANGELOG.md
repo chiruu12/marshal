@@ -30,6 +30,23 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **Integrate no longer reports `merged` for work the agent left on another branch.** An agent
+  that ran `git checkout -b feature` in its clone (or ended with a detached HEAD) had its work
+  committed there by `commit_all`, while only the run branch is ever published - so the run branch
+  still pointed at the base, git merged nothing with "Already up to date", integrate returned
+  `merged`, stamped the sticky `integrated` outcome with an empty file list, and with cleanup
+  deleted the only copy of the work. `commit_run` / `integrate` now refuse with a message naming
+  the branch (or detached commit) the work is on and how to recover it, and integrate also checks
+  that the landed commit is reachable from the target before it ever says `merged`.
+- **Git run inside a run's clone no longer executes agent-authored hooks or `core.fsmonitor`, and
+  no longer sees the driver's credentials.** `collect_run`, `commit_run` and `integrate` ran git in
+  the clone with the full driver environment and the clone's own config honoured, so an agent that
+  wrote `.git/config` or `.git/hooks/post-commit` had its script run as Marshal, later, with the
+  `ANTHROPIC_API_KEY` / `GH_TOKEN` that the child-environment allowlist deliberately withholds from
+  agents. Clone-side git now gets that same allowlist, `core.fsmonitor` is off, hooks are disabled
+  unless `integrate_run_hooks: true` (which keeps hooks but still not the credentials), and `git
+  diff` runs with `--no-ext-diff --no-textconv`. See SECURITY.md for the residual.
+
 - **A file stamped ahead of the clock can no longer make a productive run read as stalled.** The
   progress probe took the newest mtime under the worktree, so one future-dated file (clock skew,
   an extracted archive) sat at the top forever and every real write compared lower. Timestamps
