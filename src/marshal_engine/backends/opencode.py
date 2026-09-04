@@ -410,6 +410,14 @@ class OpenCodeBackend(CodingAgentBackend):
         for msg in data.get("messages") or []:
             if not isinstance(msg, dict):
                 continue
+            # Assistant turns only. The export holds the whole session, so taking every text part
+            # prepended the driver's own prompt (and, on a resumed session, every earlier turn) to
+            # what is documented as "the agent's final message" - which then carried the injected
+            # output_schema JSON, failing schema runs as "2 top-level JSON objects".
+            info = msg.get("info")
+            role = info.get("role") if isinstance(info, dict) else None
+            if role is not None and role != "assistant":
+                continue
             for part in msg.get("parts") or []:
                 if not isinstance(part, dict):
                     continue

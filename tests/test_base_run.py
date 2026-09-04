@@ -612,6 +612,36 @@ def test_a_run_making_progress_survives_past_the_soft_deadline(tmp_path: Path) -
     assert res.status is RunStatus.EXITED_CLEAN
 
 
+def test_a_stall_kill_says_it_was_a_stall_and_names_the_stall_deadline(tmp_path: Path) -> None:
+    """REGRESSION (P1): the TIMED_OUT error was always built from `timeout_s`, so a stall kill
+    reported "timed out after 600s" for a run stopped at 1s of silence - a duration the run never
+    had, with nothing saying it had been ended for lack of progress. A driver cannot tell a stall
+    from a wall-clock kill, and the two call for different fixes."""
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=30)
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    assert res.status is RunStatus.TIMED_OUT
+    assert "no progress" in (res.error or "")
+    assert "1s" in (res.error or "") and "30s" not in (res.error or "")
+
+
+def test_a_ceiling_kill_says_ceiling_and_a_plain_timeout_still_says_timed_out(
+    tmp_path: Path,
+) -> None:
+    """The other two shapes, so the fix distinguishes rather than relabels everything."""
+    policy = ProgressTimeout(
+        enabled=True, stall_s=30, soft_deadline_s=1, hard_ceiling_s=2, poll_interval_s=1
+    )
+    res = _writer(30, tmp_path / "w").run(
+        _task(), RunOpts(cwd=tmp_path, timeout_s=1, progress=policy)
+    )
+    assert res.status is RunStatus.TIMED_OUT
+    assert "hard ceiling" in (res.error or "") and "2s" in (res.error or "")
+
+    plain = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert plain.status is RunStatus.TIMED_OUT
+    assert "timed out after 1s" in (plain.error or "")
+
+
 def test_the_hard_ceiling_still_kills_a_busy_run(tmp_path: Path) -> None:
     """The invariant: a run is never extended past the ceiling, however productive it looks."""
     policy = ProgressTimeout(

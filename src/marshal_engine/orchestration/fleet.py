@@ -787,7 +787,16 @@ class Fleet:
                 client_env=req.client_env,
                 on_pid=_record_pid,
                 on_exit=_record_exit,
-                progress=self.progress_timeout if self.progress_timeout.enabled else None,
+                # Never for a read-only run. The only progress signal is the worktree's newest
+                # mtime, and a read-only agent writes nothing by construction - so an actively
+                # working reviewer registers no progress at all and is killed at `stall_s`, which
+                # is every reviewer in every `run_team` panel. Its wall clock stays `timeout_s`.
+                progress=(
+                    self.progress_timeout
+                    if self.progress_timeout.enabled
+                    and req.permission is not PermissionMode.READ_ONLY
+                    else None
+                ),
             )
             # Hold a slot for the agent run (the heavy, memory-hungry part) - including any transient
             # retry backoff, since the run is still in flight. Worktree creation/provision in _start

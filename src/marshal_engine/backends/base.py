@@ -432,7 +432,7 @@ class CodingAgentBackend(ABC):
 
         try:
             out, err = _wait_for_child(proc, opts)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as timeout_exc:
             _kill_process_group(pgid)
             out, err, drained = _drain(proc)  # bounded: a pipe-holder that escaped can't hang us
             # Ask whether the kill worked instead of assuming it. `_kill_process_group` swallows
@@ -458,7 +458,15 @@ class CodingAgentBackend(ABC):
             return AgentResult(
                 status=RunStatus.TIMED_OUT,
                 error=_timeout_error(
-                    self.name, opts.timeout_s, survived=survived, escaped=escaped
+                    self.name,
+                    # The exception carries the deadline that fired, which under a progress policy
+                    # is a stall (`stall_s`) or the ceiling - neither of them `timeout_s`. Reporting
+                    # `timeout_s` told the driver a duration the run never had, in both directions,
+                    # and nothing said the run had been ended for lack of progress.
+                    timeout_exc.timeout if timeout_exc.timeout is not None else opts.timeout_s,
+                    survived=survived,
+                    escaped=escaped,
+                    kind=getattr(timeout_exc, "_marshal_timeout_kind", None),
                 ),
                 session_id=opts.session_id,
                 usage=self._recover_partial_usage(out, err),
@@ -564,7 +572,7 @@ def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, st
         elapsed = time.monotonic() - started
         remaining_hard = hard_ceiling - elapsed
         if remaining_hard <= 0:
-            raise subprocess.TimeoutExpired(proc.args, hard_ceiling)
+            raise _labelled_timeout(proc, hard_ceiling, "ceiling")
         # Never sleep past the ceiling, and never past the next progress measurement.
         slice_s = min(policy.poll_interval_s, remaining_hard)
         # Below the soft deadline there is nothing to extend, so wake no more often than needed.
@@ -582,7 +590,21 @@ def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, st
             # Nothing has changed under the worktree for `stall_s`. Ending now returns the
             # failure sooner and hands the rest of the cap back, instead of waiting out a clock
             # that was never evidence either way.
-            raise subprocess.TimeoutExpired(proc.args, policy.stall_s)
+            raise _labelled_timeout(proc, policy.stall_s, "stall")
+
+
+def _labelled_timeout(
+    proc: subprocess.Popen[str], seconds: float, kind: str
+) -> subprocess.TimeoutExpired:
+    """A TimeoutExpired that remembers WHICH deadline fired, so the error can say so.
+
+    `run()` sees only `subprocess.TimeoutExpired`, and "timed out" reads as the wall clock. Under a
+    progress policy it is usually neither - a stall, or the ceiling - and those call for different
+    driver moves (write a chattier task vs. raise the cap).
+    """
+    exc = subprocess.TimeoutExpired(proc.args, seconds)
+    exc._marshal_timeout_kind = kind  # type: ignore[attr-defined]
+    return exc
 
 
 def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
@@ -609,7 +631,9 @@ def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
 _DRAIN_TIMEOUT_S = 2.0
 
 
-def _timeout_error(name: str, timeout_s: float, *, survived: bool, escaped: bool) -> str:
+def _timeout_error(
+    name: str, timeout_s: float, *, survived: bool, escaped: bool, kind: str | None = None
+) -> str:
     """The error for a timed-out run, saying what survived the kill.
 
     A driver's next move differs completely. If nothing survived, the worktree is a stable snapshot
@@ -622,7 +646,15 @@ def _timeout_error(name: str, timeout_s: float, *, survived: bool, escaped: bool
     descendant left no pid at all - the sole trace is pipes that never closed - so nothing can
     report when it stops, and saying so plainly is better than a refusal that would never lift.
     """
-    base = f"{name}: timed out after {timeout_s}s"
+    if kind == "stall":
+        base = (
+            f"{name}: ended after {timeout_s}s with no progress - nothing under the worktree "
+            "changed for that long, so the run was stopped rather than left to burn its cap"
+        )
+    elif kind == "ceiling":
+        base = f"{name}: hit its hard ceiling of {timeout_s}s"
+    else:
+        base = f"{name}: timed out after {timeout_s}s"
     if survived:
         return (
             f"{base}, and the agent did NOT stop: SIGTERM then SIGKILL to its process group left "

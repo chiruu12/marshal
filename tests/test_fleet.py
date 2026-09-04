@@ -34,6 +34,7 @@ from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.core.config import BudgetSpec
 from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.core.retry import RetryPolicy
+from marshal_engine.core.types import ProgressTimeout
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import liveness as liveness_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
@@ -1116,6 +1117,41 @@ def test_a_job_that_fails_before_its_record_exists_is_still_addressable(repo: Pa
     assert fleet.state.get(failed.run_id) is not None, "the failure is not addressable"
     # Both strategies are in the recorded runs a benchmark report is derived from.
     assert {r.backend for r in fleet.state.list() if r.task_id == "bench"} == {"picky", "writer"}
+
+
+def test_a_read_only_run_is_never_given_the_progress_policy(repo: Path) -> None:
+    """REGRESSION (P1): the only progress signal is the worktree's newest mtime, and a read-only
+    agent writes nothing by construction - so an actively working reviewer registered no progress
+    and was killed at `stall_s`. That is every reviewer in every `run_team` panel, and the reports
+    were lost with them."""
+    seen: list[object] = []
+
+    class _Capture(_Writer):
+        name = "capture"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            seen.append(opts.progress)
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok")
+
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=30)
+    fleet = Fleet(repo, {"capture": _Capture()}, progress_timeout=policy)
+    fleet.run_request(
+        RunRequest(
+            backend_name="capture",
+            task=TaskSpec(id="ro", goal="review"),
+            permission=PermissionMode.READ_ONLY,
+        )
+    )
+    assert seen == [None], "a read-only reviewer was put under the stall clock"
+
+    fleet.run_request(
+        RunRequest(
+            backend_name="capture",
+            task=TaskSpec(id="rw", goal="write"),
+            permission=PermissionMode.SAFE_EDIT,
+        )
+    )
+    assert seen[1] is policy, "a writing run must still get the policy"
 
 
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
@@ -6032,6 +6068,29 @@ def test_structured_output_tolerates_a_single_json_fence(repo: Path) -> None:
     )
     assert rec.status == RunStatus.EXITED_CLEAN.value
     assert rec.structured == {"score": 3}
+
+
+def test_structured_output_tolerates_narration_before_a_fenced_object(repo: Path) -> None:
+    """REGRESSION (P1): the two tolerances did not compose. A whole-message fence was accepted and
+    leading narration was accepted, but narration THEN a fence was failed as "trailing prose after
+    JSON object" - the trailing text being the closing fence itself. That is the single commonest
+    LLM reply shape, and the run had produced exactly one conforming object."""
+    fleet = Fleet(repo, {"talker": _Talker('Here is the result:\n```json\n{"score": 5}\n```\n')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-narrated", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value, rec.error
+    assert rec.structured == {"score": 5}
+
+
+def test_structured_output_still_refuses_two_fenced_objects(repo: Path) -> None:
+    """Anti-blanket control: lifting an object out from behind narration must not start guessing
+    between candidates - "which one did you mean" stays a failure."""
+    two = 'First:\n```json\n{"score": 1}\n```\nand also:\n```json\n{"score": 2}\n```'
+    fleet = Fleet(repo, {"talker": _Talker(two)})
+    rec = fleet.run("talker", TaskSpec(id="so-two", goal="rate it", output_schema=_SCORE_SCHEMA))
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None and rec.error and "structured_output:" in rec.error
 
 
 def test_structured_output_rejects_prose_as_distinct_validation_failure(repo: Path) -> None:

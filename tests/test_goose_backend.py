@@ -242,6 +242,27 @@ def test_parse_output_auth_error_in_assistant_text(backend: GooseBackend) -> Non
     assert "Authentication error" in (res.error or "")
 
 
+def test_a_work_summary_that_merely_mentions_auth_is_not_an_auth_failure(
+    backend: GooseBackend,
+) -> None:
+    """REGRESSION (P1): the auth heuristic scanned the WHOLE assistant reply for substrings like
+    "unauthorized", so an agent reporting a finished auth-related task was recorded FAILED with
+    its own success summary as the error - and the fleet counted the attempt as a failure."""
+    summary = (
+        "I added test_returns_401_when_unauthorized to tests/test_api.py and fixed the handler "
+        "so it responds 401 Unauthorized for a missing token. Ran the suite: all 12 tests pass. "
+        "I also checked the invalid api key path is covered by an existing test."
+    )
+    out = (
+        '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":'
+        + __import__("json").dumps(summary)[1:-1].join(['"', '"'])
+        + "}]}}\n"
+    )
+    res = backend.parse_output(out, "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN, res.error
+    assert res.error is None
+
+
 def test_parse_output_nonzero_exit(backend: GooseBackend) -> None:
     res = backend.parse_output("", "fatal error", 1)
     assert res.status is RunStatus.FAILED

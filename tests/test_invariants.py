@@ -19,7 +19,11 @@ from pathlib import Path
 import pytest
 
 import marshal_engine
-from marshal_engine.backends.base import CodingAgentBackend, _wait_for_child
+from marshal_engine.backends.base import (
+    CodingAgentBackend,
+    _labelled_timeout,
+    _wait_for_child,
+)
 from marshal_engine.core.config import ClientConfig
 from marshal_engine.core.types import (
     Capabilities,
@@ -258,12 +262,19 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
     assert src.index("TimeoutExpired") < src.index("_kill_process_group")
 
     wait_src = inspect.getsource(_wait_for_child)
+
     # No policy => the previous behaviour, byte for byte.
     assert "communicate(timeout=opts.timeout_s)" in wait_src
     # With a policy the wait is still bounded, and the ceiling is what bounds it. A progress
     # signal may only move the kill earlier or extend BELOW this - never remove it.
     assert "hard_ceiling = policy.hard_ceiling_s or opts.timeout_s" in wait_src
-    assert "raise subprocess.TimeoutExpired(proc.args, hard_ceiling)" in wait_src
+    assert 'raise _labelled_timeout(proc, hard_ceiling, "ceiling")' in wait_src
+    # ...and the thing it raises really is a TimeoutExpired, so `run()`'s kill branch catches it.
+    # Checking the spelling alone would pass over a helper that raised something else.
+    label_src = inspect.getsource(_labelled_timeout)
+    assert "subprocess.TimeoutExpired(proc.args, seconds)" in label_src
+    built = _labelled_timeout(subprocess.Popen(["true"]), 1.0, "ceiling")
+    assert isinstance(built, subprocess.TimeoutExpired) and built.timeout == 1.0
     # Every `communicate` in the waiter carries a timeout - none may block unbounded.
     assert "communicate()" not in wait_src
 

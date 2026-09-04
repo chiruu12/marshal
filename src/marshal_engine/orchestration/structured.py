@@ -18,6 +18,10 @@ from ..runtime.env import redact_secrets
 
 #: Whole-message fence: optional language tag, body, closing fence. Trailing prose outside the
 #: fence is rejected (the pattern must match the entire stripped message).
+#: Any fenced block, anywhere in the message (the anchored `_JSON_FENCE_RE` only matches a message
+#: that IS one fence). Used to lift a single fenced object out from behind narration.
+_FENCED_BLOCK_RE = re.compile(r"```(?:[A-Za-z0-9_+-]*)\s*\n(.*?)\n?```", re.DOTALL)
+
 _JSON_FENCE_RE = re.compile(
     r"^```(?:json)?\s*\n(.*)\n```\s*$",
     re.DOTALL | re.IGNORECASE,
@@ -100,6 +104,14 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     fenced = _JSON_FENCE_RE.match(s)
     if fenced:
         s = fenced.group(1).strip()
+    else:
+        # Narration, then a fenced block - the commonest LLM reply shape, and the two tolerances
+        # did not compose: the anchored fence match failed, so the closing fence read as "trailing
+        # prose" and a run that had produced exactly one conforming object was failed for it. Only
+        # when there is exactly ONE fenced block, so "which one did you mean" stays an error.
+        blocks = _FENCED_BLOCK_RE.findall(s)
+        if len(blocks) == 1:
+            s = blocks[0].strip()
 
     # Fast path: the message IS the object, as instructed.
     if s.startswith("{"):

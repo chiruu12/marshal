@@ -401,6 +401,27 @@ def test_reconcile_recovers_dropped_text(
     assert res.text == "full report restored."  # export overrode the live stream's "partial "
 
 
+def test_reconcile_does_not_prepend_the_users_own_prompt(
+    backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1): the export holds the whole session, and every text part was concatenated
+    regardless of role - so the driver's prompt (and, on a resumed session, earlier turns) was
+    glued in front of what is documented as "the agent's final message". With output_schema that
+    made the injected schema a second top-level object, failing runs that had obeyed exactly."""
+    export = {
+        "info": {"id": "ses_x", "tokens": {"input": 1, "output": 1}, "cost": 0.0},
+        "messages": [
+            {"info": {"role": "user"}, "parts": [
+                {"type": "text", "text": 'Reply with JSON matching {"type":"object"}. '},
+            ]},
+            {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": '{"ok": true}'}]},
+        ],
+    }
+    _patch_export(monkeypatch, proc=_stub_export(export))
+    res = _finalize(backend, '{"sessionID":"ses_x","part":{"type":"text","text":"x"}}\n')
+    assert res.text == '{"ok": true}'
+
+
 def test_reconcile_uses_authoritative_tokens(
     backend: OpenCodeBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:

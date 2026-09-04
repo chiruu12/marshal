@@ -649,6 +649,15 @@ class TeamRunner:
             # reviews nothing: the panel was refused as "nothing to review", or shown the
             # uncommitted remainder while the summary counted only that remainder, so a partial
             # review was indistinguishable from a whole one. Both sections go to the reviewers.
+            if cr.produced == "unavailable":
+                # "Nothing to review" would be a lie about a run whose work merely could not be
+                # read (its worktree was cleaned, or the agent left it on another branch). The
+                # panel is refused either way, but the driver is told which, and can re-run the
+                # work instead of concluding the run did nothing.
+                raise ConfigError(
+                    f"run {run_id}: its work cannot be read, so there is nothing to review yet - "
+                    f"{cr.unavailable_reason or 'the worktree is gone'}"
+                )
             body = _combined_run_diff(cr)
             files = len(set(cr.changed_files) | set(cr.committed_changed_files))
             return body, f"run {run_id} ({files} file(s) changed{suffix})", note

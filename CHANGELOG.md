@@ -30,6 +30,32 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A read-only run is never put under the progress timeout.** The only progress signal is the
+  worktree's newest mtime, and a read-only agent writes nothing by construction - so an actively
+  working reviewer registered no progress and was killed at `stall_s`. That was every reviewer in
+  every `run_team` panel, with the reports lost. Read-only runs keep their plain wall clock.
+- **A timeout now says which deadline ended the run.** With a progress policy the error was still
+  built from `timeout_s`, so a run stopped after 120s of silence reported "timed out after 600s"
+  and a run extended to its ceiling reported the same - a duration it never had, in both
+  directions, with nothing saying it had been ended for lack of progress. A stall and a ceiling
+  kill now name themselves and carry the deadline that actually fired.
+- **`output_schema` accepts narration followed by a fenced JSON object.** A whole-message fence was
+  tolerated and leading narration was tolerated, but the two did not compose: the closing fence
+  read as "trailing prose after JSON object" and failed a run that had produced exactly one
+  conforming object - the commonest reply shape there is. Two fenced objects are still refused.
+- **OpenCode's final message no longer carries the driver's own prompt.** The session export was
+  concatenated across every role, so what is documented as "the agent's final message" began with
+  the prompt (and, on a resumed session, every earlier turn). With `output_schema` the injected
+  schema then read as a second top-level object, failing runs that had obeyed the instruction.
+- **A Goose reply that merely mentions authentication is no longer recorded as an auth failure.**
+  The heuristic scanned the whole assistant message for substrings like "unauthorized", so an
+  agent reporting a finished auth-related task was stamped `failed` with its own success summary
+  as the error. It now applies only to a reply short enough to be a bare error message.
+- **`run_team` says a run's work is unreadable rather than empty.** A run whose worktree had been
+  cleaned came back as `produced="unavailable"`, and the panel refused it as "is empty - there is
+  nothing to review" - the exact conflation `CollectResult` exists to prevent. A genuinely empty
+  run is still refused as empty.
+
 - **A `run_many` job that fails before it is recorded now gets a real, addressable run.** A job
   dying inside the start path - an argv preflight, an unsupported permission mode, an enforced
   budget, base-branch resolution - was handed back as a synthesized `<task>.<backend>` id that
