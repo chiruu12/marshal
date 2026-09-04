@@ -30,6 +30,32 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A cancel that arrives after the agent has finished no longer throws the result away.** The
+  window between the child being reaped and the terminal stamp covers pricing, the `verify` gate and
+  artifact harvest, and can run for minutes; a `cancel_run` in it signalled nothing but still stamped
+  `cancelled`, which then made the terminal stamp lose the race. The run was recorded cancelled with
+  no cost, no text and no verify result while its own ledger line said `exited_clean`, and the
+  default `clean` scope listed the worktree holding the finished work. Cancel is now the no-op its
+  docstring always promised there, and the completed result lands.
+- **`collect_run` says `unavailable`, not `nothing`, for work the agent left on another branch.**
+  Only the run branch is read, so a run that committed on a branch of its own reported "produced
+  nothing" - which the docs define as "the run genuinely produced neither". A driver branching on
+  that field rejected work that existed, and `routing` recorded the rejection against its client.
+- **`integrate(cleanup=True)` no longer denies a merge that landed.** A failure tearing the worktree
+  down raised out of `integrate` after the merge had landed and the record was stamped `integrated`,
+  so the driver was told the call failed and its retry answered `empty`. The merge is reported as
+  the fact it is, with the leftover worktree named in the message.
+- **Marshal never aborts a git operation it did not start.** `merge` ran `git merge` without checking
+  whether the driver checkout was already mid-merge (or mid-rebase, cherry-pick, revert or bisect),
+  so an autonomous `integrate` reset a checkout someone was hand-resolving, discarded their
+  uncommitted resolution, and reported their conflicted files as the run's conflicts. It now returns
+  `blocked` naming the operation in the way, having touched nothing.
+- **`integrate_run_hooks: true` now finds the hooks it promises to run.** Only `<repo>/.git/hooks`
+  was copied into a run's clone, so a repo using `core.hooksPath` (husky, lefthook) or a driver
+  checkout that is itself a linked worktree got no hooks at all - the opted-in commit gate silently
+  never ran and `commit_all` returned a sha as though it had passed. Hooks are now resolved as git
+  resolves them, and a copy that fails refuses the run instead of starting one with no gate.
+
 - **Integrate no longer reports `merged` for work the agent left on another branch.** An agent
   that ran `git checkout -b feature` in its clone (or ended with a detached HEAD) had its work
   committed there by `commit_all`, while only the run branch is ever published - so the run branch

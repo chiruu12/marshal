@@ -612,7 +612,70 @@ def test_commit_all_and_merge_round_trip(repo: Path) -> None:
     assert (repo / "feature.txt").exists()  # landed in the main checkout
 
 
-def test_merge_aborts_an_in_progress_merge_and_reports_blocked(repo: Path) -> None:
+def test_opted_in_hooks_are_found_when_the_repo_uses_core_hookspath(repo: Path) -> None:
+    """REGRESSION (P1): `integrate_run_hooks: true` copied only `<repo>/.git/hooks`, so a repo
+    using `core.hooksPath` - husky and lefthook both set it, and SECURITY.md names them - had its
+    real hooks ignored. The commit gate the operator opted into never ran, and commit_all returned
+    a sha as if it had passed."""
+    custom = repo / ".husky" / "_"
+    custom.mkdir(parents=True)
+    (custom / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (custom / "pre-commit").chmod(0o755)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.hooksPath", ".husky/_"],
+        check=True, capture_output=True, text=True,
+    )
+    m = WorktreeManager(repo, integrate_run_hooks=True)
+    wt = m.create("husky")
+    (wt.path / "f.txt").write_text("x")
+    with pytest.raises(WorktreeError, match="commit failed"):
+        m.commit_all(wt, "the opted-in gate must run")
+
+
+def test_opted_in_hooks_are_found_when_the_driver_checkout_is_a_linked_worktree(
+    repo: Path, tmp_path: Path
+) -> None:
+    """The other half: in a linked worktree `.git` is a FILE pointing at the common dir, so the
+    old directory test was False and NOTHING was copied - a silent no-gate. This repo is itself
+    checked out that way, so it is the normal case here, not an exotic one."""
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "linked-wt", str(linked)],
+        check=True, capture_output=True, text=True,
+    )
+    assert (linked / ".git").is_file(), "expected a linked worktree whose .git is a file"
+    m = WorktreeManager(linked, base_dir=tmp_path / "runs", integrate_run_hooks=True)
+    wt = m.create("linked")
+    (wt.path / "f.txt").write_text("x")
+    with pytest.raises(WorktreeError, match="commit failed"):
+        m.commit_all(wt, "the opted-in gate must run")
+
+
+def test_hooks_are_not_copied_when_the_operator_did_not_opt_in(repo: Path) -> None:
+    """Anti-blanket control: resolving hooks better must not start running them by default."""
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    m = WorktreeManager(repo)
+    wt = m.create("no-optin")
+    (wt.path / "f.txt").write_text("x")
+    assert m.commit_all(wt, "hooks off by default")
+    assert not (wt.path / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_merge_leaves_an_operators_in_progress_merge_alone_and_reports_blocked(repo: Path) -> None:
+    """REGRESSION (P1): merge() used to `git merge --abort` a merge the OPERATOR had started.
+
+    This test previously pinned that abort as intended. It is not: an autonomous driver calling
+    integrate would reset a checkout someone was in the middle of resolving by hand, and the
+    pre-existing conflicted files were then reported as this run's conflicts. Marshal never
+    aborts an operation it did not start.
+    """
     m = WorktreeManager(repo)
 
     def g(*a: str) -> str:
@@ -633,9 +696,52 @@ def test_merge_aborts_an_in_progress_merge_and_reports_blocked(repo: Path) -> No
     g("merge", "--no-commit", "--no-ff", "sibling")
     assert m._merge_in_progress()
 
-    result = m.merge(wt.branch)            # git refuses (merge in progress); merge() aborts it
+    result = m.merge(wt.branch)
     assert not result.ok and result.blocked
-    assert not m._merge_in_progress()      # repo returned to a clean state, not left mid-merge
+    assert "merge" in result.message and "did not start" in result.message
+    assert m._merge_in_progress(), "Marshal aborted the operator's own merge"
+    assert (repo / "sibling.txt").exists(), "the operator's staged merge content was reset"
+
+
+def test_merge_does_not_report_the_operators_conflicts_as_the_runs(repo: Path) -> None:
+    """The damaging half of the same bug: with a CONFLICTED merge already in progress, the
+    operator's hand-edited resolution was discarded and their conflicted file came back as this
+    run's conflict list - pointing the driver at a file the run never touched."""
+    m = WorktreeManager(repo)
+
+    def g(*a: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *a], check=True, capture_output=True, text=True
+        ).stdout
+
+    shared = repo / "shared.txt"
+    shared.write_text("base\n")
+    g("add", "-A")
+    g("commit", "-m", "shared")
+    base = g("rev-parse", "--abbrev-ref", "HEAD").strip()
+    g("checkout", "-b", "sibling")
+    shared.write_text("sibling\n")
+    g("add", "-A")
+    g("commit", "-m", "sibling edit")
+    g("checkout", base)
+    shared.write_text("main\n")
+    g("add", "-A")
+    g("commit", "-m", "main edit")
+    wt = m.create("unrelated")
+    (wt.path / "mine.txt").write_text("mine")
+    m.commit_all(wt, "mine")
+    # Expected to fail with a conflict - that is the state under test.
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "sibling"], check=False, capture_output=True, text=True
+    )
+    assert m._merge_in_progress()
+    shared.write_text("carefully hand-resolved by the operator\n")
+
+    result = m.merge(wt.branch)
+    assert not result.ok and result.blocked
+    assert result.conflicts == [], "the operator's conflict was reported as the run's"
+    assert shared.read_text() == "carefully hand-resolved by the operator\n"
+    assert m._merge_in_progress()
 
 
 def test_abort_merge_raises_when_abort_fails(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:

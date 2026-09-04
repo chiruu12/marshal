@@ -76,6 +76,12 @@ which is where a read-only run's guidance belongs.
 |------|---------|--------------|---------|
 | bool \| omitted | `false` | When `false`, `commit_run` / `integrate` pass `git --no-verify` so prompting pre-commit/pre-merge hooks cannot deadlock a headless driver, and so Marshal does not execute possibly **agent-modified** / repo-controlled hook scripts. Set `true` only when hooks are known **non-interactive** *and* you trust their provenance for your threat model. Prompting hooks can hang until the git timeout (`GIT_TERMINAL_PROMPT=0` + closed stdin + timeout still apply). Prefer `verify:` + human/CI review over hooks when unsure. See `SECURITY.md`. | `integrate_run_hooks: true` |
 
+Hooks are resolved the way git resolves them: `core.hooksPath` when the repo sets it (husky and
+lefthook both do), otherwise the common git directory's `hooks/` — so a driver checkout that is
+itself a linked worktree works too. If hooks exist but cannot be copied into the run's clone, the
+run is refused rather than started with a gate that would silently not run. Whether or not you opt
+in, git inside a run's clone never sees the driver's credentials; see `SECURITY.md`.
+
 ### `allow_external_read_paths`
 
 | Type | Default | What it does | Example |

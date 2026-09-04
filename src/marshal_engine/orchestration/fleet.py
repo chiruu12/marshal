@@ -1474,6 +1474,18 @@ class Fleet:
             # counted, and 0 would assert the agent committed nothing.
             commit_count: int | None = None
             if wt.branch:
+                # Work the agent left on a branch of its own is real, and it is NOT on the run
+                # branch every read below uses - so without this the run reads as "produced
+                # nothing" while its commits sit in the clone. `unavailable` is the honest answer:
+                # the work could not be read, which is not evidence there is none.
+                off_branch = self.worktrees.off_run_branch(wt)
+                if off_branch is not None and not changed_files:
+                    return _gone(
+                        f"run {run_id!r} left its clone on {off_branch} instead of its run branch "
+                        f"{wt.branch!r}, so any work it committed is not on the branch Marshal "
+                        f"reads. Look in {wt.path} on that ref; integrate will refuse until the "
+                        "work is on the run branch."
+                    )
                 # The run works in its own clone, so commits the AGENT made are not in the driver's
                 # repo yet - and every branch read below happens there. Without this, self-committed
                 # work reads as "no changes" instead of as the work it is.
@@ -1814,8 +1826,16 @@ class Fleet:
             # time, require a successful probe that still matches — a failed probe is not a
             # mismatch: signalling risks a stranger, and stamping cancelled would lie.
             with _active_runs_guard:
-                if handle.exited or handle.pid is None:
-                    pass  # finished, or cancel beat the pid (applied when published)
+                if handle.exited:
+                    # The agent already finished; nothing was signalled and nothing will be. The
+                    # run is mid-finalization (pricing, the verify gate, harvest), so stamping
+                    # `cancelled` here would refuse the terminal stamp that carries the run's cost,
+                    # text and verify result - recording a completed run as cancelled with none of
+                    # its facts, while the ledger line for the same run says it exited cleanly.
+                    # The docstring's promised no-op is the honest answer: let the result land.
+                    return self.state.get(run_id) or rec
+                if handle.pid is None:
+                    pass  # cancel beat the pid (applied when published)
                 else:
                     pid = handle.pid
                     started = handle.pid_start_time
@@ -1924,6 +1944,7 @@ class Fleet:
         except WorktreeError as exc:
             return IntegrateResult(run_id=run_id, status="blocked", branch=wt.branch, message=str(exc))
 
+        cleanup_error = ""
         try:
             commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
             # "empty" only when the worktree is clean AND the branch has no commits past target.
@@ -2005,7 +2026,14 @@ class Fleet:
             outcome_note=None,
         )
         if cleanup:
-            self.worktrees.remove(wt)
+            # The merge has landed and the record already says so. A teardown failure after that
+            # is a disk problem, not a failed integrate - raising here told the driver the call
+            # failed for a merge that succeeded, and the retry then answered "empty". Report the
+            # leftover instead; `clean` reclaims it later.
+            try:
+                self.worktrees.remove(wt)
+            except WorktreeError as exc:
+                cleanup_error = f" (the merge landed; its worktree could not be removed: {exc})"
         drift, drift_msg = _base_branch_drift_warning(rec, target)
         return IntegrateResult(
             run_id=run_id,
@@ -2015,7 +2043,7 @@ class Fleet:
             changed_files=changed,
             commit=commit,
             base_branch_drift=drift,
-            message=drift_msg,
+            message=drift_msg + cleanup_error,
         )
 
     def _ensure_artifacts_recorded(self, run_id: str, record: RunRecord, artifacts: list[str]) -> None:

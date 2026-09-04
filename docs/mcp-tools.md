@@ -521,7 +521,12 @@ pid unambiguously belongs to the agent.
   rather than left running behind an already-terminal record.
 - During `spawn`'s provisioning window the same rules cover the `setup_cmd` process group: a cancel
   SIGTERMs it once its pid is published, or stamps `cancelled` and the agent never launches.
-- A cancel **after** the child is reaped does not signal at all.
+- A cancel **after** the child is reaped does not signal at all, and does not stamp `cancelled`
+  either: the agent has finished, and the run is being finalized (pricing, the `verify` gate,
+  artifact harvest). The call is the documented no-op and returns the record as it stands — poll
+  it, and the real terminal status arrives with the run's cost, text and verify result. Stamping
+  `cancelled` there used to make the terminal stamp lose the race, recording a completed run as
+  cancelled with none of its facts while its ledger line said `exited_clean`.
 - A run started by a **different (or dead) process** is stamped `cancelled` without a signal, with
   the reason on `error`. The `pid` is kept when something is still alive at that number (so `clean`
   spares the worktree) and cleared only when the process is gone. Guessing at a pid this process
@@ -587,7 +592,7 @@ merge (an outcome, not a fault).
 | `merged_into` | string \| null | Target branch. |
 | `changed_files` | list[string] | |
 | `conflicts` | list[string] | Conflicting paths. When the run's base commit was rewritten away these are *not* the cause — see `message`. |
-| `commit` | string \| null | Merge commit hash. |
+| `commit` | string \| null | The commit this run lands: the sha `integrate` created on the run's branch, or that branch's tip when the work was already committed. It is a **parent** of the merge commit, not the merge commit itself, whenever the target has moved since the run was spawned. |
 | `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. On `conflict`, reports when the run's base commit is reachable from **no branch or tag** — a base that is no longer in history makes every file read as changed on both sides, so the `conflicts` list points away from the real cause. It states that observation and offers the likely causes (history rewritten mid-run; a deleted base branch; a `base_branch` naming a commit that was never on one) rather than asserting one, since `base_branch` accepts any commit-ish. The measured claim and the remedy hold in every one of those cases. Silent unless the base is unreachable from the target **and** reached by no surviving ref, so a run deliberately spawned with `base_branch` onto a live branch is not mislabelled. |
 | `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
 

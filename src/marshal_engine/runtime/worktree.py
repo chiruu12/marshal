@@ -334,7 +334,7 @@ class WorktreeManager:
         self._inherit_identity(path)
 
         if self.integrate_run_hooks:
-            _copy_repo_hooks(self.repo_root, path)
+            _copy_repo_hooks(self.repo_root, path, self._git)
 
         # Published while still empty so the branch exists in the driver's repo from `create`, as it
         # did when this was a linked worktree. Callers ask about it before the run has committed
@@ -675,16 +675,10 @@ class WorktreeManager:
         gated: fetching the (unchanged) run branch is harmless, and `collect_run` publishes
         before it reads the diff - the driver must still be able to SEE off-branch work.
         """
-        head = self._git("symbolic-ref", "-q", "HEAD", cwd=wt.path)
-        sha = self._git("rev-parse", "--short=12", "HEAD", cwd=wt.path).stdout.strip()
-        expected = f"refs/heads/{wt.branch}"
-        if head.returncode == 0 and head.stdout.strip() == expected:
+        where = self.off_run_branch(wt)
+        if where is None:
             return
-        where = (
-            f"branch {head.stdout.strip().removeprefix('refs/heads/')!r}"
-            if head.returncode == 0
-            else f"a detached HEAD at {sha}"
-        )
+        sha = self._git("rev-parse", "--short=12", "HEAD", cwd=wt.path).stdout.strip()
         raise WorktreeError(
             f"run {wt.task_id!r} left its clone on {where} instead of its run branch "
             f"{wt.branch!r}; only the run branch is published to the repo, so committing or "
@@ -692,6 +686,22 @@ class WorktreeManager:
             f"{wt.path}: commit it there and `git checkout {wt.branch}` + cherry-pick it onto the "
             "run branch (or re-run the task), then retry."
         )
+
+    def off_run_branch(self, wt: Worktree) -> str | None:
+        """Where the clone's HEAD is, when that is NOT the run's own branch; None when it is.
+
+        Read-only and non-raising, so `collect_run` can REPORT the condition while `commit_all`
+        refuses on it. Both need the same answer, and a driver that is told "produced nothing"
+        for work sitting on another branch has been told something false.
+        """
+        head = self._git("symbolic-ref", "-q", "HEAD", cwd=wt.path)
+        if head.returncode == 0:
+            ref = head.stdout.strip()
+            if ref == f"refs/heads/{wt.branch}":
+                return None
+            return f"branch {ref.removeprefix('refs/heads/')!r}"
+        sha = self._git("rev-parse", "--short=12", "HEAD", cwd=wt.path).stdout.strip()
+        return f"a detached HEAD at {sha}"
 
     def _publish(self, wt: Worktree, what: str) -> None:
         """Copy the run's branch out of its clone and into the driver's repo.
@@ -854,6 +864,21 @@ class WorktreeManager:
         if message is not None:
             args += ["-m", message]
         args.append(branch)
+        # An operation already in progress in the DRIVER's checkout is the operator's, not ours.
+        # git refuses to start a merge on top of it, and the failure then looks exactly like one
+        # we caused: the pre-existing conflicted files read as this run's conflicts, and the abort
+        # below throws away a resolution someone was in the middle of hand-editing. Check first,
+        # touch nothing, and say whose state is in the way.
+        busy = self._operation_in_progress()
+        if busy:
+            return MergeResult(
+                ok=False,
+                blocked=True,
+                message=(
+                    f"the repo is in the middle of a {busy}; Marshal will not abort an operation "
+                    "it did not start. Finish or abort it yourself, then retry the integrate."
+                ),
+            )
         proc = self._git(*args)
         if proc.returncode == 0:
             return MergeResult(ok=True, message=proc.stdout.strip())
@@ -888,6 +913,30 @@ class WorktreeManager:
 
     def _merge_in_progress(self) -> bool:
         return self._git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+
+    def _operation_in_progress(self) -> str | None:
+        """Name the multi-step git operation the driver checkout is mid-way through, if any.
+
+        Every one of these makes `git merge` refuse, and every one holds work in progress that
+        `merge --abort` (or a mis-attributed conflict list) would destroy or misreport.
+        """
+        proc = self._git("rev-parse", "--git-dir")
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        root = Path(proc.stdout.strip())
+        if not root.is_absolute():
+            root = self.repo_root / root
+        for marker, label in (
+            ("MERGE_HEAD", "merge"),
+            ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REVERT_HEAD", "revert"),
+            ("BISECT_LOG", "bisect"),
+        ):
+            if (root / marker).exists():
+                return label
+        if (root / "rebase-merge").exists() or (root / "rebase-apply").exists():
+            return "rebase"
+        return None
 
     def _conflicted_files(self) -> list[str]:
         # -z: verbatim, NUL-delimited paths (no C-quoting of spaces/non-ASCII names).
@@ -979,7 +1028,34 @@ class WorktreeManager:
             self._delete_managed_branch(branch)
 
 
-def _copy_repo_hooks(repo_root: Path, clone_path: Path) -> None:
+def _resolve_hooks_dir(
+    repo_root: Path, git: Callable[..., subprocess.CompletedProcess[str]]
+) -> Path | None:
+    """Where the operator's hooks actually live, or None when the repo has none.
+
+    Two shapes broke the naive ``<repo>/.git/hooks``, and both are ordinary rather than exotic:
+    ``core.hooksPath`` (husky and lefthook both set it, so the real hooks are elsewhere and
+    ``.git/hooks`` holds only git's inert samples), and a linked worktree, whose ``.git`` is a
+    FILE pointing at the common dir - so the directory test failed and nothing was copied at all.
+    """
+    configured = git("config", "--get", "core.hooksPath")
+    if configured.returncode == 0 and configured.stdout.strip():
+        path = Path(configured.stdout.strip()).expanduser()
+        return path if path.is_absolute() else (repo_root / path)
+    common = git("rev-parse", "--git-common-dir")
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    root = Path(common.stdout.strip())
+    if not root.is_absolute():
+        root = repo_root / root
+    return root / "hooks"
+
+
+def _copy_repo_hooks(
+    repo_root: Path,
+    clone_path: Path,
+    git: Callable[..., subprocess.CompletedProcess[str]],
+) -> None:
     """Copy the repo's hooks into a run's clone. Only called when ``integrate_run_hooks`` is set.
 
     A clone does not inherit hooks, which is mostly the point - but an operator who explicitly opted
@@ -987,16 +1063,24 @@ def _copy_repo_hooks(repo_root: Path, clone_path: Path) -> None:
     would be a gate that reports success without ever having executed. Copied, never linked: the
     run gets its own copy to execute, so an agent editing it cannot reach back into the repo's.
     """
-    src = repo_root / ".git" / "hooks"
+    src = _resolve_hooks_dir(repo_root, git)
     dest = clone_path / ".git" / "hooks"
-    if not src.is_dir():
+    if src is None or not src.is_dir():
         return
     # `symlinks=False` DEREFERENCES: a hook that is a symlink to a file outside the repo would
     # otherwise be recreated as that same absolute link inside a directory the agent can write, so
     # writing "its own" hook would overwrite the operator's real file - and that edit outlives the
     # run. Copying contents means the run gets something it can only damage for itself.
-    with contextlib.suppress(OSError):
+    # Raised, not suppressed: the whole value of the opt-in is that the gate runs, so a run whose
+    # hooks were quietly dropped would commit unguarded while reporting success.
+    try:
         shutil.copytree(src, dest, dirs_exist_ok=True, symlinks=False)
+    except OSError as exc:
+        raise WorktreeError(
+            f"integrate_run_hooks is set but the repo's hooks ({src}) could not be copied into "
+            f"the run's clone: {exc}. Refusing to start a run whose commit gate would silently "
+            "not run."
+        ) from exc
 
 
 def _run_group(

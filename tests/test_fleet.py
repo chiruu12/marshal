@@ -223,6 +223,21 @@ class _BranchSwitcher(CodingAgentBackend):
         )
 
 
+class _OffBranchCommitter(_BranchSwitcher):
+    """Commits its work on a branch it made itself - so the run branch stays at the base."""
+
+    name = "offcommit"
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; s.run(['git','checkout','-q','-b','feature'],check=True);"
+            "open('work.txt','w').write('hi');"
+            "s.run(['git','add','work.txt'],check=True);"
+            "s.run(['git','commit','--no-verify','-q','-m','agent'],check=True); print('done')"
+        )
+        return [sys.executable, "-c", script]
+
+
 class _SelfCommitter(CodingAgentBackend):
     """Commits its work onto the run branch before exiting (like Cursor / Claude Code)."""
 
@@ -1032,6 +1047,52 @@ def test_integrate_does_not_stamp_integrated_when_the_merge_landed_nothing(
     assert result.status == "error" and "not reachable" in result.message
     after = fleet.state.get(rec.run_id)
     assert after is not None and after.outcome is None
+
+
+def test_collect_run_says_unavailable_not_nothing_for_work_left_on_another_branch(
+    repo: Path,
+) -> None:
+    """REGRESSION (P1): the agent committed on a branch it created, so the run branch still
+    pointed at the base and collect_run reported `produced="nothing"` - documented as "the run
+    genuinely produced neither". A driver branching on that field rejects a run whose work exists,
+    and routing then holds the rejection against the client."""
+    fleet = Fleet(repo, {"offcommit": _OffBranchCommitter()})
+    rec = fleet.run("offcommit", TaskSpec(id="offcommit", goal="x"))
+    assert rec.status == "exited_clean"
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "unavailable", collected
+    assert collected.unavailable_reason and "feature" in collected.unavailable_reason
+    assert collected.commit_count is None, "a count nobody could take must not read as zero"
+
+
+def test_collect_run_still_says_nothing_for_a_run_that_really_did_nothing(repo: Path) -> None:
+    """Anti-blanket control: the off-branch report must not turn every empty run into
+    `unavailable`, which would hide genuinely idle runs from the driver."""
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="idle", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "nothing" and collected.unavailable_reason is None
+
+
+def test_integrate_cleanup_failure_does_not_hide_a_merge_that_landed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1): the post-merge worktree teardown was unguarded, so a teardown failure
+    raised out of integrate AFTER the merge landed and the record was stamped `integrated` - the
+    driver was told the call failed, and its retry then answered `empty`. The merge is a fact;
+    report the leftover instead of denying it."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cleanupfail", goal="x"))
+
+    def boom(_wt: object) -> None:
+        raise WorktreeError("worktree path is outside base dir")
+
+    monkeypatch.setattr(fleet.worktrees, "remove", boom)
+    result = fleet.integrate(rec.run_id, cleanup=True)
+    assert result.status == "merged", result
+    assert "could not be removed" in result.message
+    after = fleet.state.get(rec.run_id)
+    assert after is not None and after.outcome == "integrated"
 
 
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
@@ -2034,7 +2095,10 @@ def test_cancel_does_not_signal_after_reap_that_lands_mid_cancel(
         monkeypatch.setattr(fleet_mod, "_cancel_after_handle_snapshot", None)
 
     assert killed == [], "signalled a pid after the child was reaped (recycle risk)"
-    assert rec.status == RunStatus.CANCELLED.value
+    # The reap means the agent FINISHED. Stamping `cancelled` here would refuse the terminal
+    # stamp that carries its cost, text and verify result, so the record is left for the
+    # finalizer (see test_cancel_after_the_agent_finished_keeps_the_completed_result).
+    assert rec.status == RunStatus.RUNNING.value
 
 
 def test_cancel_of_live_run_still_signals(
@@ -3775,7 +3839,51 @@ def test_cancel_does_not_signal_after_the_child_is_reaped(
 
     rec = fleet.cancel_run(run_id)
     assert killed == [], "signalled a pid that may already have been recycled"
-    assert rec.status == RunStatus.CANCELLED.value
+    assert rec.status == RunStatus.RUNNING.value  # finished, not cancelled - see the test below
+
+
+def test_cancel_after_the_agent_finished_keeps_the_completed_result(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1): a cancel that arrived while a finished run was still being finalized (the
+    verify gate can run for minutes) stamped `cancelled`, which then made the terminal stamp lose
+    the race - so a run whose agent exited 0 was recorded cancelled with no cost, no text and no
+    verify result, while its ledger line said `exited_clean`, and the default `clean` scope listed
+    the worktree holding the finished work for deletion."""
+    import threading
+
+    reaped = threading.Event()
+    release = threading.Event()
+    # A real verify gate: this is the window in production (a test suite can run for minutes),
+    # and it sits between the agent being reaped and the terminal stamp.
+    fleet = Fleet(repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "pass"])
+
+    real_verify = fleet.worktrees.verify
+
+    def slow_verify(wt: object) -> object:
+        reaped.set()  # the agent has exited; we are inside finalization
+        release.wait(timeout=10)
+        return real_verify(wt)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fleet.worktrees, "verify", slow_verify)
+    run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="late", goal="x")))
+    assert reaped.wait(timeout=15), "the run never reached finalization"
+
+    cancelled = fleet.cancel_run(run_id)
+    assert cancelled.status == "running", "a finished run was recorded as cancelled"
+    release.set()
+    deadline = time.monotonic() + 15
+    rec = None
+    while time.monotonic() < deadline:
+        rec = fleet.state.get(run_id)
+        if rec and rec.status != "running":
+            break
+        time.sleep(0.05)
+    assert rec is not None and rec.status == "exited_clean", rec
+    assert rec.text, "the completed run's text was discarded"
+    events = "".join(f.read_text() for f in Path(repo).rglob("events.jsonl"))
+    assert "exited_clean" in events
+    assert run_id not in fleet.clean(scope="finished", dry_run=True).removed
 
 
 def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
