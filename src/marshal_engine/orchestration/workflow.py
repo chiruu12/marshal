@@ -342,7 +342,27 @@ class WorkflowRunner:
                 available = [c for c in phase.clients if self.service.client_available(c)]
                 skipped = [c for c in phase.clients if c not in available]
                 if not available:
-                    raise ConfigError(f"phase {idx} ({label}): all clients unavailable")
+                    # Nothing has run yet: fail fast, which is the cheapest possible answer and
+                    # what the caller can act on directly.
+                    if not phases:
+                        raise ConfigError(f"phase {idx} ({label}): all clients unavailable")
+                    # But earlier phases HAVE run, and those are finished runs that cost real
+                    # money and are on the ledger. Raising here threw all of them away; the very
+                    # next block already treats a failed `run_many` as a phase note and keeps
+                    # going, for the stated reason that the driver needs the full picture.
+                    msg = (
+                        f"phase {idx} ({label}): every client is unavailable "
+                        f"({', '.join(phase.clients)}) - phase skipped. Run `doctor` to see why."
+                    )
+                    had_error = True
+                    next_actions.append(msg)
+                    runs_by_index[idx] = []
+                    phases.append(
+                        PhaseResult(
+                            name=phase.name, run=phase.run, run_ids=[], records=[], notes=[msg]
+                        )
+                    )
+                    continue
                 notes = [f"{c}: backend CLI unavailable, skipped" for c in skipped]
                 jobs = [{"client": c, "goal": goal, "task_id": task_id} for c in available]
                 # A primitive raising here (e.g. run_many blowing up because every available

@@ -524,6 +524,28 @@ def test_runner_fan_out_all_unavailable_raises() -> None:
     assert svc.calls == []  # nothing ran
 
 
+def test_a_later_unavailable_phase_does_not_discard_the_earlier_phases_results() -> None:
+    """REGRESSION (P2): a later phase whose clients are all unavailable raised, throwing away
+    every earlier phase's results - finished runs that cost real money and are on the ledger. The
+    runner's own rule for a failing phase is to record it and keep going, because the driver needs
+    the full picture; the first phase still fails fast, where there is nothing to lose."""
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[
+            PhaseSpec(name="first", run="fan_out", clients=["a"], goal="{t}"),
+            PhaseSpec(name="second", run="fan_out", clients=["b"], goal="{t}"),
+        ],
+    )
+    svc = StubService(_config("a", "b"), unavailable={"b"})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+    assert [p.name for p in result.phases] == ["first", "second"]
+    assert result.phases[0].run_ids, "the completed phase's runs were discarded"
+    assert result.phases[1].run_ids == []
+    assert any("every client is unavailable" in n for n in result.phases[1].notes)
+    assert any("every client is unavailable" in a for a in result.next_actions)
+
+
 def test_runner_fan_out_failed_run_surfaces_note_and_action() -> None:
     # (c) a run that does not succeed records a note + a next_action (additive, status unchanged)
     spec = WorkflowSpec(

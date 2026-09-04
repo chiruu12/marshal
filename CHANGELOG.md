@@ -30,6 +30,11 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A later workflow phase with no available clients no longer discards the earlier phases.** It
+  raised, throwing away every result already produced - finished runs that cost real money and are
+  on the ledger - where the runner's own rule for a failing phase is to record it and carry on so
+  the driver gets the full picture. The first phase still fails fast, since nothing is lost there.
+
 - **`run_many` jobs accept `base_branch` over MCP again.** The engine's job builder documents the
   field and promises it is "not silently dropped when a job chains off a prior run's branch", but
   the MCP job model never declared it, so it was stripped before the engine saw it. A parity test
