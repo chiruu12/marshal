@@ -144,6 +144,7 @@ from ..core.types import (
     TaskSpec,
     UsageRecord,
     UsageSource,
+    effective_timeout_s,
 )
 from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend, parse_jsonl
@@ -328,7 +329,10 @@ class AntigravityBackend(CodingAgentBackend):
         argv += ["--output-format", "json"]
         # agy's own print-mode deadline. Left at its 5-minute default it silently capped every
         # longer run, so the engine's timeout never meant what it said.
-        argv += ["--print-timeout", _print_timeout(opts.timeout_s)]
+        # From the run's EFFECTIVE deadline, not `timeout_s`: with a progress policy a productive
+        # run is extended up to `hard_ceiling_s`, and deriving agy's own deadline from `timeout_s`
+        # made it self-terminate inside that window - reported as a task FAILURE, not a timeout.
+        argv += ["--print-timeout", _print_timeout(effective_timeout_s(opts))]
         # Add the worktree to the active workspace; paired with the trust entry prepare() writes,
         # this makes edits land in cwd instead of agy's scratch dir.
         argv += ["--add-dir", str(opts.cwd)]
@@ -577,7 +581,7 @@ _PRINT_TIMEOUT_GRACE_S = 5
 
 
 def _print_timeout(timeout_s: int) -> str:
-    """Run timeout -> the Go duration for ``--print-timeout``, set just inside ours. Pure.
+    """Effective run deadline -> the Go duration for ``--print-timeout``, set just inside ours. Pure.
 
     Floored at 1s so a very short timeout still produces a valid duration rather than ``0s``
     (which agy reads as "no deadline") or a negative one.

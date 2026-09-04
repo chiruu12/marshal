@@ -1244,16 +1244,27 @@ class Fleet:
                 stamped = self.state.get(stamped_id)
                 if stamped is not None:
                     return stamped
-            return RunRecord(
-                run_id=f"{req.task.id}.{req.backend_name}",
+            # Nothing was stamped: the job died in `_start`, before the RUNNING record existed
+            # (an argv preflight, an unsupported permission mode, an enforce budget, a base-branch
+            # resolution). Mint the real id shape and PERSIST it, so the failure is addressable the
+            # same way every other run is - `get_run`, `set_outcome`, and `report`, which rebuilds
+            # a benchmark from the recorded runs and silently dropped the strategy that never
+            # started. No ledger line: nothing ran, so there is no spend to record and none is
+            # invented.
+            failed = RunRecord(
+                run_id=f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}",
                 task_id=req.task.id,
                 backend=req.backend_name,
                 client=req.client,
                 model=req.model,
                 status=RunStatus.FAILED.value,
+                started_at=_now(),
                 ended_at=_now(),
                 error=f"run_many: {exc}",
             )
+            with contextlib.suppress(Exception):
+                self.state.add(failed)
+            return failed
 
     def _price_usage(self, usage: UsageRecord | None, model: str | None) -> None:
         """Normalize cost + source in place: keep native cost, else unavailable (tokens kept)."""

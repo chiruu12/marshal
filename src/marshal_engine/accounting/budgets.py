@@ -766,6 +766,11 @@ class EnforceBudgetGate:
         self._held: dict[str, str] = {}
         # key -> opaque token written to disk at begin; bind/renew prove ownership with it
         self._tokens: dict[str, str] = {}
+        #: Reservations a terminal release could not clear because the shared flock was
+        #: unavailable at the time. Retried under the next lock this gate takes; without this a
+        #: single lost lock left a bound entry that nothing reclaims, holding the cap for the rest
+        #: of the process lifetime and naming a finished run as the holder.
+        self._pending_drops: dict[str, str] = {}
         # Durable reservation file; None until begin() infers it from the usage tracker.
         self._path: Path | None = Path(path) if path is not None else None
 
@@ -811,6 +816,14 @@ class EnforceBudgetGate:
                 disk = _load_reservations(path)
                 # Drop dead/reused-pid holders and aged-out unbound placeholders.
                 disk = {k: e for k, e in disk.items() if _reservation_still_held(e)}
+                # ...and any entry a release could not clear because the lock was unavailable
+                # then. We hold it now, and the run it names has already finished.
+                if self._pending_drops:
+                    for key, token in list(self._pending_drops.items()):
+                        entry = disk.get(key)
+                        if entry is None or _entry_owned_by(entry, token):
+                            disk.pop(key, None)
+                    self._pending_drops.clear()
                 keys: list[str] = []
                 try:
                     for b in matching:
@@ -1046,6 +1059,8 @@ class EnforceBudgetGate:
             with _flock_exclusive(
                 _lock_sidecar(path), timeout_s=_ENFORCE_GATE_LOCK_TIMEOUT_S
             ):
+                owned = {**self._pending_drops, **owned}
+                self._pending_drops.clear()
                 disk = _load_reservations(path)
                 changed = False
                 for key, token in owned.items():
@@ -1056,6 +1071,13 @@ class EnforceBudgetGate:
                 if changed:
                     _write_reservations(path, disk)
         except BudgetExceeded:
+            # The lock was held by someone else for longer than the timeout. `_held`/`_tokens` are
+            # already cleared, so nothing local will ever come back to this entry - and a BOUND
+            # entry with a live holder pid is reclaimed by no other path, so the cap would refuse
+            # every later spawn in this (long-lived MCP) process, naming a run that had finished.
+            # Remember it and drop it under the next lock anyone here takes.
+            self._pending_drops.update(owned)
             return
         except OSError:
+            self._pending_drops.update(owned)
             return

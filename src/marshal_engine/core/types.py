@@ -297,6 +297,21 @@ class ProgressTimeout(BaseModel):
     poll_interval_s: int = 15
 
 
+
+def effective_timeout_s(opts: RunOpts) -> int:
+    """The run's real outer deadline in seconds - what actually ends it.
+
+    With a progress policy enabled the wall clock is no longer `timeout_s`: a run still writing
+    is extended up to `hard_ceiling_s`. A backend that derives its OWN deadline from `timeout_s`
+    would then self-terminate inside the window the policy exists to grant, so the extension
+    silently would not hold for that backend.
+    """
+    policy = opts.progress
+    if policy is not None and policy.enabled and policy.hard_ceiling_s:
+        return max(opts.timeout_s, policy.hard_ceiling_s)
+    return opts.timeout_s
+
+
 class RunOpts(BaseModel):
     """How to run a TaskSpec. Backend-agnostic; adapters translate these to native flags."""
 

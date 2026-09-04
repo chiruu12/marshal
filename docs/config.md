@@ -129,6 +129,10 @@ backends legitimately stay quiet — and why this is opt-in rather than the defa
 | `hard_ceiling_s` | `timeout_s` | The backstop. Never exceeded, whatever progress says. |
 | `poll_interval_s` | `15` | How often progress is re-measured. |
 
+`hard_ceiling_s` is the run's effective outer deadline, so a backend that carries a deadline of
+its own (Antigravity's `--print-timeout`) is given the ceiling rather than `timeout_s` — otherwise
+it would end the run inside the very window the policy grants.
+
 ```yaml
 progress_timeout:
   enabled: true

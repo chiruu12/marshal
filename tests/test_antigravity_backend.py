@@ -972,6 +972,33 @@ def test_build_invocation_derives_print_timeout_from_opts(
     assert argv[argv.index("--print-timeout") + 1] == "1795s"
 
 
+def test_print_timeout_follows_the_progress_ceiling_not_the_base_timeout() -> None:
+    """REGRESSION (P1): agy's own print deadline was derived from `timeout_s`, so with a progress
+    policy enabled a productive run self-terminated inside the very window the policy grants -
+    and agy's ERROR envelope made it a task FAILURE, not even a timeout. The extension has to
+    hold for every backend, including the ones that carry a deadline of their own."""
+    from marshal_engine.core.types import ProgressTimeout
+
+    policy = ProgressTimeout(enabled=True, soft_deadline_s=900, hard_ceiling_s=1800)
+    argv = AntigravityBackend().build_invocation(
+        TaskSpec(id="t1", goal="x"),
+        _opts(permission=PermissionMode.SAFE_EDIT, timeout_s=600, progress=policy),
+    )
+    assert argv[argv.index("--print-timeout") + 1] == "1795s"
+
+
+def test_print_timeout_ignores_a_disabled_progress_policy() -> None:
+    """Anti-blanket control: a policy that is present but off must not widen the deadline."""
+    from marshal_engine.core.types import ProgressTimeout
+
+    policy = ProgressTimeout(enabled=False, hard_ceiling_s=1800)
+    argv = AntigravityBackend().build_invocation(
+        TaskSpec(id="t1", goal="x"),
+        _opts(permission=PermissionMode.SAFE_EDIT, timeout_s=600, progress=policy),
+    )
+    assert argv[argv.index("--print-timeout") + 1] == "595s"
+
+
 # --- slash-command hijack -------------------------------------------------------------------
 
 

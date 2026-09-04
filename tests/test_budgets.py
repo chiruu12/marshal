@@ -681,6 +681,58 @@ def test_bind_failure_with_stuck_release_lock_does_not_poison_cap(
     gate2.release(keys2)
 
 
+def test_a_bound_reservation_whose_release_lost_the_lock_does_not_hold_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1): the unbound variant above ages out via the TTL, but a BOUND entry with a
+    live holder pid is reclaimed by no path at all. A terminal `release_run` that could not take
+    the shared flock therefore left the cap held for the rest of the process lifetime, refusing
+    every later spawn and naming a run that had already finished and recorded its spend."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    gate.bind(keys, "run-1")
+
+    real_flock = budgets_mod._flock_exclusive
+
+    @contextlib.contextmanager
+    def flock_fail(*_a: object, **_k: object):  # noqa: ANN001
+        raise BudgetExceeded("budget gate lock timed out after 5.0s (test)")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(budgets_mod, "_flock_exclusive", flock_fail)
+    gate.release_run("run-1")  # the run finished; the disk drop cannot take the lock
+    monkeypatch.setattr(budgets_mod, "_flock_exclusive", real_flock)
+
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][keys[0]]["run_id"] == "run-1"  # bound, live pid: nothing reclaims it
+    assert disk["held"][keys[0]]["pid"] == os.getpid()
+
+    keys2 = gate.begin(tracker, SESSION, [budget], _scope())  # must not refuse
+    assert keys2 == keys
+    gate.release(keys2)
+
+
+def test_a_reservation_a_peer_still_holds_is_not_dropped_by_the_retry(tmp_path: Path) -> None:
+    """Anti-blanket control: the retry clears only entries carrying OUR token. A live peer's
+    reservation must still refuse, or the fix would turn a lost lock into a fail-open cap."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    peer = EnforceBudgetGate(path=path)
+    peer_keys = peer.begin(tracker, SESSION, [budget], _scope())
+    peer.bind(peer_keys, "peer-run")
+
+    ours = EnforceBudgetGate(path=path)
+    ours._pending_drops[peer_keys[0]] = "a-token-that-is-not-the-peers"
+    with pytest.raises(BudgetExceeded, match="another in-flight run"):
+        ours.begin(tracker, SESSION, [budget], _scope())
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][peer_keys[0]]["run_id"] == "peer-run", "dropped a peer's live reservation"
+
+
 def test_fresh_unbound_reservation_still_blocks_peer(tmp_path: Path) -> None:
     """Genuinely in-flight unbound (within TTL, live pid) must still refuse — no fail-open."""
     tracker = _tracker(tmp_path)

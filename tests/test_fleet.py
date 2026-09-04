@@ -1095,6 +1095,29 @@ def test_integrate_cleanup_failure_does_not_hide_a_merge_that_landed(
     assert after is not None and after.outcome == "integrated"
 
 
+def test_a_job_that_fails_before_its_record_exists_is_still_addressable(repo: Path) -> None:
+    """REGRESSION (P1): a job dying inside `_start` - an argv preflight, an unsupported permission
+    mode, an enforce budget, base-branch resolution - had never been stamped, so run_many handed
+    back a synthesized id (`<task>.<backend>`) that matched no record anywhere. The driver could
+    not `get_run`, `collect_run` or `set_outcome` the failure, and `report` (which rebuilds a
+    benchmark from the recorded runs) dropped that strategy from the comparison silently."""
+
+    class _NoSafeEdit(_Writer):
+        name = "picky"
+        capabilities = Capabilities(permission_modes={PermissionMode.READ_ONLY})
+
+    fleet = Fleet(repo, {"picky": _NoSafeEdit(), "writer": _Writer()})
+    results = fleet.run_many([
+        RunManyJob(request=RunRequest(backend_name="picky", task=TaskSpec(id="bench", goal="x"))),
+        RunManyJob(request=RunRequest(backend_name="writer", task=TaskSpec(id="bench", goal="x"))),
+    ])
+    failed = next(r.primary for r in results if r.primary.backend == "picky")
+    assert failed.status == "failed" and failed.error
+    assert fleet.state.get(failed.run_id) is not None, "the failure is not addressable"
+    # Both strategies are in the recorded runs a benchmark report is derived from.
+    assert {r.backend for r in fleet.state.list() if r.task_id == "bench"} == {"picky", "writer"}
+
+
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
 
 

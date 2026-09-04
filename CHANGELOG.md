@@ -30,6 +30,25 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A `run_many` job that fails before it is recorded now gets a real, addressable run.** A job
+  dying inside the start path - an argv preflight, an unsupported permission mode, an enforced
+  budget, base-branch resolution - was handed back as a synthesized `<task>.<backend>` id that
+  matched no record anywhere, so the driver could not `get_run`, `collect_run` or `set_outcome` the
+  failure, and `report` (which rebuilds a benchmark from the recorded runs) dropped that strategy
+  from the comparison without saying so. The failure is persisted like any other run. No ledger
+  line is written: nothing ran, so there is no spend, and none is invented.
+- **Antigravity runs now honour the progress timeout's ceiling.** `agy` carries its own print
+  deadline, derived from `timeout_s`, so a productive run that the progress policy would have
+  extended self-terminated at the base timeout instead - and `agy`'s error envelope made that a
+  task FAILURE rather than a timeout. The deadline now follows the run's effective outer deadline,
+  so the documented extension holds for backends that keep a clock of their own.
+- **A terminal budget release that loses the shared lock no longer holds the enforce cap forever.**
+  Nothing reclaims a *bound* reservation with a live holder pid, so one lost lock at release time
+  refused every later matching spawn for the rest of the process lifetime - naming, as the holder,
+  a run that had already finished and recorded its spend. The drop is retried under the next lock
+  the gate takes, and only for entries carrying its own token, so a peer's live reservation still
+  refuses.
+
 - **A cancel that arrives after the agent has finished no longer throws the result away.** The
   window between the child being reaped and the terminal stamp covers pricing, the `verify` gate and
   artifact harvest, and can run for minutes; a `cancel_run` in it signalled nothing but still stamped
