@@ -30,6 +30,13 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **The `info/exclude` lock now covers the write, not just the decision to write.** The entry was
+  written into a buffered file object and the lock released in the `finally`, so the flush landed
+  afterwards at block close. A concurrent writer admitted in that window read a file that did not
+  yet contain the entry and appended a second copy - the duplicate the lock exists to prevent.
+  Caught by the existing concurrency test on a loaded CI runner; the flush is now inside the lock,
+  with a regression test that opens the window deterministically instead of relying on timing.
+
 - **A refused MCP tool call keeps its reason under `mcp` >= 2.1.** The SDK now redacts the text of
   any exception that is not a deliberate `ToolError`, so an unknown workspace, an unsafe run id, a
   run no workspace owns or a malformed `output_schema` reached the driver as the bare line

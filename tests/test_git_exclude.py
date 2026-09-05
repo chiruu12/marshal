@@ -176,3 +176,39 @@ def test_a_fleet_builds_over_a_non_utf8_exclude_file(tmp_path: Path) -> None:
     exclude.write_bytes(b"\xff\xfe binary junk\n")
 
     Fleet(tmp_path, {})  # must not raise
+
+
+def test_the_entry_is_on_disk_before_the_lock_is_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: the lock must cover the write, not just the decision to write.
+
+    `fh` is buffered, so unlocking in the `finally` and letting the flush land at `with`-block
+    close leaves a window where the lock is free but the bytes are not on disk. A waiter admitted
+    there reads a file without the entry and appends a second copy - the duplicate the lock is
+    there to prevent. This widens that window deterministically instead of hoping a loaded CI
+    runner hits it, which is how the concurrency test above failed.
+    """
+    import fcntl as _fcntl
+
+    from marshal_engine.runtime import git_exclude as mod
+
+    _init(tmp_path)
+    real_flock = _fcntl.flock
+    admitted: list[str] = []
+
+    def slow_unlock(fd: int, op: int) -> None:
+        real_flock(fd, op)
+        if op == _fcntl.LOCK_UN and not admitted:
+            # Stand in for the waiter the kernel would admit here: read the file the way
+            # append_git_exclude does, at the instant the lock is released.
+            admitted.append(_exclude_text(tmp_path))
+
+    monkeypatch.setattr(mod.fcntl, "flock", slow_unlock)
+    mod.append_git_exclude(tmp_path, ".marshal/")
+
+    assert admitted, "the unlock path never ran - the test no longer exercises the window"
+    assert ".marshal/" in admitted[0].splitlines(), (
+        "the lock was released before the entry reached disk; a waiter admitted here would "
+        f"append a duplicate. Saw: {admitted[0]!r}"
+    )
