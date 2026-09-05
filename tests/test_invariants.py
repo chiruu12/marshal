@@ -568,3 +568,25 @@ def test_marketplace_manifest_has_a_description() -> None:
     root = Path(__file__).resolve().parent.parent
     market = json.loads((root / ".claude-plugin" / "marketplace.json").read_text())
     assert market.get("description", "").strip(), "marketplace.json needs a description"
+
+
+def test_no_mcp_tool_body_refuses_with_a_bare_valueerror() -> None:
+    """A refusal raised in a tool body must be `ctx.refuse(...)`, never a bare `ValueError`.
+
+    The MCP SDK preserves the text of a deliberate `ToolError` and redacts everything else to
+    `Error executing tool <name>`. `offload` converts the engine's own `ValueError`/`ConfigError`
+    on the way out, but a `raise` in the handler itself never crosses it - so a bare `ValueError`
+    there reaches the driver with its reason stripped, which is the one thing a refusal is for.
+    """
+    tools = sorted((_PKG / "interfaces" / "mcp_server").glob("tools_*.py"))
+    assert tools, "no MCP tool modules found - the guard would pass vacuously"
+    offenders = [
+        f"{path.name}:{node.lineno}"
+        for path in tools
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id in {"ValueError", "ConfigError"}
+    ]
+    assert not offenders, f"raise ctx.refuse(...) instead of a bare ValueError at: {offenders}"

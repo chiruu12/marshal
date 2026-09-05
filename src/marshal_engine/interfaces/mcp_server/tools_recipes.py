@@ -20,6 +20,7 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
     """Register this group's tools on ``app``."""
     registry = ctx.registry
     offload = ctx.offload
+    refuse = ctx.refuse
     ws_call = ctx.ws_call
     tag = ctx.tag
 
@@ -168,7 +169,7 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
         pr_ref = None
         if pr is not None:
             if base or head:
-                raise ValueError(
+                raise refuse(
                     "pass either `pr` or `base`/`head`, not both: `pr` resolves the range itself, "
                     "and honouring both would review something neither argument describes."
                 )

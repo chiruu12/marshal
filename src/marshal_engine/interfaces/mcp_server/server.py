@@ -56,6 +56,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     """
     import anyio.to_thread
     from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 
     registry = target if isinstance(target, WorkspaceRegistry) else WorkspaceRegistry.for_service(target)
     # Report our version in the initialize handshake. Without it every client sees an empty
@@ -66,8 +67,23 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
     allow_mcp_registration = os.environ.get(_ALLOW_MCP_REGISTRATION_ENV) == "1"
 
     async def offload(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
-        """Run a (possibly long, blocking) service call off the event loop."""
-        return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
+        """Run a (possibly long, blocking) service call off the event loop.
+
+        A `ValueError` from the engine (`ConfigError` included - it subclasses `ValueError`) is
+        the deliberate "you asked for something that cannot work, here is why" signal: an unknown
+        workspace, an unsafe run id, a run no workspace owns, a malformed `output_schema`. That
+        text is written for the driver to read and act on, so it is re-raised as `ToolError`,
+        which the SDK keeps. Every other exception is a crash and stays redacted to the generic
+        message, which is what the SDK's split is for - a traceback is not for the driver.
+        """
+        try:
+            return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+
+    def refuse(message: str) -> Exception:
+        """The exception a tool body raises to refuse a call with a reason the driver can act on."""
+        return ToolError(message)
 
     def tag(payload: dict[str, Any], workspace: str) -> dict[str, Any]:
         """Stamp a result with the workspace it came from, so the driver can route follow-ups."""
@@ -111,6 +127,7 @@ def build_app(target: WorkspaceRegistry | MarshalService) -> Any:
         ws_call=ws_call,
         run_call=run_call,
         tag=tag,
+        refuse=refuse,
         allow_mcp_registration=allow_mcp_registration,
     )
     # Registration order is the order tools appear to a driver listing them.

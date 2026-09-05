@@ -18,6 +18,7 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
     registry = ctx.registry
     offload = ctx.offload
     allow_mcp_registration = ctx.allow_mcp_registration
+    refuse = ctx.refuse
 
     @app.tool()
     async def list_workspaces() -> list[dict[str, Any]]:
@@ -42,7 +43,7 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
         MARSHAL_ALLOW_MCP_WORKSPACE_REGISTRATION=1. On refusal, ask the operator to run
         `marshal workspace add <name> <path>` instead (hot-reloaded - no reconnect needed)."""
         if not allow_mcp_registration:
-            raise ValueError(
+            raise refuse(
                 "MCP workspace registration is disabled by default. Ask the operator to register "
                 "the repo with `marshal workspace add <name> <path>` (hot-reloaded, no reconnect "
                 f"needed), or to restart the MCP server with {_ALLOW_MCP_REGISTRATION_ENV}=1 to "

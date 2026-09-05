@@ -80,6 +80,12 @@ def append_git_exclude(checkout: Path, entry: str) -> None:
             if existing and not existing.endswith("\n"):
                 fh.write(b"\n")
             fh.write(f"{entry}\n".encode())
+            # Flush INSIDE the lock. `fh` is buffered, so without this the bytes are still in
+            # Python's buffer when the `finally` unlocks, and the flush lands at `with`-block
+            # close - after the lock is gone. A waiter admitted in that window reads a file that
+            # does not yet contain the entry and appends its own, which is the exact duplicate
+            # the lock exists to prevent.
+            fh.flush()
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 

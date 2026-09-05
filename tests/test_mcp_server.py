@@ -1477,3 +1477,43 @@ def test_a_then_stage_keeps_the_context_inputs_through_validation() -> None:
     body = job.then.model_dump()
     assert body["read_paths"] == ["/tmp/notes.md"]
     assert body["artifacts_from"] == ["run-1"]
+
+
+def test_an_anticipated_refusal_keeps_its_reason_but_a_crash_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The driver reads the tool error text, so an anticipated refusal must carry its reason.
+
+    The SDK splits deliberate `ToolError` (text preserved) from a crash (text redacted to
+    "Error executing tool <name>"). The engine signals "you asked for something that cannot
+    work" with `ValueError`/`ConfigError`, so those must cross the boundary as `ToolError` -
+    otherwise "unknown workspace 'nope'" reaches the driver as an unactionable generic line.
+
+    The second half is the control: widening the catch to `Exception` would leak an internal
+    crash's text to the client, so a blanket change fails here.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from marshal_engine.interfaces.mcp_server import build_app
+    from marshal_engine.interfaces.service import MarshalService
+
+    repo = _repo_with_config(tmp_path)
+    monkeypatch.setenv("MARSHAL_REPO", str(repo))
+    monkeypatch.delenv("MARSHAL_CONFIG", raising=False)
+    app = build_app(build_service())
+
+    # Anticipated: the reason survives.
+    with pytest.raises(Exception, match="unknown workspace 'nope'"):
+        asyncio.run(app.call_tool("status", {"workspace": "nope"}))
+
+    # A crash: the internal text is redacted, only the generic prefix reaches the driver.
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("internal-detail-that-must-not-leak")
+
+    monkeypatch.setattr(MarshalService, "status", boom)
+    try:
+        crashed: object = asyncio.run(app.call_tool("status", {}))
+    except Exception as exc:  # noqa: BLE001 - the shape is what is under test
+        crashed = exc
+    assert "internal-detail-that-must-not-leak" not in repr(crashed)
