@@ -27,7 +27,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..core.config import ConfigError, FleetConfig
+from ..core.ids import MAX_TASK_ID_LEN, validate_worktree_id
 from ..core.types import RunStatus
+from ..runtime.worktree import WorktreeError
 
 if TYPE_CHECKING:  # typing only - avoids a runtime import cycle with fleet/state
     from ..runtime.state import RunRecord
@@ -161,6 +163,12 @@ def resolve_source(spec: WorkflowSpec, phase_index: int) -> int:
     )
 
 
+#: Length of the per-run prefix a phase's task id carries (`<hex>.`), so validation can bound a
+#: phase name against the room actually left for it.
+_WORKFLOW_RUN_ID_LEN = 8
+_RUN_ID_PREFIX_LEN = _WORKFLOW_RUN_ID_LEN + 1
+
+
 def validate_workflow(spec: WorkflowSpec, config: FleetConfig) -> None:
     """Raise ConfigError on any structural problem - BEFORE any agent runs (fail-fast like run_many)."""
     if not spec.phases:
@@ -168,6 +176,21 @@ def validate_workflow(spec: WorkflowSpec, config: FleetConfig) -> None:
     known = set(config.clients)
     declared = set(spec.inputs)
     for idx, phase in enumerate(spec.phases):
+        # The phase label becomes part of a task id at run time, so an illegal one (a space, a
+        # slash, `..`, or simply too long) used to pass validation and blow up mid-run - after
+        # earlier phases had already spent real money. This function promises fail-fast; that
+        # promise has to include the ids it is about to mint.
+        label = phase.name or f"{phase.run}{idx}"
+        try:
+            # The run-time id is `<8 hex>.<label>`, so the label's budget is what is left of the
+            # task-id limit after that prefix - validating the label alone still let an over-long
+            # one through to fail mid-run.
+            validate_worktree_id(label, max_len=MAX_TASK_ID_LEN - _RUN_ID_PREFIX_LEN)
+        except ValueError as exc:
+            raise ConfigError(
+                f"phase {idx}: name {label!r} cannot be part of a task id ({exc}); "
+                "use letters, digits, '.', '_' or '-', starting with a letter or digit"
+            ) from exc
         if phase.run in _GENERATIVE:
             if not phase.goal:
                 raise ConfigError(f"phase {idx} ({phase.run}): missing 'goal'")
@@ -302,7 +325,7 @@ class WorkflowRunner:
         if missing:
             raise ConfigError(f"workflow {spec.name!r}: missing input(s): {', '.join(missing)}")
 
-        workflow_run_id = uuid.uuid4().hex[:8]
+        workflow_run_id = uuid.uuid4().hex[:_WORKFLOW_RUN_ID_LEN]
         runs_by_index: dict[int, list[str]] = {}
         status_by_run: dict[str, str] = {}
         phases: list[PhaseResult] = []
@@ -319,7 +342,27 @@ class WorkflowRunner:
                 available = [c for c in phase.clients if self.service.client_available(c)]
                 skipped = [c for c in phase.clients if c not in available]
                 if not available:
-                    raise ConfigError(f"phase {idx} ({label}): all clients unavailable")
+                    # Nothing has run yet: fail fast, which is the cheapest possible answer and
+                    # what the caller can act on directly.
+                    if not phases:
+                        raise ConfigError(f"phase {idx} ({label}): all clients unavailable")
+                    # But earlier phases HAVE run, and those are finished runs that cost real
+                    # money and are on the ledger. Raising here threw all of them away; the very
+                    # next block already treats a failed `run_many` as a phase note and keeps
+                    # going, for the stated reason that the driver needs the full picture.
+                    msg = (
+                        f"phase {idx} ({label}): every client is unavailable "
+                        f"({', '.join(phase.clients)}) - phase skipped. Run `doctor` to see why."
+                    )
+                    had_error = True
+                    next_actions.append(msg)
+                    runs_by_index[idx] = []
+                    phases.append(
+                        PhaseResult(
+                            name=phase.name, run=phase.run, run_ids=[], records=[], notes=[msg]
+                        )
+                    )
+                    continue
                 notes = [f"{c}: backend CLI unavailable, skipped" for c in skipped]
                 jobs = [{"client": c, "goal": goal, "task_id": task_id} for c in available]
                 # A primitive raising here (e.g. run_many blowing up because every available
@@ -428,7 +471,14 @@ class WorkflowRunner:
                 for rid in source_ids:
                     try:
                         cr = self.service.collect_run(rid)
-                    except ValueError as exc:  # a run with no worktree to resolve; record, continue
+                    except (ValueError, WorktreeError, OSError) as exc:
+                        # The same race `teams.py` documents on this exact call: a
+                        # concurrent `clean` can remove the worktree between the status read and
+                        # this one, and each shape is a different point in it - ValueError (gone
+                        # at resolution), WorktreeError (vanished after, git failed), OSError
+                        # (vanished before the git process started, so spawning with a deleted
+                        # cwd raises FileNotFoundError). Catching only the first let the other two
+                        # escape the runner and discard every phase result collected so far.
                         notes.append(f"{rid}: {exc}")
                         continue
                     collected.append(cr.model_dump(mode="json"))
@@ -461,7 +511,20 @@ class WorkflowRunner:
                         needs_review = True
                 else:
                     for rid in candidates:
-                        ir = self.service.integrate(rid)
+                        # Same survival contract as every other phase. This loop was the one
+                        # exception - and the comment above claiming collect/integrate "were
+                        # already wrapped" was false for integrate. An escaping exception here
+                        # discarded the whole WorkflowResult *after* earlier candidates may
+                        # already have merged, leaving the driver to reconstruct from `status`
+                        # which merges had landed.
+                        try:
+                            ir = self.service.integrate(rid)
+                        except Exception as exc:  # noqa: BLE001
+                            had_error = True
+                            next_actions.append(
+                                f"integrate raised (human needed): {rid}: {exc}"
+                            )
+                            continue
                         pr.integrations.append(ir.model_dump(mode="json"))
                         if ir.status == "error":
                             had_error = True
@@ -479,7 +542,16 @@ class WorkflowRunner:
                         elif ir.status == RunStatus.EMPTY.value:
                             # nothing landed and nothing to review - informational, not a gate.
                             pr.notes.append(f"{rid}: nothing to integrate (empty)")
-                        # "merged" → no follow-up needed
+                        elif ir.base_branch_drift:
+                            # A merge DID land, but onto a branch the run was not based on - the
+                            # checkout moved while the agent worked. `Fleet.integrate` exists in
+                            # part to detect this; dropping it here reported `completed` with an
+                            # empty `next_actions`, which is the driver's whole contract for
+                            # "nothing left to do", about work that landed somewhere unintended.
+                            needs_review = True
+                            pr.notes.append(f"{rid}: {ir.message}")
+                            next_actions.append(f"verify the merge target: {rid}: {ir.message}")
+                        # "merged" onto the expected base → no follow-up needed
                 phases.append(pr)
 
         status: Literal["completed", "awaiting_review", "error"] = (

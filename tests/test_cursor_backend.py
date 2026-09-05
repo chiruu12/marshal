@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from marshal_engine import ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec
+from marshal_engine import AgentResult, ModelSource, PermissionMode, RunOpts, RunStatus, TaskSpec
 from marshal_engine.backends.cursor import (
     SAFE_EDIT_DENY,
     CursorBackend,
@@ -283,6 +283,39 @@ def test_run_safe_edit_restore_failure_fails_the_run(
     assert res.status is RunStatus.FAILED
     assert "failed to restore" in (res.error or "")
     assert "disk full" in (res.error or "")
+
+
+def test_a_restore_failure_does_not_disarm_the_still_writing_guard(
+    backend: CursorBackend,
+    tmp_path: Path,
+    fake_cursor_agent: Callable[[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REGRESSION (P2): a restore failure rewrote the status to FAILED even when the run had timed
+    out with its agent still alive. `_agent_may_still_be_writing` keys on TIMED_OUT, so the
+    rewrite disarmed it - and `clean` / `commit_run` / `integrate` would then proceed on a
+    worktree a live agent is still writing, which is the one case that guard exists for."""
+    from marshal_engine.backends import cursor as cursor_mod
+
+    fake_cursor_agent(_fake_body(action="Path('out.txt').write_text('hi')"))
+    wt = tmp_path / "wt"
+    wt.mkdir()
+
+    def _boom(path: Path, snapshot: object) -> None:
+        raise OSError("disk full")
+
+    def _timed_out_survivor(self: object, task: object, opts: object) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.TIMED_OUT, error="cursor: timed out", agent_survived_kill=True
+        )
+
+    monkeypatch.setattr(cursor_mod, "_restore_cli_json", _boom)
+    monkeypatch.setattr(cursor_mod.CodingAgentBackend, "run", _timed_out_survivor)
+    res = backend.run(TaskSpec(id="t", goal="x"), _opts(cwd=wt, permission=PermissionMode.SAFE_EDIT))
+    assert res.status is RunStatus.TIMED_OUT, "the still-writing guard was disarmed"
+    assert res.agent_survived_kill is True
+    assert "failed to restore" in (res.error or "")
+    assert "timed out" in (res.error or "")
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permission bits")

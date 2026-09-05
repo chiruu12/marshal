@@ -60,6 +60,22 @@ class PullRequestRef:
 
 
 def _run(argv: Sequence[str], cwd: Path, runner: Runner) -> subprocess.CompletedProcess[str]:
+    try:
+        return _run_inner(argv, cwd, runner)
+    except subprocess.TimeoutExpired as exc:
+        # The timeout exists so a prompting `gh` or `git fetch` fails fast; letting the raw
+        # exception out made it fail LOUDLY instead - a traceback from the CLI, which catches
+        # only ConfigError, and an unclassified error over MCP. The module promises a clear
+        # failure, so it has to be the documented one.
+        raise ConfigError(
+            f"{argv[0]} timed out after {NETWORK_TIMEOUT_S}s: {' '.join(argv)}. "
+            "Check network/VPN access to GitHub and that no credential helper is prompting."
+        ) from exc
+
+
+def _run_inner(
+    argv: Sequence[str], cwd: Path, runner: Runner
+) -> subprocess.CompletedProcess[str]:
     return runner(
         list(argv),
         cwd=str(cwd),
@@ -107,7 +123,7 @@ def resolve_pr(
             "Install it, or pass `base`/`head` refs directly to review the range by hand."
         )
 
-    meta = _fetch_metadata(repo, number, runner)
+    meta = _fetch_metadata(repo, number, runner, remote)
     base_name = str(meta.get("baseRefName") or "")
     head_oid = str(meta.get("headRefOid") or "")
 
@@ -172,15 +188,31 @@ def resolve_pr(
     )
 
 
-def _fetch_metadata(repo: Path, number: int, runner: Runner) -> dict[str, Any]:
-    proc = _run(
-        [
-            "gh", "pr", "view", str(number),
-            "--json", "baseRefName,headRefOid,title,url,state",
-        ],
-        repo,
-        runner,
-    )
+def _remote_slug(repo: Path, remote: str, runner: Runner) -> str | None:
+    """``owner/name`` for ``remote``, or None when the URL is not a GitHub one we can parse.
+
+    The PR is fetched from this remote, so this is the repository the PR must be read from too.
+    Without it `gh` resolves the number against its own configured default - which on a fork clone
+    is usually the upstream - and the two disagree: the metadata comes from one repository and the
+    refs from another, so the fetch fails with "couldn't find remote ref", which reads as "the PR
+    does not exist".
+    """
+    proc = _run(["git", "remote", "get-url", remote], repo, runner)
+    if proc.returncode != 0:
+        return None
+    url = proc.stdout.strip()
+    match = re.search(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$", url)
+    if not match:
+        return None
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def _fetch_metadata(repo: Path, number: int, runner: Runner, remote: str = "origin") -> dict[str, Any]:
+    argv = ["gh", "pr", "view", str(number), "--json", "baseRefName,headRefOid,title,url,state"]
+    slug = _remote_slug(repo, remote, runner)
+    if slug is not None:
+        argv += ["--repo", slug]
+    proc = _run(argv, repo, runner)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         hint = ""

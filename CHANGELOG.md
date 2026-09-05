@@ -8,7 +8,371 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **New `advisory` run outcome.** The other three verdicts all assume the work was a diff, so a
+  read-only review, audit or plan panel - whose findings get used while nothing merges - could only
+  be recorded `abandoned`: a judged non-integration that reads as "gave up" and drove the client's
+  integration rate toward zero for merges it was never eligible to produce. `advisory` says the
+  work was used and there was nothing to merge. `routing` counts it as judged, reports it as
+  `n_advisory`, and keeps it out of the integration rate's denominator (`n_integrable` = judged
+  minus advisory) rather than counting it as a failure; a client whose judged runs are all advisory
+  is listed with its counts and left unranked, never at 0%.
+
+- **Opt-in progress-aware run timeout (#276).** A new `progress_timeout:` block ends a run on
+  evidence of progress rather than on the clock alone: a stalled run is killed early instead of
+  burning the rest of its cap, and a run still making progress at its soft deadline is extended
+  below a hard ceiling. Progress is the newest mtime under the worktree, which is
+  backend-independent; `communicate()` and its pipe handling are untouched, so no new deadlock
+  surface. **Off by default** - absent or `enabled: false` leaves `timeout_s` behaving exactly as
+  before. The hard ceiling is never removed: a silent, hung process still always dies, and a run
+  ended for lack of progress is reported as `timed_out` like any other. See `docs/config.md`.
+
 ### Fixed
+
+- **A later workflow phase with no available clients no longer discards the earlier phases.** It
+  raised, throwing away every result already produced - finished runs that cost real money and are
+  on the ledger - where the runner's own rule for a failing phase is to record it and carry on so
+  the driver gets the full picture. The first phase still fails fast, since nothing is lost there.
+
+- **`run_many` jobs accept `base_branch` over MCP again.** The engine's job builder documents the
+  field and promises it is "not silently dropped when a job chains off a prior run's branch", but
+  the MCP job model never declared it, so it was stripped before the engine saw it. A parity test
+  now pins both job models against the field list the engine actually reads.
+- **Driver-facing docs corrected where they contradicted the code.** `collect_run` and the
+  quickstart enumerated `produced` without `unavailable` - the one value that means "I cannot tell
+  you", which a driver must not read as "it did nothing"; the quickstart said Marshal has no
+  structured output, which `output_schema` has provided for some time; `list_teams` was documented
+  as returning a `decision` field the design deliberately refuses to compute; `get_run_log` listed
+  two causes for a null log and not the third (`clean` reclaims logs); a duration error on a
+  `progress_timeout` key was phrased as a client's `timeout_s`; and SETUP.md said a Fireworks model
+  is rejected at load when it loads with a billing warning.
+
+- **An explicitly relative `worktree_setup` / `verify` command needs the unsafe opt-in again.** The
+  refusal compared a `Path`, and pathlib normalises `./pytest` to `pytest` - so the form that
+  resolves inside the worktree the agent writes to compared equal to a bare basename and ran
+  without `allow_unsafe_commands`, while `.venv/bin/python` was refused.
+- **`run_team` on an unknown run id says so.** The id fell through to the worktree-vanished
+  handler and was reported as "its worktree was removed (most likely by `clean`)" - a confident
+  wrong cause for what is usually a typo or a run in another workspace.
+- **The last unbounded git call now has a deadline.** `append_git_exclude` ran `git rev-parse`
+  with no timeout during worktree creation, holding the create lock if git hung.
+
+- **Every malformed `fleet.config.yaml` now raises a config error instead of a traceback.** Four
+  ordinary operator mistakes escaped the loader as raw exceptions - a permission typo as a bare
+  `ValueError` from the enum, invalid YAML as a parser error, a non-mapping `clients:` as an
+  `AttributeError`, a string client spec as a `TypeError`. Each one killed the MCP server at
+  startup for every workspace, and each is now reported with the file and the problem named.
+  `list_workspaces` degrades per repo for all of them too.
+- **A per-client `env:` credential no longer reaches the run record.** Such a value is not in
+  Marshal's own environment, so the ambient scrub cannot see it; the run log was passed it
+  explicitly and the record was not, so the value the log was careful to hide was persisted in
+  `text` (and `error`, and structured output) and handed back by `get_run` and `collect_run`.
+- **A retried run's total is not called measured when the final attempt reported nothing.** The
+  fold took an earlier attempt's record as its base and kept its `native` label, stating a
+  measured total missing the last attempt's spend entirely - the same undercount-presented-as-a-
+  measurement the fold exists to prevent, arriving from the other end.
+- **Process identity on Linux no longer moves when the clock does.** It was read from
+  `ps -o lstart=`, which is derived from the current boot-time estimate and re-renders whenever the
+  wall clock is stepped - an NTP correction is enough - so a LIVE agent read as "somebody else's
+  pid", the one reading that authorises reaping it, and a live budget reservation could be
+  reclaimed out from under its holder. Linux now uses the boot-relative start time from
+  `/proc/<pid>/stat`, and every stamp is re-read with the source that wrote it - so records
+  written before the change keep verifying instead of all becoming unverifiable at once, which
+  would have left stale locks, claims and reservations that nothing reclaims.
+- **An unusable workflow phase name is refused before anything runs.** The label becomes part of a
+  task id, so a space, a slash or an over-long name passed `validate_workflow` - which promises to
+  raise before any agent runs - and failed mid-run, after earlier phases had spent real money.
+
+- **A PR's metadata is read from the same remote its refs are fetched from.** `gh pr view` ran with
+  no `--repo`, so it resolved the number against gh's own configured default - on a fork clone
+  usually the upstream - while the refs always came from `origin`. The two then disagreed about
+  which repository the PR belongs to, and the failure read as "the PR does not exist".
+- **`docs/usage.md` no longer understates the Antigravity adapter.** It said the backend has no
+  read-only tier and no auth probe; it has both, so a driver was told Antigravity could not serve
+  as a review-team reviewer and that a green doctor line did not imply login.
+
+- **The progress scan is bounded by what is LEFT of the ceiling, so the hard ceiling still holds.** The walk of the worktree ran
+  between the waiter's ceiling checks with no limit, so on a large tree (`node_modules`, a build
+  directory) a run could stay alive past `hard_ceiling_s` - the one deadline that must always hold.
+  It now stops at the first entry newer than the last reading and gives up on a budget that is
+  itself capped by the time remaining to the ceiling, so a scan starting near the deadline cannot
+  overrun it; a scan that could not finish reports "progress unknown" and no stall is concluded
+  from it.
+- **`soft_deadline_s` now ends a run that has made no progress.** It is documented as the first
+  deadline, at which a run "still making progress is extended rather than killed" - but nothing
+  ever killed at it, so the key only sized the poll interval and any value below `stall_s` was
+  decorative.
+- **A Cursor restore failure no longer disarms the still-writing guard.** Rewriting a timed-out
+  run's status to `failed` cleared the condition `clean` / `commit_run` / `integrate` check before
+  touching a worktree whose agent survived the kill - the one case that guard exists for. The
+  restore failure is still reported.
+- **`set_outcome` reconciles orphaned runs like every other read path.** A run whose supervisor had
+  died was refused with "still running; wait for it to finish", naming a run that never would,
+  while the same run read as `failed` from `get_run` and `status`.
+- **An empty `model` is no longer treated as a model override.** `model=""` discarded the client's
+  configured model, skipped the OpenCode subscription default and the metered-provider advisory,
+  and left the backend to run whatever its own config defaults to while the record said `""`.
+- **A worktree-side rename no longer produces a path that does not exist.** The old-path field was
+  skipped only when the index column reported the rename, so the form `git add -N` produces on a
+  moved file left the old path to be parsed as a status record and truncated by three characters.
+- **`artifacts_from` refusals name `artifacts_from`.** A harvested artifact with a credential-shaped
+  name refused the whole mount with a message naming `read_paths`, a setting the driver had not
+  used, and listing a stale subset of the patterns that actually refuse. The list is now read from
+  the patterns themselves.
+- **Antigravity's dead-trust sweep works under a custom `MARSHAL_HOME`.** It recognised only the
+  legacy in-repo worktree path, so with the documented setting in use the self-healing sweep never
+  fired and dead paths accumulated in the host's global trust list.
+- **A `gh` or `git fetch` that hangs during PR resolution fails as a config error.** The timeout
+  existed so a prompting command fails fast; the raw `TimeoutExpired` escaping it instead produced
+  a traceback from the CLI, which catches only that error type.
+
+- **A cancelled run keeps the facts it measured, and its ledger line agrees with it.** On the
+  ordinary cancel path the terminal stamp is refused so the cancel keeps the status - but the run's
+  cost, tokens and duration were refused with it, so `get_run` said nothing had been measured for a
+  run the ledger prices. The ledger line also carried the backend's exit status (`failed`, from the
+  SIGTERM) while the record said `cancelled`, so one run had two histories that disagreed. The
+  measurements are now written without touching the status, and the ledger takes the record's.
+- **A run's recorded duration covers every attempt.** Tokens and cost were folded across retried
+  attempts but duration was the last attempt's alone, so the ledger's own numbers disagreed - and
+  `routing` ranks on the mean of that column, which made a client whose runs retry look faster than
+  one whose runs do not.
+- **A break after the agent ran no longer records a partial figure as a measurement, or claims the
+  backend was never reached.** The failure path wrote one attempt's usage - a partial number tagged
+  `native`, the measured-looking undercount the cost invariant exists to prevent - and left the
+  record at `attempts: 1` with `duration_ms: null`, which the docs define as "the run never reached
+  a backend", for a run whose agent had run several times.
+- **A reported `admin-api` cost is no longer thrown away.** Pricing kept only `native`, so a backend
+  using the documented `extract_usage` extension point to report a real provider cost had it
+  rewritten to `$0 / unavailable`. "Never fabricate cost" has an inverse, and discarding a measured
+  one is it.
+- **`collect_run` no longer says a running run produced nothing.** It had no status guard, so an
+  in-flight run was read mid-write and reported as `nothing` - documented as "the run genuinely
+  produced neither" - seconds before the same run reported a diff. It now reports `unavailable`
+  with the reason, which is what "I cannot tell you yet" means.
+- **"Why the work could not be read" is no longer answered with why the run ended.** For any
+  terminal run carrying an error, `unavailable_reason` (and the same message from `commit_run` /
+  `integrate`) repeated that error - a true sentence about a different question, which hid that the
+  worktree was simply gone. The reason now leads with what blocked the read and carries the run's
+  own error as context.
+
+- **A read-only run is never put under the progress timeout.** The only progress signal is the
+  worktree's newest mtime, and a read-only agent writes nothing by construction - so an actively
+  working reviewer registered no progress and was killed at `stall_s`. That was every reviewer in
+  every `run_team` panel, with the reports lost. Read-only runs keep their plain wall clock.
+- **A timeout now says which deadline ended the run.** With a progress policy the error was still
+  built from `timeout_s`, so a run stopped after 120s of silence reported "timed out after 600s"
+  and a run extended to its ceiling reported the same - a duration it never had, in both
+  directions, with nothing saying it had been ended for lack of progress. A stall and a ceiling
+  kill now name themselves and carry the deadline that actually fired.
+- **`output_schema` accepts narration followed by a fenced JSON object.** A whole-message fence was
+  tolerated and leading narration was tolerated, but the two did not compose: the closing fence
+  read as "trailing prose after JSON object" and failed a run that had produced exactly one
+  conforming object - the commonest reply shape there is. Two fenced objects are still refused.
+- **OpenCode's final message no longer carries the driver's own prompt.** The session export was
+  concatenated across every role, so what is documented as "the agent's final message" began with
+  the prompt (and, on a resumed session, every earlier turn). With `output_schema` the injected
+  schema then read as a second top-level object, failing runs that had obeyed the instruction.
+- **A Goose reply that merely mentions authentication is no longer recorded as an auth failure.**
+  The heuristic scanned the whole assistant message for substrings like "unauthorized", so an
+  agent reporting a finished auth-related task was stamped `failed` with its own success summary
+  as the error. It now applies only to a reply short enough to be a bare error message.
+- **`run_team` says a run's work is unreadable rather than empty.** A run whose worktree had been
+  cleaned came back as `produced="unavailable"`, and the panel refused it as "is empty - there is
+  nothing to review" - the exact conflation `CollectResult` exists to prevent. A genuinely empty
+  run is still refused as empty.
+
+- **A `run_many` job that fails before it is recorded now gets a real, addressable run.** A job
+  dying inside the start path - an argv preflight, an unsupported permission mode, an enforced
+  budget, base-branch resolution - was handed back as a synthesized `<task>.<backend>` id that
+  matched no record anywhere, so the driver could not `get_run`, `collect_run` or `set_outcome` the
+  failure, and `report` (which rebuilds a benchmark from the recorded runs) dropped that strategy
+  from the comparison without saying so. The failure is persisted like any other run. No ledger
+  line is written: nothing ran, so there is no spend, and none is invented.
+- **Antigravity runs now honour the progress timeout's ceiling.** `agy` carries its own print
+  deadline, derived from `timeout_s`, so a productive run that the progress policy would have
+  extended self-terminated at the base timeout instead - and `agy`'s error envelope made that a
+  task FAILURE rather than a timeout. The deadline now follows the run's effective outer deadline,
+  so the documented extension holds for backends that keep a clock of their own.
+- **A terminal budget release that loses the shared lock no longer holds the enforce cap forever.**
+  Nothing reclaims a *bound* reservation with a live holder pid, so one lost lock at release time
+  refused every later matching spawn for the rest of the process lifetime - naming, as the holder,
+  a run that had already finished and recorded its spend. The drop is retried under the next lock
+  the gate takes, and only for entries carrying its own token, so a peer's live reservation still
+  refuses.
+
+- **A cancel that arrives after the agent has finished no longer throws the result away.** The
+  window between the child being reaped and the terminal stamp covers pricing, the `verify` gate and
+  artifact harvest, and can run for minutes; a `cancel_run` in it signalled nothing but still stamped
+  `cancelled`, which then made the terminal stamp lose the race. The run was recorded cancelled with
+  no cost, no text and no verify result while its own ledger line said `exited_clean`, and the
+  default `clean` scope listed the worktree holding the finished work. Cancel is now the no-op its
+  docstring always promised there, and the completed result lands.
+- **`collect_run` says `unavailable`, not `nothing`, for work the agent left on another branch.**
+  Only the run branch is read, so a run that committed on a branch of its own reported "produced
+  nothing" - which the docs define as "the run genuinely produced neither". A driver branching on
+  that field rejected work that existed, and `routing` recorded the rejection against its client.
+- **`integrate(cleanup=True)` no longer denies a merge that landed.** A failure tearing the worktree
+  down raised out of `integrate` after the merge had landed and the record was stamped `integrated`,
+  so the driver was told the call failed and its retry answered `empty`. The merge is reported as
+  the fact it is, with the leftover worktree named in the message.
+- **Marshal never aborts a git operation it did not start.** `merge` ran `git merge` without checking
+  whether the driver checkout was already mid-merge (or mid-rebase, cherry-pick, revert or bisect),
+  so an autonomous `integrate` reset a checkout someone was hand-resolving, discarded their
+  uncommitted resolution, and reported their conflicted files as the run's conflicts. It now returns
+  `blocked` naming the operation in the way, having touched nothing.
+- **`integrate_run_hooks: true` now finds the hooks it promises to run.** Only `<repo>/.git/hooks`
+  was copied into a run's clone, so a repo using `core.hooksPath` (husky, lefthook) or a driver
+  checkout that is itself a linked worktree got no hooks at all - the opted-in commit gate silently
+  never ran and `commit_all` returned a sha as though it had passed. Hooks are now resolved as git
+  resolves them, and a copy that fails refuses the run instead of starting one with no gate.
+
+- **Integrate no longer reports `merged` for work the agent left on another branch.** An agent
+  that ran `git checkout -b feature` in its clone (or ended with a detached HEAD) had its work
+  committed there by `commit_all`, while only the run branch is ever published - so the run branch
+  still pointed at the base, git merged nothing with "Already up to date", integrate returned
+  `merged`, stamped the sticky `integrated` outcome with an empty file list, and with cleanup
+  deleted the only copy of the work. `commit_run` / `integrate` now refuse with a message naming
+  the branch (or detached commit) the work is on and how to recover it, and integrate also checks
+  that the landed commit is reachable from the target before it ever says `merged`.
+- **Git run inside a run's clone no longer executes agent-authored hooks or `core.fsmonitor`, and
+  no longer sees the driver's credentials.** `collect_run`, `commit_run` and `integrate` ran git in
+  the clone with the full driver environment and the clone's own config honoured, so an agent that
+  wrote `.git/config` or `.git/hooks/post-commit` had its script run as Marshal, later, with the
+  `ANTHROPIC_API_KEY` / `GH_TOKEN` that the child-environment allowlist deliberately withholds from
+  agents. Clone-side git now gets that same allowlist, `core.fsmonitor` is off, hooks are disabled
+  unless `integrate_run_hooks: true` (which keeps hooks but still not the credentials), and `git
+  diff` runs with `--no-ext-diff --no-textconv`. See SECURITY.md for the residual.
+
+- **A file stamped ahead of the clock can no longer make a productive run read as stalled.** The
+  progress probe took the newest mtime under the worktree, so one future-dated file (clock skew,
+  an extracted archive) sat at the top forever and every real write compared lower. Timestamps
+  ahead of the clock beyond a small tolerance are now ignored.
+- **A run cancelled while its failure path was unwinding keeps `cancelled` on the ledger.** The
+  failure path stamped the run's usage event `failed` even when a concurrent cancel had already
+  won the record, so the two histories disagreed about the same run. The event now carries the
+  record's terminal status.
+
+- **A failure between the agent finishing and its usage being read no longer strands the run as
+  `running`.** The fleet's failure path wrote the run's ledger line whenever the agent had
+  returned a result, but the `usage` it passed was first bound only after `extract_usage` - a
+  backend seam that can raise. A failure there replaced the real exception with an
+  `UnboundLocalError` inside the except block, so the terminal stamp never ran: the record stayed
+  `running` forever and the actual cause was lost. The run now reaches `failed` with the original
+  error, and its ledger line is still written.
+
+- **A malformed default `fleet.config.yaml` no longer stops the MCP server from starting.** The
+  eager default-workspace build at boot raised on a parse error, so one bad file killed the server
+  for every registered workspace and left a traceback in the host's MCP log as the only evidence.
+  Boot now reports the error on stderr and keeps serving; calls on that workspace return the same
+  error until the file is fixed, which the hot-reload picks up on the next call without a restart.
+  Other workspaces are unaffected. Any non-config startup failure still propagates.
+
+- **One unknown backend name no longer takes the MCP server down.** `MarshalService` built every
+  configured client's backend up front and raised on a name the registry does not know, and the
+  server builds the default workspace at boot - so a fleet config with a client written for a newer
+  Marshal (or a plain typo) killed the server for every workspace and every healthy client, with
+  the only evidence a traceback in the host's MCP log. The client is now skipped with the reason
+  `list_clients` already had for it (`backend 'x' is not a known backend`), the stderr line says
+  the same instead of blaming an "unavailable CLI", and resolving that client for a run repeats the
+  reason rather than telling you to install something that is fine. `marshal doctor` still FAILs
+  the name.
+
+- **A run that broke after its agent finished vanished from the ledger.** Everything between
+  `backend.run` and `usage.record` can raise - the verify gate, the commit count, the event build
+  - and the failure path stamped `failed` without writing a usage line. The agent's tokens and
+  dollars were spent regardless, so the run disappeared from every cost, budget and routing
+  figure while its record sat there saying it had run. The ledger's contract is one line per run,
+  and a run that broke is still a run. The line is now written on that path too, guarded so a
+  failure *after* the record cannot bill the same run twice.
+
+- **`output_schema` rejected a valid object when the agent narrated before it (#328).** Extraction
+  required the object at character 0, but for at least one backend the narration is not an
+  occasional lapse - it is the shape of every final message, which made the feature effectively
+  unusable there. Eleven of fourteen runs in one audit fan-out were stamped `failed` while the
+  conforming object sat in `text`, so the fan-out had to be re-run to recover output already in
+  hand. Leading prose is now accepted when exactly one top-level object is present. The refusals
+  that protect a real property are kept: prose *after* the object, and more than one top-level
+  object, are still refused, because those are the cases where picking one would be a guess.
+
+- **An Antigravity run that failed reported success.** `agy` exits 0 whether the turn worked or
+  not and puts the verdict in the envelope's `status`; `parse_output` read only the exit code.
+  That defeated the reason `--print-timeout` is set just INSIDE the run timeout - the point of
+  that ordering is for agy to answer with a parseable envelope (`status=ERROR`, `error="timeout
+  waiting for response"`, plus tokens spent) rather than be hard-killed - so a deliberate,
+  well-behaved timeout came back as `exited_clean`, carrying PARTIAL response text a driver
+  could integrate believing the turn was complete. Any status that is not `SUCCESS` is now a
+  failure, fail-closed on an unrecognised value; partial text and usage are kept, because a
+  truncated turn still spent those tokens.
+
+- **The under-lock budget recheck could read an unreadable ledger as an empty tail.**
+  `read_events` was rewritten to tell "no ledger yet" from "cannot read it"; `events_after` - the
+  recheck every *enforced* budget runs while holding the lock - still decided with `exists()`,
+  which reports a plain False for `ENOTDIR` and `ELOOP`. The recheck then added no spend and the
+  cap admitted the spawn: the same fail-open, on the same file, in the one mode whose entire job
+  is to refuse. It now stats, treats only `FileNotFoundError` as the empty case, and lets every
+  other error become a refusal.
+
+- **A concurrent append could make the ledger look rewritten.** The cursor took its size from
+  after the read and its mtime from before it, so a `record()` landing between the two syscalls
+  minted a cursor the file never had. `events_after` reads same-size-with-newer-mtime as proof of
+  an in-place rewrite, so an under-cap spawn was refused and the driver sent to repair a
+  perfectly healthy ledger. The cursor now describes one instant.
+
+- **A budget's run cap reported a full remainder when nobody could count the runs.** A ledger
+  lookup failure left `runs_unmeasured` at 0 and therefore `remaining_runs` at the whole cap -
+  "all clear" at the exact moment the spend is unknowable. The dollar side of the same function
+  already got this right via `spent_known`. The runs side now carries `runs_known` and reports a
+  null remainder rather than a measured-looking one.
+
+- **The budget gate re-took an aged-out reservation without showing it was still under the cap.**
+  A peer can reclaim the slot, run, record spend that meets the cap, and release it, leaving the
+  entry absent rather than held. `bind` holds no tracker and no budget specs, so it cannot re-read
+  the ledger - yet it re-acquired anyway, under a comment asserting a cap compliance nothing
+  verified, letting a hard cap be overshot by a full run's cost. It now refuses, exactly as the
+  neighbouring peer-holds branch does.
+
+- **A git timeout while counting commits deleted the run from the ledger.**
+  `agent_commit_count` documents "None when git failed", but a timeout raises through it. Its
+  sibling `changed_files` call was guarded and it was not, so a slow git turned a clean, finished
+  run into `failed` - and, because the count happens before `usage.record`, the run never reached
+  the ledger at all, vanishing from every cost, budget and routing figure.
+
+- **A failed `run_many` job handed back a run id that addressed nothing.** The synthesized record
+  used `<task>.<backend>`, without the suffix every real id carries, so a driver could not
+  `get_run`, `collect_run` or `set_outcome` the failure - and therefore could never judge it -
+  while the genuine failed record sat in the ledger under its real id. The real record is now
+  returned whenever the run got far enough to be stamped.
+
+- **A finished run could report having no diagnostics.** The run log was written after the
+  terminal stamp, so a driver polling for terminal-then-reading could see `log: null` - documented
+  to mean "the backend crashed before producing one" - for a run whose full output landed a moment
+  later. Artifacts are harvested before the stamp for exactly this reason; the log now follows the
+  same rule, with the `finally` write kept as the backstop.
+
+- **A workflow's integrate phase could discard the whole run.** The integrate loop was the one
+  phase with no guard - and the comment above it claiming collect/integrate "were already wrapped"
+  was false for integrate. A `clean` racing the merge made the service raise, which escaped the
+  runner and threw away every phase result *after* earlier candidates had already merged, leaving
+  no record of which merges landed. The collect phase had a related gap: it caught only
+  `ValueError`, while `teams.py` documents three shapes for this exact race on this exact call.
+
+- **A merge onto a drifted base was reported as `completed` with nothing left to do.** When the
+  checkout moves while agents work, `Fleet.integrate` flags that the merge target is not the
+  branch the run was based on. The workflow dropped that flag, so `status` said `completed` and
+  `next_actions` was empty - the driver's whole contract for "done" - about work that landed
+  somewhere unintended.
+
+- **An Antigravity run blocked by a headless permission auto-deny read as an ordinary empty run.**
+  `agy` exits 0 and reports `status=SUCCESS` even when a tool needed a permission that headless
+  mode cannot prompt for, in which case the whole run collapses to an empty `response` - it says
+  so on stderr, but `parse_output` discarded stderr on the exit-0 path, so the record carried
+  `error=None`. That made "the agent looked and found nothing" and "the agent was never allowed to
+  look" indistinguishable, and they call for opposite responses: the first is a result, the second
+  is a misconfiguration to fix and re-run. A read-only reviewer hitting it reported no findings
+  having read nothing, after spending its full input budget. The reason agy gave now travels on the
+  record. Only the reason - the status stays `empty`, which is still an accurate account of what
+  was observed.
 
 - **A credential in a client `env:` block was written verbatim to the run log.**
   `RunLogStore.write` scrubbed values found in the parent environment only, so a secret that

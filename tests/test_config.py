@@ -37,6 +37,66 @@ clients:
 """
 
 
+@pytest.mark.parametrize("argv0", ["./pytest", "./make", "../bin/pytest", ".venv/bin/python"])
+def test_an_explicitly_relative_command_needs_the_unsafe_opt_in(argv0: str) -> None:
+    """REGRESSION (P2): the refusal compared a `Path`, and pathlib normalises `./pytest` to
+    `pytest` - so the explicitly-relative form, which resolves inside the worktree the agent
+    writes to, compared equal to a bare basename and ran without the opt-in."""
+    from marshal_engine.core.config import setup_command_refusal
+
+    reason = setup_command_refusal([argv0], allow_unsafe=False)
+    assert reason is not None and "relative path" in reason
+    assert setup_command_refusal([argv0], allow_unsafe=True) is None
+
+
+@pytest.mark.parametrize("argv0", ["pytest", "uv", "/usr/bin/pytest", "python3.12"])
+def test_a_bare_or_absolute_allowlisted_command_still_runs(argv0: str) -> None:
+    """Anti-blanket control: a bare name resolves through PATH and an absolute path is checked by
+    basename - tightening the relative case must not start refusing those."""
+    from marshal_engine.core.config import setup_command_refusal
+
+    assert setup_command_refusal([argv0], allow_unsafe=False) is None
+
+
+def test_every_malformed_config_raises_config_error_not_a_traceback(tmp_path: Path) -> None:
+    """REGRESSION (P0/P1): four ordinary operator mistakes escaped `load_config` as raw exceptions
+    - a permission typo as ValueError, bad YAML as ParserError, a non-mapping `clients` as
+    AttributeError, a string client spec as TypeError. Callers treat ConfigError as the shape they
+    can report, so each of these instead produced a traceback and killed the MCP server at startup
+    for every workspace."""
+    cases = {
+        "permission typo": "clients:\n  a:\n    backend: opencode\n    permission: read-onlyy\n",
+        "bad yaml": "clients:\n  a:\n   backend: [unclosed\n",
+        "clients not a mapping": "clients: 42\n",
+        "client spec is a string": "clients:\n  a: notamapping\n",
+        "top level not a mapping": "- just\n- a list\n",
+        "defaults not a mapping": "defaults: 7\nclients: {}\n",
+    }
+    for name, text in cases.items():
+        cfg = tmp_path / f"{name.replace(' ', '_')}.yaml"
+        cfg.write_text(text)
+        with pytest.raises(ConfigError) as exc:
+            load_config(cfg)
+        assert str(exc.value), f"{name}: empty message"
+
+
+def test_a_permission_typo_names_the_legal_modes(tmp_path: Path) -> None:
+    """The message has to be actionable: which client, what it said, and what is allowed."""
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  worker:\n    backend: opencode\n    permission: readonly\n")
+    with pytest.raises(ConfigError) as exc:
+        load_config(cfg)
+    msg = str(exc.value)
+    assert "worker" in msg and "readonly" in msg and "read-only" in msg and "safe-edit" in msg
+
+
+def test_a_valid_permission_is_still_accepted(tmp_path: Path) -> None:
+    """Anti-blanket control: tightening the error must not start refusing good configs."""
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  worker:\n    backend: opencode\n    permission: read-only\n")
+    assert load_config(cfg).clients["worker"].permission.value == "read-only"
+
+
 def test_load_merges_defaults(tmp_path: Path) -> None:
     p = tmp_path / "fleet.config.yaml"
     p.write_text(_YAML)
@@ -733,3 +793,62 @@ def test_client_env_value_must_be_string(tmp_path: Path) -> None:
     p.write_text("clients:\n  x:\n    backend: codex\n    env:\n      FOO: 42\n")
     with pytest.raises(ConfigError, match="must be a string"):
         load_config(p)
+
+
+def _write(tmp_path: Path, body: str) -> Path:
+    """Write a minimal fleet config and return its path."""
+    p = tmp_path / "fleet.config.yaml"
+    p.write_text(body)
+    return p
+
+
+def test_progress_timeout_is_absent_by_default(tmp_path: Path) -> None:
+    """The whole feature must be invisible to every config that does not ask for it."""
+    cfg = _write(tmp_path, "clients:\n  a:\n    backend: opencode\n")
+
+    assert load_config(cfg).progress_timeout.enabled is False
+
+
+def test_progress_timeout_parses_its_block(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\n"
+        "progress_timeout:\n  enabled: true\n  stall_s: 120\n"
+        "  soft_deadline_s: 900\n  hard_ceiling_s: 1800\n",
+    )
+    policy = load_config(cfg).progress_timeout
+
+    assert policy.enabled is True
+    assert (policy.stall_s, policy.soft_deadline_s, policy.hard_ceiling_s) == (120, 900, 1800)
+
+
+def test_progress_timeout_rejects_a_soft_deadline_past_the_ceiling(tmp_path: Path) -> None:
+    """A soft deadline above the backstop could never be reached - that is a typo, not a policy."""
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\n"
+        "progress_timeout:\n  enabled: true\n  soft_deadline_s: 1800\n  hard_ceiling_s: 900\n",
+    )
+    with pytest.raises(ConfigError, match="above"):
+        load_config(cfg)
+
+
+def test_progress_timeout_rejects_a_nonsense_threshold(tmp_path: Path) -> None:
+    """Zero or negative would either kill instantly or never fire; both read as a broken feature."""
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\nprogress_timeout:\n  enabled: true\n  stall_s: 0\n",
+    )
+    with pytest.raises(ConfigError, match="stall_s"):
+        load_config(cfg)
+
+
+def test_progress_timeout_rejects_an_unknown_setting(tmp_path: Path) -> None:
+    """A misspelled key must not silently disable the guard the user thought they configured."""
+    cfg = _write(
+        tmp_path,
+        "clients:\n  a:\n    backend: opencode\n"
+        "progress_timeout:\n  enabled: true\n  stall_seconds: 120\n",
+    )
+    with pytest.raises(ConfigError, match="stall_seconds"):
+        load_config(cfg)

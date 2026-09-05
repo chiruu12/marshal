@@ -109,6 +109,8 @@ class StubService:
         self.run_status = run_status
         self.agent_survived_kill = agent_survived_kill
         self.collect_raises = collect_raises
+        self.collect_unavailable: str | None = None
+        self.missing_run = False
 
     def run_many(self, jobs: list[dict[str, Any]], *, max_concurrency: int = 4) -> list[RunManyJobResult]:
         self.calls.append("run_many")
@@ -135,6 +137,8 @@ class StubService:
         return [RunManyJobResult(primary=r) for r in out]
 
     def get_run(self, run_id: str) -> RunRecord | None:
+        if self.missing_run:
+            return None
         # A surviving agent means a LIVE pid: the guard re-probes it, so a record without one
         # reads as settled no matter what the flag says. Use this process, which is alive for the
         # duration of the test and whose start time the real probe can read.
@@ -153,6 +157,11 @@ class StubService:
         self.calls.append("collect_run")
         if self.collect_raises:
             raise self.collect_raises(f"worktree for run {run_id!r} no longer exists: /gone")
+        if self.collect_unavailable:
+            return CollectResult(
+                run_id=run_id, branch="b", worktree=None, changed_files=[], diff="",
+                produced="unavailable", unavailable_reason=self.collect_unavailable,
+            )
         return CollectResult(
             run_id=run_id,
             branch="b",
@@ -831,6 +840,43 @@ def test_runner_reviews_an_unsuccessful_run_but_says_so(status: str) -> None:
     assert f"run status {status}" in result.subject_summary
     assert f"run status {status}" in svc.jobs[0]["goal"]
     assert f"run status {status}" in result.unified_report if result.unified_report else True
+
+
+def test_runner_says_no_such_run_rather_than_blaming_clean(tmp_path: Path) -> None:
+    """REGRESSION (P2): an unknown run id fell through to the worktree-vanished handler and was
+    reported as "its worktree was removed (most likely by `clean`)" - a confident wrong cause for
+    what is usually a typo or a run in another workspace."""
+    svc = StubService(_config("ro-a", "ro-b"))
+    svc.missing_run = True
+    with pytest.raises(ConfigError) as exc:
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="typo9"), team_run_id="t1")
+    msg = str(exc.value)
+    assert "no such run" in msg and "typo9" in msg
+    assert "clean" not in msg
+
+
+def test_runner_says_unreadable_not_empty_for_a_run_whose_work_cannot_be_read() -> None:
+    """REGRESSION (P1): a run whose worktree had been cleaned came back from collect_run as
+    `produced="unavailable"` with no files, and the panel refused it as "is empty - there is
+    nothing to review". That is the exact conflation CollectResult exists to prevent: the work
+    could not be READ, which is not evidence there was none, and the driver's next move differs
+    (re-run the work vs. conclude the agent did nothing)."""
+    svc = StubService(_config("ro-a", "ro-b"))
+    svc.collect_unavailable = "worktree for run 'r9' no longer exists: /gone"
+    with pytest.raises(ConfigError) as exc:
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
+    msg = str(exc.value)
+    assert "cannot be read" in msg and "no longer exists" in msg
+    assert "is empty" not in msg
+    assert "run_many" not in svc.calls
+
+
+def test_runner_still_refuses_a_genuinely_empty_run() -> None:
+    """Anti-blanket control: a run that really produced nothing must still be refused as empty,
+    not relabelled unreadable - reviewing nothing wastes a fleet."""
+    svc = StubService(_config("ro-a", "ro-b"), diff="")
+    with pytest.raises(ConfigError, match="is empty"):
+        _runner(svc).run(_spec(), TeamSubject(kind="run", run_id="r9"), team_run_id="t1")
 
 
 @pytest.mark.parametrize("exc", [ValueError, WorktreeError, FileNotFoundError])

@@ -335,3 +335,71 @@ def test_the_best_client_of_a_kind_cannot_be_outranked_by_a_better_one_elsewhere
     assert by_key[("refactor", "refactor-best")] == 1
     assert by_key[("docs", "docs-star")] == 1
     assert ledger.recommended_by_task_kind["refactor"] == "refactor-best"
+
+
+# --- advisory: judged, but never a failed integration -----------------------------------------
+
+
+def test_advisory_runs_are_kept_out_of_the_integration_rate() -> None:
+    """A read-only reviewer must not be scored on merges it could never have produced.
+
+    This is the whole reason `advisory` exists. Before it, the only verdict that fit a run whose
+    findings were used but whose worktree merged nothing was `abandoned` - a judged
+    non-integration, which drags the rate toward zero for work that was never in the running.
+    """
+    events = [_event("r1"), _event("r2"), _event("r3")]
+    outcomes = {"r1": "integrated", "r2": "advisory", "r3": "advisory"}
+
+    cell = summarize_routing(events, outcomes).cells[0]
+
+    assert cell.n_judged == 3
+    assert cell.n_advisory == 2
+    assert cell.n_integrable == 1
+    assert cell.integration_rate == 1.0  # not 1/3
+    assert cell.n_abandoned == 0
+
+
+def test_abandoned_still_counts_against_the_rate() -> None:
+    """The control: `advisory` must not become a loophole that launders every non-integration.
+
+    Without this, changing the denominator to exclude one verdict could quietly exclude the
+    others too, and every client would read 100%.
+    """
+    events = [_event("r1"), _event("r2"), _event("r3")]
+    outcomes = {"r1": "integrated", "r2": "abandoned", "r3": "rejected"}
+
+    cell = summarize_routing(events, outcomes).cells[0]
+
+    assert cell.n_integrable == 3
+    assert cell.integration_rate == round(1 / 3, 4)
+
+
+def test_an_advisory_only_client_is_unranked_rather_than_zero_percent() -> None:
+    """No integrable run means no rate - the same rule an unjudged client gets, for the same reason.
+
+    Reporting 0% here would be the defamation the `None` rate exists to prevent, and reporting
+    100% would invent a merge. Unranked-with-counts is the only honest answer.
+    """
+    ledger = summarize_routing([_event("r1"), _event("r2")], {"r1": "advisory", "r2": "advisory"})
+    cell = ledger.cells[0]
+
+    assert cell.integration_rate is None
+    assert cell.rank is None
+    assert cell.n_judged == 2
+    assert ledger.total_judged == 2  # judged, so no "nothing has been judged" caveat
+    assert ledger.caveat is None
+    assert ledger.recommended is None
+    assert "advisory" in cell.evidence
+    assert any("advisory" in n for n in cell.notes)
+
+
+def test_advisory_runs_do_not_shrink_the_small_sample_warning_away() -> None:
+    """The weak-evidence note follows the denominator it qualifies, not the judged total."""
+    events = [_event(f"r{i}") for i in range(5)]
+    outcomes = {"r0": "integrated", "r1": "rejected"}
+    outcomes.update({f"r{i}": "advisory" for i in (2, 3, 4)})
+
+    cell = summarize_routing(events, outcomes).cells[0]
+
+    assert cell.n_judged == 5
+    assert any("small sample (n=2)" in n for n in cell.notes)

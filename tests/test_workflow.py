@@ -26,6 +26,7 @@ from marshal_engine.orchestration.workflow import (
     validate_workflow,
 )
 from marshal_engine.runtime.state import RunRecord
+from marshal_engine.runtime.worktree import WorktreeError
 
 
 def _config(*names: str) -> FleetConfig:
@@ -40,7 +41,7 @@ class StubService:
         config: FleetConfig,
         *,
         statuses: dict[str, str] | None = None,
-        collect_errors: set[str] | None = None,
+        collect_errors: set[str] | dict[str, BaseException] | None = None,
         unreadable: set[str] | None = None,
         integrate: dict[str, IntegrateResult] | None = None,
         unavailable: set[str] | None = None,
@@ -83,7 +84,8 @@ class StubService:
     def collect_run(self, run_id: str) -> CollectResult:
         self.calls.append(("collect_run", run_id))
         if run_id in self._collect_errors:
-            raise ValueError(f"run {run_id}: no collectable work")
+            planned = self._collect_errors[run_id] if isinstance(self._collect_errors, dict) else None
+            raise planned or ValueError(f"run {run_id}: no collectable work")
         if run_id in self._unreadable:
             return CollectResult(
                 run_id=run_id,
@@ -100,12 +102,38 @@ class StubService:
 
     def integrate(self, run_id: str, *, cleanup: bool = False) -> IntegrateResult:
         self.calls.append(("integrate", run_id, cleanup))
-        return self._integrate.get(
-            run_id, IntegrateResult(run_id=run_id, status="merged", merged_into="main")
-        )
+        planned = self._integrate.get(run_id)
+        if isinstance(planned, BaseException):
+            raise planned
+        return planned or IntegrateResult(run_id=run_id, status="merged", merged_into="main")
 
 
 # --- pure: render / resolve / validate ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad", ["step one", "a/b", "../x", "-lead", "x" * 60, ".hidden"]
+)
+def test_a_phase_name_that_cannot_be_a_task_id_is_refused_up_front(bad: str) -> None:
+    """REGRESSION (P1): a phase label becomes part of a task id at run time, so an illegal one
+    passed `validate_workflow` - which promises to raise BEFORE any agent runs - and blew up
+    mid-run, after earlier phases had already spent real money."""
+    spec = WorkflowSpec(
+        name="w", phases=[{"run": "fan_out", "name": bad, "goal": "g", "clients": ["a"]}]
+    )
+    cfg = FleetConfig(clients={"a": ClientConfig(name="a", backend="opencode")})
+    with pytest.raises(ConfigError, match="task id"):
+        validate_workflow(spec, cfg)
+
+
+def test_an_ordinary_phase_name_is_still_accepted() -> None:
+    """Anti-blanket control: the names recipes actually use must keep working."""
+    cfg = FleetConfig(clients={"a": ClientConfig(name="a", backend="opencode")})
+    for good in ("review", "fan_out-1", "phase.2", "Draft_v3"):
+        spec = WorkflowSpec(
+            name="w", phases=[{"run": "fan_out", "name": good, "goal": "g", "clients": ["a"]}]
+        )
+        validate_workflow(spec, cfg)
 
 
 def test_render_goal_strict() -> None:
@@ -496,6 +524,28 @@ def test_runner_fan_out_all_unavailable_raises() -> None:
     assert svc.calls == []  # nothing ran
 
 
+def test_a_later_unavailable_phase_does_not_discard_the_earlier_phases_results() -> None:
+    """REGRESSION (P2): a later phase whose clients are all unavailable raised, throwing away
+    every earlier phase's results - finished runs that cost real money and are on the ledger. The
+    runner's own rule for a failing phase is to record it and keep going, because the driver needs
+    the full picture; the first phase still fails fast, where there is nothing to lose."""
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[
+            PhaseSpec(name="first", run="fan_out", clients=["a"], goal="{t}"),
+            PhaseSpec(name="second", run="fan_out", clients=["b"], goal="{t}"),
+        ],
+    )
+    svc = StubService(_config("a", "b"), unavailable={"b"})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+    assert [p.name for p in result.phases] == ["first", "second"]
+    assert result.phases[0].run_ids, "the completed phase's runs were discarded"
+    assert result.phases[1].run_ids == []
+    assert any("every client is unavailable" in n for n in result.phases[1].notes)
+    assert any("every client is unavailable" in a for a in result.next_actions)
+
+
 def test_runner_fan_out_failed_run_surfaces_note_and_action() -> None:
     # (c) a run that does not succeed records a note + a next_action (additive, status unchanged)
     spec = WorkflowSpec(
@@ -597,3 +647,52 @@ def test_single_agent_non_clean_status_is_workflow_error() -> None:
     impl = result.phases[0]
     assert any("a.1" in n and "did not succeed" in n for n in impl.notes)
     assert any("a.1" in a and "timed_out" in a for a in result.next_actions)
+
+
+def test_a_raising_integrate_does_not_discard_the_whole_workflow() -> None:
+    """REGRESSION: the integrate loop was the one phase with no guard.
+
+    A `clean` racing the merge made `Fleet.integrate` raise a bare OSError, which escaped the
+    runner - throwing away every PhaseResult *after* an earlier candidate had already merged,
+    so the driver had no record of which merges landed.
+    """
+    svc = StubService(_config("a", "b"), integrate={"b.2": FileNotFoundError("worktree is gone")})
+    result = WorkflowRunner(svc).run(_auto_integrate_spec(), {"t": "go"})
+
+    assert result.status == "error"
+    # The successful merge that happened BEFORE the raise is still reported.
+    assert any(i["run_id"] == "a.1" and i["status"] == "merged" for i in result.phases[-1].integrations)
+    assert any("b.2" in a and "worktree is gone" in a for a in result.next_actions)
+
+
+@pytest.mark.parametrize("exc", [ValueError("gone"), WorktreeError("git failed"), FileNotFoundError("no cwd")])
+def test_collect_survives_every_shape_of_the_clean_race(exc: BaseException) -> None:
+    """The three-shape race `teams.py` documents on this exact call; collect caught only the first."""
+    spec = WorkflowSpec(
+        name="w",
+        inputs=["t"],
+        phases=[
+            PhaseSpec(name="impl", run="fan_out", clients=["a"], goal="{t}"),
+            PhaseSpec(name="look", run="collect"),
+        ],
+    )
+    svc = StubService(_config("a"), collect_errors={"a.1": exc})
+    result = WorkflowRunner(svc).run(spec, {"t": "go"})
+
+    assert any("a.1" in n for n in result.phases[-1].notes)
+
+
+def test_a_merge_onto_a_drifted_base_is_not_reported_completed() -> None:
+    """A merge landing on a branch the run was not based on must not read as 'nothing left to do'."""
+    drifted = IntegrateResult(
+        run_id="a.1",
+        status="merged",
+        merged_into="main",
+        base_branch_drift=True,
+        message="warning: run was based on 'feature-a', merging into 'main'",
+    )
+    svc = StubService(_config("a", "b"), integrate={"a.1": drifted})
+    result = WorkflowRunner(svc).run(_auto_integrate_spec(), {"t": "go"})
+
+    assert result.status == "awaiting_review"
+    assert any("feature-a" in a for a in result.next_actions)

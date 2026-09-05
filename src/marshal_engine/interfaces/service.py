@@ -222,8 +222,18 @@ class MarshalService:
         # Where the config was loaded from - the preflight re-checks this file parses on disk.
         self.config_path = Path(config_path) if config_path else self.repo_root / "fleet.config.yaml"
         if backends is None:
-            names = {c.backend for c in config.clients.values()}
-            backends = {name: make_backend(name) for name in names}
+            # A client naming a backend the registry does not know is skipped with a reason that
+            # says so (see _skip_reason), never a construction failure. The MCP server builds the
+            # default workspace at boot, so raising here took the whole server down - every
+            # workspace, every healthy client - over one typo or one client written for a newer
+            # Marshal than the one running. Doctor still FAILs the name loudly.
+            built: dict[str, CodingAgentBackend] = {}
+            for name in {c.backend for c in config.clients.values()}:
+                try:
+                    built[name] = make_backend(name)
+                except ValueError:
+                    continue
+            backends = built
         # Keep the FULL backend set on the Fleet (doctor probes every configured backend, even
         # ones whose CLI is currently unavailable). Partition clients by availability so a missing
         # CLI skips that client instead of failing mid-run.
@@ -282,7 +292,9 @@ class MarshalService:
         }
         for n, c in config.clients.items():
             if not _client_available(c):
-                print(f"marshal: skipping client {n!r} (backend {c.backend!r} CLI unavailable)", file=sys.stderr)
+                # The same reason the driver sees in list_clients - a stderr line blaming the CLI
+                # for a misspelled backend name sends a human to install something that is fine.
+                print(f"marshal: skipping client {n!r}: {_skip_reason(c)}", file=sys.stderr)
         self.fleet = Fleet(
             repo_root,
             backends,
@@ -295,6 +307,7 @@ class MarshalService:
             retries=RetryPolicy(max_attempts=config.retries + 1),
             run_gate=run_gate,
             budgets=config.budgets,
+            progress_timeout=config.progress_timeout,
             # Pass-through injection (default None keeps Fleet's own defaults): the workspace
             # registry supplies a durable per-repo gate + session clock so a config hot-reload
             # rebuild doesn't fork enforce-budget state or reset session-window accounting.
@@ -483,7 +496,12 @@ class MarshalService:
                 client = self._clients.get(client_name)
             if client is None:
                 raise self._unknown_client_error(client_name)
-            resolved_model = model if model is not None else resolve_model(client)
+            # `""` is not an override: it discarded the client's configured model, skipped the
+            # OpenCode subscription default and the metered-provider advisory (both truthiness
+            # tests), and left the backend to run whatever its own config defaults to - billed,
+            # with the record and ledger saying the model was "". Drivers emit "" for "no
+            # override", so it is read as one.
+            resolved_model = model if model else resolve_model(client)
             # A model override never passes through load_config/validate, so the metered-provider
             # advisory would otherwise be silent on exactly the path that starts the billed run.
             self._warn_if_metered(client.backend, client.name, resolved_model)
@@ -531,11 +549,16 @@ class MarshalService:
         - config loaded but the name is simply not declared
         """
         if client_name in self.skipped_clients:
-            skipped = self.config.clients[client_name]
+            detail = self._skipped_detail.get(client_name)
+            reason = (
+                detail.reason
+                if detail is not None
+                else f"backend {self.config.clients[client_name].backend!r} CLI unavailable"
+            )
             return ValueError(
-                f"client {client_name!r} skipped: backend {skipped.backend!r} CLI unavailable; "
-                f"hint: install/authenticate the backend and re-run `marshal doctor` "
-                f"(config: {self.config_path})"
+                f"client {client_name!r} skipped: {reason}; "
+                f"hint: fix the client's backend name or install/authenticate its CLI, then "
+                f"re-run `marshal doctor` (config: {self.config_path})"
             )
         known = ", ".join(self._clients) or "(none configured)"
         parts = [f"no such client: {client_name!r}", f"known: {known}"]
@@ -551,7 +574,7 @@ class MarshalService:
             parts.append(f"config: {self.config_path}")
             if self.skipped_clients:
                 parts.append(
-                    f"skipped (CLI unavailable): {', '.join(self.skipped_clients)}"
+                    f"skipped (list_clients gives each reason): {', '.join(self.skipped_clients)}"
                 )
         parts.append(
             "hint: pass backend=<name> (with optional model=) for an ad-hoc run, or "
@@ -932,6 +955,10 @@ class MarshalService:
         Thin delegation on purpose: the CLI reaches the same function without needing a config,
         so the two surfaces cannot drift apart.
         """
+        # Reconcile first: every other read path (get_run, status, wait_for_runs) does, so a run
+        # whose supervisor died was reported here as still running - "wait for it to finish"
+        # naming a run that never will - while the same run read as `failed` everywhere else.
+        self.fleet.reconcile_orphans()
         return record_outcome(self.fleet.state, run_id, outcome, note=note)
 
     def wait_for_runs(

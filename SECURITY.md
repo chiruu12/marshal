@@ -274,13 +274,18 @@ These are intentional or not-yet-hardened behaviors. `marshal doctor` surfaces s
   the workspace config **and** treat agent tasks as code you might run yourself; prefer narrow
   allowlisted runners; still review `collect_run` / CI before integrate. Treat the config like
   executable code; only use trusted configs. See `docs/config.md`.
-- **`commit_run` / `integrate` default to `git --no-verify`.** Hooks are skipped so a prompting
-  pre-commit cannot deadlock a headless merge, and so Marshal does not execute
-  repo-/worktree-controlled hook scripts the agent may have changed. Set
-  `integrate_run_hooks: true` only when hooks are known **non-interactive** *and* you trust
-  their provenance for your threat model (agent-writable hook paths / husky / lefthook / etc.);
-  prompting hooks can still hang until the git timeout. Prefer `verify:` + human/CI review over
-  hooks for gating; review diffs and CI regardless.
+- **Git inside a run's clone is treated as agent-controlled.** The clone's `.git/config` and
+  `.git/hooks` are plain files the agent can write, and git executes what they name. So every git
+  call Marshal makes inside a clone (`collect_run`, `commit_run`, `integrate`) runs with the same
+  allowlisted environment the agent got - the driver's credentials never reach code the agent
+  wrote - with `core.fsmonitor` off, hooks disabled (`core.hooksPath` pointed at nothing) unless
+  `integrate_run_hooks: true`, and `git diff` run with `--no-ext-diff --no-textconv`. Set
+  `integrate_run_hooks: true` only when hooks are known **non-interactive** *and* you trust their
+  provenance for your threat model (agent-writable hook paths / husky / lefthook / etc.); they
+  still run without the driver's credentials, and a prompting hook can still hang until the git
+  timeout. Residual: `filter.*.clean` drivers and other config-named programs that git runs on
+  `add`/`checkout` are not neutralised; the scrubbed environment is the mitigation. Prefer
+  `verify:` + human/CI review over hooks for gating; review diffs and CI regardless.
 - **Budgets default to soft-warn.** Caps never block spawns unless you set `enforce: true` on a
   budget entry. Enforced budgets also serialize matching in-flight spawns (one at a time per
   budget) so concurrent fan-out cannot TOCTOU past the ledger snapshot before spend is recorded.

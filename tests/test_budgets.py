@@ -681,6 +681,58 @@ def test_bind_failure_with_stuck_release_lock_does_not_poison_cap(
     gate2.release(keys2)
 
 
+def test_a_bound_reservation_whose_release_lost_the_lock_does_not_hold_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1): the unbound variant above ages out via the TTL, but a BOUND entry with a
+    live holder pid is reclaimed by no path at all. A terminal `release_run` that could not take
+    the shared flock therefore left the cap held for the rest of the process lifetime, refusing
+    every later spawn and naming a run that had already finished and recorded its spend."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    gate.bind(keys, "run-1")
+
+    real_flock = budgets_mod._flock_exclusive
+
+    @contextlib.contextmanager
+    def flock_fail(*_a: object, **_k: object):  # noqa: ANN001
+        raise BudgetExceeded("budget gate lock timed out after 5.0s (test)")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(budgets_mod, "_flock_exclusive", flock_fail)
+    gate.release_run("run-1")  # the run finished; the disk drop cannot take the lock
+    monkeypatch.setattr(budgets_mod, "_flock_exclusive", real_flock)
+
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][keys[0]]["run_id"] == "run-1"  # bound, live pid: nothing reclaims it
+    assert disk["held"][keys[0]]["pid"] == os.getpid()
+
+    keys2 = gate.begin(tracker, SESSION, [budget], _scope())  # must not refuse
+    assert keys2 == keys
+    gate.release(keys2)
+
+
+def test_a_reservation_a_peer_still_holds_is_not_dropped_by_the_retry(tmp_path: Path) -> None:
+    """Anti-blanket control: the retry clears only entries carrying OUR token. A live peer's
+    reservation must still refuse, or the fix would turn a lost lock into a fail-open cap."""
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    peer = EnforceBudgetGate(path=path)
+    peer_keys = peer.begin(tracker, SESSION, [budget], _scope())
+    peer.bind(peer_keys, "peer-run")
+
+    ours = EnforceBudgetGate(path=path)
+    ours._pending_drops[peer_keys[0]] = "a-token-that-is-not-the-peers"
+    with pytest.raises(BudgetExceeded, match="another in-flight run"):
+        ours.begin(tracker, SESSION, [budget], _scope())
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["held"][peer_keys[0]]["run_id"] == "peer-run", "dropped a peer's live reservation"
+
+
 def test_fresh_unbound_reservation_still_blocks_peer(tmp_path: Path) -> None:
     """Genuinely in-flight unbound (within TTL, live pid) must still refuse — no fail-open."""
     tracker = _tracker(tmp_path)
@@ -1413,6 +1465,135 @@ def test_the_reservation_probe_reads_one_identity_across_timezones() -> None:
     utc = _budgets_probe_in_a_child(os.getpid(), TZ="UTC", LC_ALL="C")
     kolkata = _budgets_probe_in_a_child(os.getpid(), TZ="Asia/Kolkata", LC_ALL="C")
 
+    from marshal_engine.accounting.budgets import _PROC_IDENTITY_PREFIX as BUDGETS_PROC
+
     assert utc not in ("", "None"), "the probe could not read a live pid at all"
-    assert utc.startswith(PINNED)
+    # Either source, marked: `ps -o lstart=` where that is all there is, `/proc` on Linux (where
+    # lstart moves with the wall clock). The marker is what makes the reading comparable.
+    assert utc.startswith((PINNED, BUDGETS_PROC))
     assert utc == kolkata, "the same live pid rendered as two identities"
+
+
+def test_an_unreadable_ledger_does_not_read_as_an_empty_tail(tmp_path: Path, monkeypatch) -> None:
+    """REGRESSION: `events_after` is the UNDER-LOCK recheck, and it decided with `exists()`.
+
+    `exists()` swallows ENOTDIR and ELOOP (a path component replaced by a file, a symlink loop)
+    and reports a plain False, while `read_events` - rewritten precisely to stop conflating
+    "no ledger yet" with "cannot read it" - propagates them. So the outside-lock read could
+    correctly find no ledger, and the under-lock recheck could then meet an unreadable one and
+    call it an empty tail: $0 of new spend, and the enforced cap admits the spawn. Fail-open,
+    in the one mode whose entire job is to refuse.
+
+    (Note EACCES is NOT the trigger: `Path.exists` propagates that one.)
+    """
+    tracker = _tracker(tmp_path)
+    # Cold baseline: no ledger at the outside-lock read, exactly as a first spawn sees it.
+    _, cursor = tracker.read_events(strict=True)
+    assert cursor.size == 0
+
+    real_stat = Path.stat
+
+    def unreadable(self, *a, **kw):
+        if self.name == "events.jsonl":
+            raise NotADirectoryError(20, "Not a directory")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", unreadable)
+
+    with pytest.raises(OSError):
+        tracker.events_after(cursor, strict=True)
+
+
+def test_a_cold_ledger_still_reads_as_an_empty_tail(tmp_path: Path) -> None:
+    """Anti-blanket control: the legitimate cold start must survive the fix."""
+    tracker = _tracker(tmp_path)
+    _, cursor = tracker.read_events(strict=True)
+
+    assert tracker.events_after(cursor, strict=True) == []
+
+
+def test_an_unreadable_run_count_does_not_report_a_full_remaining_cap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The runs side degraded to 0, i.e. to "the whole cap is still available".
+
+    The dollar side directly above it already gets this right via `spent_known`. Reporting a
+    measured-looking `remaining_runs` at the moment nobody can read the ledger tells a driver
+    the cap is clear when it may be fully spent.
+    """
+    tracker = _tracker(tmp_path)
+    monkeypatch.setattr(type(tracker), "events", lambda self: (_ for _ in ()).throw(OSError("boom")))
+
+    rows = compute_budget_status(
+        tracker, SESSION, [BudgetSpec(window="week", limit_runs=10, enforce=True)], datetime.now(UTC)
+    )
+
+    assert rows[0].runs_known is False
+    assert rows[0].remaining_runs is None    # never a fake "10 still available"
+
+
+def test_a_readable_run_count_is_still_reported_as_measured(tmp_path: Path) -> None:
+    """Anti-blanket control: the ordinary path keeps a real count and a real remainder."""
+    tracker = _tracker(tmp_path)
+    rows = compute_budget_status(
+        tracker, SESSION, [BudgetSpec(window="week", limit_runs=10)], datetime.now(UTC)
+    )
+
+    assert rows[0].runs_known is True
+    assert rows[0].remaining_runs == 10
+
+
+def test_bind_refuses_a_slot_that_aged_out_and_was_released(tmp_path: Path) -> None:
+    """REGRESSION: the `entry is None` branch re-took the slot claiming to be "under the cap".
+
+    A peer can reclaim an aged-out placeholder, run, record spend that meets the cap, and
+    release - leaving the slot absent rather than held. `bind` holds no tracker and no budget
+    specs, so it cannot re-read the ledger to show the cap is still clear; re-acquiring anyway
+    let a hard cap be overshot by a full run's cost while a comment asserted the opposite.
+    """
+    tracker = _tracker(tmp_path)
+    budget = BudgetSpec(backend="opencode", window="week", limit_usd=100.0, enforce=True)
+    path = tmp_path / "budget_gate.json"
+    gate = EnforceBudgetGate(path=path)
+    keys = gate.begin(tracker, SESSION, [budget], _scope())
+    assert keys
+
+    # The peer took the aged-out slot, ran, and released it: the entry is simply gone.
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    disk["held"].pop(keys[0])
+    path.write_text(json.dumps(disk), encoding="utf-8")
+
+    with pytest.raises(BudgetExceeded, match="aged out before bind"):
+        gate.bind(keys, "run-a-slow")
+    assert keys[0] not in gate._held
+
+
+def test_the_cursor_describes_one_instant_of_the_ledger(tmp_path: Path, monkeypatch) -> None:
+    """REGRESSION: size came from AFTER the read, mtime from BEFORE it.
+
+    A `record()` landing between those two syscalls is captured by the read but not by the
+    mtime, minting a cursor the file never had: size S+B paired with the mtime of size S.
+    `events_after` then sees equal size and a newer mtime, reads that as proof of an in-place
+    rewrite, and refuses an under-cap spawn - sending the driver to repair a healthy ledger.
+    """
+    tracker = _tracker(tmp_path)
+    _seed(tracker, cost=1.0)
+
+    real_stat = Path.stat
+    fired = {"done": False}
+
+    def stat_then_append(self, *a, **kw):
+        st = real_stat(self, *a, **kw)
+        if self.name == "events.jsonl" and not fired["done"]:
+            fired["done"] = True
+            # A concurrent recorder appends AFTER our stat but before our read.
+            _seed(tracker, cost=2.0)
+        return st
+
+    monkeypatch.setattr(Path, "stat", stat_then_append)
+    _, cursor = tracker.read_events(strict=True)
+    monkeypatch.undo()
+
+    # Nothing was appended after the read, so the tail is empty - and must NOT be reported as
+    # an in-place rewrite.
+    assert tracker.events_after(cursor, strict=True) == []

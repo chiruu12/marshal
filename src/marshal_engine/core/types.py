@@ -136,14 +136,25 @@ class RunOutcome(str, Enum):
     That verdict arrives later, from whoever reviewed it, and is stamped on the run record.
 
     `INTEGRATED` is a mechanical fact - a merge commit exists - so it is never overwritten. The
-    other two are opinions and may be revised. Absence of an outcome means "not judged yet", which
-    is emphatically not the same as `REJECTED`: every routing number is a ratio over *judged* runs,
-    and conflating the two would silently count work nobody has looked at as work someone refused.
+    other verdicts are opinions and may be revised. Absence of an outcome means "not judged yet",
+    which is emphatically not the same as `REJECTED`: every routing number is a ratio over
+    *judged* runs, and conflating the two would silently count work nobody has looked at as work
+    someone refused.
+
+    `ADVISORY` exists because the other verdicts all assume the work was a diff. A read-only
+    reviewer, an audit, or a plan-consensus panel produces findings that get *used* while merging
+    nothing, and the only verdict that previously fit was `ABANDONED` - which reads as "gave up"
+    and, being a judged non-integration, drove the client's integration rate toward zero for work
+    it was never eligible to win. `ADVISORY` says the work was used and there was nothing to
+    merge; the routing ledger counts it as judged but keeps it out of the integration-rate
+    denominator. It is a verdict about the work, so it is not for a run that merely produced no
+    diff - that is `empty`, a status, or `REJECTED` if the findings were wrong.
     """
 
     INTEGRATED = "integrated"
     REJECTED = "rejected"
     ABANDONED = "abandoned"
+    ADVISORY = "advisory"
 
 
 class UsageSource(str, Enum):
@@ -258,6 +269,49 @@ class TaskSpec(BaseModel):
         return v
 
 
+class ProgressTimeout(BaseModel):
+    """Opt-in policy for ending a run on evidence of progress rather than on the clock alone.
+
+    A single wall-clock number treats two opposite situations identically: a run that stalled at
+    30s burns its whole cap before anyone notices, and a run still working at the cap is killed
+    with its tokens already spent. Elapsed time is not evidence about whether work is happening.
+
+    The hard ceiling is NEVER removed - a silent, hung process must always die, which is the
+    invariant this sits underneath. This policy only decides EARLIER kills (a stalled run) and
+    BOUNDED extensions (a productive one), always below `hard_ceiling_s`.
+
+    Progress is measured as the newest mtime under the run's worktree: backend-independent, and
+    it needs no per-backend calibration. The known blind spot is deliberate: an agent that
+    reasons for a long time without writing anything looks idle, which is why `stall_s` must sit
+    well above however long a backend legitimately stays quiet, and why this is opt-in.
+    """
+
+    enabled: bool = False
+    #: Kill once nothing under the worktree has changed for this long.
+    stall_s: int = 300
+    #: First deadline. A run still making progress here is extended, not killed. None = timeout_s.
+    soft_deadline_s: int | None = None
+    #: The backstop. Never exceeded, whatever progress says. None = timeout_s (no extension).
+    hard_ceiling_s: int | None = None
+    #: How often to re-measure progress.
+    poll_interval_s: int = 15
+
+
+
+def effective_timeout_s(opts: RunOpts) -> int:
+    """The run's real outer deadline in seconds - what actually ends it.
+
+    With a progress policy enabled the wall clock is no longer `timeout_s`: a run still writing
+    is extended up to `hard_ceiling_s`. A backend that derives its OWN deadline from `timeout_s`
+    would then self-terminate inside the window the policy exists to grant, so the extension
+    silently would not hold for that backend.
+    """
+    policy = opts.progress
+    if policy is not None and policy.enabled and policy.hard_ceiling_s:
+        return max(opts.timeout_s, policy.hard_ceiling_s)
+    return opts.timeout_s
+
+
 class RunOpts(BaseModel):
     """How to run a TaskSpec. Backend-agnostic; adapters translate these to native flags."""
 
@@ -272,6 +326,8 @@ class RunOpts(BaseModel):
     # Called by base.run() once the child has been REAPED. Until then the OS cannot reuse its pid,
     # so this is what tells a canceller that signalling that pid is no longer safe.
     on_exit: Callable[[], None] | None = None
+    #: Opt-in progress policy. None (the default) keeps the plain `timeout_s` wall clock.
+    progress: ProgressTimeout | None = None
 
 
 class UsageRecord(BaseModel):

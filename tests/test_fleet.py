@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -33,6 +34,7 @@ from marshal_engine.backends.cursor import SAFE_EDIT_DENY, CursorBackend
 from marshal_engine.core.config import BudgetSpec
 from marshal_engine.core.layout import artifacts_dir, runs_dir
 from marshal_engine.core.retry import RetryPolicy
+from marshal_engine.core.types import ProgressTimeout
 from marshal_engine.orchestration import fleet as fleet_mod
 from marshal_engine.orchestration import liveness as liveness_mod
 from marshal_engine.orchestration import provisioning as provisioning_mod
@@ -191,6 +193,50 @@ class _Sleeper(CodingAgentBackend):
     def inflight(self) -> int:
         with self._lock:
             return self._inflight
+
+
+class _BranchSwitcher(CodingAgentBackend):
+    """Does its work on a branch it created inside the clone, the way an agent asked to
+    "open a PR" routinely does."""
+
+    name = "switcher"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; s.run(['git','checkout','-q','-b','feature'],check=True);"
+            "open('feature.txt','w').write('the work'); print('done')"
+        )
+        return [sys.executable, "-c", script]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            text=raw_stdout.strip(),
+            exit_code=exit_code,
+        )
+
+
+class _OffBranchCommitter(_BranchSwitcher):
+    """Commits its work on a branch it made itself - so the run branch stays at the base."""
+
+    name = "offcommit"
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        script = (
+            "import subprocess as s; s.run(['git','checkout','-q','-b','feature'],check=True);"
+            "open('work.txt','w').write('hi');"
+            "s.run(['git','add','work.txt'],check=True);"
+            "s.run(['git','commit','--no-verify','-q','-m','agent'],check=True); print('done')"
+        )
+        return [sys.executable, "-c", script]
 
 
 class _SelfCommitter(CodingAgentBackend):
@@ -775,10 +821,10 @@ def test_a_cancel_during_the_backoff_sleep_stops_the_retry(
     real_start = liveness_mod._pid_start_time
     unconfirm = {"active": False}
 
-    def probe(pid: int) -> str | None:
+    def probe(pid: int, like: str | None = None) -> str | None:
         if unconfirm["active"]:
             return None
-        return real_start(pid)
+        return real_start(pid, like)
 
     # Patched on `liveness`, the module that owns the probe: `_identity_verdict` looks it up
     # there, so the toggle reaches the cancel comparison and nothing else. The stamping paths
@@ -902,6 +948,475 @@ def test_run_loop_stamps_failed_on_exception(repo: Path) -> None:
     assert len(runs) == 1
     assert runs[0].status == "failed"  # not left stranded as RUNNING
     assert runs[0].error and "kaboom" in runs[0].error
+
+
+class _UsageExploder(_Talker):
+    """The agent finishes cleanly; the usage seam raises afterwards (a provider admin-API fetch
+    is exactly that kind of seam). The failure path then runs with a real `result` in hand."""
+
+    name = "usageboom"
+
+    def extract_usage(self, result: AgentResult) -> UsageRecord | None:
+        raise RuntimeError("admin api down")
+
+
+def test_a_failure_after_the_agent_finished_still_stamps_failed_and_keeps_the_error(
+    repo: Path,
+) -> None:
+    """REGRESSION: `usage` was first bound AFTER `extract_usage`, and the failure path read it
+    whenever `result` was set. A seam raising between the two replaced the real exception with
+    an UnboundLocalError inside the except block - so the terminal stamp never ran and the record
+    stayed `running` forever, with the actual cause gone."""
+    fleet = Fleet(repo, {"usageboom": _UsageExploder("done")})
+    with pytest.raises(RuntimeError, match="admin api down"):
+        fleet.run("usageboom", TaskSpec(id="ub1", goal="x"))
+    (rec,) = fleet.state.list()
+    assert rec.status == "failed", "left stranded as running"
+    assert rec.error and "admin api down" in rec.error
+    # The run spent real tokens; its ledger line must exist even though it broke.
+    events = "".join(f.read_text() for f in Path(repo).rglob("events.jsonl"))
+    assert "ub1" in events
+
+
+def test_a_cancel_that_won_the_record_keeps_its_status_on_the_ledger(repo: Path) -> None:
+    """The failure path writes the run's ledger line with status `failed`, but a concurrent
+    cancel may already have terminal-stamped the record `cancelled` - and `update_if` rightly
+    leaves that alone. The ledger must say the same thing as the record it describes."""
+    fleet = Fleet(repo, {"usageboom": _UsageExploder("done")})
+
+    def cancel_then_raise(result: AgentResult) -> UsageRecord | None:
+        (running,) = fleet.state.list()  # the run id is minted by the fleet, not the task
+        fleet.state.update_if(
+            running.run_id, lambda r: True, status=RunStatus.CANCELLED.value, ended_at="now"
+        )
+        raise RuntimeError("admin api down")
+
+    fleet.backends["usageboom"].extract_usage = cancel_then_raise  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="admin api down"):
+        fleet.run("usageboom", TaskSpec(id="cx1", goal="x"))
+    (rec,) = fleet.state.list()
+    assert rec.status == "cancelled"
+    lines = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+        if "cx1" in line
+    ]
+    assert lines and all(ev["status"] == "cancelled" for ev in lines), lines
+
+
+def test_integrate_refuses_work_left_on_another_branch_instead_of_claiming_merged(
+    repo: Path,
+) -> None:
+    """REGRESSION (P0): the agent's uncommitted work sat on a branch it created in its clone.
+    commit_all committed it there, publish moved nothing, `merge` said "Already up to date" with
+    ok=True, and integrate returned `merged`, stamped the sticky `integrated` outcome, and (with
+    cleanup) deleted the only copy of the work. Now: a structured refusal that says where the
+    work is, nothing stamped, worktree kept."""
+    fleet = Fleet(repo, {"switcher": _BranchSwitcher()})
+    rec = fleet.run("switcher", TaskSpec(id="offbranch", goal="x"))
+    assert rec.status == "exited_clean"
+    collected = fleet.collect_run(rec.run_id)
+    assert "feature.txt" in collected.changed_files  # the work exists and is visible
+
+    result = fleet.integrate(rec.run_id)
+    assert result.status == "error", result
+    assert "feature" in result.message and rec.branch in result.message
+    after = fleet.state.get(rec.run_id)
+    assert after is not None and after.outcome is None and after.merged_into is None
+    assert Path(rec.worktree or "").exists(), "the only copy of the work was deleted"
+    tip = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert tip == rec.base_commit, "the target moved although nothing was integrated"
+
+
+def test_integrate_does_not_stamp_integrated_when_the_merge_landed_nothing(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt and braces under the refusal above: if git ever reports success for a merge that
+    left the target without the run's commit, `merged` and the sticky outcome are refused."""
+    from marshal_engine.runtime.worktree import MergeResult
+
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="phantom", goal="x"))
+    wt = fleet.worktrees
+    monkeypatch.setattr(wt, "commit_all", lambda w, m: "0" * 40)  # a sha the target never gets
+    monkeypatch.setattr(wt, "merged_diff_files", lambda b, t: [])
+    monkeypatch.setattr(wt, "merge", lambda b, **k: MergeResult(ok=True, message="Already up to date."))
+    result = fleet.integrate(rec.run_id)
+    assert result.status == "error" and "not reachable" in result.message
+    after = fleet.state.get(rec.run_id)
+    assert after is not None and after.outcome is None
+
+
+def test_collect_run_says_unavailable_not_nothing_for_work_left_on_another_branch(
+    repo: Path,
+) -> None:
+    """REGRESSION (P1): the agent committed on a branch it created, so the run branch still
+    pointed at the base and collect_run reported `produced="nothing"` - documented as "the run
+    genuinely produced neither". A driver branching on that field rejects a run whose work exists,
+    and routing then holds the rejection against the client."""
+    fleet = Fleet(repo, {"offcommit": _OffBranchCommitter()})
+    rec = fleet.run("offcommit", TaskSpec(id="offcommit", goal="x"))
+    assert rec.status == "exited_clean"
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "unavailable", collected
+    assert collected.unavailable_reason and "feature" in collected.unavailable_reason
+    assert collected.commit_count is None, "a count nobody could take must not read as zero"
+
+
+def test_collect_run_still_says_nothing_for_a_run_that_really_did_nothing(repo: Path) -> None:
+    """Anti-blanket control: the off-branch report must not turn every empty run into
+    `unavailable`, which would hide genuinely idle runs from the driver."""
+    fleet = Fleet(repo, {"noop": _NoOp()})
+    rec = fleet.run("noop", TaskSpec(id="idle", goal="x"))
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "nothing" and collected.unavailable_reason is None
+
+
+def test_integrate_cleanup_failure_does_not_hide_a_merge_that_landed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1): the post-merge worktree teardown was unguarded, so a teardown failure
+    raised out of integrate AFTER the merge landed and the record was stamped `integrated` - the
+    driver was told the call failed, and its retry then answered `empty`. The merge is a fact;
+    report the leftover instead of denying it."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cleanupfail", goal="x"))
+
+    def boom(_wt: object) -> None:
+        raise WorktreeError("worktree path is outside base dir")
+
+    monkeypatch.setattr(fleet.worktrees, "remove", boom)
+    result = fleet.integrate(rec.run_id, cleanup=True)
+    assert result.status == "merged", result
+    assert "could not be removed" in result.message
+    after = fleet.state.get(rec.run_id)
+    assert after is not None and after.outcome == "integrated"
+
+
+def test_a_job_that_fails_before_its_record_exists_is_still_addressable(repo: Path) -> None:
+    """REGRESSION (P1): a job dying inside `_start` - an argv preflight, an unsupported permission
+    mode, an enforce budget, base-branch resolution - had never been stamped, so run_many handed
+    back a synthesized id (`<task>.<backend>`) that matched no record anywhere. The driver could
+    not `get_run`, `collect_run` or `set_outcome` the failure, and `report` (which rebuilds a
+    benchmark from the recorded runs) dropped that strategy from the comparison silently."""
+
+    class _NoSafeEdit(_Writer):
+        name = "picky"
+        capabilities = Capabilities(permission_modes={PermissionMode.READ_ONLY})
+
+    fleet = Fleet(repo, {"picky": _NoSafeEdit(), "writer": _Writer()})
+    results = fleet.run_many([
+        RunManyJob(request=RunRequest(backend_name="picky", task=TaskSpec(id="bench", goal="x"))),
+        RunManyJob(request=RunRequest(backend_name="writer", task=TaskSpec(id="bench", goal="x"))),
+    ])
+    failed = next(r.primary for r in results if r.primary.backend == "picky")
+    assert failed.status == "failed" and failed.error
+    assert fleet.state.get(failed.run_id) is not None, "the failure is not addressable"
+    # Both strategies are in the recorded runs a benchmark report is derived from.
+    assert {r.backend for r in fleet.state.list() if r.task_id == "bench"} == {"picky", "writer"}
+
+
+def test_a_read_only_run_is_never_given_the_progress_policy(repo: Path) -> None:
+    """REGRESSION (P1): the only progress signal is the worktree's newest mtime, and a read-only
+    agent writes nothing by construction - so an actively working reviewer registered no progress
+    and was killed at `stall_s`. That is every reviewer in every `run_team` panel, and the reports
+    were lost with them."""
+    seen: list[object] = []
+
+    class _Capture(_Writer):
+        name = "capture"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            seen.append(opts.progress)
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="ok")
+
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=30)
+    fleet = Fleet(repo, {"capture": _Capture()}, progress_timeout=policy)
+    fleet.run_request(
+        RunRequest(
+            backend_name="capture",
+            task=TaskSpec(id="ro", goal="review"),
+            permission=PermissionMode.READ_ONLY,
+        )
+    )
+    assert seen == [None], "a read-only reviewer was put under the stall clock"
+
+    fleet.run_request(
+        RunRequest(
+            backend_name="capture",
+            task=TaskSpec(id="rw", goal="write"),
+            permission=PermissionMode.SAFE_EDIT,
+        )
+    )
+    assert seen[1] is policy, "a writing run must still get the policy"
+
+
+class _RetryingTokened(CodingAgentBackend):
+    """Fails transiently twice, each attempt reporting native usage, then succeeds."""
+
+    name = "retrytok"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [sys.executable, "-c", "pass"]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        raise AssertionError("run() is overridden")
+
+    def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+        self.calls += 1
+        usage = UsageRecord(
+            backend="retrytok", input_tokens=100, output_tokens=10, cost_usd=0.02,
+            source=UsageSource.NATIVE,
+        )
+        if self.calls < 3:
+            return AgentResult(
+                status=RunStatus.FAILED, error="connection reset by peer",
+                usage=usage, duration_ms=1000,
+            )
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN, text="done",
+            usage=UsageRecord(
+                backend="retrytok", input_tokens=7, output_tokens=3, cost_usd=0.005,
+                source=UsageSource.NATIVE,
+            ),
+            duration_ms=500,
+        )
+
+
+def test_a_retried_runs_ledger_duration_covers_every_attempt(repo: Path) -> None:
+    """REGRESSION (P2): tokens and cost were folded across retried attempts but duration was the
+    LAST attempt's alone, so the run's own numbers disagreed - and `routing` ranks clients on the
+    mean of this column, making a client whose runs retry look faster than one whose runs do not."""
+    fleet = Fleet(repo, {"retrytok": _RetryingTokened()}, retries=RetryPolicy(max_attempts=3))
+    rec = fleet.run("retrytok", TaskSpec(id="retdur", goal="x"))
+    assert rec.status == "exited_clean" and rec.attempts == 3
+    assert rec.duration_ms == 2500, "duration excluded the retried-away attempts"
+    events = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+    ]
+    (event,) = [e for e in events if e["run_id"] == rec.run_id]
+    assert event["duration_ms"] == 2500
+    assert event["input_tokens"] == 207, "tokens were already folded; duration must match"
+
+
+def test_a_measured_admin_api_cost_is_not_discarded(repo: Path) -> None:
+    """REGRESSION (P2): `_price_usage` kept only `native`, so a backend using the documented
+    `extract_usage` extension point to report a real provider cost had it rewritten to $0 /
+    unavailable. "Never fabricate cost" has an inverse, and throwing a measured one away is it."""
+
+    class _AdminPriced(_Talker):
+        name = "adminpriced"
+
+        def extract_usage(self, result: AgentResult) -> UsageRecord | None:
+            return UsageRecord(
+                backend="adminpriced", input_tokens=5, output_tokens=1, cost_usd=0.42,
+                source=UsageSource.ADMIN_API,
+            )
+
+    fleet = Fleet(repo, {"adminpriced": _AdminPriced("ok")})
+    rec = fleet.run("adminpriced", TaskSpec(id="adminp", goal="x"))
+    assert rec.cost_usd == 0.42 and rec.source == "admin-api"
+
+
+def test_collect_run_on_a_running_run_does_not_claim_it_produced_nothing(repo: Path) -> None:
+    """REGRESSION (P2): collect_run had no status guard, so an in-flight run was read mid-write
+    and reported `produced="nothing"` - documented as "the run genuinely produced neither" -
+    seconds before the same run reported a diff."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="stillrunning", goal="x"))
+    fleet.state.update(rec.run_id, status="running", ended_at=None)
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "unavailable"
+    assert collected.unavailable_reason and "still running" in collected.unavailable_reason
+
+
+def test_collect_run_reason_says_why_the_work_could_not_be_read(repo: Path) -> None:
+    """REGRESSION (P2): `unavailable_reason` preferred the run's own `error`, so a cleaned run
+    answered "why is there no diff" with "the agent timed out" - a true sentence about a
+    different question, and the actual reason was discarded."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    rec = fleet.run("writer", TaskSpec(id="cleaned", goal="x"))
+    fleet.state.update(rec.run_id, error="agent run timed out after 600s")
+    fleet.clean(run_ids=[rec.run_id])
+    collected = fleet.collect_run(rec.run_id)
+    assert collected.produced == "unavailable"
+    reason = collected.unavailable_reason or ""
+    assert "timed out" in reason, "the run's own error is worth carrying, as context"
+    assert reason != "agent run timed out after 600s", (
+        "the reason still answers 'why did the run end' instead of 'why can the work not be read'"
+    )
+    assert "worktree" in reason or "no longer exists" in reason, reason
+
+
+def test_a_failure_after_the_agent_ran_records_what_the_run_actually_did(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P2, two of them): when the bookkeeping broke after the agent had run, the
+    failure path recorded only the FINAL attempt's usage - a partial figure stamped `native`, the
+    measured-looking undercount "never fabricate cost" exists to prevent - and left the record at
+    its defaults, `attempts: 1` and `duration_ms: null`, which the docs define as "the run never
+    reached a backend" for a run whose agent had run three times."""
+    backend = _RetryingTokened()
+    fleet = Fleet(repo, {"retrytok": backend}, retries=RetryPolicy(max_attempts=3))
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("bookkeeping exploded")
+
+    # Raises after the agent ran, before any usage was gathered - the window the failure path
+    # has to cover on its own.
+    monkeypatch.setattr(fleet_mod, "_apply_structured_output", boom)
+    with pytest.raises(RuntimeError, match="bookkeeping exploded"):
+        fleet.run("retrytok", TaskSpec(id="failfold", goal="x"))
+
+    (rec,) = fleet.state.list()
+    assert rec.status == "failed"
+    assert rec.attempts == 3, "the record said the backend was invoked once"
+    assert rec.duration_ms == 2500, "the record said the run never reached a backend"
+    events = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+    ]
+    (event,) = [e for e in events if e["run_id"] == rec.run_id]
+    assert event["input_tokens"] == 207, "the ledger line omitted the retried-away attempts"
+    assert event["output_tokens"] == 23
+
+
+def test_a_cancel_that_wins_the_record_keeps_the_runs_measured_facts(repo: Path) -> None:
+    """REGRESSION (P2): on the ordinary cancel path the terminal stamp is refused, and the run's
+    measured cost, tokens and duration were refused with it - so `get_run` said nothing had been
+    measured for a run the ledger prices. The ledger also kept the backend's exit status, so the
+    two histories of one run disagreed about what happened to it."""
+    started = threading.Event()
+    release = threading.Event()
+
+    class _WritesAndCounts(_Writer):
+        """Writes a file (so the verify gate runs) and reports usage."""
+
+        name = "wc"
+
+        def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+            res = super().parse_output(raw_stdout, raw_stderr, exit_code)
+            return res.model_copy(update={
+                "usage": UsageRecord(
+                    backend="wc", input_tokens=11, output_tokens=2, cost_usd=0.01,
+                    source=UsageSource.NATIVE,
+                ),
+                "duration_ms": 1234,
+            })
+
+    fleet = Fleet(repo, {"wc": _WritesAndCounts()}, verify=[sys.executable, "-c", "pass"])
+    real_verify = fleet.worktrees.verify
+
+    def slow_verify(wt: object) -> object:
+        started.set()
+        release.wait(timeout=10)
+        return real_verify(wt)  # type: ignore[arg-type]
+
+    fleet.worktrees.verify = slow_verify  # type: ignore[method-assign]
+    run_id = fleet.spawn(RunRequest(backend_name="wc", task=TaskSpec(id="cancelfacts", goal="x")))
+    assert started.wait(timeout=15), "the run never reached the verify gate"
+    # Another process's cancel: stamp the record terminal while this one is still finalizing.
+    fleet.state.update_if(
+        run_id, lambda r: r.status == "running", status="cancelled",
+        ended_at=fleet_mod._now(),
+    )
+    release.set()
+    deadline = time.monotonic() + 15
+    rec = None
+    while time.monotonic() < deadline:
+        rec = fleet.state.get(run_id)
+        if rec and rec.status != "running" and rec.cost_usd is not None:
+            break
+        time.sleep(0.05)
+    assert rec is not None and rec.status == "cancelled", rec
+    assert rec.cost_usd is not None, "the run's measured spend was dropped with the status"
+    assert rec.input_tokens is not None and rec.duration_ms is not None
+    events = [
+        json.loads(line)
+        for f in Path(repo).rglob("events.jsonl")
+        for line in f.read_text().splitlines()
+    ]
+    (event,) = [e for e in events if e["run_id"] == run_id]
+    assert event["status"] == "cancelled", "the ledger disagreed with the record about the run"
+
+
+def test_a_client_env_credential_is_redacted_from_the_run_record(repo: Path) -> None:
+    """REGRESSION (P1): a per-client `env:` credential is not in THIS process's environment, so
+    the ambient scrub cannot see it. The run LOG was passed it explicitly and the record was not -
+    so the value the log was careful to hide was persisted in `text` and handed straight back to
+    the driver by `get_run` and `collect_run`."""
+    secret = "sk-client-env-secret-value-123456"
+
+    class _Echoes(_Talker):
+        name = "echoes"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            return AgentResult(
+                status=RunStatus.EXITED_CLEAN,
+                text=f"I used the key {secret} to authenticate",
+                error=f"and again in the error: {secret}",
+                structured={"note": f"and in structured output: {secret}"},
+            )
+
+    fleet = Fleet(repo, {"echoes": _Echoes("x")})
+    rec = fleet.run_request(
+        RunRequest(
+            backend_name="echoes",
+            task=TaskSpec(id="leak", goal="x"),
+            client_env={"PROVIDER_AUTH": secret},
+        )
+    )
+    assert secret not in rec.text
+    assert secret not in (rec.error or "")
+    assert secret not in json.dumps(rec.structured or {})
+    assert "[redacted:" in rec.text
+
+
+def test_a_total_is_not_called_measured_when_the_final_attempt_reported_nothing(
+    repo: Path,
+) -> None:
+    """REGRESSION (P2): if the final attempt reported no usage while an earlier one did, the fold
+    took the earlier record as its base and kept its `native` label - stating a measured total
+    that is missing the last attempt's spend entirely. That is the same undercount-presented-as-a-
+    measurement the fold exists to prevent, arriving from the other end."""
+
+    class _LastAttemptSilent(_RetryingTokened):
+        name = "lastsilent"
+
+        def run(self, task: TaskSpec, opts: RunOpts) -> AgentResult:
+            self.calls += 1
+            if self.calls < 3:
+                return AgentResult(
+                    status=RunStatus.FAILED, error="connection reset by peer", duration_ms=1000,
+                    usage=UsageRecord(
+                        backend="lastsilent", input_tokens=100, output_tokens=10,
+                        cost_usd=0.02, source=UsageSource.NATIVE,
+                    ),
+                )
+            return AgentResult(status=RunStatus.EXITED_CLEAN, text="done", duration_ms=500)
+
+    fleet = Fleet(repo, {"lastsilent": _LastAttemptSilent()}, retries=RetryPolicy(max_attempts=3))
+    rec = fleet.run("lastsilent", TaskSpec(id="silentlast", goal="x"))
+    assert rec.attempts == 3
+    assert rec.source == "unavailable", "a partial total was labelled a measurement"
+    assert rec.cost_usd is None or rec.cost_usd == 0.0
 
 
 # --- run-record text redaction: must precede the 16KB truncate -----------------------------
@@ -1904,7 +2419,10 @@ def test_cancel_does_not_signal_after_reap_that_lands_mid_cancel(
         monkeypatch.setattr(fleet_mod, "_cancel_after_handle_snapshot", None)
 
     assert killed == [], "signalled a pid after the child was reaped (recycle risk)"
-    assert rec.status == RunStatus.CANCELLED.value
+    # The reap means the agent FINISHED. Stamping `cancelled` here would refuse the terminal
+    # stamp that carries its cost, text and verify result, so the record is left for the
+    # finalizer (see test_cancel_after_the_agent_finished_keeps_the_completed_result).
+    assert rec.status == RunStatus.RUNNING.value
 
 
 def test_cancel_of_live_run_still_signals(
@@ -2085,7 +2603,7 @@ def test_cancel_unconfirmed_when_identity_probe_fails(
 
     killed: list[int] = []
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(pgid))
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     monkeypatch.setattr(fleet_mod, "_pid_alive", lambda pid: True)
 
     fleet = Fleet(repo, {"writer": _Writer()})
@@ -2125,7 +2643,7 @@ def test_cancel_of_verified_live_run_still_signals_and_stamps_cancelled(
         _os, "killpg", lambda pgid, sig: killed.append((pgid, sig))
     )
     started = f"{PINNED}Mon Jan  1 00:00:00 2026"
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: started)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: started)
 
     fleet = Fleet(repo, {"writer": _Writer()})
     run_id = "verifcancel.writer.deadbeef"
@@ -2768,7 +3286,7 @@ def test_supervisor_identity_is_stamped_whole_or_not_at_all(
 ) -> None:
     """A pid without a verifiable start time is worse than no pid: it would be trusted on bare
     liveness, and after a reboot recycles the number it reads as a live supervisor forever."""
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     assert _supervisor_identity() == (None, None)
 
 
@@ -3539,9 +4057,15 @@ def test_a_run_records_its_pid_start_time(repo: Path) -> None:
     rec = fleet.run("writer", TaskSpec(id="pst1", goal="x"))
     stored = fleet.state.get(rec.run_id)
     # A run that reached a live pid must have stamped the identity pair (pid + start time).
-    # `ps -o lstart=` shape is a non-empty string with a clock (`HH:MM:SS`).
+    # The reading is marked with its source - `ps -o lstart=`, or `/proc` on Linux - and the
+    # marker is the part that matters: it is what lets a later reader know how to compare it.
+    from marshal_engine.orchestration.liveness import (
+        _PINNED_IDENTITY_PREFIX,
+        _PROC_IDENTITY_PREFIX,
+    )
+
     assert isinstance(stored.pid_start_time, str) and stored.pid_start_time.strip()
-    assert ":" in stored.pid_start_time
+    assert stored.pid_start_time.startswith((_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX))
 
 
 def test_cancel_before_the_pid_is_known_still_stops_the_agent(
@@ -3645,7 +4169,51 @@ def test_cancel_does_not_signal_after_the_child_is_reaped(
 
     rec = fleet.cancel_run(run_id)
     assert killed == [], "signalled a pid that may already have been recycled"
-    assert rec.status == RunStatus.CANCELLED.value
+    assert rec.status == RunStatus.RUNNING.value  # finished, not cancelled - see the test below
+
+
+def test_cancel_after_the_agent_finished_keeps_the_completed_result(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1): a cancel that arrived while a finished run was still being finalized (the
+    verify gate can run for minutes) stamped `cancelled`, which then made the terminal stamp lose
+    the race - so a run whose agent exited 0 was recorded cancelled with no cost, no text and no
+    verify result, while its ledger line said `exited_clean`, and the default `clean` scope listed
+    the worktree holding the finished work for deletion."""
+    import threading
+
+    reaped = threading.Event()
+    release = threading.Event()
+    # A real verify gate: this is the window in production (a test suite can run for minutes),
+    # and it sits between the agent being reaped and the terminal stamp.
+    fleet = Fleet(repo, {"writer": _Writer()}, verify=[sys.executable, "-c", "pass"])
+
+    real_verify = fleet.worktrees.verify
+
+    def slow_verify(wt: object) -> object:
+        reaped.set()  # the agent has exited; we are inside finalization
+        release.wait(timeout=10)
+        return real_verify(wt)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fleet.worktrees, "verify", slow_verify)
+    run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="late", goal="x")))
+    assert reaped.wait(timeout=15), "the run never reached finalization"
+
+    cancelled = fleet.cancel_run(run_id)
+    assert cancelled.status == "running", "a finished run was recorded as cancelled"
+    release.set()
+    deadline = time.monotonic() + 15
+    rec = None
+    while time.monotonic() < deadline:
+        rec = fleet.state.get(run_id)
+        if rec and rec.status != "running":
+            break
+        time.sleep(0.05)
+    assert rec is not None and rec.status == "exited_clean", rec
+    assert rec.text, "the completed run's text was discarded"
+    events = "".join(f.read_text() for f in Path(repo).rglob("events.jsonl"))
+    assert "exited_clean" in events
+    assert run_id not in fleet.clean(scope="finished", dry_run=True).removed
 
 
 def test_cancel_signals_the_retry_after_an_earlier_attempt_exited(
@@ -4004,7 +4572,7 @@ def test_an_unprobeable_pid_does_not_count_as_verified(repo: Path) -> None:
     )
     monkey = pytest.MonkeyPatch()
     monkey.setattr(liveness_mod, "_pid_alive", lambda pid: True)  # the process exists...
-    monkey.setattr(liveness_mod, "_pid_start_time", lambda pid: None)  # ...but cannot be identified
+    monkey.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)  # ...but cannot be identified
     try:
         assert liveness_mod._pid_is_still_ours(rec) is True, "the fail-open helper changed meaning"
         assert liveness_mod._pid_is_verifiably_ours(rec) is False
@@ -5492,9 +6060,17 @@ def test_integrate_and_collect_on_setup_failed_run(repo: Path) -> None:
         assert integrated.status == "error"
         assert rec.error and rec.error in integrated.message
 
+        # The record is stamped `failed` a few lines before the run thread unregisters itself,
+        # and clean deliberately skips a run still in flight in this process. Wait for the
+        # handoff, or this races on a slow runner and reads the skip as a failure to reap.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and fleet_mod._inflight_in_this_process(
+            fleet.state.dir, run_id
+        ):
+            time.sleep(0.05)
         # clean reaps setup-failed runs like other terminal non-success statuses
         cleaned = fleet.clean(scope="finished")
-        assert run_id in cleaned.removed
+        assert run_id in cleaned.removed, cleaned.skipped
     finally:
         fleet.shutdown()
 
@@ -5763,6 +6339,29 @@ def test_structured_output_tolerates_a_single_json_fence(repo: Path) -> None:
     )
     assert rec.status == RunStatus.EXITED_CLEAN.value
     assert rec.structured == {"score": 3}
+
+
+def test_structured_output_tolerates_narration_before_a_fenced_object(repo: Path) -> None:
+    """REGRESSION (P1): the two tolerances did not compose. A whole-message fence was accepted and
+    leading narration was accepted, but narration THEN a fence was failed as "trailing prose after
+    JSON object" - the trailing text being the closing fence itself. That is the single commonest
+    LLM reply shape, and the run had produced exactly one conforming object."""
+    fleet = Fleet(repo, {"talker": _Talker('Here is the result:\n```json\n{"score": 5}\n```\n')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-narrated", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+    assert rec.status == RunStatus.EXITED_CLEAN.value, rec.error
+    assert rec.structured == {"score": 5}
+
+
+def test_structured_output_still_refuses_two_fenced_objects(repo: Path) -> None:
+    """Anti-blanket control: lifting an object out from behind narration must not start guessing
+    between candidates - "which one did you mean" stays a failure."""
+    two = 'First:\n```json\n{"score": 1}\n```\nand also:\n```json\n{"score": 2}\n```'
+    fleet = Fleet(repo, {"talker": _Talker(two)})
+    rec = fleet.run("talker", TaskSpec(id="so-two", goal="rate it", output_schema=_SCORE_SCHEMA))
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None and rec.error and "structured_output:" in rec.error
 
 
 def test_structured_output_rejects_prose_as_distinct_validation_failure(repo: Path) -> None:
@@ -6035,6 +6634,44 @@ def test_an_artifact_written_in_one_run_reaches_the_next(repo: Path) -> None:
         "reader", TaskSpec(id="round2", goal="fix it", artifacts_from=[first.run_id])
     )
     assert second.text == "the bug is on line 12", "round 2 could not read round 1's report"
+
+
+def test_a_denylisted_artifact_blames_artifacts_from_not_read_paths(repo: Path) -> None:
+    """REGRESSION (P2): the artifact mount reuses the read_paths copier, so a harvested artifact
+    with a credential-shaped name refused the whole mount with a message naming `read_paths` - a
+    setting the driver had not used - and listing a stale subset of the patterns that actually
+    refuse. Harvest stores any file the agent wrote, so this is reachable without any misuse."""
+
+    class _WritesEnvExample(_Reporter):
+        name = "envwriter"
+
+        def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+            script = (
+                "import os; os.makedirs('.marshal-artifacts', exist_ok=True);"
+                "open('.marshal-artifacts/.env.example','w').write('EXAMPLE=1');"
+                "open('.marshal-artifacts/report.md','w').write('fine'); print('done')"
+            )
+            return [sys.executable, "-c", script]
+
+    fleet = Fleet(repo, {"envwriter": _WritesEnvExample(), "reader": _Reader()})
+    first = fleet.run("envwriter", TaskSpec(id="artdeny", goal="write"))
+    assert ".env.example" in first.artifacts
+
+    with pytest.raises(ValueError) as exc:
+        fleet.run("reader", TaskSpec(id="artdeny2", goal="x", artifacts_from=[first.run_id]))
+    msg = str(exc.value)
+    assert "artifacts_from refuses" in msg, msg
+    assert "read_paths refuses" not in msg
+    assert ".netrc" in msg, "the message still lists a stale subset of the real patterns"
+
+
+def test_a_denylisted_read_path_still_blames_read_paths(repo: Path) -> None:
+    """Anti-blanket control: naming the caller must not relabel the read_paths refusal itself."""
+    secret = repo / ".env.local"
+    secret.write_text("TOKEN=1")
+    fleet = Fleet(repo, {"reader": _Reader()})
+    with pytest.raises(ValueError, match="read_paths refuses"):
+        fleet.run("reader", TaskSpec(id="rpdeny", goal="x", read_paths=[".env.local"]))
 
 
 def test_an_artifact_survives_the_worktree_it_was_written_in(repo: Path) -> None:
@@ -6764,3 +7401,149 @@ def test_cleanup_still_removes_the_worktree_of_a_settled_run(repo: Path) -> None
 
     assert rec.status == RunStatus.EXITED_CLEAN.value
     assert not (rec.worktree and Path(rec.worktree).exists()), "cleanup stopped removing worktrees"
+
+
+def test_a_git_timeout_counting_commits_does_not_lose_the_run(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: `agent_commit_count` promises None on git failure, but a TIMEOUT raises.
+
+    The sibling `changed_files` call is guarded; this one was not. Because it runs before
+    `usage.record`, a slow git turned a clean run into `failed` AND dropped its ledger line -
+    the run vanished from every cost, budget and routing figure.
+    """
+    def boom(wt: object) -> int:
+        raise WorktreeError("git 'rev-list ...' timed out after 120s")
+
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    monkeypatch.setattr(fleet.worktrees, "agent_commit_count", boom)
+
+    rec = fleet.run("selfcommit", TaskSpec(id="sc-timeout", goal="x"))
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    events = [e for e in fleet.usage.read_events(strict=True)[0] if e.run_id == rec.run_id]
+    assert len(events) == 1, "the run must still have exactly one ledger line"
+
+
+def test_a_failed_job_reports_an_addressable_run_id(repo: Path) -> None:
+    """REGRESSION: run_many synthesized `<task>.<backend>`, an id matching no record.
+
+    The driver was handed that as `primary.run_id`, so it could not get_run / collect_run /
+    set_outcome the failure, while the genuine failed record sat in the ledger under the id it
+    was really written with.
+    """
+    from marshal_engine.orchestration.fleet import RunManyJob
+
+    fleet = Fleet(repo, {"boom": _Exploder()})
+    results = fleet.run_many(
+        [RunManyJob(request=RunRequest(backend_name="boom", task=TaskSpec(id="bad", goal="x")))]
+    )
+
+    primary = results[0].primary
+    assert primary.status == RunStatus.FAILED.value
+    # The id must resolve to a real record.
+    assert fleet.state.get(primary.run_id) is not None
+    assert primary.run_id in {r.run_id for r in fleet.state.list()}
+
+
+def test_structured_output_accepts_narration_before_the_object(repo: Path) -> None:
+    """REGRESSION (#328): 11 of 14 audit runs were stamped `failed` for doing exactly this.
+
+    The Cursor CLI narrates as part of its final message; the conforming object followed the
+    prose and was sitting in `text` the whole time. With one object present there is nothing to
+    choose between, so refusing was strictness that bought no safety and cost a whole fan-out.
+    """
+    narrated = (
+        "I'll audit the liveness area read-only: conventions first, then those three files."
+        'Checking how these helpers are used for cancel/reap.{"score": 4}'
+    )
+    fleet = Fleet(repo, {"talker": _Talker(narrated)})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-lead", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    assert rec.status == RunStatus.EXITED_CLEAN.value
+    assert rec.structured == {"score": 4}
+    assert rec.error is None
+
+
+def test_structured_output_still_refuses_when_several_objects_are_present(repo: Path) -> None:
+    """The property the strictness actually protects: never guess which object was meant."""
+    fleet = Fleet(repo, {"talker": _Talker('First draft {"score": 1} but actually {"score": 9}')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-many", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.structured is None
+    assert rec.error is not None and "cannot tell which one" in rec.error
+
+
+def test_structured_output_still_refuses_prose_after_a_narrated_object(repo: Path) -> None:
+    """Leading prose is now fine; trailing prose is still a refusal, and both can co-occur."""
+    fleet = Fleet(repo, {"talker": _Talker('Here you go: {"score": 4}\nHope that helps!')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-both", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.error is not None and "trailing prose" in rec.error
+
+
+def test_a_brace_in_narration_does_not_defeat_extraction(repo: Path) -> None:
+    """A brace in prose is not a JSON object; it must not read as a second candidate."""
+    fleet = Fleet(repo, {"talker": _Talker('Pass {} to reset, then: {"score": 2}')})
+    rec = fleet.run(
+        "talker", TaskSpec(id="so-brace", goal="rate it", output_schema=_SCORE_SCHEMA)
+    )
+
+    # `{}` IS a valid top-level object, so this is genuinely ambiguous and must refuse - the
+    # honest outcome, and the reason the refusal counts objects rather than guessing the last.
+    assert rec.status == RunStatus.FAILED.value
+    assert rec.error is not None and "cannot tell which one" in rec.error
+
+
+def test_a_run_that_broke_after_the_agent_still_reaches_the_ledger(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: the failure path stamped `failed` and wrote no ledger line.
+
+    Everything between `backend.run` and `usage.record` can raise - the verify gate, the commit
+    count, the event build. The agent's tokens were spent regardless, and the run then vanished
+    from every cost, budget and routing figure. One line per run, including runs that broke.
+    """
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    # Raises at line 797, BEFORE usage.record at 822 - the window where the line was lost.
+    def explode(*a: object, **kw: object) -> object:
+        raise RuntimeError("status classification exploded")
+
+    monkeypatch.setattr(fleet, "_authoritative_status", explode)
+
+    with pytest.raises(RuntimeError):
+        fleet.run("selfcommit", TaskSpec(id="lost-ledger", goal="x"))
+
+    events, _ = fleet.usage.read_events(strict=True)
+    lost = [e for e in events if e.run_id.startswith("lost-ledger")]
+    assert len(lost) == 1, "the broken run must still have exactly one ledger line"
+    assert lost[0].status == RunStatus.FAILED.value
+
+
+def test_a_run_that_broke_after_recording_is_not_counted_twice(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction, which is worse: never bill one run's spend twice."""
+    fleet = Fleet(repo, {"selfcommit": _SilentSelfCommitter()})
+    real_update = fleet.state.update_if
+
+    def explode_after_recording(*a: object, **kw: object) -> object:
+        raise RuntimeError("stamp exploded")
+
+    monkeypatch.setattr(fleet.state, "update_if", explode_after_recording)
+
+    with pytest.raises(RuntimeError):
+        fleet.run("selfcommit", TaskSpec(id="double-bill", goal="x"))
+
+    events, _ = fleet.usage.read_events(strict=True)
+    billed = [e for e in events if e.run_id.startswith("double-bill")]
+    assert len(billed) == 1, "usage.record already ran; the failure path must not add a second"
+    assert real_update is not None

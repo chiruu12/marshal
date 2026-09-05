@@ -60,6 +60,69 @@ def _dead_pid() -> int:
 # --------------------------------------------------------------------------------------
 
 
+def test_a_linux_identity_is_boot_relative_and_survives_a_clock_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P1, Linux): `ps -o lstart=` is derived from the CURRENT boot-time estimate, so
+    an NTP correction re-renders the start time of a process that never restarted. The identity
+    check then read a LIVE agent as "somebody else's pid" - the one reading that authorises
+    reaping it. `/proc/<pid>/stat` field 22 counts from boot and cannot drift with the clock."""
+    from marshal_engine.orchestration import liveness as liveness_mod
+
+    proc_dir = tmp_path / "proc" / "4242"
+    proc_dir.mkdir(parents=True)
+    # A comm containing spaces and a ')' - the shape that breaks naive field splitting.
+    (proc_dir / "stat").write_text(
+        "4242 (my weird ) name) S 1 4242 4242 0 -1 4194304 0 0 0 0 1 2 0 0 20 0 1 0 987654 0 0\n"
+    )
+    real_open = open
+
+    def fake_open(path, *a, **kw):  # noqa: ANN001, ANN202
+        if str(path) == "/proc/4242/stat":
+            return real_open(proc_dir / "stat", *a, **kw)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    stamped = liveness_mod._pid_start_time(4242)
+    assert stamped is not None and stamped.startswith(liveness_mod._PROC_IDENTITY_PREFIX)
+    assert stamped.endswith("987654"), stamped
+
+    # The clock steps; ps would now render a different lstart. The boot-relative value does not
+    # move, so the identity still verifies as the same process.
+    monkeypatch.setattr(liveness_mod, "_pid_alive", lambda _pid: True)
+    assert liveness_mod._identity_verdict(4242, stamped) is True
+
+
+def test_a_stamp_is_re_read_with_the_source_that_wrote_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upgrade changes which source writes new stamps, and the records already on disk keep
+    theirs. Probing with the preferred source and comparing across the two would make every
+    pre-upgrade record unverifiable - which fails OPEN, leaving stale locks, claims and
+    reservations that nothing ever reclaims. Each stamp is re-read with its own source."""
+    from marshal_engine.orchestration import liveness as liveness_mod
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        liveness_mod,
+        "_ps_start_time",
+        lambda pid: (asked.append("ps"), f"{liveness_mod._PINNED_IDENTITY_PREFIX}stamp")[1],
+    )
+    monkeypatch.setattr(
+        liveness_mod,
+        "_proc_start_ticks",
+        lambda pid: (asked.append("proc"), f"{liveness_mod._PROC_IDENTITY_PREFIX}123")[1],
+    )
+    old_stamp = f"{liveness_mod._PINNED_IDENTITY_PREFIX}stamp"
+    assert liveness_mod._identity_verdict(4242, old_stamp) is True
+    assert asked == ["ps"], "a pre-upgrade stamp was checked against the wrong source"
+
+    asked.clear()
+    new_stamp = f"{liveness_mod._PROC_IDENTITY_PREFIX}123"
+    assert liveness_mod._identity_verdict(4242, new_stamp) is True
+    assert asked == ["proc"]
+
+
 def test_pid_alive_assumes_alive_when_the_probe_is_denied(monkeypatch: pytest.MonkeyPatch) -> None:
     # A pid owned by another user answers EPERM, not ESRCH - the process EXISTS, we just may not
     # signal it. Reading that ambiguity as "dead" would reap a live run, so the only safe reading
@@ -76,9 +139,21 @@ def test_pid_alive_is_false_for_a_genuinely_absent_process() -> None:
     assert _pid_alive(_dead_pid()) is False
 
 
+def _no_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the /proc reading, so the `ps` fallback is the one under test.
+
+    On Linux /proc answers first (and should: a working /proc must not be defeated by a broken
+    `ps`), so these three only reach `ps` once it is out of the way. The property they pin is
+    "NO source could answer, therefore None" - unverifiable, which every caller must read as
+    "spare it", never as "different, therefore reapable".
+    """
+    monkeypatch.setattr(liveness_mod, "_proc_start_ticks", lambda _pid: None)
+
+
 def test_pid_start_time_is_none_when_ps_cannot_be_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    # No `ps` on PATH, or a fork that fails under load. None means "unverifiable", and every
-    # caller is required to treat that as "spare it", never as "different, therefore reapable".
+    # No `ps` on PATH, or a fork that fails under load.
+    _no_proc(monkeypatch)
+
     def no_ps(*args: object, **kwargs: object) -> None:
         raise OSError(2, "No such file or directory: 'ps'")
 
@@ -87,6 +162,8 @@ def test_pid_start_time_is_none_when_ps_cannot_be_run(monkeypatch: pytest.Monkey
 
 
 def test_pid_start_time_is_none_when_ps_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_proc(monkeypatch)
+
     def slow_ps(*args: object, **kwargs: object) -> None:
         raise subprocess.TimeoutExpired(cmd="ps", timeout=5)
 
@@ -97,9 +174,59 @@ def test_pid_start_time_is_none_when_ps_times_out(monkeypatch: pytest.MonkeyPatc
 def test_pid_start_time_is_none_when_ps_prints_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     # `ps -p <gone>` exits non-zero with empty stdout. An empty string must not be returned as a
     # start time: two unverifiable pids would then compare EQUAL and impersonate each other.
+    _no_proc(monkeypatch)
     completed = subprocess.CompletedProcess(args=["ps"], returncode=1, stdout="  \n", stderr="")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: completed)
     assert _pid_start_time(LIVE_PID) is None
+
+
+@pytest.mark.parametrize("module", ["liveness", "budgets"])
+def test_the_linux_identity_path_end_to_end_in_both_copies(
+    module: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercises the Linux-only branch on any host, in BOTH copies of the probe.
+
+    Written because this branch was developed on macOS, where nothing runs it: the first two
+    attempts at it were wrong in ways only Linux CI could see. It pins the two properties that
+    matter - a new stamp verifies against itself, and a stamp written by the OLD source still
+    compares (False here), rather than becoming unverifiable, which would fail open and leave
+    stale locks, claims and reservations that nothing reclaims.
+    """
+    from marshal_engine.accounting import budgets as budgets_mod
+
+    mod = liveness_mod if module == "liveness" else budgets_mod
+    stat = tmp_path / "stat"
+    # A comm containing spaces and a ')' - the shape that breaks naive field splitting.
+    stat.write_text("4242 (my weird ) name) S 1 4242 4242 0 -1 0 0 0 0 0 1 2 0 0 20 0 1 0 987654 0 0\n")
+    real_open = open
+
+    def fake_open(path, *a, **kw):  # noqa: ANN001, ANN202
+        return real_open(stat if str(path).startswith("/proc/") else path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    stamped = mod._pid_start_time(LIVE_PID)
+    assert stamped == f"{mod._PROC_IDENTITY_PREFIX}987654"
+    assert mod._identity_verdict(LIVE_PID, stamped) is True
+
+    old_stamp = f"{mod._PINNED_IDENTITY_PREFIX}Thu Jan  1 00:00:00 1970"
+    assert mod._identity_verdict(LIVE_PID, old_stamp) is False, (
+        "a pre-upgrade stamp became unverifiable instead of comparing - that fails open"
+    )
+
+
+def test_a_working_proc_reading_is_not_defeated_by_a_broken_ps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The converse, and the reason the three above needed changing: where /proc answers, a `ps`
+    that is missing, slow or silent must not turn a verifiable identity into an unverifiable one -
+    unverifiable fails open, so it is not a free direction."""
+    monkeypatch.setattr(liveness_mod, "_proc_start_ticks", lambda _pid: "proc/starttime|4242")
+
+    def no_ps(*args: object, **kwargs: object) -> None:
+        raise OSError(2, "No such file or directory: 'ps'")
+
+    monkeypatch.setattr(subprocess, "run", no_ps)
+    assert _pid_start_time(LIVE_PID) == "proc/starttime|4242"
 
 
 def test_pid_start_time_reads_the_real_start_time_of_a_live_process() -> None:
@@ -176,7 +303,7 @@ def test_claim_with_an_unprobeable_start_time_is_held(
     # Unverifiable errs toward sparing: deleting a possibly-live create is the worse mistake.
     payload = {"pid": LIVE_PID, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     _creating_claim_path(tmp_path, "r1").write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     assert _creating_claim_held(tmp_path, "r1") is True
 
 
@@ -203,7 +330,7 @@ def test_unverifiable_claim_writer_stamps_written_at_instead_of_refusing(
     # Probe failed: still write (a create must stay shielded), and stamp written_at so the hold
     # can age out. Raising here would leave mid-create worktrees unprotected; omitting written_at
     # would recreate the forever-hold wedge once the pid is recycled.
-    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid, like=None: None)
     _write_creating_claim(tmp_path, "r1")
     data = json.loads(_creating_claim_path(tmp_path, "r1").read_text(encoding="utf-8"))
     assert data["pid"] == LIVE_PID
@@ -265,7 +392,7 @@ def test_live_holder_with_an_unprobeable_start_time_is_assumed_held(
     lock = tmp_path / "fleet.lock"
     payload = {"pid": 1, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     lock.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     assert _another_fleet_active(lock) is True
 
 
@@ -280,7 +407,11 @@ def test_recycled_pid_does_not_impersonate_the_lock_holder(
     lock = tmp_path / "fleet.lock"
     payload = {"pid": 1, "pid_start_time": f"{PINNED}Thu Jan  1 00:00:00 1970"}
     lock.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: f"{PINNED}Fri Jan  2 00:00:00 1970")
+    monkeypatch.setattr(
+        liveness_mod,
+        "_pid_start_time",
+        lambda pid, like=None: f"{PINNED}Fri Jan  2 00:00:00 1970",
+    )
     assert _another_fleet_active(lock) is False
 
 
@@ -382,7 +513,7 @@ def test_claim_succeeds_when_start_time_probe_is_unavailable(
     # OPPOSITE of the wedge fix: a host without `ps` must still claim the lock and supervise.
     # The previous wrong fix raised from the writer; `_claim_fleet_lock` caught OSError and
     # returned False, so Marshal supervised nothing. Degrade - publish with written_at.
-    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(liveness_mod, "_pid_start_time", lambda pid, like=None: None)
     lock = tmp_path / "fleet.lock"
     assert _claim_fleet_lock(lock) is True
     data = json.loads(lock.read_text(encoding="utf-8"))
@@ -428,7 +559,7 @@ def test_publish_pid_records_a_just_forked_pid_when_start_time_probe_fails(
     # the OS holds the number until we reap. Refusing to stamp the pid turns cancel into a
     # silent no-op. Mutation: `_publish_pid` skips setting handle.pid when started is None
     # makes this fail.
-    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid: None)
+    monkeypatch.setattr(inflight_mod, "_pid_start_time", lambda pid, like=None: None)
     handle = _register_inflight_run(tmp_path, "r.publish")
     try:
         pending = _publish_pid(handle, 4242)
@@ -563,9 +694,14 @@ def test_both_layers_mark_a_pinned_start_time_the_same_way() -> None:
     two never read each other's stamps - and the last time this probe was corrected, only one of
     the two copies got the fix."""
     from marshal_engine.accounting.budgets import _PINNED_IDENTITY_PREFIX as BUDGETS_PINNED
+    from marshal_engine.accounting.budgets import _PROC_IDENTITY_PREFIX as BUDGETS_PROC
+    from marshal_engine.orchestration.liveness import _PROC_IDENTITY_PREFIX as LIVENESS_PROC
 
     assert BUDGETS_PINNED == PINNED
-    assert _pid_start_time(LIVE_PID).startswith(PINNED)  # type: ignore[union-attr]
+    # Both markers, for the same reason: the Linux probe was added to one copy first, and the
+    # two never read each other's stamps, so nothing else would notice the drift.
+    assert BUDGETS_PROC == LIVENESS_PROC
+    assert _pid_start_time(LIVE_PID).startswith((PINNED, LIVENESS_PROC))  # type: ignore[union-attr]
 
 
 def test_a_timed_out_run_whose_kill_landed_is_writable() -> None:

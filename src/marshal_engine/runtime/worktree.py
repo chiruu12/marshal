@@ -116,6 +116,12 @@ class Worktree(BaseModel):
     base_commit: str | None = None
 
 
+#: Config overrides for every git call made INSIDE a run's clone (see `WorktreeManager._git`).
+#: `core.fsmonitor` names a program git runs on every status/diff; the clone's config is
+#: agent-writable, so it is never honoured there (it is an optimisation Marshal does not need).
+_CLONE_SIDE_GIT_OVERRIDES: tuple[str, ...] = ("-c", "core.fsmonitor=false")
+
+
 class MergeResult(BaseModel):
     """Outcome of merging a worktree branch back into the current branch."""
 
@@ -202,17 +208,36 @@ class WorktreeManager:
         return self._git(*args)
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        # These git calls run on the driver's checkout (commit/merge/status), so they get the same
-        # headless guards as agent runs: stdin closed + a hard timeout so a credential/lock/hook
-        # prompt fails fast instead of hanging the driver. GIT_TERMINAL_PROMPT=0 turns an auth
-        # prompt into an error rather than a wait.
+        # These git calls get the same headless guards as agent runs: stdin closed + a hard
+        # timeout so a credential/lock/hook prompt fails fast instead of hanging the driver.
+        # GIT_TERMINAL_PROMPT=0 turns an auth prompt into an error rather than a wait.
+        #
+        # A call with `cwd` runs INSIDE a run's clone, and the clone is agent-controlled: its
+        # `.git/config` and `.git/hooks` are plain files the agent can write, and git will execute
+        # what they name (core.fsmonitor on every `status`, post-commit on every commit, external
+        # diff drivers on `diff`) - as Marshal, at collect/commit/integrate time, long after the
+        # run ended. So clone-side git gets the same allowlisted environment the agent got (the
+        # driver's credentials never reach code the agent wrote) and the execution hooks git
+        # honours from repo config are switched off; opting into `integrate_run_hooks` keeps hooks
+        # and only hooks. Driver-side calls (no `cwd`) run against the operator's own checkout and
+        # keep the full environment.
+        # LC_ALL=C keeps git's messages in English so stderr matching (e.g. the blocked-merge
+        # detection in merge()) is stable across locales.
+        headless = {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+        if cwd is None:
+            argv = ["git", "-C", str(self.repo_root), *args]
+            env: Mapping[str, str] = {**os.environ, **headless}
+        else:
+            argv = ["git", "-C", str(cwd), *_CLONE_SIDE_GIT_OVERRIDES]
+            if not self.integrate_run_hooks:
+                argv += ["-c", f"core.hooksPath={os.devnull}"]
+            argv += list(args)
+            env = child_env(headless)
         try:
             return _run_group(
-                ["git", "-C", str(cwd or self.repo_root), *args],
+                argv,
                 cwd=cwd or self.repo_root,
-                # LC_ALL=C keeps git's messages in English so stderr matching (e.g. the
-                # blocked-merge detection in merge()) is stable across locales.
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
+                env=env,
                 timeout=self.git_timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
@@ -309,7 +334,7 @@ class WorktreeManager:
         self._inherit_identity(path)
 
         if self.integrate_run_hooks:
-            _copy_repo_hooks(self.repo_root, path)
+            _copy_repo_hooks(self.repo_root, path, self._git)
 
         # Published while still empty so the branch exists in the driver's repo from `create`, as it
         # did when this was a linked worktree. Callers ask about it before the run has committed
@@ -515,7 +540,12 @@ class WorktreeManager:
             status, path = tok[:2], tok[3:]
             if path:
                 files.append(path)
-            i += 2 if status and status[0] in ("R", "C") else 1  # rename/copy: skip the old-path field
+            # A rename/copy emits the old path as its own field, which must be skipped or it is
+            # parsed as a status record and truncated by three characters into a path that does
+            # not exist. Git reports it in EITHER column: index-side (`R `) and worktree-side
+            # (` R`, what `git add -N` on a moved file produces) both carry the extra field, and
+            # testing only the index column let the worktree-side form through.
+            i += 2 if any(c in ("R", "C") for c in status) else 1
         return files
 
     def diff(self, wt: Worktree) -> str:
@@ -525,7 +555,9 @@ class WorktreeManager:
         those are appended as against-/dev/null diffs. Read-only: the index is not modified.
         """
         parts: list[str] = []
-        tracked = self._git("diff", "HEAD", cwd=wt.path)
+        # `--no-ext-diff --no-textconv`: both name programs from repo config + .gitattributes, and
+        # both are agent-writable in the clone.
+        tracked = self._git("diff", "--no-ext-diff", "--no-textconv", "HEAD", cwd=wt.path)
         if tracked.returncode != 0:
             raise WorktreeError(f"diff failed for {wt.task_id!r}: {tracked.stderr.strip()}")
         if tracked.stdout:
@@ -545,7 +577,10 @@ class WorktreeManager:
             # `changed_files` while contributing no hunk - a driver then reviews a filename with
             # no content and either integrates it unread or rejects the run for producing an
             # empty file. A diff that is silently incomplete is worse than one that fails loudly.
-            added = self._git("diff", "--no-index", "--", "/dev/null", path, cwd=wt.path)
+            added = self._git(
+                "diff", "--no-ext-diff", "--no-textconv", "--no-index", "--", "/dev/null", path,
+                cwd=wt.path,
+            )
             if added.returncode > 1:
                 raise WorktreeError(
                     f"diff failed for {wt.task_id!r} on new file {path!r}: "
@@ -563,6 +598,7 @@ class WorktreeManager:
         so possibly agent-modified hook scripts are not executed; set
         ``integrate_run_hooks=True`` only for non-interactive hooks with trusted provenance.
         """
+        self._require_on_run_branch(wt)
         add = self._git("add", "-A", cwd=wt.path)
         if add.returncode != 0:
             raise WorktreeError(f"add failed for {wt.task_id!r}: {add.stderr.strip()}")
@@ -631,6 +667,46 @@ class WorktreeManager:
         itself, which never pass through `commit_all` - exist only in the clone until this runs.
         """
         self._publish(wt, "publish")
+
+    def _require_on_run_branch(self, wt: Worktree) -> None:
+        """Refuse to commit or publish unless the clone's HEAD is its own run branch.
+
+        Only `refs/heads/<run branch>` is ever published to the repo. An agent that ran
+        `git checkout -b feature` (or was stopped mid-rebase, leaving HEAD detached) has its work
+        on a ref that publishing never looks at: committing it would land on that other ref, the
+        run branch would still point at the base, and integrate would then merge nothing, report
+        `merged`, stamp `integrated`, and - with cleanup - delete the only copy. Refusing here
+        keeps the work where it is and tells the driver exactly where. Publishing itself is not
+        gated: fetching the (unchanged) run branch is harmless, and `collect_run` publishes
+        before it reads the diff - the driver must still be able to SEE off-branch work.
+        """
+        where = self.off_run_branch(wt)
+        if where is None:
+            return
+        sha = self._git("rev-parse", "--short=12", "HEAD", cwd=wt.path).stdout.strip()
+        raise WorktreeError(
+            f"run {wt.task_id!r} left its clone on {where} instead of its run branch "
+            f"{wt.branch!r}; only the run branch is published to the repo, so committing or "
+            f"integrating from here would land nothing and report success. The work is at {sha} in "
+            f"{wt.path}: commit it there and `git checkout {wt.branch}` + cherry-pick it onto the "
+            "run branch (or re-run the task), then retry."
+        )
+
+    def off_run_branch(self, wt: Worktree) -> str | None:
+        """Where the clone's HEAD is, when that is NOT the run's own branch; None when it is.
+
+        Read-only and non-raising, so `collect_run` can REPORT the condition while `commit_all`
+        refuses on it. Both need the same answer, and a driver that is told "produced nothing"
+        for work sitting on another branch has been told something false.
+        """
+        head = self._git("symbolic-ref", "-q", "HEAD", cwd=wt.path)
+        if head.returncode == 0:
+            ref = head.stdout.strip()
+            if ref == f"refs/heads/{wt.branch}":
+                return None
+            return f"branch {ref.removeprefix('refs/heads/')!r}"
+        sha = self._git("rev-parse", "--short=12", "HEAD", cwd=wt.path).stdout.strip()
+        return f"a detached HEAD at {sha}"
 
     def _publish(self, wt: Worktree, what: str) -> None:
         """Copy the run's branch out of its clone and into the driver's repo.
@@ -793,6 +869,21 @@ class WorktreeManager:
         if message is not None:
             args += ["-m", message]
         args.append(branch)
+        # An operation already in progress in the DRIVER's checkout is the operator's, not ours.
+        # git refuses to start a merge on top of it, and the failure then looks exactly like one
+        # we caused: the pre-existing conflicted files read as this run's conflicts, and the abort
+        # below throws away a resolution someone was in the middle of hand-editing. Check first,
+        # touch nothing, and say whose state is in the way.
+        busy = self._operation_in_progress()
+        if busy:
+            return MergeResult(
+                ok=False,
+                blocked=True,
+                message=(
+                    f"the repo is in the middle of a {busy}; Marshal will not abort an operation "
+                    "it did not start. Finish or abort it yourself, then retry the integrate."
+                ),
+            )
         proc = self._git(*args)
         if proc.returncode == 0:
             return MergeResult(ok=True, message=proc.stdout.strip())
@@ -827,6 +918,30 @@ class WorktreeManager:
 
     def _merge_in_progress(self) -> bool:
         return self._git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+
+    def _operation_in_progress(self) -> str | None:
+        """Name the multi-step git operation the driver checkout is mid-way through, if any.
+
+        Every one of these makes `git merge` refuse, and every one holds work in progress that
+        `merge --abort` (or a mis-attributed conflict list) would destroy or misreport.
+        """
+        proc = self._git("rev-parse", "--git-dir")
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        root = Path(proc.stdout.strip())
+        if not root.is_absolute():
+            root = self.repo_root / root
+        for marker, label in (
+            ("MERGE_HEAD", "merge"),
+            ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REVERT_HEAD", "revert"),
+            ("BISECT_LOG", "bisect"),
+        ):
+            if (root / marker).exists():
+                return label
+        if (root / "rebase-merge").exists() or (root / "rebase-apply").exists():
+            return "rebase"
+        return None
 
     def _conflicted_files(self) -> list[str]:
         # -z: verbatim, NUL-delimited paths (no C-quoting of spaces/non-ASCII names).
@@ -918,7 +1033,34 @@ class WorktreeManager:
             self._delete_managed_branch(branch)
 
 
-def _copy_repo_hooks(repo_root: Path, clone_path: Path) -> None:
+def _resolve_hooks_dir(
+    repo_root: Path, git: Callable[..., subprocess.CompletedProcess[str]]
+) -> Path | None:
+    """Where the operator's hooks actually live, or None when the repo has none.
+
+    Two shapes broke the naive ``<repo>/.git/hooks``, and both are ordinary rather than exotic:
+    ``core.hooksPath`` (husky and lefthook both set it, so the real hooks are elsewhere and
+    ``.git/hooks`` holds only git's inert samples), and a linked worktree, whose ``.git`` is a
+    FILE pointing at the common dir - so the directory test failed and nothing was copied at all.
+    """
+    configured = git("config", "--get", "core.hooksPath")
+    if configured.returncode == 0 and configured.stdout.strip():
+        path = Path(configured.stdout.strip()).expanduser()
+        return path if path.is_absolute() else (repo_root / path)
+    common = git("rev-parse", "--git-common-dir")
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    root = Path(common.stdout.strip())
+    if not root.is_absolute():
+        root = repo_root / root
+    return root / "hooks"
+
+
+def _copy_repo_hooks(
+    repo_root: Path,
+    clone_path: Path,
+    git: Callable[..., subprocess.CompletedProcess[str]],
+) -> None:
     """Copy the repo's hooks into a run's clone. Only called when ``integrate_run_hooks`` is set.
 
     A clone does not inherit hooks, which is mostly the point - but an operator who explicitly opted
@@ -926,16 +1068,24 @@ def _copy_repo_hooks(repo_root: Path, clone_path: Path) -> None:
     would be a gate that reports success without ever having executed. Copied, never linked: the
     run gets its own copy to execute, so an agent editing it cannot reach back into the repo's.
     """
-    src = repo_root / ".git" / "hooks"
+    src = _resolve_hooks_dir(repo_root, git)
     dest = clone_path / ".git" / "hooks"
-    if not src.is_dir():
+    if src is None or not src.is_dir():
         return
     # `symlinks=False` DEREFERENCES: a hook that is a symlink to a file outside the repo would
     # otherwise be recreated as that same absolute link inside a directory the agent can write, so
     # writing "its own" hook would overwrite the operator's real file - and that edit outlives the
     # run. Copying contents means the run gets something it can only damage for itself.
-    with contextlib.suppress(OSError):
+    # Raised, not suppressed: the whole value of the opt-in is that the gate runs, so a run whose
+    # hooks were quietly dropped would commit unguarded while reporting success.
+    try:
         shutil.copytree(src, dest, dirs_exist_ok=True, symlinks=False)
+    except OSError as exc:
+        raise WorktreeError(
+            f"integrate_run_hooks is set but the repo's hooks ({src}) could not be copied into "
+            f"the run's clone: {exc}. Refusing to start a run whose commit gate would silently "
+            "not run."
+        ) from exc
 
 
 def _run_group(

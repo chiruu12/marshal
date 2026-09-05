@@ -163,14 +163,19 @@ this step.
 
 ## 6. Record the outcome - what you rejected, not just what you merged
 `integrate` records `integrated` for you. Nothing records the other half, so **call
-`set_outcome(run_id, "rejected"|"abandoned", note?)` on every run you decide not to merge**:
+`set_outcome(run_id, "rejected"|"abandoned"|"advisory", note?)` on every run you decide not to
+merge**:
 - `rejected` - you reviewed it and the work was wrong, off-scope, or worse than a sibling's.
 - `abandoned` - you gave up on it (superseded, no longer needed, the task was wrong).
+- `advisory` - it produced findings you USED and there was nothing to merge (a read-only review,
+  audit, or plan panel). Reach for this instead of `abandoned` there: `abandoned` reads as giving
+  up, and counts against a reviewer's integration rate for merges it could never have produced.
 
 Why it matters: declining to integrate leaves **no trace**, so a run you reviewed and threw away is
 indistinguishable from one nobody has looked at. `routing` computes every rate over *judged* runs
-only - if you record integrations and never rejections, it reports a 100% success rate for every
-client and tells you nothing.
+only (the integration rate over the judged runs that could have merged - `advisory` ones are kept
+out of it) - if you record integrations and never rejections, it reports a 100% success rate for
+every client and tells you nothing.
 
 Add a `note` when the reason is not obvious from the diff; it is what your future self reads out of
 `routing`. `integrated` is sticky (a merge commit is a fact, not an opinion) - trying to overwrite

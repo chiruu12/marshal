@@ -139,7 +139,7 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
             _format_budget_amount(r.spent_usd, known=r.spent_known) if r.limit_usd is not None else "-",
             f"${r.limit_usd:.4f}" if r.limit_usd is not None else "-",
             _format_budget_remaining(r),
-            str(r.runs_unmeasured) if r.limit_runs is not None else "-",
+            _format_unmeasured_runs(r),
             str(r.limit_runs) if r.limit_runs is not None else "-",
             "enforce" if r.enforce else "soft-warn",
         )
@@ -147,6 +147,15 @@ def _print_budget_table(rows: Sequence[BudgetStatus]) -> None:
     ]
     for line in _align_rows(header, table_rows):
         print(f"  {line}")
+
+
+def _format_unmeasured_runs(r: BudgetStatus) -> str:
+    """Unmeasured runs for this budget, or an honest "unknown" - never a fake zero."""
+    if r.limit_runs is None:
+        return "-"                    # dollars-only budget: no run cap to count against
+    if not r.runs_known:
+        return "unavailable"          # the count could not be read; 0 would read as "all clear"
+    return str(r.runs_unmeasured)
 
 
 def _format_budget_remaining(r: BudgetStatus) -> str:
@@ -166,8 +175,14 @@ def _format_integration_rate(cell: RoutingCell) -> str:
     failed, it has not been looked at.
     """
     if cell.integration_rate is None:
+        if cell.n_advisory:
+            return f"advisory ({cell.n_advisory} of {cell.n_runs}, nothing to merge)"
         return f"unknown (0 of {cell.n_runs} judged)"
-    return f"{cell.integration_rate * 100:.0f}% ({cell.n_integrated}/{cell.n_judged} judged)"
+    suffix = f", {cell.n_advisory} advisory" if cell.n_advisory else ""
+    return (
+        f"{cell.integration_rate * 100:.0f}% "
+        f"({cell.n_integrated}/{cell.n_integrable} integrable{suffix})"
+    )
 
 
 def _format_cell_cost(cell: RoutingCell) -> str:

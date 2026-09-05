@@ -972,6 +972,51 @@ def test_build_invocation_derives_print_timeout_from_opts(
     assert argv[argv.index("--print-timeout") + 1] == "1795s"
 
 
+def test_the_dead_trust_sweep_recognises_a_run_tree_under_a_custom_marshal_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P2): the sweep matched only the literal `/.marshal/worktrees/` segment, but run
+    trees live under `<MARSHAL_HOME>/worktrees/<repo>-<digest>/` - and `MARSHAL_HOME` is a
+    documented setting. With one configured, the self-healing sweep never fired and dead paths
+    accumulated in the host's global agy trust list forever."""
+    from marshal_engine.backends.antigravity import _is_marshal_worktree
+
+    monkeypatch.setenv("MARSHAL_HOME", str(tmp_path / "scratch"))
+    run_tree = str(tmp_path / "scratch" / "worktrees" / "repo-abc123def456" / "t1.agy.deadbeef")
+    assert _is_marshal_worktree(run_tree)
+    # The legacy in-repo layout still matches...
+    assert _is_marshal_worktree("/Users/x/proj/.marshal/worktrees/t1")
+    # ...and a path that is simply the user's own is still left alone.
+    assert not _is_marshal_worktree(str(tmp_path / "my-project"))
+
+
+def test_print_timeout_follows_the_progress_ceiling_not_the_base_timeout() -> None:
+    """REGRESSION (P1): agy's own print deadline was derived from `timeout_s`, so with a progress
+    policy enabled a productive run self-terminated inside the very window the policy grants -
+    and agy's ERROR envelope made it a task FAILURE, not even a timeout. The extension has to
+    hold for every backend, including the ones that carry a deadline of their own."""
+    from marshal_engine.core.types import ProgressTimeout
+
+    policy = ProgressTimeout(enabled=True, soft_deadline_s=900, hard_ceiling_s=1800)
+    argv = AntigravityBackend().build_invocation(
+        TaskSpec(id="t1", goal="x"),
+        _opts(permission=PermissionMode.SAFE_EDIT, timeout_s=600, progress=policy),
+    )
+    assert argv[argv.index("--print-timeout") + 1] == "1795s"
+
+
+def test_print_timeout_ignores_a_disabled_progress_policy() -> None:
+    """Anti-blanket control: a policy that is present but off must not widen the deadline."""
+    from marshal_engine.core.types import ProgressTimeout
+
+    policy = ProgressTimeout(enabled=False, hard_ceiling_s=1800)
+    argv = AntigravityBackend().build_invocation(
+        TaskSpec(id="t1", goal="x"),
+        _opts(permission=PermissionMode.SAFE_EDIT, timeout_s=600, progress=policy),
+    )
+    assert argv[argv.index("--print-timeout") + 1] == "595s"
+
+
 # --- slash-command hijack -------------------------------------------------------------------
 
 
@@ -1036,3 +1081,88 @@ def test_read_only_slash_check_sees_the_composed_prompt(backend: AntigravityBack
             TaskSpec(id="t1", goal="/usage", context_files=["a.py"]),
             _opts(permission=PermissionMode.READ_ONLY),
         )
+
+
+def test_exit_zero_with_empty_response_carries_agys_own_reason(
+    backend: AntigravityBackend,
+) -> None:
+    """A headless auto-deny exits 0 with an empty response; the driver must see WHY.
+
+    Without the reason the record is indistinguishable from an agent that genuinely found
+    nothing, so a read-only review reads as NO FINDINGS having read nothing at all.
+    """
+    stdout = json.dumps(
+        {
+            "conversation_id": "c1",
+            "status": "SUCCESS",
+            "response": "",
+            "usage": {"input_tokens": 126599, "output_tokens": 3592},
+        }
+    )
+    stderr = (
+        'jetski: no output produced — a tool required the "command" permission that headless '
+        "mode cannot prompt for, so it was auto-denied."
+    )
+    result = backend.parse_output(stdout, stderr, 0)
+
+    assert result.status is RunStatus.EXITED_CLEAN
+    assert result.text == ""
+    assert result.error is not None
+    assert "auto-denied" in result.error
+    # The tokens were still spent and must reach the ledger.
+    assert result.usage.input_tokens == 126599
+
+
+def test_exit_zero_with_real_response_carries_no_error(backend: AntigravityBackend) -> None:
+    """The anti-blanket control: a run that produced text is not annotated with stderr noise."""
+    stdout = json.dumps({"conversation_id": "c1", "status": "SUCCESS", "response": "NO FINDINGS"})
+    result = backend.parse_output(stdout, "some harmless warning on stderr", 0)
+
+    assert result.status is RunStatus.EXITED_CLEAN
+    assert result.text == "NO FINDINGS"
+    assert result.error is None
+
+
+def test_error_envelope_on_exit_zero_is_a_failure(backend: AntigravityBackend) -> None:
+    """agy's print-timeout returns status=ERROR with exit 0; that is a failed run, not a clean one.
+
+    `--print-timeout` is deliberately set just inside the run timeout so agy answers with a
+    parseable envelope instead of being hard-killed. Reading only the exit code turned that
+    well-behaved timeout into a reported success carrying PARTIAL text.
+    """
+    stdout = json.dumps(
+        {
+            "conversation_id": "c1",
+            "status": "ERROR",
+            "error": "timeout waiting for response",
+            "response": "I began refactoring the parser and",
+            "usage": {"input_tokens": 900, "output_tokens": 40},
+        }
+    )
+    result = backend.parse_output(stdout, "", 0)
+
+    assert result.status is RunStatus.FAILED
+    assert result.error is not None
+    assert "timeout waiting for response" in result.error
+    # The partial turn still spent these tokens - they belong in the ledger.
+    assert result.usage.input_tokens == 900
+    assert result.text.startswith("I began refactoring")
+
+
+def test_unrecognised_envelope_status_fails_closed(backend: AntigravityBackend) -> None:
+    """An unknown status is a failure: a false failure costs a re-run, a false success costs more."""
+    stdout = json.dumps({"conversation_id": "c1", "status": "PARTIAL", "response": "half a turn"})
+    result = backend.parse_output(stdout, "", 0)
+
+    assert result.status is RunStatus.FAILED
+    assert result.error is not None and "PARTIAL" in result.error
+
+
+def test_success_envelope_is_still_clean(backend: AntigravityBackend) -> None:
+    """Anti-blanket control: the ordinary SUCCESS path must not be swept into the failure branch."""
+    stdout = json.dumps({"conversation_id": "c1", "status": "SUCCESS", "response": "done"})
+    result = backend.parse_output(stdout, "", 0)
+
+    assert result.status is RunStatus.EXITED_CLEAN
+    assert result.error is None
+    assert result.text == "done"

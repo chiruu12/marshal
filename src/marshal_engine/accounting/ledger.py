@@ -61,7 +61,8 @@ def normalize_task_kind(raw: str | None) -> str:
 _INTEGRATED: Final[str] = RunOutcome.INTEGRATED.value
 _REJECTED: Final[str] = RunOutcome.REJECTED.value
 _ABANDONED: Final[str] = RunOutcome.ABANDONED.value
-_JUDGED: Final[frozenset[str]] = frozenset({_INTEGRATED, _REJECTED, _ABANDONED})
+_ADVISORY: Final[str] = RunOutcome.ADVISORY.value
+_JUDGED: Final[frozenset[str]] = frozenset({_INTEGRATED, _REJECTED, _ABANDONED, _ADVISORY})
 
 
 class RoutingCell(BaseModel):
@@ -79,12 +80,19 @@ class RoutingCell(BaseModel):
     n_integrated: int = 0
     n_rejected: int = 0
     n_abandoned: int = 0
+    #: Judged, and deliberately NOT part of `integration_rate`'s denominator. See `n_integrable`.
+    n_advisory: int = 0
     n_unjudged: int = 0      # run record exists, nobody has judged it
     n_no_record: int = 0     # the run record is gone; counted in n_runs, never in n_judged
 
-    #: Integrated over JUDGED runs, not over all runs. `None` when nothing has been judged - a
-    #: rate over an empty denominator is not 0%, it is unknown, and rendering it as 0 would
-    #: defame a client nobody has reviewed yet.
+    #: Judged runs that could have produced a merge - `n_judged` minus `n_advisory`. Advisory
+    #: work merges nothing by definition, so counting it here would score a reviewer on a race it
+    #: never entered.
+    n_integrable: int = 0
+
+    #: Integrated over INTEGRABLE runs, not over all runs and not over all judged ones. `None`
+    #: when nothing integrable has been judged - a rate over an empty denominator is not 0%, it
+    #: is unknown, and rendering it as 0 would defame a client nobody has reviewed yet.
     integration_rate: float | None = None
 
     mean_duration_ms: float | None = None
@@ -181,12 +189,15 @@ def summarize_routing(
                 integrated_cost[key] = round(integrated_cost.get(key, 0.0) + event.cost_usd, 6)
         elif verdict == _REJECTED:
             cell.n_rejected += 1
+        elif verdict == _ADVISORY:
+            cell.n_advisory += 1
         else:
             cell.n_abandoned += 1
 
     for key, cell in cells.items():
-        if cell.n_judged:
-            cell.integration_rate = round(cell.n_integrated / cell.n_judged, 4)
+        cell.n_integrable = cell.n_judged - cell.n_advisory
+        if cell.n_integrable:
+            cell.integration_rate = round(cell.n_integrated / cell.n_integrable, 4)
         if cell.duration_runs:
             cell.mean_duration_ms = round(duration_totals[key] / cell.duration_runs, 1)
         if cell.priced_integrated_runs:
@@ -234,6 +245,8 @@ def rank_cells(cells: Sequence[RoutingCell]) -> list[RoutingCell]:
     1. Judged or not. A cell with no recorded verdict has no evidence and cannot be ranked; it
        sorts last in its group and keeps `rank=None`. It is still returned, with its counts.
     2. Integration rate, descending. This is the question being asked - did the work get kept.
+       A cell whose judged runs are all `advisory` has no such rate: it merged nothing because
+       there was nothing to merge, so it sorts with the unranked rather than at 0%.
     3. Mean duration, ascending; unknown duration sorts as infinity, so it can lose a tiebreak
        but never win one.
     4. Mean measured cost per integrated run, ascending; **unmeasured cost sorts as infinity**.
@@ -271,10 +284,16 @@ def _evidence(cell: RoutingCell) -> str:
     """One line a human or an agent can quote, with the sample size attached to the claim."""
     if not cell.n_judged:
         return f"{cell.n_runs} run(s), none judged yet"
+    advisory = f", {cell.n_advisory} advisory" if cell.n_advisory else ""
+    if not cell.n_integrable:
+        return (
+            f"{cell.n_advisory} advisory run(s) out of {cell.n_runs} - work used without a merge, "
+            "so there is no integration rate to rank on"
+        )
     pct = f"{(cell.integration_rate or 0.0) * 100:.0f}%"
     return (
-        f"{cell.n_integrated}/{cell.n_judged} judged runs integrated ({pct}, n={cell.n_judged})"
-        f" out of {cell.n_runs} run(s)"
+        f"{cell.n_integrated}/{cell.n_integrable} integrable runs integrated "
+        f"({pct}, n={cell.n_integrable}{advisory}) out of {cell.n_runs} run(s)"
     )
 
 
@@ -293,6 +312,11 @@ def _notes(cell: RoutingCell) -> list[str]:
         notes.append(
             f"cost measured for {cell.priced_integrated_runs}/{cell.n_integrated} integrated run(s)"
         )
-    if cell.n_judged and cell.n_judged < 3:
-        notes.append(f"small sample (n={cell.n_judged}) - treat the rate as weak evidence")
+    if cell.n_advisory:
+        notes.append(
+            f"{cell.n_advisory} advisory run(s) - work used with nothing to merge; judged, but "
+            "excluded from the integration rate rather than counted against it"
+        )
+    if cell.n_integrable and cell.n_integrable < 3:
+        notes.append(f"small sample (n={cell.n_integrable}) - treat the rate as weak evidence")
     return notes

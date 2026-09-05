@@ -934,7 +934,7 @@ def test_still_unavailable_client_keeps_raising(repo: Path) -> None:
     svc, _be = _toggle_svc(repo)
     with pytest.raises(ValueError, match="client 'late' skipped"):
         svc.run_agent("late", "go", task_id="t1")
-    with pytest.raises(ValueError, match="CLI unavailable"):
+    with pytest.raises(ValueError, match="not available on PATH"):
         svc.run_agent("late", "go", task_id="t2")  # reprobe found nothing; still skipped
     assert svc.skipped_clients == ["late"]
 
@@ -1379,6 +1379,42 @@ def test_list_clients_names_the_clients_it_dropped_and_why(repo: Path) -> None:
     assert "not available on PATH" in dropped["ghost"].reason
 
 
+def test_set_outcome_reconciles_a_dead_supervisors_run_before_judging_it(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P2): every other read path reconciles orphans, but set_outcome judged the raw
+    state - so a run whose supervisor had died was refused with "still running; wait for it to
+    finish", naming a run that never would. A get_run in between flipped it to failed and the
+    identical call then succeeded."""
+    cfg = FleetConfig(clients={"w": ClientConfig(name="w", backend="echo")})
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    svc.fleet.state.add(
+        RunRecord(
+            run_id="orphan.echo.deadbeef", task_id="orphan", backend="echo",
+            status="running", supervisor_pid=999_999, started_at="2020-01-01T00:00:00+00:00",
+        )
+    )
+    result = svc.set_outcome("orphan.echo.deadbeef", "rejected", note="reviewed, wrong")
+    assert result.status == "recorded", result.message
+    rec = svc.fleet.state.get("orphan.echo.deadbeef")
+    assert rec is not None and rec.status != "running"
+
+
+def test_an_empty_model_override_is_not_an_override(repo: Path) -> None:
+    """REGRESSION (P2): `model=""` was treated as an override, discarding the client's configured
+    model - so the backend ran whatever its own config defaults to (possibly a metered provider,
+    with no billing advisory) while the record and ledger said the model was "". Drivers emit ""
+    for "no override"."""
+    cfg = FleetConfig(
+        clients={"w": ClientConfig(name="w", backend="echo", model="opencode-go/kimi-k2.5")}
+    )
+    svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
+    req = svc._request_for("w", "goal", None, None, None, model="")
+    assert req.model == "opencode-go/kimi-k2.5", "an empty override erased the configured model"
+    # A real override still overrides.
+    assert svc._request_for("w", "goal", None, None, None, model="other").model == "other"
+
+
 def test_an_unknown_backend_reads_differently_from_an_uninstalled_one(repo: Path) -> None:
     """"You typed a backend that does not exist" and "that CLI is not installed" have different
     fixes; collapsing them to one message makes the driver guess which it is."""
@@ -1386,6 +1422,49 @@ def test_an_unknown_backend_reads_differently_from_an_uninstalled_one(repo: Path
     svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
     reason = svc.list_clients().skipped[0].reason
     assert "not a known backend" in reason
+
+
+def test_an_unknown_backend_in_config_does_not_take_the_service_down(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """REGRESSION: on the real construction path (no injected backends) `make_backend` raised for
+    an unknown backend name before the skip logic ever ran. The MCP server builds the default
+    workspace at boot, so one client written for a newer Marshal - or one typo - killed the whole
+    server for every workspace. The client must be skipped with the reason that names the
+    problem, on stderr and in list_clients alike, while the healthy client keeps working."""
+    cfg = FleetConfig(
+        clients={
+            "future": ClientConfig(name="future", backend="not-shipped-yet"),
+            "typo": ClientConfig(name="typo", backend="opencodee"),
+        }
+    )
+    svc = MarshalService(repo, cfg)  # must not raise
+    listing = svc.list_clients()
+    assert listing.clients == []
+    dropped = {s.name: s.reason for s in listing.skipped}
+    assert set(dropped) == {"future", "typo"}
+    assert all("not a known backend" in r for r in dropped.values())
+    err = capsys.readouterr()[1]
+    assert "skipping client 'typo': backend 'opencodee' is not a known backend" in err
+    assert "CLI unavailable" not in err, "the stderr line blamed an installed CLI for a typo"
+    # Resolving the skipped name for a run says the same thing, not "install the CLI".
+    with pytest.raises(ValueError, match="not a known backend"):
+        svc.run_agent("typo", "do nothing")
+
+
+def test_a_known_but_uninstalled_backend_still_reads_as_a_path_problem(
+    repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control for the test above: tolerating unknown names must not soften the message for a
+    backend that exists and is simply not installed - that one still needs installing."""
+    from marshal_engine.backends import opencode as oc_mod
+
+    monkeypatch.setattr(oc_mod.OpenCodeBackend, "check_available", lambda self: False)
+    cfg = FleetConfig(clients={"oc": ClientConfig(name="oc", backend="opencode")})
+    svc = MarshalService(repo, cfg)
+    reason = svc.list_clients().skipped[0].reason
+    assert "not available on PATH" in reason and "not a known backend" not in reason
+    assert "skipping client 'oc': the 'opencode' CLI is not available on PATH" in capsys.readouterr()[1]
 
 
 def test_skipped_client_env_override_failure_does_not_blame_path(repo: Path) -> None:

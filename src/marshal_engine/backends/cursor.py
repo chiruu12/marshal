@@ -159,7 +159,13 @@ class CursorBackend(CodingAgentBackend):
                     "committing or integrating this run"
                 )
         if restore_error is not None:
-            result.status = RunStatus.FAILED
+            # A timed-out run whose agent survived the kill keeps TIMED_OUT. Downgrading it to
+            # FAILED disarmed `_agent_may_still_be_writing` - which keys on that status - so
+            # `clean`, `commit_run` and `integrate` would go ahead on a worktree a live agent is
+            # still writing, which is the case that guard exists for. The restore failure is
+            # appended to the error either way.
+            if not (result.status is RunStatus.TIMED_OUT and result.agent_survived_kill):
+                result.status = RunStatus.FAILED
             result.error = f"{result.error}; {restore_error}" if result.error else restore_error
         return result
 

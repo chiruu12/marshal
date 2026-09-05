@@ -236,13 +236,20 @@ def compute_budget_status(
             spent = 0.0
             spent_known = False  # error => spend unknown, never claim a known $0
         runs_unmeasured = 0
+        runs_known = True
         if b.limit_runs is not None:
             try:
                 runs_unmeasured = _unmeasured_runs_from_events(
                     tracker.events(), b, session_start=session_start, now=now
                 )
             except Exception:  # noqa: BLE001 - display never fails a usage query
+                # Degrade to UNKNOWN, not to zero. The dollar side directly above already gets
+                # this right (`spent_known = False`, "never claim a known $0"); the runs side
+                # silently reported 0 unmeasured runs and therefore a full `remaining_runs`,
+                # which reads as "the whole cap is still available" at the exact moment nobody
+                # can tell how much of it was spent.
                 runs_unmeasured = 0
+                runs_known = False
         out.append(
             BudgetStatus(
                 scope=_budget_scope_label(b),
@@ -255,9 +262,12 @@ def compute_budget_status(
                 runs_unmeasured=runs_unmeasured,
                 limit_runs=b.limit_runs,
                 remaining_runs=(
-                    None if b.limit_runs is None else max(0, b.limit_runs - runs_unmeasured)
+                    None
+                    if b.limit_runs is None or not runs_known
+                    else max(0, b.limit_runs - runs_unmeasured)
                 ),
                 enforce=b.enforce,
+                runs_known=runs_known,
                 spent_known=spent_known,
             )
         )
@@ -278,6 +288,14 @@ class BudgetStatus(BaseModel):
     limit_runs: int | None = None
     remaining_runs: int | None = None
     enforce: bool = False
+    runs_known: bool = Field(
+        default=True,
+        description=(
+            "False when the unmeasured-run count could not be determined (ledger lookup "
+            "failure). Machine consumers (MCP / --json) must read this before treating "
+            "runs_unmeasured / remaining_runs as measured."
+        ),
+    )
     spent_known: bool = Field(
         default=True,
         description=(
@@ -523,13 +541,51 @@ def _pid_alive(pid: int) -> bool:
 # change both together - `test_liveness_inflight.py` fails if the two markers drift apart.
 _PINNED_IDENTITY_PREFIX = "C/UTC|"
 
+#: Duplicated for the same reason, and for the same drift: on Linux ``ps -o lstart=`` moves when
+#: the wall clock is stepped, so a LIVE reservation holder rendered a different start time and its
+#: slot was reclaimed - admitting a second run under a cap that exists to stop exactly that.
+#: ``/proc/<pid>/stat`` field 22 counts from boot and does not move.
+_PROC_IDENTITY_PREFIX = "proc/starttime|"
 
-def _pid_start_time(pid: int) -> str | None:
+
+def _proc_start_ticks(pid: int) -> str | None:
+    """Linux: ``/proc/<pid>/stat`` field 22 (start time in ticks since boot). None elsewhere."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    close = raw.rfind(")")  # comm is parenthesised and may contain spaces or ')'
+    if close == -1:
+        return None
+    fields = raw[close + 2 :].split()
+    if len(fields) < 20 or not fields[19].isdigit():
+        return None
+    return _PROC_IDENTITY_PREFIX + fields[19]
+
+
+def _pid_start_time(pid: int, like: str | None = None) -> str | None:
     """OS-reported start time of ``pid``, or None when unverifiable (same idiom as fleet.lock).
 
     Rendered under a pinned ``LC_ALL``/``TZ`` and returned prefixed, so two processes that
     disagree about either still read one live pid as one identity.
     """
+    if like is not None and like.startswith(_PINNED_IDENTITY_PREFIX):
+        # Re-read with the SOURCE THAT WROTE the stamp. Probing with the preferred source and
+        # comparing across sources would make every pre-upgrade record unverifiable, which fails
+        # open: stale locks, claims and reservations that nothing ever reclaims.
+        return _ps_start_time(pid)
+    ticks = _proc_start_ticks(pid)
+    if ticks is not None:
+        return ticks
+    return _ps_start_time(pid)
+
+
+def _ps_start_time(pid: int) -> str | None:
+    """The ``ps -o lstart=`` reading, prefixed. Kept as its own function so a stamp written by it
+    stays re-readable: a record written before the Linux probe existed must still verify against
+    the same source it came from, or every pre-existing stamp would read "unverifiable" after an
+    upgrade and nothing stale would ever be reclaimed."""
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
@@ -556,9 +612,14 @@ def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
     The accounting-layer twin of ``liveness._identity_verdict``; see it for why an unpinned stamp
     is unverifiable rather than different.
     """
-    if not recorded or not recorded.startswith(_PINNED_IDENTITY_PREFIX):
+    if not recorded or not recorded.startswith(
+        (_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX)
+    ):
         return None
-    now = _pid_start_time(pid)
+    # Re-read with the SAME source that wrote the stamp. Probing with the preferred source and
+    # comparing across sources would make every pre-upgrade record unverifiable, which fails open:
+    # stale locks, claims and reservations that nothing reclaims.
+    now = _pid_start_time(pid, like=recorded)
     if now is None:
         return None
     return now == recorded
@@ -748,6 +809,11 @@ class EnforceBudgetGate:
         self._held: dict[str, str] = {}
         # key -> opaque token written to disk at begin; bind/renew prove ownership with it
         self._tokens: dict[str, str] = {}
+        #: Reservations a terminal release could not clear because the shared flock was
+        #: unavailable at the time. Retried under the next lock this gate takes; without this a
+        #: single lost lock left a bound entry that nothing reclaims, holding the cap for the rest
+        #: of the process lifetime and naming a finished run as the holder.
+        self._pending_drops: dict[str, str] = {}
         # Durable reservation file; None until begin() infers it from the usage tracker.
         self._path: Path | None = Path(path) if path is not None else None
 
@@ -793,6 +859,14 @@ class EnforceBudgetGate:
                 disk = _load_reservations(path)
                 # Drop dead/reused-pid holders and aged-out unbound placeholders.
                 disk = {k: e for k, e in disk.items() if _reservation_still_held(e)}
+                # ...and any entry a release could not clear because the lock was unavailable
+                # then. We hold it now, and the run it names has already finished.
+                if self._pending_drops:
+                    for key, token in list(self._pending_drops.items()):
+                        entry = disk.get(key)
+                        if entry is None or _entry_owned_by(entry, token):
+                            disk.pop(key, None)
+                    self._pending_drops.clear()
                 keys: list[str] = []
                 try:
                     for b in matching:
@@ -952,8 +1026,27 @@ class EnforceBudgetGate:
                                 "refusing spawn because enforce=true. Retry shortly."
                             )
                         if entry is None:
-                            # Reclaimed and not taken — slot is free; re-acquire under the cap.
-                            disk[key] = _new_reservation_entry(run_id, token=token)
+                            # Reclaimed and not taken. The slot LOOKS free, but "free" is not the
+                            # same as "under the cap": while our placeholder was aged out, a peer
+                            # could have taken the slot, run, recorded spend that met the cap, and
+                            # released it. `bind` holds no tracker and no budget specs, so it
+                            # cannot re-read the ledger to find out - and the old comment here
+                            # claimed a cap compliance ("re-acquire under the cap") that no code
+                            # verified, silently re-admitting a run that could overshoot a hard
+                            # cap by a full run's cost.
+                            #
+                            # So refuse, exactly as the peer-holds branch above already does.
+                            # This is the enforce path, whose entire job is to refuse when it
+                            # cannot prove otherwise; the cost of being wrong here is one retry.
+                            for k in keys:
+                                self._held.pop(k, None)
+                                self._tokens.pop(k, None)
+                            raise BudgetExceeded(
+                                f"budget gate reservation aged out before bind "
+                                f"({path}, key {key}); the slot was released and this run's "
+                                "spend can no longer be shown to be under the cap. Refusing "
+                                "spawn because enforce=true. Retry shortly."
+                            )
                         else:
                             entry["run_id"] = run_id
                             disk[key] = entry
@@ -1009,6 +1102,8 @@ class EnforceBudgetGate:
             with _flock_exclusive(
                 _lock_sidecar(path), timeout_s=_ENFORCE_GATE_LOCK_TIMEOUT_S
             ):
+                owned = {**self._pending_drops, **owned}
+                self._pending_drops.clear()
                 disk = _load_reservations(path)
                 changed = False
                 for key, token in owned.items():
@@ -1019,6 +1114,13 @@ class EnforceBudgetGate:
                 if changed:
                     _write_reservations(path, disk)
         except BudgetExceeded:
+            # The lock was held by someone else for longer than the timeout. `_held`/`_tokens` are
+            # already cleared, so nothing local will ever come back to this entry - and a BOUND
+            # entry with a live holder pid is reclaimed by no other path, so the cap would refuse
+            # every later spawn in this (long-lived MCP) process, naming a run that had finished.
+            # Remember it and drop it under the next lock anyone here takes.
+            self._pending_drops.update(owned)
             return
         except OSError:
+            self._pending_drops.update(owned)
             return

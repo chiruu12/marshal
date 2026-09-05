@@ -277,7 +277,7 @@ Race the same goal through several configured clients.
 
 **Returns:** `{ teams, errors, workspace }`
 
-- `teams`: `[{ name, description, target, roles: [{ name, client }], decision }]`
+- `teams`: `[{ name, description, target, roles: [{ name, client }] }]` — no `decision`, `score` or tally, deliberately: judging the panel is the driver's job, and a verdict parsed out of reviewer prose is both a layering violation and something a reviewed diff could influence.
 - `errors`: `{ "<filename>": "<message>" }` — malformed team files
 
 ### `run_team`
@@ -521,7 +521,12 @@ pid unambiguously belongs to the agent.
   rather than left running behind an already-terminal record.
 - During `spawn`'s provisioning window the same rules cover the `setup_cmd` process group: a cancel
   SIGTERMs it once its pid is published, or stamps `cancelled` and the agent never launches.
-- A cancel **after** the child is reaped does not signal at all.
+- A cancel **after** the child is reaped does not signal at all, and does not stamp `cancelled`
+  either: the agent has finished, and the run is being finalized (pricing, the `verify` gate,
+  artifact harvest). The call is the documented no-op and returns the record as it stands — poll
+  it, and the real terminal status arrives with the run's cost, text and verify result. Stamping
+  `cancelled` there used to make the terminal stamp lose the race, recording a completed run as
+  cancelled with none of its facts while its ledger line said `exited_clean`.
 - A run started by a **different (or dead) process** is stamped `cancelled` without a signal, with
   the reason on `error`. The `pid` is kept when something is still alive at that number (so `clean`
   spares the worktree) and cleared only when the process is gone. Guessing at a pid this process
@@ -587,7 +592,7 @@ merge (an outcome, not a fault).
 | `merged_into` | string \| null | Target branch. |
 | `changed_files` | list[string] | |
 | `conflicts` | list[string] | Conflicting paths. When the run's base commit was rewritten away these are *not* the cause — see `message`. |
-| `commit` | string \| null | Merge commit hash. |
+| `commit` | string \| null | The commit this run lands: the sha `integrate` created on the run's branch, or that branch's tip when the work was already committed. It is a **parent** of the merge commit, not the merge commit itself, whenever the target has moved since the run was spawned. |
 | `message` | string | Detail on failure; base-branch drift warning when `base_branch_drift` is true. On `conflict`, reports when the run's base commit is reachable from **no branch or tag** — a base that is no longer in history makes every file read as changed on both sides, so the `conflicts` list points away from the real cause. It states that observation and offers the likely causes (history rewritten mid-run; a deleted base branch; a `base_branch` naming a commit that was never on one) rather than asserting one, since `base_branch` accepts any commit-ish. The measured claim and the remedy hold in every one of those cases. Silent unless the base is unreachable from the target **and** reached by no surviving ref, so a run deliberately spawned with `base_branch` onto a live branch is not mislabelled. |
 | `base_branch_drift` | bool | `true` when the merge target differs from the run's recorded `base_branch` (merge still proceeds). |
 
@@ -605,9 +610,12 @@ total_judged, events_without_record, task_kind_filter, caveat, window, workspace
 Derived on read by joining the usage ledger to recorded run outcomes; nothing is stored. Each
 cell is one `(task_kind, client)` pair:
 
-- `integration_rate`: integrated ÷ **judged** runs. `null` when nothing has been judged — that is
-  *unknown*, not 0%. `n_judged`, `n_unjudged` and `n_no_record` are all reported so a rate is never
-  read without its denominator.
+- `integration_rate`: integrated ÷ **integrable** runs (`n_integrable` = judged minus advisory).
+  `null` when there are none — that is *unknown*, not 0%. `n_judged`, `n_integrable`, `n_advisory`,
+  `n_unjudged` and `n_no_record` are all reported so a rate is never read without its denominator.
+- `n_advisory`: judged runs that merged nothing because there was nothing to merge (read-only
+  reviews, audits, plan panels). Kept **out** of the rate's denominator rather than counted as
+  failures; a client whose judged runs are all advisory is listed with its counts and left unranked.
 - `mean_cost_per_integrated`: `null`, **never 0**, when no integrated run reported a measured cost
   (`native` / `admin-api`). Compare against `measured_cost_all_usd`, which includes money spent on
   runs you rejected — cost-per-integrated alone flatters a client that burns four rejects per keeper.
@@ -632,7 +640,7 @@ rejections, every rate reads 100%.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `run_id` | string | — | The run to judge. |
-| `outcome` | `integrated` \| `rejected` \| `abandoned` | — | Your judgment about the **work**. |
+| `outcome` | `integrated` \| `rejected` \| `abandoned` \| `advisory` | — | Your judgment about the **work**. `advisory` = findings you used, nothing to merge — use it instead of `abandoned` for read-only reviews, audits and plan panels, which otherwise read as "gave up" and count against the client's integration rate. |
 | `note` | string \| null | `null` | Short reason, kept with the record. Truncated at 2000 chars. |
 | `workspace` | string \| null | `null` | Workspace hint; the run's owning workspace is resolved from `run_id`. |
 
@@ -721,7 +729,7 @@ mode. Budgets in the payload come from that workspace's `fleet.config.yaml` alon
 | `by_client` | dict | Per-client buckets. |
 | `by_model` | dict | Per-model buckets. |
 | `by_backend_model` | dict | Keys like `opencode/<model>`. |
-| `budgets` | list \| omitted | Present when that workspace's `fleet.config.yaml` declares `budgets:`: `[{ scope, window, spent_usd, limit_usd, remaining_usd, enforce, spent_known }]`. Soft-warn by default; `enforce: true` refuses over-cap spawns on **that** workspace. `spent_known` is `false` when spend could not be determined (lookup failure, or scope has runs but no priced cost source) — treat `spent_usd` / `remaining_usd` as unknown in that case. |
+| `budgets` | list \| omitted | Present when that workspace's `fleet.config.yaml` declares `budgets:`: `[{ scope, window, spent_usd, limit_usd, remaining_usd, runs_unmeasured, limit_runs, remaining_runs, enforce, spent_known, runs_known }]`. Soft-warn by default; `enforce: true` refuses over-cap spawns on **that** workspace. `spent_known` is `false` when spend could not be determined (lookup failure, or scope has runs but no priced cost source) — treat `spent_usd` / `remaining_usd` as unknown in that case. `runs_known` is the same caveat for the run cap: when it is `false` the unmeasured-run count could not be read, so `runs_unmeasured` is not a measurement and `remaining_runs` is `null`. |
 | `workspace` | string | |
 
 Each **Bucket**: `{ runs, succeeded, cost_usd, cost_native, cost_admin_api, cost_estimated, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_per_run, cost_per_succeeded }`. `cost_estimated` is a zero tombstone (legacy ledger compatibility).
@@ -762,7 +770,7 @@ Judgment about the work is not on this line: it arrives later, so successful `in
 | `ended_at` | string \| null | ISO-8601. |
 | `error` | string \| null | Failure detail. |
 | `merged_into` | string \| null | Branch after integrate. |
-| `outcome` | string \| null | Judgment about the work, **distinct from** process `status`: `integrated` / `rejected` / `abandoned`. Successful `integrate` stamps `integrated` here (late judgment — the usage event is not rewritten). Absence means no judgment yet; never infer `rejected` from a clean-but-unintegrated run. |
+| `outcome` | string \| null | Judgment about the work, **distinct from** process `status`: `integrated` / `rejected` / `abandoned` / `advisory`. Successful `integrate` stamps `integrated` here (late judgment — the usage event is not rewritten). Absence means no judgment yet; never infer `rejected` from a clean-but-unintegrated run. |
 | `commit` | string \| null | Branch tip after `commit_run`. |
 | `pid` | int \| null | Agent subprocess pid (while running). |
 | `pid_start_time` | string \| null | OS-reported start time of `pid`. A pid alone is not an identity — the OS reuses pids — so startup reconciliation verifies the pair before deciding a recorded run is still alive. Rendered under a pinned locale and timezone and prefixed to say so, because the process that writes it is not always the one that checks it; an unprefixed value was written by an older Marshal and is treated as unverifiable rather than as a different process. |

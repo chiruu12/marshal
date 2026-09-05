@@ -75,11 +75,18 @@ def _deferred_provision_error(exc: BaseException) -> str:
 
 
 def _worktree_gone_message(rec: RunRecord) -> str:
-    """Driver-facing reason when collect/integrate/commit hit a torn-down worktree."""
-    if rec.error:
-        return rec.error
+    """Driver-facing reason when collect/integrate/commit hit a torn-down worktree.
+
+    Leads with why the WORK cannot be reached, and carries the run's own error only as context.
+    Returning `rec.error` instead answered "why is there no diff" with "the agent timed out" - a
+    true sentence about a different question, which reads as though the timeout were the reason
+    the work is unreadable and hides that the worktree is simply gone.
+    """
     path = rec.worktree or ""
-    return f"worktree for run {rec.run_id!r} no longer exists: {path}"
+    gone = f"worktree for run {rec.run_id!r} no longer exists: {path}"
+    if rec.error:
+        return f"{gone} (the run itself ended with: {rec.error})"
+    return gone
 
 
 def _live_agent_message(rec: RunRecord) -> str:

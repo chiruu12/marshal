@@ -113,6 +113,13 @@ a human.
 - **If you proceed:** you still read the diff yourself. A panel is several second opinions, not a
   substitute for looking. Then `integrate(run_id)`, one run at a time (see `marshal-orchestrate`
   step 5 for `merged` / `conflict` / `blocked` / `empty` / `error`).
+- **Judge the reviewers themselves:** `set_outcome(<reviewer_run_id>, "advisory", note?)` for each
+  panel member whose report you actually used. Reviewers merge nothing by definition, so
+  `advisory` is their verdict - `abandoned` reads as giving up, and would count a review you acted
+  on against that client's integration rate for a merge it could never have produced. Use
+  `rejected` when the findings were wrong or off-contract; leave a missing lens unjudged, since
+  nobody reviewed it. This is what makes `routing` able to tell you which reviewer is worth
+  spending on.
 
 ## Invariants to respect
 - Reviewers are headless and read-only: the rubric + subject is all they get; no questions possible.

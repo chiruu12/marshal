@@ -62,6 +62,50 @@ def _gh_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_a_hanging_gh_becomes_a_config_error_not_a_traceback(tmp_path: Path) -> None:
+    """REGRESSION (P2): the timeout exists so a prompting `gh` or `git fetch` fails FAST; the raw
+    `TimeoutExpired` escaping it instead made it fail LOUDLY - a traceback out of the CLI, which
+    catches only ConfigError, and an unclassified error over MCP."""
+
+    def hangs(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(argv, 60.0)
+
+    with pytest.raises(ConfigError) as exc:
+        resolve_pr(tmp_path, 7, runner=hangs)
+    msg = str(exc.value)
+    assert "timed out" in msg and "60.0s" in msg
+    assert "Traceback" not in msg
+
+
+def test_pr_metadata_is_read_from_the_same_remote_the_refs_are_fetched_from(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION (P2): `gh pr view` ran with no `--repo`, so it resolved the number against gh's
+    own configured default - on a fork clone usually the upstream - while the refs were always
+    fetched from `origin`. The two then disagreed about which repository the PR belongs to, and
+    the failure read as "the PR does not exist"."""
+    runner = _Runner({
+        "gh pr view": (0, _meta()),
+        "git remote get-url": (0, "git@github.com:me/my-fork.git\n"),
+    })
+    resolve_pr(tmp_path, 7, runner=runner)
+    argv = runner.argv_for("gh pr view")
+    assert argv is not None and "--repo" in argv
+    assert argv[argv.index("--repo") + 1] == "me/my-fork"
+
+
+def test_pr_metadata_falls_back_when_the_remote_is_not_a_github_url(tmp_path: Path) -> None:
+    """Anti-blanket control: an unparseable remote must not become a bogus `--repo` - gh's own
+    default is the right answer there, not a guess."""
+    runner = _Runner({
+        "gh pr view": (0, _meta()),
+        "git remote get-url": (0, "/srv/mirrors/proj.git\n"),
+    })
+    resolve_pr(tmp_path, 7, runner=runner)
+    argv = runner.argv_for("gh pr view")
+    assert argv is not None and "--repo" not in argv
+
+
 def test_resolves_a_pr_to_remote_base_and_head_sha(tmp_path: Path) -> None:
     runner = _Runner({"gh pr view": (0, _meta())})
     ref = resolve_pr(tmp_path, 7, runner=runner)

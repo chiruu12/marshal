@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -43,6 +44,7 @@ from ..core.retry import RetryPolicy, is_transient_failure
 from ..core.types import (
     AgentResult,
     PermissionMode,
+    ProgressTimeout,
     RunOpts,
     RunOutcome,
     RunStatus,
@@ -137,6 +139,17 @@ def _cap_text(text: str) -> tuple[str, bool, int | None]:
     return text[:_TEXT_CAP], True, len(text)
 
 
+def _total_duration_ms(result: AgentResult, abandoned: list[AgentResult]) -> int | None:
+    """Wall clock across every attempt of one run, or None when nothing was timed.
+
+    A retried run occupied the fleet for all of its attempts. Tokens and cost are already folded
+    across them, so reporting the final attempt's duration alone made the run's own numbers
+    disagree - and `routing` ranks on the mean of this column.
+    """
+    parts = [r.duration_ms for r in [result, *abandoned] if r.duration_ms is not None]
+    return sum(parts) if parts else None
+
+
 def _still_running(rec: RunRecord) -> bool:
     """update_if predicate: stamp a terminal status only if the run hasn't already reached one
     (e.g. been cancelled concurrently), so a cancel that won the race is never overwritten."""
@@ -209,6 +222,7 @@ class Fleet:
         budgets: list[BudgetSpec] | None = None,
         budget_gate: EnforceBudgetGate | None = None,
         session_start: datetime | None = None,
+        progress_timeout: ProgressTimeout | None = None,
     ) -> None:
         # Recover the user's interactive PATH so a Fleet constructed in a context that didn't
         # source the user's rc files (an MCP server with a stripped PATH) still spawns agent
@@ -264,6 +278,10 @@ class Fleet:
         # None / [] = no budgets. Default is soft-warn; enforce=true raises BudgetExceeded and
         # serializes matching in-flight spawns via EnforceBudgetGate (see budgets.py).
         self.budgets: list[BudgetSpec] = list(budgets) if budgets else []
+        # Opt-in progress-aware timeout. Default (None / disabled) keeps the plain `timeout_s`
+        # wall clock, so a bare Fleet behaves exactly as before; the service turns it on from
+        # config, the same way `retries` works.
+        self.progress_timeout = progress_timeout or ProgressTimeout()
         # The gate is injectable (like run_gate) so a layer that REBUILDS Fleets over the same
         # ledger - the workspace registry on config hot-reload - can keep ONE gate per repo:
         # in-flight runs on the evicted Fleet still hold slots the replacement consults, and the
@@ -731,6 +749,18 @@ class Fleet:
         # can reach it even when the run died before the loop ran.
         abandoned: list[AgentResult] = []
         record: RunRecord | None = None
+        # Whether this run's line already reached the ledger, so the failure path can add one
+        # when it did not - and never a second one when it did.
+        usage_recorded = False
+        # Bound before the try because the failure path reads it: `extract_usage` is a backend
+        # seam and can raise, and an unbound name there would replace the real exception with an
+        # UnboundLocalError inside the except block - skipping the terminal stamp and leaving the
+        # record `running` forever.
+        usage: UsageRecord | None = None
+        # Bound here for the same reason as `usage`: the failure path reads both, and an unbound
+        # name there would replace the real exception with an UnboundLocalError.
+        attempts = 1
+        usage_folded = False
         try:
             if deferred_provisioning:
                 early = self._run_deferred_provisioning(req, run_id, wt)
@@ -773,6 +803,16 @@ class Fleet:
                 client_env=req.client_env,
                 on_pid=_record_pid,
                 on_exit=_record_exit,
+                # Never for a read-only run. The only progress signal is the worktree's newest
+                # mtime, and a read-only agent writes nothing by construction - so an actively
+                # working reviewer registers no progress at all and is killed at `stall_s`, which
+                # is every reviewer in every `run_team` panel. Its wall clock stays `timeout_s`.
+                progress=(
+                    self.progress_timeout
+                    if self.progress_timeout.enabled
+                    and req.permission is not PermissionMode.READ_ONLY
+                    else None
+                ),
             )
             # Hold a slot for the agent run (the heavy, memory-hungry part) - including any transient
             # retry backoff, since the run is still in flight. Worktree creation/provision in _start
@@ -786,10 +826,11 @@ class Fleet:
                     backend, run_task, opts, run_id, wt
                 )
                 result = _apply_structured_output(req.task, result)
-            usage = backend.extract_usage(result)    # the seam (default: result.usage)
+            usage = backend.extract_usage(result)  # noqa: F841 - read again on the failure path    # the seam (default: result.usage)
             self._price_usage(usage, req.model)      # normalize cost + source (unavailable unless native)
             # Fold in what the retried-away attempts spent, so the run's line is the run's total.
             usage = self._fold_abandoned_attempts(usage, abandoned, req.model, backend)
+            usage_folded = True
             self._apply_external_cost(usage, req, start_iso=ts)  # backfill REAL cost if a usage_api is set
             status = self._authoritative_status(result, wt)
             # The workspace's optional verify gate: only a would-be-SUCCEEDED run that actually
@@ -815,13 +856,32 @@ class Fleet:
                 # suffix is applied later on a copy). Never the raw text — ledger is long-lived.
                 goal_digest=goal_digest(req.task.goal),
             )
-            event.status = status.value              # report the authoritative process status (incl. EMPTY)
+            # The run occupied the fleet for every attempt, not just the last one. Tokens and cost
+            # are already folded across attempts; leaving duration at the final attempt's made the
+            # ledger's own numbers disagree with each other, and `routing` ranks on the mean of
+            # this column - so a client whose runs retry looked faster than one whose runs do not.
+            total_duration_ms = _total_duration_ms(result, abandoned)
+            if total_duration_ms is not None:
+                # The event's convention is a plain int (its `source` column carries provenance);
+                # the RECORD keeps None, which is how it says "nobody timed this".
+                event.duration_ms = total_duration_ms
+            # A cancel may already have won the record. The ledger then carried the backend's exit
+            # status (`failed`, from the SIGTERM) for a run whose record says `cancelled`, so the
+            # two histories of one run disagreed about what happened to it.
+            current = self.state.get(run_id)
+            already_terminal = current is not None and current.status != RunStatus.RUNNING.value
+            event.status = (
+                current.status if already_terminal and current is not None else status.value
+            )
             self.usage.record(event)
+            usage_recorded = True
             # Harvest BEFORE the terminal stamp so the record names its artifacts in the same write
             # that makes it terminal. Landing them afterwards would publish a finished run whose
             # artifact list is still empty, and a driver polling for terminal-then-reading would
             # see a run that produced nothing.
             artifacts = self._harvest_artifacts(wt, run_id)
+            # Same ordering rule as the harvest above, and for the same reason.
+            self._persist_run_log(run_id, req, abandoned, result)
             # Stamp the terminal record ONLY if the run is still running, so a `cancel_run` that
             # already marked it `cancelled` (the common cancel-wins-first race) is preserved rather
             # than clobbered by this thread returning from the SIGTERM-killed subprocess. The usage
@@ -829,7 +889,11 @@ class Fleet:
             # Redact first (value-based scrub needs the whole secret present), then cap - and
             # record that the cap fired. A driver reading `text` as a finished product cannot see
             # the cut from the string alone; see RunRecord.text_truncated.
-            _redacted_text = redact_secrets(result.text)
+            # `extra_values`: a client's own `env:` credential is not in THIS process's
+            # environment, so the ambient scrub cannot see it. The run log already passed it; the
+            # record did not, so the value the log was careful to hide was persisted in `text`
+            # and handed straight back to the driver by `get_run` / `collect_run`.
+            _redacted_text = redact_secrets(result.text, extra_values=req.client_env or None)
             _capped_text, _text_truncated, _text_full_len = _cap_text(_redacted_text)
             # Release the enforce slot BEFORE publishing a record that says the run is over.
             # Stamping first left a window where a run read as terminal while still holding its
@@ -839,11 +903,7 @@ class Fleet:
             # ledger, which is what the next spawn re-checks. The `finally` below still calls this
             # as the backstop for paths that never reach here; `release_run` is idempotent.
             self._budget_gate.release_run(run_id)
-            record = self.state.update_if(
-                run_id,
-                _still_running,
-                status=status.value,
-                artifacts=artifacts,
+            measured: dict[str, Any] = dict(
                 cost_usd=event.cost_usd,
                 # From the usage RECORD, not the ledger event: the event defaults absent counts to
                 # 0 (it is the facts ledger, and its `source` column carries the provenance), while
@@ -851,36 +911,85 @@ class Fleet:
                 # the backend reported nothing; a record with 0 in it is a measured zero.
                 input_tokens=usage.input_tokens if usage is not None else None,
                 output_tokens=usage.output_tokens if usage is not None else None,
-                duration_ms=result.duration_ms,
+                duration_ms=total_duration_ms,
                 source=event.source,
                 # Redact before the 16KB cut: value-based scrub needs the whole secret present.
                 text=_capped_text,
                 text_truncated=_text_truncated,
                 text_full_len=_text_full_len,
-                structured=_redact_structured(result.structured),
+                structured=_redact_structured(
+                    result.structured, extra_values=req.client_env or None
+                ),
                 ended_at=_now(),
-                error=redact_secrets(result.error) if result.error else result.error,
+                error=(
+                    redact_secrets(result.error, extra_values=req.client_env or None)
+                    if result.error
+                    else result.error
+                ),
                 attempts=attempts,
                 verify_passed=verify_passed,
                 verify_output=verify_output,
                 agent_survived_kill=result.agent_survived_kill,
             )
+            record = self.state.update_if(
+                run_id, _still_running, status=status.value, artifacts=artifacts, **measured
+            )
+            if record.status != status.value:
+                # A cancel won the status, and it keeps it - but the spend, the tokens and the
+                # duration are facts this thread measured, and dropping them left the record
+                # saying nothing was measured for a run the ledger prices. Write the measurements
+                # without touching the terminal status anyone else chose.
+                record = self.state.update_if(run_id, lambda _r: True, **measured)
             self._ensure_artifacts_recorded(run_id, record, artifacts)
         except Exception as exc:  # noqa: BLE001 - never leave a run stranded as RUNNING
+            # The agent's spend belongs in the ledger even when the bookkeeping AFTER it failed.
+            # Everything between `backend.run` and `usage.record` - the verify gate, the commit
+            # count, the event build - can raise, and the run then reached `failed` with no ledger
+            # line at all: real tokens and real dollars, spent and invisible to every cost, budget
+            # and routing figure. The ledger's contract is one line per run; a run that broke is
+            # still a run. Guarded by the flag so a failure AFTER the record cannot double-count.
+            if result is not None and not usage_recorded:
+                if not usage_folded:
+                    # Same reason the success path folds: every attempt's tokens and cost are
+                    # spend that happened. Recording one attempt's figure wrote a partial number
+                    # tagged `native` - a measured-looking undercount, the exact shape "never
+                    # fabricate cost" exists to prevent. The final attempt is read here too, since
+                    # the break may have come before the success path ever asked for it.
+                    with contextlib.suppress(Exception):
+                        if usage is None:
+                            usage = backend.extract_usage(result)
+                            self._price_usage(usage, req.model)
+                        usage = self._fold_abandoned_attempts(usage, abandoned, req.model, backend)
+                self._record_usage_best_effort(run_id, req, result, ts, usage)
             # Terminal-stamp the record before re-raising, so one failure can't leave a zombie - but
             # only if still running, so a concurrent cancel's terminal status wins.
             # Harvest here too: a run that died partway may still have written the findings that
             # explain why, and those are exactly what the next round needs.
             failed_artifacts = self._harvest_artifacts(wt, run_id)
+            if result is not None:
+                self._persist_run_log(run_id, req, abandoned, result)
             # Same ordering as the success path (#278): never publish a terminal record while the
             # enforce slot is still held. A run that failed before `usage.record` has no spend to
             # overshoot with; one that failed after has already recorded it.
             self._budget_gate.release_run(run_id)
+            # What the run actually did, when it got far enough to do it. Leaving these at their
+            # defaults said `attempts: 1, duration_ms: null` - which the docs define as "the run
+            # never reached a backend" - for a run whose agent had run, possibly several times.
+            ran: dict[str, Any] = {}
+            if result is not None:
+                ran = {
+                    "attempts": attempts,
+                    "duration_ms": _total_duration_ms(result, abandoned),
+                }
             failed_rec = self.state.update_if(
                 run_id, _still_running, status=RunStatus.FAILED.value, ended_at=_now(),
-                error=f"fleet: {exc}", artifacts=failed_artifacts,
+                error=f"fleet: {exc}", artifacts=failed_artifacts, **ran,
             )
             self._ensure_artifacts_recorded(run_id, failed_rec, failed_artifacts)
+            # The record above is the real one for this run. Carry its id out with the exception
+            # so a batch caller can hand the driver an addressable handle instead of a synthetic
+            # id that resolves to nothing.
+            exc._marshal_run_id = run_id  # type: ignore[attr-defined]
             raise
         finally:
             # Backstop release. Both terminal-stamp paths above release first, so that a record
@@ -900,19 +1009,7 @@ class Fleet:
             # exactly the evidence being looked for. Same reasoning as the cost ledger, which
             # already folds in what the abandoned attempts spent.
             if result is not None:
-                try:
-                    self.logs.write_attempts(
-                        run_id,
-                        [
-                            (r.raw_stdout or "", r.raw_stderr or "")
-                            for r in (*abandoned, result)
-                        ],
-                        # Same client env: the child received — scrub values that never appear in
-                        # os.environ (e.g. PROVIDER_AUTH under a non-secret-shaped key name).
-                        extra_values=req.client_env or None,
-                    )
-                except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
-                    print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
+                self._persist_run_log(run_id, req, abandoned, result)
 
         if cleanup and _agent_may_still_be_writing(record):
             # Deleting a worktree out from under a live writer destroys the partial work AND the
@@ -1144,28 +1241,118 @@ class Fleet:
             return "primary run has no branch"
         return None
 
+
+
+    def _record_usage_best_effort(
+        self,
+        run_id: str,
+        req: RunRequest,
+        result: AgentResult,
+        ts: str,
+        usage: UsageRecord | None,
+    ) -> None:
+        """Write this run's ledger line on the failure path. Never raises.
+
+        Best-effort by construction: this runs while an exception is already unwinding, and a
+        second failure here must not replace the original one the driver needs to see.
+        """
+        try:
+            event = UsageEvent.from_result(
+                result, run_id=run_id, backend=req.backend_name, ts=ts, usage=usage,
+                client=req.client, model=req.model,
+                task_kind=req.task.task_kind,
+                goal_digest=goal_digest(req.task.goal),
+            )
+            # A concurrent cancel that already won the record keeps its status on the ledger
+            # too; `failed` here would leave the two histories disagreeing about the same run.
+            # This read and the terminal `update_if` below are not one atomic step, so a cancel
+            # landing in between still records `failed` here: the ledger line must precede the
+            # budget-slot release, which must precede the terminal stamp (see the success path),
+            # and that ordering is worth more than closing a window this narrow.
+            current = self.state.get(run_id)
+            terminal = current is not None and current.status != RunStatus.RUNNING.value
+            event.status = current.status if terminal and current else RunStatus.FAILED.value
+            self.usage.record(event)
+        except Exception as exc:  # noqa: BLE001 - the original failure must survive this
+            print(
+                f"[marshal] {run_id}: failed to record usage for a failed run: {exc}",
+                file=sys.stderr,
+            )
+
+    def _persist_run_log(
+        self,
+        run_id: str,
+        req: RunRequest,
+        abandoned: list[AgentResult],
+        result: AgentResult,
+    ) -> None:
+        """Write the run's full stdout/stderr. Idempotent, so it is safe to call more than once.
+
+        Called BEFORE the terminal stamp, for the same reason artifacts are harvested before it:
+        a driver polling for terminal-then-reading must never see a finished run whose diagnostics
+        are not on disk yet. `get_run_log` returning null is documented to mean "the backend
+        crashed before producing one", so the gap between the stamp and this write turned a
+        transient ordering into a durable wrong conclusion. The `finally` call remains as the
+        backstop for paths that never reach the stamp at all.
+        """
+        try:
+            self.logs.write_attempts(
+                run_id,
+                [(r.raw_stdout or "", r.raw_stderr or "") for r in (*abandoned, result)],
+                # Same client env: the child received — scrub values that never appear in
+                # os.environ (e.g. PROVIDER_AUTH under a non-secret-shaped key name).
+                extra_values=req.client_env or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
+            print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
+
     def _run_request(self, req: RunRequest) -> RunRecord:
         """run_request one request, capturing any failure as a FAILED record so a batch survives it."""
         try:
             return self.run_request(req)
         except Exception as exc:  # noqa: BLE001 - one job's failure must not abort the batch
-            return RunRecord(
-                run_id=f"{req.task.id}.{req.backend_name}",
+            # If the run got far enough to be stamped, hand back the REAL record. Synthesizing
+            # one here minted `<task>.<backend>` - an id with no uuid suffix, matching nothing in
+            # the ledger - so a driver given it as `primary.run_id` could not `get_run`,
+            # `collect_run` or `set_outcome` the failure, while the genuine failed record sat
+            # unreachable under the id it was actually written with.
+            stamped_id = getattr(exc, "_marshal_run_id", None)
+            if isinstance(stamped_id, str):
+                stamped = self.state.get(stamped_id)
+                if stamped is not None:
+                    return stamped
+            # Nothing was stamped: the job died in `_start`, before the RUNNING record existed
+            # (an argv preflight, an unsupported permission mode, an enforce budget, a base-branch
+            # resolution). Mint the real id shape and PERSIST it, so the failure is addressable the
+            # same way every other run is - `get_run`, `set_outcome`, and `report`, which rebuilds
+            # a benchmark from the recorded runs and silently dropped the strategy that never
+            # started. No ledger line: nothing ran, so there is no spend to record and none is
+            # invented.
+            failed = RunRecord(
+                run_id=f"{req.task.id}.{req.backend_name}.{uuid.uuid4().hex[:8]}",
                 task_id=req.task.id,
                 backend=req.backend_name,
                 client=req.client,
                 model=req.model,
                 status=RunStatus.FAILED.value,
+                started_at=_now(),
                 ended_at=_now(),
                 error=f"run_many: {exc}",
             )
+            with contextlib.suppress(Exception):
+                self.state.add(failed)
+            return failed
 
     def _price_usage(self, usage: UsageRecord | None, model: str | None) -> None:
         """Normalize cost + source in place: keep native cost, else unavailable (tokens kept)."""
         if usage is None:
             return
-        if usage.source is UsageSource.NATIVE:
-            return  # backend authoritatively reported the cost (a real $0 included) - never override
+        if usage.source in (UsageSource.NATIVE, UsageSource.ADMIN_API):
+            # Both are REPORTED costs (a real $0 included) - never overridden. `admin-api` is the
+            # documented `extract_usage` extension point, and zeroing it discarded a measured
+            # figure: the inverse of fabricating one, and just as wrong for every cost, budget and
+            # routing number downstream.
+            return
         usage.cost_usd = 0.0
         usage.source = UsageSource.UNAVAILABLE
 
@@ -1202,9 +1389,14 @@ class Fleet:
             priors.append(prior)
         if not priors:
             return usage
+        # The FINAL attempt reported nothing at all, while some earlier one did. Its tokens and
+        # cost are simply unknown, so no total over the run can be called measured - the same
+        # undercount-presented-as-a-measurement this function exists to prevent, arriving from the
+        # other end.
+        final_unreported = usage is None
         if usage is None:
             usage = priors.pop(0)
-        measured = usage.source is UsageSource.NATIVE
+        measured = usage.source is UsageSource.NATIVE and not final_unreported
         for prior in priors:
             usage.input_tokens += prior.input_tokens
             usage.output_tokens += prior.output_tokens
@@ -1273,7 +1465,15 @@ class Fleet:
         """
         if self._worktree_has_changes(wt):
             return True
-        committed = self.worktrees.agent_commit_count(wt)
+        # `agent_commit_count` documents "None when git failed", but a git TIMEOUT raises
+        # `WorktreeError` straight through it (and a dead cwd raises OSError from Popen). The
+        # sibling `changed_files` call is guarded; this one was not, so a slow git turned a
+        # clean, expensive run into `failed` - and, because this runs before `usage.record`,
+        # dropped its ledger line entirely.
+        try:
+            committed = self.worktrees.agent_commit_count(wt)
+        except (WorktreeError, OSError):
+            return True  # cannot tell -> assume the agent wrote, the safe direction
         return committed is None or committed > 0
 
     def _authoritative_status(self, result: AgentResult, wt: Worktree) -> RunStatus:
@@ -1292,7 +1492,10 @@ class Fleet:
         # uncommitted behind it. Stamping EMPTY there put the record at odds with `collect_run`,
         # which reports those commits - and a driver polling status would discard work that is
         # sitting on the branch (#250). None = could not tell, which must not read as zero.
-        committed = self.worktrees.agent_commit_count(wt)
+        try:
+            committed = self.worktrees.agent_commit_count(wt)
+        except (WorktreeError, OSError):
+            return RunStatus.EXITED_CLEAN  # same "can't tell -> don't mislabel" rule as above
         if committed is None or committed > 0:
             return RunStatus.EXITED_CLEAN
         return RunStatus.EMPTY
@@ -1336,9 +1539,15 @@ class Fleet:
             raise ValueError(f"no such run: {run_id!r}")
 
         def _gone(detail: str | None = None) -> CollectResult:
-            text = _worktree_gone_message(rec)
-            if detail and not rec.error:
-                text = detail
+            # `detail` is why the work could not be READ, which is what this field is for. The
+            # run's own `error` says why the RUN ended - a different question, and preferring it
+            # answered "why is there no diff" with "the agent timed out", discarding the git
+            # failure or the torn-down-worktree message that actually explains the emptiness.
+            text = detail or _worktree_gone_message(rec)
+            if detail and rec.error:
+                text = f"{detail} (the run itself ended with: {rec.error})"
+            # `text` on the result is the agent's final message for a run that produced one; for
+            # an unreadable run there is none, so the reason stands in for it (unchanged).
             return CollectResult(
                 run_id=run_id,
                 branch=rec.branch or None,
@@ -1355,6 +1564,16 @@ class Fleet:
                 structured=rec.structured,
             )
 
+        if rec.status == RunStatus.RUNNING.value:
+            # No status guard here let a driver read a half-written worktree and be told the run
+            # "genuinely produced neither" - the documented meaning of `nothing` - seconds before
+            # the same run reported a diff. `commit_run` and `integrate` already refuse a running
+            # run; this one reports rather than refuses, because reading is safe.
+            return _gone(
+                f"run {run_id!r} is still running, so its work is not finished and cannot be "
+                "read as a result yet. Wait for a terminal status (wait_for_runs) and collect "
+                "again."
+            )
         try:
             wt = self._worktree_for(run_id)
         except ValueError:
@@ -1368,6 +1587,18 @@ class Fleet:
             # counted, and 0 would assert the agent committed nothing.
             commit_count: int | None = None
             if wt.branch:
+                # Work the agent left on a branch of its own is real, and it is NOT on the run
+                # branch every read below uses - so without this the run reads as "produced
+                # nothing" while its commits sit in the clone. `unavailable` is the honest answer:
+                # the work could not be read, which is not evidence there is none.
+                off_branch = self.worktrees.off_run_branch(wt)
+                if off_branch is not None and not changed_files:
+                    return _gone(
+                        f"run {run_id!r} left its clone on {off_branch} instead of its run branch "
+                        f"{wt.branch!r}, so any work it committed is not on the branch Marshal "
+                        f"reads. Look in {wt.path} on that ref; integrate will refuse until the "
+                        "work is on the run branch."
+                    )
                 # The run works in its own clone, so commits the AGENT made are not in the driver's
                 # repo yet - and every branch read below happens there. Without this, self-committed
                 # work reads as "no changes" instead of as the work it is.
@@ -1708,8 +1939,16 @@ class Fleet:
             # time, require a successful probe that still matches — a failed probe is not a
             # mismatch: signalling risks a stranger, and stamping cancelled would lie.
             with _active_runs_guard:
-                if handle.exited or handle.pid is None:
-                    pass  # finished, or cancel beat the pid (applied when published)
+                if handle.exited:
+                    # The agent already finished; nothing was signalled and nothing will be. The
+                    # run is mid-finalization (pricing, the verify gate, harvest), so stamping
+                    # `cancelled` here would refuse the terminal stamp that carries the run's cost,
+                    # text and verify result - recording a completed run as cancelled with none of
+                    # its facts, while the ledger line for the same run says it exited cleanly.
+                    # The docstring's promised no-op is the honest answer: let the result land.
+                    return self.state.get(run_id) or rec
+                if handle.pid is None:
+                    pass  # cancel beat the pid (applied when published)
                 else:
                     pid = handle.pid
                     started = handle.pid_start_time
@@ -1818,6 +2057,7 @@ class Fleet:
         except WorktreeError as exc:
             return IntegrateResult(run_id=run_id, status="blocked", branch=wt.branch, message=str(exc))
 
+        cleanup_error = ""
         try:
             commit = self.worktrees.commit_all(wt, message or f"marshal: integrate {run_id}")
             # "empty" only when the worktree is clean AND the branch has no commits past target.
@@ -1868,6 +2108,24 @@ class Fleet:
                 message=_orphaned_base_diagnosis(self.worktrees, rec, target),
             )
 
+        # `merged` is a claim about the target branch, so check the target before making it:
+        # git reports success for a merge that had nothing to bring in ("Already up to date"),
+        # and stamping `integrated` on that would be a permanent verdict for a merge that never
+        # happened. The commit this run lands must now be reachable from the target.
+        if commit and not self.worktrees.is_ancestor(commit, target):
+            return IntegrateResult(
+                run_id=run_id,
+                status="error",
+                branch=wt.branch,
+                merged_into=target,
+                commit=commit,
+                message=(
+                    f"git reported the merge as successful, but {commit[:12]} is not reachable "
+                    f"from {target!r}: nothing was integrated, and the run is not recorded as "
+                    "integrated. The run branch and its clone disagree about where the work is; "
+                    "inspect the worktree before retrying."
+                ),
+            )
         # Judgment lands on the run record (not a second usage event): events.jsonl is one line
         # per run for cost rollups, and rewriting that line would break ledger immutability.
         # `outcome_note` is cleared because it explains the verdict being replaced: a run that was
@@ -1881,7 +2139,14 @@ class Fleet:
             outcome_note=None,
         )
         if cleanup:
-            self.worktrees.remove(wt)
+            # The merge has landed and the record already says so. A teardown failure after that
+            # is a disk problem, not a failed integrate - raising here told the driver the call
+            # failed for a merge that succeeded, and the retry then answered "empty". Report the
+            # leftover instead; `clean` reclaims it later.
+            try:
+                self.worktrees.remove(wt)
+            except WorktreeError as exc:
+                cleanup_error = f" (the merge landed; its worktree could not be removed: {exc})"
         drift, drift_msg = _base_branch_drift_warning(rec, target)
         return IntegrateResult(
             run_id=run_id,
@@ -1891,7 +2156,7 @@ class Fleet:
             changed_files=changed,
             commit=commit,
             base_branch_drift=drift,
-            message=drift_msg,
+            message=drift_msg + cleanup_error,
         )
 
     def _ensure_artifacts_recorded(self, run_id: str, record: RunRecord, artifacts: list[str]) -> None:

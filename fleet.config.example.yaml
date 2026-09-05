@@ -106,6 +106,20 @@ retries: 2
 #     limit_usd: 10.0
 #     limit_runs: 100
 
+# OPT-IN, off by default: end a run on evidence of progress rather than on the clock alone.
+# Without this, one wall-clock number treats two opposite situations identically - a run that
+# stalled early burns its whole cap, and a run still working at the cap is killed with its tokens
+# already spent. Progress = newest mtime under the worktree (backend-independent, no per-backend
+# calibration). Blind spot, deliberately: an agent that thinks for a long time WITHOUT writing
+# looks idle, so keep `stall_s` well above however long your backends legitimately stay quiet.
+# The hard ceiling is never removed - a silent, hung process must still always die.
+# progress_timeout:
+#   enabled: true
+#   stall_s: 120             # nothing changed under the worktree this long -> kill early
+#   soft_deadline_s: 900     # still making progress here -> extend rather than kill
+#   hard_ceiling_s: 1800     # the backstop; never exceeded, whatever progress says
+#   poll_interval_s: 15
+
 clients:
   # OpenCode. Omit `model` and it defaults to opencode-go/glm-5.2 (the Go subscription); a
   # fireworks-ai/* model is ALLOWED and warned about on stderr - it bills Fireworks credits rather

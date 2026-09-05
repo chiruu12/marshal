@@ -612,7 +612,90 @@ def test_commit_all_and_merge_round_trip(repo: Path) -> None:
     assert (repo / "feature.txt").exists()  # landed in the main checkout
 
 
-def test_merge_aborts_an_in_progress_merge_and_reports_blocked(repo: Path) -> None:
+def test_opted_in_hooks_are_found_when_the_repo_uses_core_hookspath(repo: Path) -> None:
+    """REGRESSION (P1): `integrate_run_hooks: true` copied only `<repo>/.git/hooks`, so a repo
+    using `core.hooksPath` - husky and lefthook both set it, and SECURITY.md names them - had its
+    real hooks ignored. The commit gate the operator opted into never ran, and commit_all returned
+    a sha as if it had passed."""
+    custom = repo / ".husky" / "_"
+    custom.mkdir(parents=True)
+    (custom / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (custom / "pre-commit").chmod(0o755)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.hooksPath", ".husky/_"],
+        check=True, capture_output=True, text=True,
+    )
+    m = WorktreeManager(repo, integrate_run_hooks=True)
+    wt = m.create("husky")
+    (wt.path / "f.txt").write_text("x")
+    with pytest.raises(WorktreeError, match="commit failed"):
+        m.commit_all(wt, "the opted-in gate must run")
+
+
+def test_opted_in_hooks_are_found_when_the_driver_checkout_is_a_linked_worktree(
+    repo: Path, tmp_path: Path
+) -> None:
+    """The other half: in a linked worktree `.git` is a FILE pointing at the common dir, so the
+    old directory test was False and NOTHING was copied - a silent no-gate. This repo is itself
+    checked out that way, so it is the normal case here, not an exotic one."""
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "linked-wt", str(linked)],
+        check=True, capture_output=True, text=True,
+    )
+    assert (linked / ".git").is_file(), "expected a linked worktree whose .git is a file"
+    m = WorktreeManager(linked, base_dir=tmp_path / "runs", integrate_run_hooks=True)
+    wt = m.create("linked")
+    (wt.path / "f.txt").write_text("x")
+    with pytest.raises(WorktreeError, match="commit failed"):
+        m.commit_all(wt, "the opted-in gate must run")
+
+
+def test_hooks_are_not_copied_when_the_operator_did_not_opt_in(repo: Path) -> None:
+    """Anti-blanket control: resolving hooks better must not start running them by default."""
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    m = WorktreeManager(repo)
+    wt = m.create("no-optin")
+    (wt.path / "f.txt").write_text("x")
+    assert m.commit_all(wt, "hooks off by default")
+    assert not (wt.path / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_changed_files_handles_a_worktree_side_rename(repo: Path) -> None:
+    """REGRESSION (P2): the old-path field was skipped only when the INDEX column said R/C. A
+    rename detected on the worktree side (` R`, what `git add -N` on a moved file produces) left
+    the old path in the stream, where it was parsed as a status record and truncated by three
+    characters - so the driver was shown a file that does not exist."""
+    m = WorktreeManager(repo)
+    wt = m.create("renamed")
+    old = wt.path / "old name.txt"
+    old.write_text("contents that survive the move\n")
+    _git(wt.path, "add", "-A")
+    _git(wt.path, "commit", "-q", "--no-verify", "-m", "seed")
+    old.rename(wt.path / "new name.txt")
+    _git(wt.path, "add", "-N", "new name.txt")
+
+    files = m.changed_files(wt)
+    assert all((wt.path / f).exists() or f == "old name.txt" for f in files), files
+    assert "new name.txt" in files
+    assert " name.txt" not in files, "a truncated, non-existent path was reported as changed"
+
+
+def test_merge_leaves_an_operators_in_progress_merge_alone_and_reports_blocked(repo: Path) -> None:
+    """REGRESSION (P1): merge() used to `git merge --abort` a merge the OPERATOR had started.
+
+    This test previously pinned that abort as intended. It is not: an autonomous driver calling
+    integrate would reset a checkout someone was in the middle of resolving by hand, and the
+    pre-existing conflicted files were then reported as this run's conflicts. Marshal never
+    aborts an operation it did not start.
+    """
     m = WorktreeManager(repo)
 
     def g(*a: str) -> str:
@@ -633,9 +716,52 @@ def test_merge_aborts_an_in_progress_merge_and_reports_blocked(repo: Path) -> No
     g("merge", "--no-commit", "--no-ff", "sibling")
     assert m._merge_in_progress()
 
-    result = m.merge(wt.branch)            # git refuses (merge in progress); merge() aborts it
+    result = m.merge(wt.branch)
     assert not result.ok and result.blocked
-    assert not m._merge_in_progress()      # repo returned to a clean state, not left mid-merge
+    assert "merge" in result.message and "did not start" in result.message
+    assert m._merge_in_progress(), "Marshal aborted the operator's own merge"
+    assert (repo / "sibling.txt").exists(), "the operator's staged merge content was reset"
+
+
+def test_merge_does_not_report_the_operators_conflicts_as_the_runs(repo: Path) -> None:
+    """The damaging half of the same bug: with a CONFLICTED merge already in progress, the
+    operator's hand-edited resolution was discarded and their conflicted file came back as this
+    run's conflict list - pointing the driver at a file the run never touched."""
+    m = WorktreeManager(repo)
+
+    def g(*a: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *a], check=True, capture_output=True, text=True
+        ).stdout
+
+    shared = repo / "shared.txt"
+    shared.write_text("base\n")
+    g("add", "-A")
+    g("commit", "-m", "shared")
+    base = g("rev-parse", "--abbrev-ref", "HEAD").strip()
+    g("checkout", "-b", "sibling")
+    shared.write_text("sibling\n")
+    g("add", "-A")
+    g("commit", "-m", "sibling edit")
+    g("checkout", base)
+    shared.write_text("main\n")
+    g("add", "-A")
+    g("commit", "-m", "main edit")
+    wt = m.create("unrelated")
+    (wt.path / "mine.txt").write_text("mine")
+    m.commit_all(wt, "mine")
+    # Expected to fail with a conflict - that is the state under test.
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "sibling"], check=False, capture_output=True, text=True
+    )
+    assert m._merge_in_progress()
+    shared.write_text("carefully hand-resolved by the operator\n")
+
+    result = m.merge(wt.branch)
+    assert not result.ok and result.blocked
+    assert result.conflicts == [], "the operator's conflict was reported as the run's"
+    assert shared.read_text() == "carefully hand-resolved by the operator\n"
+    assert m._merge_in_progress()
 
 
 def test_abort_merge_raises_when_abort_fails(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -666,6 +792,98 @@ def test_abort_merge_raises_when_abort_fails(repo: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(m, "_git", fake_git)
     with pytest.raises(WorktreeError):  # abort failed + still mid-merge -> honest hard error
         m._abort_merge("marshal/whatever")
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("leave_clone", ["branch", "detached"])
+def test_commit_all_refuses_when_the_clone_is_off_its_run_branch(
+    repo: Path, leave_clone: str
+) -> None:
+    """REGRESSION (P0): commit_all committed whatever HEAD the clone was on and published only the
+    run branch. An agent that ran `git checkout -b feature` (or was stopped mid-rebase, detached)
+    had its commit land on a ref publishing never reads; the run branch still pointed at the base,
+    integrate merged nothing and reported `merged`, and cleanup deleted the only copy."""
+    m = WorktreeManager(repo)
+    wt = m.create("offbranch")
+    if leave_clone == "branch":
+        _git(wt.path, "checkout", "-q", "-b", "feature")
+    else:
+        _git(wt.path, "checkout", "-q", "--detach")
+    (wt.path / "work.txt").write_text("the work")
+    with pytest.raises(WorktreeError) as exc:
+        m.commit_all(wt, "should refuse")
+    msg = str(exc.value)
+    assert wt.branch in msg and ("'feature'" in msg or "detached HEAD" in msg)
+    # Nothing was committed anywhere and the work is still in the clone, where the message says.
+    assert (wt.path / "work.txt").read_text() == "the work"
+    assert m.branch_tip(wt.branch) == wt.base_commit
+    assert _git(wt.path, "status", "--porcelain") != ""
+
+
+def test_publish_refuses_self_commits_made_off_the_run_branch(repo: Path) -> None:
+    """The self-committed path publishes too, and must not read a commit on another branch as
+    "no changes" (the run branch is untouched, so it would look clean)."""
+    m = WorktreeManager(repo)
+    wt = m.create("offbranch-self")
+    _git(wt.path, "checkout", "-q", "-b", "feature")
+    (wt.path / "work.txt").write_text("x")
+    _git(wt.path, "add", "work.txt")
+    _git(wt.path, "commit", "-q", "--no-verify", "-m", "agent commit on feature")
+    with pytest.raises(WorktreeError, match="feature"):
+        m.commit_all(wt, "self-committed elsewhere")
+
+
+def test_clone_side_git_never_runs_agent_authored_hooks_or_fsmonitor(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION (P0): collect/commit/integrate ran git inside the clone with the driver's full
+    environment and the clone's own config honoured. An agent that wrote `core.fsmonitor` or a
+    post-commit hook into its clone got code executed AS MARSHAL at collect time, with the
+    ANTHROPIC_API_KEY / GH_TOKEN that child_env deliberately withholds from the agent."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SECRET-DRIVER-ONLY")
+    m = WorktreeManager(repo)
+    wt = m.create("evil")
+    marker = wt.path.parent / "evil.marker"
+    script = wt.path / ".git" / "payload.sh"
+    script.write_text(f"#!/bin/sh\necho \"ran ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY\" >> {marker}\n")
+    script.chmod(0o755)
+    _git(wt.path, "config", "core.fsmonitor", str(script))
+    hooks = wt.path / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "post-commit").write_text(script.read_text())
+    (hooks / "post-commit").chmod(0o755)
+    (wt.path / "b.txt").write_text("x")
+
+    assert m.changed_files(wt) == ["b.txt"]
+    assert "b.txt" in m.diff(wt)
+    assert m.commit_all(wt, "commit")
+    assert not marker.exists(), marker.read_text() if marker.exists() else ""
+
+
+def test_opted_in_hooks_run_without_the_drivers_credentials(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`integrate_run_hooks: true` keeps hooks, and only hooks: the clone-side environment is
+    still the allowlist, so a hook the agent could have edited never sees the driver's secrets."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SECRET-DRIVER-ONLY")
+    m = WorktreeManager(repo, integrate_run_hooks=True)
+    wt = m.create("hooked-env")
+    dump = wt.path.parent / "hook-env.txt"
+    hooks = wt.path / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "post-commit").write_text(f"#!/bin/sh\nenv > {dump}\n")
+    (hooks / "post-commit").chmod(0o755)
+    (wt.path / "f.txt").write_text("x")
+    assert m.commit_all(wt, "commit with hooks on")
+    assert dump.exists(), "the opted-in hook did not run"
+    seen = dump.read_text()
+    assert "PATH=" in seen, "the hook needs the operational environment"
+    assert "ANTHROPIC_API_KEY" not in seen and "SECRET-DRIVER-ONLY" not in seen
 
 
 def test_commit_all_skips_pre_commit_hook(repo: Path) -> None:

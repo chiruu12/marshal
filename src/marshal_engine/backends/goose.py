@@ -376,9 +376,34 @@ def _apply_token_fields(usage: UsageRecord, payload: dict[str, Any]) -> bool:
     return found
 
 
+#: A reply (or first line) at most this long reads as a bare error message rather than a work
+#: summary. Goose's real auth failures are one short line; missing an unusually long one is the
+#: safer side, since the exit code and the reply still reach the driver either way.
+_BARE_ERROR_MAX_LEN = 200
+
+
 def _auth_or_fatal_error_from_text(text: str) -> str | None:
     """Goose sometimes exits 0 while embedding auth failures in the assistant message."""
-    lower = text.lower()
+    stripped = text.strip()
+    if not stripped:
+        return None
+    # Only the FIRST line, or a reply short enough to be a bare error. Goose puts its auth failure
+    # at the top when it exits 0 with one; scanning the whole reply turned any *mention* into a
+    # failure - an agent reporting "added test_returns_401_when_unauthorized ... all 12 tests pass"
+    # was recorded as an auth error with its own success summary as the error text. Missing an
+    # unusually-worded auth failure is the safer side: the exit code and the reply still reach the
+    # driver, where a run wrongly stamped FAILED loses its work.
+    # A bare error message: the whole reply, or its first line, short enough not to be a work
+    # summary. Goose's real auth failures are one short line; an agent's report of finished work
+    # is long, and scanning it turned any *mention* of auth into a failure.
+    first_line = stripped.splitlines()[0].strip()
+    if len(stripped) <= _BARE_ERROR_MAX_LEN:
+        candidate = stripped
+    elif len(first_line) <= _BARE_ERROR_MAX_LEN:
+        candidate = first_line
+    else:
+        return None
+    lower = candidate.lower()
     needles = (
         "authentication error",
         "not logged in",
@@ -390,7 +415,7 @@ def _auth_or_fatal_error_from_text(text: str) -> str | None:
     for needle in needles:
         if needle in lower:
             # Prefer a short first line when the model wrapped the error.
-            first = text.strip().splitlines()[0].strip() if text.strip() else text
+            first = first_line or stripped
             # Redact before the length cut so a credential cannot straddle and leak a prefix.
             safe = redact_secrets(first or text)
             return safe[:500]

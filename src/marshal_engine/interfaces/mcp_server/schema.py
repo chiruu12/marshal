@@ -61,7 +61,9 @@ _DESC_OUTPUT_SCHEMA = (
     "Optional JSON Schema (object) for the agent's FINAL MESSAGE. When set, the engine requires "
     "exactly one conforming JSON object, surfaces it as `structured` on the run/collect result, "
     "and fails the run (status failed, error prefixed `structured_output:`) if the reply is "
-    "missing or invalid. Omit for today's prose behaviour."
+    "missing or invalid. Narration BEFORE the object is tolerated (some CLIs always narrate); "
+    "prose after it, or more than one top-level object, is refused rather than guessed at. "
+    "Omit for today's prose behaviour."
 )
 _DESC_RUN_ID = "A run id returned by run_agent / spawn / run_many."
 _DESC_WORKSPACE = "Target workspace name (from list_workspaces); defaults to the primary workspace."
@@ -91,6 +93,7 @@ class Job(BaseModel):
     artifacts_from: Annotated[
         list[str] | None, Field(description=_DESC_ARTIFACTS_FROM)
     ] = None
+    base_branch: Annotated[str | None, Field(description=_DESC_BASE_BRANCH)] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None
     duration: Annotated[str | int | None, Field(description=_DESC_DURATION)] = None
@@ -137,6 +140,16 @@ class ThenJob(BaseModel):
     read_paths: Annotated[list[str] | None, Field(description=_DESC_READ_PATHS)] = None
     artifacts_from: Annotated[
         list[str] | None, Field(description=_DESC_ARTIFACTS_FROM)
+    ] = None
+    base_branch: Annotated[
+        str | None,
+        Field(
+            description=(
+                _DESC_BASE_BRANCH
+                + " On a `then` stage this is overridden by the primary's branch, which is the "
+                "point of chaining - set it only if you know why."
+            )
+        ),
     ] = None
     model: Annotated[str | None, Field(description=_DESC_MODEL)] = None
     backend: Annotated[str | None, Field(description=_DESC_BACKEND)] = None

@@ -27,6 +27,7 @@ from marshal_engine import (
     UsageSource,
 )
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.core.types import ProgressTimeout
 
 
 class _Dummy(CodingAgentBackend):
@@ -551,3 +552,262 @@ def test_a_clean_timeout_is_not_reported_as_a_survivor(tmp_path: Path) -> None:
 
     assert res.status is RunStatus.TIMED_OUT
     assert res.agent_survived_kill is False
+
+
+# --- progress-aware timeout (#276) -------------------------------------------------------
+#
+# The hard ceiling is the invariant and is asserted in every one of these: the policy may only
+# move a kill EARLIER or extend BELOW the ceiling, never past it.
+
+def _sleeper(seconds: float) -> _Dummy:
+    """A child that produces no output and touches nothing - i.e. reads as stalled."""
+    return _Dummy([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+
+
+def _writer(seconds: float, path: Path) -> _Dummy:
+    """A child that keeps writing to its worktree - i.e. reads as making progress."""
+    code = (
+        "import time, sys\n"
+        f"end = time.time() + {seconds}\n"
+        "i = 0\n"
+        "while time.time() < end:\n"
+        f"    open({str(path)!r} + str(i % 3), 'w').write(str(i))\n"
+        "    i += 1\n"
+        "    time.sleep(0.2)\n"
+    )
+    return _Dummy([sys.executable, "-c", code])
+
+
+def test_the_progress_scan_is_bounded_so_the_hard_ceiling_still_holds(tmp_path: Path) -> None:
+    """The scan sits between the waiter's ceiling checks, so an unbounded walk of a big worktree
+    would hold the run past `hard_ceiling_s` - the one deadline that must always hold. It stops
+    on the first newer entry, and gives up on a budget either way."""
+    from marshal_engine.backends.base import _newest_mtime
+
+    deep = tmp_path
+    for i in range(40):
+        deep = deep / f"d{i}"
+    deep.mkdir(parents=True)
+    for i in range(300):
+        (deep / f"f{i}.txt").write_text("x")
+    started = time.monotonic()
+    mtime, complete = _newest_mtime(tmp_path, budget_s=0.0)
+    assert time.monotonic() - started < 1.0
+    assert complete is False, "an exhausted budget must report the scan as incomplete"
+    assert mtime == 0.0
+
+    # A scan that CAN finish still answers, and stops early once it has its answer.
+    found, done = _newest_mtime(tmp_path)
+    assert done is True and found > 0.0
+
+
+def test_an_unfinished_scan_is_not_read_as_a_stall(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """`complete=False` means "progress unknown", not "no progress". Killing a run for a stall on
+    a scan that never finished would be a verdict the code did not earn."""
+    from marshal_engine.backends import base as base_mod
+
+    monkeypatch.setattr(base_mod, "_newest_mtime", lambda *a, **k: (0.0, False))
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=3)
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    elapsed = time.monotonic() - started
+    # Not killed at stall_s (1s) on unknown evidence; the ceiling (3s) still ends it.
+    assert res.status is RunStatus.TIMED_OUT
+    assert "hard ceiling" in (res.error or ""), res.error
+    assert 2.0 < elapsed < 20.0, elapsed
+
+
+def test_the_progress_scan_cannot_run_past_the_ceiling(tmp_path: Path) -> None:
+    """A scan starting near the deadline must be bounded by what is LEFT of the ceiling, not by
+    its own budget - otherwise the child outlives the one deadline that must always hold."""
+    seen: list[float] = []
+    from marshal_engine.backends import base as base_mod
+
+    real = base_mod._newest_mtime
+
+    def recording(root, **kw):  # noqa: ANN001, ANN202
+        seen.append(kw.get("budget_s", base_mod._PROGRESS_SCAN_BUDGET_S))
+        return real(root, **kw)
+
+    policy = ProgressTimeout(enabled=True, stall_s=30, hard_ceiling_s=2, poll_interval_s=1)
+    started = time.monotonic()
+    try:
+        base_mod._newest_mtime = recording  # type: ignore[assignment]
+        res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    finally:
+        base_mod._newest_mtime = real  # type: ignore[assignment]
+    elapsed = time.monotonic() - started
+    assert res.status is RunStatus.TIMED_OUT
+    assert elapsed < 15, elapsed
+    assert seen, "the scan never ran"
+    assert all(b <= base_mod._PROGRESS_SCAN_BUDGET_S + 0.01 for b in seen)
+    assert seen[-1] < base_mod._PROGRESS_SCAN_BUDGET_S, (
+        "the last scan before the ceiling was given its full budget, so it could overrun"
+    )
+
+
+def test_a_run_with_no_progress_ends_at_its_soft_deadline(tmp_path: Path) -> None:
+    """REGRESSION (P2): `soft_deadline_s` is documented as the FIRST deadline, at which a run
+    "still making progress is extended rather than killed" - but no branch ever killed at it, so
+    the key only sized the poll slice and any soft deadline below `stall_s` was decorative."""
+    policy = ProgressTimeout(
+        enabled=True, stall_s=30, soft_deadline_s=1, hard_ceiling_s=30, poll_interval_s=1
+    )
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    elapsed = time.monotonic() - started
+    assert res.status is RunStatus.TIMED_OUT
+    assert "soft deadline" in (res.error or ""), res.error
+    assert elapsed < 15, f"ran {elapsed:.1f}s; the 1s soft deadline should have ended it"
+
+
+def test_a_stalled_run_is_killed_before_its_cap(tmp_path: Path) -> None:
+    """The whole point: a run that stopped working must not burn the rest of the clock.
+
+    Today every timeout in the ledger sits at the wall - the mechanism has never once ended a
+    run for lack of progress, only for running out of time.
+    """
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=30)
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    elapsed = time.monotonic() - started
+
+    assert res.status is RunStatus.TIMED_OUT
+    assert elapsed < 15, f"killed at {elapsed:.1f}s; should be seconds, not the 30s cap"
+
+
+def test_a_run_making_progress_survives_past_the_soft_deadline(tmp_path: Path) -> None:
+    """A productive run at the cap is exactly the case whose tokens are spent for nothing.
+
+    `stall_s` is shorter than the run on purpose: the run survives ONLY because its writes keep
+    resetting the stall clock. Take the progress signal away (stop reading mtimes, or stop
+    resetting `last_progress`) and this run stalls out at 2s instead of finishing - so the test
+    is evidence for the extension, not merely for the hard ceiling being far away.
+    """
+    policy = ProgressTimeout(
+        enabled=True, stall_s=2, soft_deadline_s=1, hard_ceiling_s=30, poll_interval_s=1
+    )
+    res = _writer(4, tmp_path / "w").run(
+        _task(), RunOpts(cwd=tmp_path, timeout_s=1, progress=policy)
+    )
+
+    # Without the extension a 1s soft deadline would have killed a run that ran for ~4s.
+    assert res.status is RunStatus.EXITED_CLEAN
+
+
+def test_a_stall_kill_says_it_was_a_stall_and_names_the_stall_deadline(tmp_path: Path) -> None:
+    """REGRESSION (P1): the TIMED_OUT error was always built from `timeout_s`, so a stall kill
+    reported "timed out after 600s" for a run stopped at 1s of silence - a duration the run never
+    had, with nothing saying it had been ended for lack of progress. A driver cannot tell a stall
+    from a wall-clock kill, and the two call for different fixes."""
+    policy = ProgressTimeout(enabled=True, stall_s=1, poll_interval_s=1, hard_ceiling_s=30)
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=30, progress=policy))
+    assert res.status is RunStatus.TIMED_OUT
+    assert "no progress" in (res.error or "")
+    assert "1s" in (res.error or "") and "30s" not in (res.error or "")
+
+
+def test_a_ceiling_kill_says_ceiling_and_a_plain_timeout_still_says_timed_out(
+    tmp_path: Path,
+) -> None:
+    """The other two shapes, so the fix distinguishes rather than relabels everything."""
+    policy = ProgressTimeout(
+        enabled=True, stall_s=30, soft_deadline_s=1, hard_ceiling_s=2, poll_interval_s=1
+    )
+    res = _writer(30, tmp_path / "w").run(
+        _task(), RunOpts(cwd=tmp_path, timeout_s=1, progress=policy)
+    )
+    assert res.status is RunStatus.TIMED_OUT
+    assert "hard ceiling" in (res.error or "") and "2s" in (res.error or "")
+
+    plain = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=1))
+    assert plain.status is RunStatus.TIMED_OUT
+    assert "timed out after 1s" in (plain.error or "")
+
+
+def test_the_hard_ceiling_still_kills_a_busy_run(tmp_path: Path) -> None:
+    """The invariant: a run is never extended past the ceiling, however productive it looks."""
+    policy = ProgressTimeout(
+        enabled=True, stall_s=30, soft_deadline_s=1, hard_ceiling_s=2, poll_interval_s=1
+    )
+    started = time.monotonic()
+    res = _writer(30, tmp_path / "w").run(
+        _task(), RunOpts(cwd=tmp_path, timeout_s=1, progress=policy)
+    )
+    elapsed = time.monotonic() - started
+
+    assert res.status is RunStatus.TIMED_OUT
+    assert elapsed < 20, f"ran {elapsed:.1f}s; the 2s ceiling must bound it"
+
+
+def test_no_policy_leaves_the_wall_clock_exactly_as_before(tmp_path: Path) -> None:
+    """Anti-blanket control: the default path must not acquire progress behaviour."""
+    started = time.monotonic()
+    res = _sleeper(30).run(_task(), RunOpts(cwd=tmp_path, timeout_s=2))
+    elapsed = time.monotonic() - started
+
+    assert res.status is RunStatus.TIMED_OUT
+    # Killed by the plain cap at ~2s, NOT early by a stall detector that should not be running.
+    assert 1.0 < elapsed < 15
+
+
+def test_a_future_dated_file_cannot_pin_the_progress_signal(tmp_path: Path) -> None:
+    """A file stamped ahead of the clock would otherwise be the newest mtime forever, so every
+    real write compares lower and a productive run is killed as stalled."""
+    import os
+
+    from marshal_engine.backends.base import _newest_mtime
+
+    future = tmp_path / "from-the-future"
+    future.write_text("x")
+    ahead = time.time() + 86_400
+    os.utime(future, (ahead, ahead))
+    assert _newest_mtime(tmp_path)[0] == 0.0, "a future stamp was read as progress"
+    real = tmp_path / "real.py"
+    real.write_text("x")
+    newest = _newest_mtime(tmp_path)[0]
+    assert 0.0 < newest < ahead
+    assert newest == real.stat().st_mtime
+
+
+def test_git_writes_do_not_count_as_agent_progress(tmp_path: Path) -> None:
+    """`.git` is skipped, so a stalled agent cannot be kept alive by git's own bookkeeping.
+
+    The progress signal is "the worktree changed". Git writes into `.git` constantly - index
+    refreshes, lock files, gc - none of which is the agent doing work. If those counted, a hung
+    run would look busy for as long as anything touched the repo, and the stall detector would
+    never fire: the exact failure it exists to catch.
+    """
+    from marshal_engine.backends.base import _newest_mtime
+
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "index").write_text("x")
+    nested = git / "refs" / "heads"
+    nested.mkdir(parents=True)
+    (nested / "main").write_text("x")
+
+    assert _newest_mtime(tmp_path)[0] == 0.0  # nothing outside .git has been written
+
+    tracked = tmp_path / "src.py"
+    tracked.write_text("x")
+    assert _newest_mtime(tmp_path)[0] > 0.0  # ... and a real file still registers
+
+
+def test_an_unreadable_directory_is_not_read_as_progress(tmp_path: Path) -> None:
+    """A directory we cannot scan yields no mtime rather than an exception.
+
+    `_newest_mtime` runs on every poll of a live run. Raising here would turn a permission quirk
+    into a killed run, so the walk degrades to "saw nothing" - which is the safe direction: the
+    stall detector fires, and the hard ceiling is still underneath it either way.
+    """
+    from marshal_engine.backends.base import _newest_mtime
+
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "f").write_text("x")
+    blocked.chmod(0o000)
+    try:
+        assert _newest_mtime(tmp_path)[0] == 0.0
+    finally:
+        blocked.chmod(0o755)

@@ -136,12 +136,47 @@ def _unverifiable_supervisor_hold(payload: dict[str, object], recorded: str | No
       pids. A bounded false hold self-heals; refusing to write the lock at all would
       disable every Fleet on a host without ``ps``.
     """
-    if isinstance(recorded, str) and recorded.startswith(_PINNED_IDENTITY_PREFIX):
+    if isinstance(recorded, str) and recorded.startswith(
+        (_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX)
+    ):
         return True
     return _unverifiable_hold_still_active(payload)
 
 
-def _pid_start_time(pid: int) -> str | None:
+#: Marker for a Linux identity read from ``/proc/<pid>/stat`` field 22 - the process's start time
+#: in clock ticks SINCE BOOT. A distinct prefix from the ``ps`` one because the two values are not
+#: comparable, and `_identity_verdict` must read a cross-prefix mismatch as "cannot check" rather
+#: than "different process" - "different" is the reading that authorises reaping a live run.
+_PROC_IDENTITY_PREFIX = "proc/starttime|"
+
+
+def _proc_start_ticks(pid: int) -> str | None:
+    """Linux: ``/proc/<pid>/stat`` field 22, the start time in ticks since boot. None elsewhere.
+
+    Preferred over ``ps -o lstart=`` on Linux because it does not move. ``lstart`` is derived from
+    the CURRENT boot-time estimate, which shifts whenever the wall clock is stepped (an NTP
+    correction is enough), so the same LIVE process rendered a different start time before and
+    after - read as "this pid is somebody else's", which is precisely the reading that authorises
+    reaping a live agent. A boot-relative counter cannot drift with the clock.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    # The comm field is parenthesised and may itself contain spaces or ')': fields are counted
+    # from AFTER the last ')', which is what every correct /proc/stat parser does.
+    close = raw.rfind(")")
+    if close == -1:
+        return None
+    fields = raw[close + 2 :].split()
+    # After comm, field 3 is state; starttime is field 22 overall, i.e. index 19 here.
+    if len(fields) < 20 or not fields[19].isdigit():
+        return None
+    return _PROC_IDENTITY_PREFIX + fields[19]
+
+
+def _pid_start_time(pid: int, like: str | None = None) -> str | None:
     """The OS-reported start time of ``pid``, or None when it cannot be determined.
 
     A pid alone is not an identity: the OS reuses pids, so "something is alive at pid 4242" does
@@ -153,6 +188,22 @@ def _pid_start_time(pid: int) -> str | None:
     thing to whoever reads it next - see ``_PINNED_IDENTITY_PREFIX``. ``worktree.py`` pins
     ``LC_ALL`` for the same reason.
     """
+    if like is not None and like.startswith(_PINNED_IDENTITY_PREFIX):
+        # Re-read with the SOURCE THAT WROTE the stamp. Probing with the preferred source and
+        # comparing across sources would make every pre-upgrade record unverifiable, which fails
+        # open: stale locks, claims and reservations that nothing ever reclaims.
+        return _ps_start_time(pid)
+    ticks = _proc_start_ticks(pid)
+    if ticks is not None:
+        return ticks
+    return _ps_start_time(pid)
+
+
+def _ps_start_time(pid: int) -> str | None:
+    """The ``ps -o lstart=`` reading, prefixed. Kept as its own function so a stamp written by it
+    stays re-readable: a record written before the Linux probe existed must still verify against
+    the same source it came from, or every pre-existing stamp would read "unverifiable" after an
+    upgrade and nothing stale would ever be reclaimed."""
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
@@ -184,9 +235,14 @@ def _identity_verdict(pid: int, recorded: str | None) -> bool | None:
     module's own rule: reaping is suppressed until then, where the direction it replaces reaps a
     live agent.
     """
-    if not recorded or not recorded.startswith(_PINNED_IDENTITY_PREFIX):
+    if not recorded or not recorded.startswith(
+        (_PINNED_IDENTITY_PREFIX, _PROC_IDENTITY_PREFIX)
+    ):
         return None  # never stamped, or stamped with the un-comparable ambient rendering
-    now = _pid_start_time(pid)
+    # Re-read with the SAME source that wrote the stamp. Probing with the preferred source and
+    # comparing across sources would make every pre-upgrade record unverifiable, which fails open:
+    # stale locks, claims and reservations that nothing reclaims.
+    now = _pid_start_time(pid, like=recorded)
     if now is None:
         return None  # probe unavailable (non-POSIX, permission)
     return now == recorded

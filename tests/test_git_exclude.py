@@ -71,7 +71,11 @@ def test_concurrent_appends_do_not_duplicate_the_entry(tmp_path: Path) -> None:
 
     def worker() -> None:
         try:
-            barrier.wait(timeout=5)
+            # Generous: the barrier only exists to maximise contention, and its timeout is not
+            # what this test is asserting. A loaded machine (a parallel fleet, a busy CI runner)
+            # can take seconds just to schedule all eight threads, and a BrokenBarrierError there
+            # was collected as a worker failure - reporting a lock defect for a slow scheduler.
+            barrier.wait(timeout=60)
             append_git_exclude(tmp_path, ".marshal/")
         except BaseException as exc:  # noqa: BLE001 - collect for the main thread
             errors.append(exc)

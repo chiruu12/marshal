@@ -614,7 +614,16 @@ class TeamRunner:
             # legitimate), but its status rides in the summary - and therefore into every
             # reviewer's prompt and the unified report - so nobody mistakes it for a candidate.
             rec = self.service.get_run(run_id)
-            status = rec.status if rec is not None else ""
+            if rec is None:
+                # No record at all. Falling through let `collect_run`'s "no such run" be caught
+                # below and reported as "its worktree was removed (most likely by `clean`)" - a
+                # confident wrong cause for what is usually a typo or a run in another workspace,
+                # and the exact failure the diagnostics module exists to avoid.
+                raise ConfigError(
+                    f"no such run: {run_id!r}. Check the id (and the workspace it belongs to) - "
+                    "nothing is recorded under it, so there is nothing to review."
+                )
+            status = rec.status
             unstable = _review_instability(run_id, rec)
             if unstable is not None:
                 raise ConfigError(unstable)
@@ -649,6 +658,15 @@ class TeamRunner:
             # reviews nothing: the panel was refused as "nothing to review", or shown the
             # uncommitted remainder while the summary counted only that remainder, so a partial
             # review was indistinguishable from a whole one. Both sections go to the reviewers.
+            if cr.produced == "unavailable":
+                # "Nothing to review" would be a lie about a run whose work merely could not be
+                # read (its worktree was cleaned, or the agent left it on another branch). The
+                # panel is refused either way, but the driver is told which, and can re-run the
+                # work instead of concluding the run did nothing.
+                raise ConfigError(
+                    f"run {run_id}: its work cannot be read, so there is nothing to review yet - "
+                    f"{cr.unavailable_reason or 'the worktree is gone'}"
+                )
             body = _combined_run_diff(cr)
             files = len(set(cr.changed_files) | set(cr.committed_changed_files))
             return body, f"run {run_id} ({files} file(s) changed{suffix})", note

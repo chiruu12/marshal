@@ -80,7 +80,7 @@ defaults:
 clients:
   implementer:
     backend: opencode
-    model: opencode-go/glm-5.2   # Go sub; a fireworks-ai/* model is rejected outright
+    model: opencode-go/glm-5.2   # Go sub; a fireworks-ai/* model loads with a billing warning
     permission: safe-edit
 
   reviewer:
@@ -270,7 +270,7 @@ until you `integrate`. State and usage live under `.marshal/`.
 | a run ends `verify_failed` | the workspace's `verify:` gate rejected work that otherwise looked succeeded | read `verify_output` on the run record, `collect_run` the diff, fix or re-run; the worktree is kept for review |
 | `no fleet config at …` | no `fleet.config.yaml` | `marshal init` (scaffolds a starter; edit clients) |
 | `marshal mcp` exits with an extra message | the `mcp` extra isn't installed | `uv sync --extra mcp` |
-| OpenCode model rejected at load | a `fireworks-ai/*` model bills Fireworks credits | use an `opencode-go/*` model |
+| OpenCode billing warning at load | a `fireworks-ai/*` model bills Fireworks credits, not the Go subscription | use an `opencode-go/*` model, or keep it deliberately |
 | a backend run shows cost `unavailable` | the backend reports no native cost and no `usage_api` backfill | configure `usage_api: eastrouter` for Codex via EastRouter, or use a native-cost backend |
 | `integrate` refuses with detached HEAD | no branch checked out in `MARSHAL_REPO` | `git checkout <branch>` |
 | your MCP host froze or "crashed" on a keystroke, with no error | a stdio MCP server's children can share the host's terminal and stop its whole process group | check `ps -eo pid,ppid,stat,comm \| awk '$3 ~ /T/'` — `T` means *suspended*, not crashed; recover with `kill -CONT <pid>` (`kill -TERM` does not land on a stopped process). Marshal no longer holds or passes on the host's terminal; if it recurs, the culprit is another stdio server |

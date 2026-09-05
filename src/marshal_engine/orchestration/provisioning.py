@@ -8,6 +8,7 @@ than trusting an earlier `stat` (the TOCTOU races in #105).
 
 from __future__ import annotations
 
+import contextvars
 import fnmatch
 import os
 import shutil
@@ -441,6 +442,14 @@ def _open_plain_dest_dir(path: Path, *, what: str) -> int:
     return fd
 
 
+#: What the caller is doing, for the refusal message. `_copy_read_path_tree` is shared by
+#: `read_paths` and `artifacts_from`, and naming the wrong one sent a driver to fix a setting it
+#: had not used.
+_COPY_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "marshal_copy_context", default="read_paths"
+)
+
+
 def _copy_read_path_tree(
     src: Path,
     dest: Path,
@@ -470,10 +479,15 @@ def _copy_read_path_tree(
     logical_path = logical if logical is not None else src
     child_dest_name = dest_name if dest_name is not None else dest.name
     if _is_refused_read_path(logical_path):
+        # The pattern list is read from the constants rather than restated: the hardcoded prose
+        # had drifted to a subset of what actually refuses, so a driver could not tell why its
+        # file was rejected or which of its files to rename.
+        globs = ", ".join(_READ_PATH_SECRET_NAME_GLOBS)
+        dirs = ", ".join(sorted(_READ_PATH_SECRET_DIRS))
         raise ValueError(
-            f"read_paths refuses secret-shaped path: {logical_path}. "
-            f"Paths matching .env*/*.pem/id_rsa*/id_ed25519* or inside a .ssh directory "
-            f"are never copied into a worktree."
+            f"{_COPY_CONTEXT.get()} refuses secret-shaped path: {logical_path}. "
+            f"Names matching {globs} - or anything inside {dirs} - are never copied into a "
+            "worktree. Rename or remove that file, or leave it out of the run."
         )
     try:
         st = _lstat_at(src, dir_fd=dir_fd)
@@ -833,7 +847,11 @@ def provision_run_artifacts(wt: Worktree, artifacts_root: Path, run_ids: list[st
                 existing = None
             if existing is not None:
                 raise ValueError(f"artifacts_from lists {run_id!r} more than once.")
-            _copy_read_path_tree(src, dest, dest_dir_fd=dest_root_fd, dest_name=run_id)
+            token = _COPY_CONTEXT.set("artifacts_from")
+            try:
+                _copy_read_path_tree(src, dest, dest_dir_fd=dest_root_fd, dest_name=run_id)
+            finally:
+                _COPY_CONTEXT.reset(token)
             _make_readonly(dest)
     finally:
         os.close(dest_root_fd)

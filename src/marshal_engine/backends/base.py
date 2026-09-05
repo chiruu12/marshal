@@ -25,7 +25,8 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar, Final
 
 from ..core.types import (
     AgentResult,
@@ -430,8 +431,8 @@ class CodingAgentBackend(ABC):
                 print(f"[marshal] {self.name}: on_exit callback failed: {exc}", file=sys.stderr)
 
         try:
-            out, err = proc.communicate(timeout=opts.timeout_s)
-        except subprocess.TimeoutExpired:
+            out, err = _wait_for_child(proc, opts)
+        except subprocess.TimeoutExpired as timeout_exc:
             _kill_process_group(pgid)
             out, err, drained = _drain(proc)  # bounded: a pipe-holder that escaped can't hang us
             # Ask whether the kill worked instead of assuming it. `_kill_process_group` swallows
@@ -457,7 +458,15 @@ class CodingAgentBackend(ABC):
             return AgentResult(
                 status=RunStatus.TIMED_OUT,
                 error=_timeout_error(
-                    self.name, opts.timeout_s, survived=survived, escaped=escaped
+                    self.name,
+                    # The exception carries the deadline that fired, which under a progress policy
+                    # is a stall (`stall_s`) or the ceiling - neither of them `timeout_s`. Reporting
+                    # `timeout_s` told the driver a duration the run never had, in both directions,
+                    # and nothing said the run had been ended for lack of progress.
+                    timeout_exc.timeout if timeout_exc.timeout is not None else opts.timeout_s,
+                    survived=survived,
+                    escaped=escaped,
+                    kind=getattr(timeout_exc, "_marshal_timeout_kind", None),
                 ),
                 session_id=opts.session_id,
                 usage=self._recover_partial_usage(out, err),
@@ -498,6 +507,154 @@ class CodingAgentBackend(ABC):
             return None
 
 
+#: How far ahead of the clock an mtime may sit before the progress probe stops trusting it.
+#: Only filesystem clock granularity needs covering; anything wider would let a slightly-ahead
+#: file hide real writes for that long, which is a stall's worth on a short `stall_s`.
+_FUTURE_MTIME_TOLERANCE_S: Final[float] = 2.0
+
+#: How long one progress scan may walk before giving up. The scan runs between the waiter's
+#: ceiling checks, so an unbounded one on a large worktree would hold the run past its hard
+#: ceiling - the one deadline that must always hold.
+_PROGRESS_SCAN_BUDGET_S: Final[float] = 2.0
+
+
+def _newest_mtime(
+    root: Path, *, newer_than: float = 0.0, budget_s: float = _PROGRESS_SCAN_BUDGET_S
+) -> tuple[float, bool]:
+    """Newest mtime under ``root`` as ``(mtime, complete)``.
+
+    Skips ``.git``: git writes index/lock files on its own schedule, so counting them would
+    report progress for a run that has done nothing. Errors are swallowed - a progress probe
+    must never be able to end a run by failing.
+
+    The walk is BOUNDED, in two ways, because it sits between the waiter's ceiling checks: an
+    unbounded scan of a big worktree (``node_modules``, a build tree) would hold the loop past
+    ``hard_ceiling_s`` and leave the child alive beyond its configured maximum. It stops as soon
+    as it finds anything newer than ``newer_than`` - the caller only ever asks "did something
+    change" - and gives up after ``budget_s`` regardless.
+
+    ``complete`` is False when the walk was cut short without finding anything newer. That is
+    "progress unknown", NOT "no progress": killing a run for a stall on the strength of a scan
+    that never finished would be a verdict the code did not earn.
+    """
+    newest = 0.0
+    # A file stamped ahead of the clock (clock skew, an extracted archive) would otherwise sit
+    # at the top forever: every real write compares lower, so a productive run reads as stalled
+    # and is killed. Anything ahead of now, beyond a small tolerance, is not evidence of work.
+    # Residual, deliberately accepted: a stamp between now and the tolerance IS taken, so it can
+    # mask real writes until the clock passes it. Bounded by the tolerance (2s) and therefore far
+    # below any usable `stall_s`, where dropping the tolerance entirely would discard legitimate
+    # writes whose filesystem timestamp rounds slightly ahead.
+    horizon = time.time() + _FUTURE_MTIME_TOLERANCE_S
+    deadline = time.monotonic() + budget_s
+    stack = [root]
+    while stack:
+        if time.monotonic() >= deadline:
+            return newest, False
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name != ".git":
+                                stack.append(Path(entry.path))
+                            continue
+                        mtime = entry.stat(follow_symlinks=False).st_mtime
+                        if mtime <= horizon:
+                            newest = max(newest, mtime)
+                            if newest > newer_than:
+                                return newest, True  # the question is answered; stop walking
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return newest, True
+
+
+def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, str]:
+    """Wait for the child, ending it early if it stalls and extending it while it works.
+
+    Without a policy this is exactly ``communicate(timeout=opts.timeout_s)`` - the previous
+    behaviour, byte for byte. `communicate` is kept in both paths deliberately: it owns the
+    concurrent draining of stdout and stderr, and replacing it with hand-rolled incremental
+    reads is precisely where a pipe-buffer deadlock comes from. Repeated calls are safe here
+    because stdin is DEVNULL, so no input is ever pending between slices.
+
+    Raises ``TimeoutExpired`` for the caller to handle, exactly as before, in both the stalled
+    and the ceiling cases - a run that is ended for lack of progress IS a timeout, and gets the
+    same kill, the same status and the same partial-usage recovery.
+    """
+    policy = opts.progress
+    if policy is None or not policy.enabled:
+        return proc.communicate(timeout=opts.timeout_s)
+
+    hard_ceiling = policy.hard_ceiling_s or opts.timeout_s
+    # A soft deadline above the effective ceiling never fires, because the ceiling ends the run
+    # first - by design, and `docs/config.md` says so. Not clamped: clamping changes no behaviour
+    # (both fire at the same instant) and would only make the reported reason less specific.
+    soft_deadline = policy.soft_deadline_s or opts.timeout_s
+    started = time.monotonic()
+    last_progress = started
+    seen_mtime, _ = _newest_mtime(opts.cwd)
+
+    while True:
+        elapsed = time.monotonic() - started
+        remaining_hard = hard_ceiling - elapsed
+        if remaining_hard <= 0:
+            raise _labelled_timeout(proc, hard_ceiling, "ceiling")
+        # Never sleep past the ceiling, and never past the next progress measurement.
+        slice_s = min(policy.poll_interval_s, remaining_hard)
+        # Below the soft deadline there is nothing to extend, so wake no more often than needed.
+        if elapsed < soft_deadline:
+            slice_s = min(slice_s, max(soft_deadline - elapsed, 1.0), policy.poll_interval_s)
+        try:
+            return proc.communicate(timeout=slice_s)
+        except subprocess.TimeoutExpired:
+            pass
+        # Bounded by whatever is LEFT of the ceiling, not just by its own budget: a full-budget
+        # scan starting near the deadline would run past it, and the ceiling is the one deadline
+        # that must always hold.
+        mtime, complete = _newest_mtime(
+            opts.cwd,
+            newer_than=seen_mtime,
+            budget_s=min(_PROGRESS_SCAN_BUDGET_S, max(hard_ceiling - (time.monotonic() - started), 0.0)),
+        )
+        if mtime > seen_mtime:
+            seen_mtime = mtime
+            last_progress = time.monotonic()
+        elif not complete:
+            # The scan ran out of budget without answering. Nothing was learned, so nothing is
+            # concluded: the stall check is skipped for this tick rather than counting an
+            # unfinished measurement as evidence of no progress. The ceiling above still bounds
+            # the run, and it is re-checked before the next slice.
+            continue
+        if elapsed >= soft_deadline and last_progress == started:
+            # The soft deadline is documented as the FIRST deadline, at which a run "still making
+            # progress is extended rather than killed" - so a run that has made none by then is
+            # not extended. Without this the key only sized the poll slice: any soft deadline
+            # below `stall_s` was decorative, and an idle run ran on to the stall instead.
+            raise _labelled_timeout(proc, soft_deadline, "soft")
+        if time.monotonic() - last_progress >= policy.stall_s:
+            # Nothing has changed under the worktree for `stall_s`. Ending now returns the
+            # failure sooner and hands the rest of the cap back, instead of waiting out a clock
+            # that was never evidence either way.
+            raise _labelled_timeout(proc, policy.stall_s, "stall")
+
+
+def _labelled_timeout(
+    proc: subprocess.Popen[str], seconds: float, kind: str
+) -> subprocess.TimeoutExpired:
+    """A TimeoutExpired that remembers WHICH deadline fired, so the error can say so.
+
+    `run()` sees only `subprocess.TimeoutExpired`, and "timed out" reads as the wall clock. Under a
+    progress policy it is usually neither - a stall, or the ceiling - and those call for different
+    driver moves (write a chattier task vs. raise the cap).
+    """
+    exc = subprocess.TimeoutExpired(proc.args, seconds)
+    exc._marshal_timeout_kind = kind  # type: ignore[attr-defined]
+    return exc
+
+
 def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
     """SIGTERM then unconditionally SIGKILL the child's whole process group.
 
@@ -522,7 +679,9 @@ def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
 _DRAIN_TIMEOUT_S = 2.0
 
 
-def _timeout_error(name: str, timeout_s: float, *, survived: bool, escaped: bool) -> str:
+def _timeout_error(
+    name: str, timeout_s: float, *, survived: bool, escaped: bool, kind: str | None = None
+) -> str:
     """The error for a timed-out run, saying what survived the kill.
 
     A driver's next move differs completely. If nothing survived, the worktree is a stable snapshot
@@ -535,7 +694,20 @@ def _timeout_error(name: str, timeout_s: float, *, survived: bool, escaped: bool
     descendant left no pid at all - the sole trace is pipes that never closed - so nothing can
     report when it stops, and saying so plainly is better than a refusal that would never lift.
     """
-    base = f"{name}: timed out after {timeout_s}s"
+    if kind == "soft":
+        base = (
+            f"{name}: ended at its soft deadline of {timeout_s}s having made no progress - "
+            "nothing under the worktree had changed since the run started"
+        )
+    elif kind == "stall":
+        base = (
+            f"{name}: ended after {timeout_s}s with no progress - nothing under the worktree "
+            "changed for that long, so the run was stopped rather than left to burn its cap"
+        )
+    elif kind == "ceiling":
+        base = f"{name}: hit its hard ceiling of {timeout_s}s"
+    else:
+        base = f"{name}: timed out after {timeout_s}s"
     if survived:
         return (
             f"{base}, and the agent did NOT stop: SIGTERM then SIGKILL to its process group left "

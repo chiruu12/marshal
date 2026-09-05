@@ -173,7 +173,10 @@ def main(argv: list[str] | None = None) -> int:
     pout.add_argument(
         "outcome",
         choices=[o.value for o in RunOutcome],
-        help="integrated (usually written by integrate) | rejected | abandoned",
+        help=(
+            "integrated (usually written by integrate) | rejected | abandoned | "
+            "advisory (findings you used, nothing to merge)"
+        ),
     )
     pout.add_argument("--note", default=None, help="short reason, kept with the record")
     pout.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")

@@ -133,6 +133,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..core.layout import marshal_home
 from ..core.types import (
     AgentResult,
     Capabilities,
@@ -144,6 +145,7 @@ from ..core.types import (
     TaskSpec,
     UsageRecord,
     UsageSource,
+    effective_timeout_s,
 )
 from ..runtime.env import DETACHED_STDIO
 from .base import CodingAgentBackend, parse_jsonl
@@ -328,7 +330,10 @@ class AntigravityBackend(CodingAgentBackend):
         argv += ["--output-format", "json"]
         # agy's own print-mode deadline. Left at its 5-minute default it silently capped every
         # longer run, so the engine's timeout never meant what it said.
-        argv += ["--print-timeout", _print_timeout(opts.timeout_s)]
+        # From the run's EFFECTIVE deadline, not `timeout_s`: with a progress policy a productive
+        # run is extended up to `hard_ceiling_s`, and deriving agy's own deadline from `timeout_s`
+        # made it self-terminate inside that window - reported as a task FAILURE, not a timeout.
+        argv += ["--print-timeout", _print_timeout(effective_timeout_s(opts))]
         # Add the worktree to the active workspace; paired with the trust entry prepare() writes,
         # this makes edits land in cwd instead of agy's scratch dir.
         argv += ["--add-dir", str(opts.cwd)]
@@ -483,20 +488,85 @@ class AntigravityBackend(CodingAgentBackend):
                 status=RunStatus.EXITED_CLEAN,
                 text=raw_stdout.strip(),
                 usage=usage,
+                error=_agy_silent_reason(raw_stdout, raw_stderr),
                 exit_code=exit_code,
                 raw_stdout=raw_stdout,
                 raw_stderr=raw_stderr,
             )
         _apply_agy_usage(usage, envelope.get("usage"))
+        text = _agy_response_text(envelope)
+        # Exit 0 is not the verdict - the envelope's `status` is. Partial text and usage are kept
+        # either way: a truncated turn still spent those tokens, and they belong in the ledger.
+        failure = _agy_envelope_failure(envelope)
+        if failure is not None:
+            return AgentResult(
+                status=RunStatus.FAILED,
+                text=text,
+                session_id=_agy_conversation_id(envelope),
+                usage=usage,
+                error=failure,
+                exit_code=exit_code,
+                raw_stdout=raw_stdout,
+                raw_stderr=raw_stderr,
+            )
         return AgentResult(
             status=RunStatus.EXITED_CLEAN,
-            text=_agy_response_text(envelope),
+            text=text,
             session_id=_agy_conversation_id(envelope),
             usage=usage,
+            error=_agy_silent_reason(text, raw_stderr),
             exit_code=exit_code,
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
         )
+
+
+def _agy_envelope_failure(envelope: dict[str, Any]) -> str | None:
+    """The envelope's own failure reason, when agy reports one alongside exit 0.
+
+    agy exits 0 whether the turn succeeded or not and puts the verdict in the envelope's
+    ``status`` field. Ignoring it defeated the very reason `--print-timeout` is set just INSIDE
+    the run timeout: the point of that ordering is for agy to return a parseable envelope
+    (``status=ERROR``, ``error="timeout waiting for response"``, plus the tokens spent) rather
+    than be hard-killed by Marshal's external kill. Reading only the exit code turned that
+    deliberate, well-behaved timeout back into a reported success - and one carrying PARTIAL
+    response text, so a driver could integrate a truncated turn believing it was complete.
+
+    Any status that is not ``SUCCESS`` is a failure. Fail-closed on an unrecognised value, the
+    same bar `_parse_agy_usage_command` already applies: a false failure costs a re-run, a false
+    success costs whatever the driver merges on top of it.
+    """
+    status = envelope.get("status")
+    if isinstance(status, str) and status.strip().upper() == "SUCCESS":
+        return None
+    error = envelope.get("error")
+    if isinstance(error, str) and error.strip():
+        return f"agy reported status={status!r}: {error.strip()}"
+    return f"agy reported status={status!r} with no error detail"
+
+
+def _agy_silent_reason(text: str, raw_stderr: str) -> str | None:
+    """Why an exit-0 agy run produced no text, when agy itself said why on stderr.
+
+    agy exits 0 and reports ``status=SUCCESS`` even when it did nothing at all - the headless
+    auto-deny path is the common case, where a tool needed a permission that cannot be prompted
+    for and the whole run collapses to an empty ``response``. The envelope alone cannot tell those
+    two situations apart, and they call for opposite responses from a driver: "the agent looked and
+    found nothing" is a RESULT, while "the agent was never allowed to look" is a misconfiguration
+    to fix and re-run. Without this the record carried ``error=None``, so the second read exactly
+    like the first and a read-only review reported NO FINDINGS having read nothing.
+
+    Only the *reason* is carried; the status is left alone, because what was observed - exited 0,
+    produced nothing - is still accurately `EMPTY`. Attaching it never turns a run into a failure:
+    `is_transient_failure` is gated on `RunStatus.FAILED`, so an explanatory error on a clean
+    result cannot trigger a retry.
+    """
+    if text.strip():
+        return None
+    reason = raw_stderr.strip()
+    if not reason:
+        return None
+    return f"agy exited 0 but produced no response: {reason}"
 
 
 # --- module helpers ----------------------------------------------------------------------
@@ -512,7 +582,7 @@ _PRINT_TIMEOUT_GRACE_S = 5
 
 
 def _print_timeout(timeout_s: int) -> str:
-    """Run timeout -> the Go duration for ``--print-timeout``, set just inside ours. Pure.
+    """Effective run deadline -> the Go duration for ``--print-timeout``, set just inside ours. Pure.
 
     Floored at 1s so a very short timeout still produces a valid duration rather than ``0s``
     (which agy reads as "no deadline") or a negative one.
@@ -732,7 +802,15 @@ def _is_marshal_worktree(path: str) -> bool:
     (unmounted volume, external drive, network share); deleting it because it does not exist right
     now silently destroys their agy trust config. Only Marshal's own leftovers are swept.
     """
-    return f"{os.sep}.marshal{os.sep}worktrees{os.sep}" in path
+    # Two layouts, and the sweep must know both: the legacy in-repo `<repo>/.marshal/worktrees/`
+    # and the current `<MARSHAL_HOME>/worktrees/<repo>-<digest>/`. Matching only the literal
+    # `.marshal` segment meant that with a configured MARSHAL_HOME - which docs/config.md
+    # documents - the self-healing sweep never fired, and dead paths accumulated in the host's
+    # global agy trust list forever.
+    if f"{os.sep}.marshal{os.sep}worktrees{os.sep}" in path:
+        return True
+    home = str(marshal_home())
+    return path.startswith(f"{home.rstrip(os.sep)}{os.sep}worktrees{os.sep}")
 
 
 def _trust_workspace(settings_path: Path, cwd: Path, lock: threading.Lock) -> bool:

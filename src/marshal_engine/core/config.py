@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
-from .types import PermissionMode
+from .types import PermissionMode, ProgressTimeout
 
 DEFAULT_OPENCODE_MODEL = "opencode-go/glm-5.2"
 
@@ -244,6 +244,63 @@ class FleetConfig(BaseModel):
     # Optional advisory $ budgets per scope (backend / client / global) and time window
     # (session / week / month). Absent/empty = no budgets, no behavior change. See BudgetSpec.
     budgets: list[BudgetSpec] = []
+    # Optional opt-in progress-aware timeout. Absent/disabled (the default) = the plain
+    # `timeout_s` wall clock, unchanged. See ProgressTimeout.
+    progress_timeout: ProgressTimeout = ProgressTimeout()
+
+
+def _parse_progress_timeout(value: Any) -> ProgressTimeout:
+    """Normalize the optional ``progress_timeout:`` block. Absent => disabled.
+
+    Every duration is validated the same way `timeout_s` is - a positive integer of seconds -
+    because a zero or negative threshold here would either kill instantly or never fire, and
+    both read as "the feature is broken" rather than as a config error.
+    """
+    if value is None:
+        return ProgressTimeout()
+    if not isinstance(value, dict):
+        raise ConfigError("progress_timeout: must be a mapping of settings")
+    known = {"enabled", "stall_s", "soft_deadline_s", "hard_ceiling_s", "poll_interval_s"}
+    unknown = set(value) - known
+    if unknown:
+        raise ConfigError(
+            f"progress_timeout: unknown setting(s) {sorted(unknown)}; known: {sorted(known)}"
+        )
+    fields: dict[str, Any] = {
+        "enabled": _parse_bool_flag(value.get("enabled"), "progress_timeout.enabled")
+    }
+    for key in ("stall_s", "soft_deadline_s", "hard_ceiling_s", "poll_interval_s"):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        fields[key] = _parse_timeout_s(raw, client=f"progress_timeout.{key}")
+    policy = ProgressTimeout(**fields)
+    if (
+        policy.soft_deadline_s is not None
+        and policy.hard_ceiling_s is not None
+        and policy.soft_deadline_s > policy.hard_ceiling_s
+    ):
+        raise ConfigError(
+            f"progress_timeout: soft_deadline_s ({policy.soft_deadline_s}) is above "
+            f"hard_ceiling_s ({policy.hard_ceiling_s}); the ceiling is the backstop and a "
+            "soft deadline past it could never be reached"
+        )
+    return policy
+
+
+def _parse_permission(value: Any, *, client: str) -> PermissionMode:
+    """Permission mode, or a ConfigError naming the legal set. Pure.
+
+    A typo here used to escape as a bare ``ValueError`` from the enum - which reads as a bug in
+    Marshal rather than a typo in the operator's file, and which no caller was catching.
+    """
+    try:
+        return PermissionMode(str(value))
+    except ValueError as exc:
+        legal = ", ".join(sorted(m.value for m in PermissionMode))
+        raise ConfigError(
+            f"client {client!r}: unknown permission {str(value)!r}; expected one of {legal}"
+        ) from exc
 
 
 def load_config(path: Path | str) -> FleetConfig:
@@ -252,11 +309,37 @@ def load_config(path: Path | str) -> FleetConfig:
         raise ConfigError(
             f"no fleet config at {p}; scaffold one with `marshal init`, then edit it"
         )
-    raw_any: Any = yaml.safe_load(p.read_text(encoding="utf-8"))
+    # Every failure below leaves this function as a ConfigError. A malformed config is an ordinary
+    # operator mistake - a typo, a stray indent - and the callers treat ConfigError as the shape
+    # they can report: the CLI prints it, and the MCP server keeps serving and answers with it.
+    # Anything else (a YAML ParserError, a ValueError from an enum, an AttributeError from a
+    # non-mapping) escaped as a traceback and killed the server at startup for every workspace.
+    try:
+        raw_any: Any = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{p} is not valid YAML: {exc}") from exc
+    if raw_any is not None and not isinstance(raw_any, dict):
+        raise ConfigError(
+            f"{p} must be a mapping at the top level, got {type(raw_any).__name__}"
+        )
     raw: dict[str, Any] = raw_any or {}
-    defaults: dict[str, Any] = raw.get("defaults") or {}
+    defaults_any = raw.get("defaults") or {}
+    if not isinstance(defaults_any, dict):
+        raise ConfigError(f"{p}: 'defaults' must be a mapping, got {type(defaults_any).__name__}")
+    defaults: dict[str, Any] = defaults_any
+    clients_any = raw.get("clients") or {}
+    if not isinstance(clients_any, dict):
+        raise ConfigError(
+            f"{p}: 'clients' must be a mapping of name -> settings, got "
+            f"{type(clients_any).__name__}"
+        )
     clients: dict[str, ClientConfig] = {}
-    for name, spec in (raw.get("clients") or {}).items():
+    for name, spec in clients_any.items():
+        if spec is not None and not isinstance(spec, dict):
+            raise ConfigError(
+                f"{p}: client {name!r} must be a mapping of settings, got "
+                f"{type(spec).__name__}"
+            )
         merged: dict[str, Any] = {**defaults, **(spec or {})}
         if "backend" not in merged:
             raise ConfigError(f"client {name!r}: missing required 'backend'")
@@ -264,7 +347,7 @@ def load_config(path: Path | str) -> FleetConfig:
             name=name,
             backend=str(merged["backend"]),
             model=str(merged["model"]) if merged.get("model") else None,
-            permission=PermissionMode(str(merged.get("permission", "safe-edit"))),
+            permission=_parse_permission(merged.get("permission", "safe-edit"), client=name),
             timeout_s=_parse_timeout_s(merged.get("timeout_s"), client=name),
             env=_parse_client_env(merged.get("env"), client=name),
             secret_ref=str(merged["secret_ref"]) if merged.get("secret_ref") else None,
@@ -302,6 +385,7 @@ def load_config(path: Path | str) -> FleetConfig:
         retries=_parse_retries(raw.get("retries")),
         models=_parse_models(raw.get("models")),
         budgets=_parse_budgets(raw.get("budgets")),
+        progress_timeout=_parse_progress_timeout(raw.get("progress_timeout")),
     )
 
 
@@ -314,7 +398,18 @@ def setup_command_basename(argv0: str) -> str:
 
 
 def is_relative_setup_argv0(argv0: str) -> bool:
-    """True when ``argv0`` is a relative path (resolves against worktree cwd), not a bare name."""
+    """True when ``argv0`` is a relative path (resolves against worktree cwd), not a bare name.
+
+    Tested on the RAW string, not on a ``Path``: pathlib normalises ``./pytest`` to ``pytest``, so
+    the explicitly-relative form compared equal to a bare basename and was allowed - while
+    ``.venv/bin/python``, which is no more dangerous, was refused. A bare name resolves through
+    PATH; anything with a separator, or an explicit leading ``./`` or ``../``, resolves inside the
+    worktree, which is where the agent writes.
+    """
+    if not argv0:
+        return False
+    if argv0.startswith(("./", "../")):
+        return True
     path = Path(argv0)
     if path == Path(path.name):
         return False
@@ -444,6 +539,18 @@ def _parse_models(value: Any) -> list[ModelSpec]:
     return out
 
 
+def _duration_subject(client: str) -> str:
+    """How to name whatever is carrying a duration, for the error message. Pure.
+
+    The same parser serves a client's ``timeout_s`` and the fleet-level ``progress_timeout.*``
+    keys, and phrasing every failure as "client 'progress_timeout.stall_s': timeout_s must be..."
+    named a client that does not exist and a key the operator did not write.
+    """
+    if client.startswith("progress_timeout."):
+        return f"{client}"
+    return f"client {client!r}: timeout_s"
+
+
 def _parse_timeout_s(value: Any, *, client: str) -> int:
     """Normalize a client's ``timeout_s`` (default 600). Same rules as ``resolve_duration``.
 
@@ -456,17 +563,17 @@ def _parse_timeout_s(value: Any, *, client: str) -> int:
     if isinstance(value, bool):
         # ``bool`` is a subclass of ``int``; ``int(True)`` would silently become 1 second.
         raise ConfigError(
-            f"client {client!r}: timeout_s must be a positive integer of seconds, "
+            f"{_duration_subject(client)} must be a positive integer of seconds, "
             f"got bool: {value!r}"
         )
     if not isinstance(value, int):
         raise ConfigError(
-            f"client {client!r}: timeout_s must be a positive integer of seconds, "
+            f"{_duration_subject(client)} must be a positive integer of seconds, "
             f"got {type(value).__name__}"
         )
     if value <= 0:
         raise ConfigError(
-            f"client {client!r}: timeout_s must be > 0 seconds, got {value}"
+            f"{_duration_subject(client)} must be > 0 seconds, got {value}"
         )
     return value
 

@@ -29,7 +29,7 @@ Each entry under `clients:` is a named client. The YAML key is the client name (
 | `permission` | `read-only` \| `safe-edit` \| `yolo` | from `defaults` | Overrides the fleet default for this client. | `permission: safe-edit` |
 | `timeout_s` | int | from `defaults` | Per-client hard timeout (seconds). | `timeout_s: 600` |
 | `env` | map of strings | `{}` | Literal environment variables merged into each agent child for this client only. **This is the allowlist escape hatch:** agent children inherit only an operational base set plus that backend's credential vars (see below); use `env:` to pass an extra **non-secret** var the base set omits (provider routing, e.g. `CODEX_HOME`). A leading `~` in values is expanded. **Refused at load:** empty keys; `PATH` (Marshal merges the user's interactive PATH at engine entry — overriding it here would break that recovery); any key whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` (case-insensitive) — credentials are not configured here. Does not undo Marshal's hygiene (`VIRTUAL_ENV`, `MARSHAL_*` are never inherited; `extra_env` from backend `prepare()` can still set them). There is no blanket "inherit the driver environment" flag. | `env: { CODEX_HOME: ~/.codex-eastrouter }` |
-| `secret_ref` | string \| omitted | `null` | **Advisory only.** When set to `env:VAR`, `marshal doctor` warns if `VAR` is unset. Marshal does **not** inject `secret_ref` into the child. Each backend may forward a small fixed credential allowlist from the parent when present (e.g. `claude-code` → `ANTHROPIC_API_KEY`, `cursor` → `CURSOR_API_KEY`, `codex` → `OPENAI_API_KEY`/`CODEX_API_KEY`, `opencode` → `OPENCODE_API_KEY`, `command-code` → `COMMAND_CODE_API_KEY`, `antigravity` → `ANTIGRAVITY_API_KEY`, `goose` → `GOOSE_PROVIDER`/`GOOSE_MODEL`, `zcode` → `ZCODE_API_KEY`/`ANTHROPIC_API_KEY`, `copilot` → `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN`). Prefer CLI login; `marshal doctor` reports `child-env:<backend>` forwarding and warns when a set `secret_ref` var is not on that backend's allowlist. | `secret_ref: env:ANTHROPIC_API_KEY` |
+| `secret_ref` | string \| omitted | `null` | **Advisory only.** When set to `env:VAR`, `marshal doctor` warns if `VAR` is unset. Marshal does **not** inject `secret_ref` into the child. Each backend may forward a small fixed credential allowlist from the parent when present (e.g. `claude-code` → `ANTHROPIC_API_KEY`, `cursor` → `CURSOR_API_KEY`, `codex` → `OPENAI_API_KEY`/`CODEX_API_KEY`, `opencode` → `OPENCODE_API_KEY`, `command-code` → `COMMAND_CODE_API_KEY`, `antigravity` → `ANTIGRAVITY_API_KEY`/`GEMINI_API_KEY`, `goose` → `GOOSE_PROVIDER`/`GOOSE_MODEL`, `zcode` → `ZCODE_API_KEY`/`ANTHROPIC_API_KEY`, `copilot` → `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN`). Prefer CLI login; `marshal doctor` reports `child-env:<backend>` forwarding and warns when a set `secret_ref` var is not on that backend's allowlist. | `secret_ref: env:ANTHROPIC_API_KEY` |
 | `env.ZCODE_BIN` | string \| omitted | *(autodetect)* | **ZCode only.** Path to the headless ZCode entry point, because ZCode ships no PATH binary — its CLI is a Node bundle inside the desktop app. A `.cjs`/`.js` path is run through `node`. Checked before `MARSHAL_ZCODE_BIN` (parent env), a `zcode` shim on PATH, and the known app-bundle paths, in that order. | `env: { ZCODE_BIN: /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs }` |
 | `usage_api` | string \| omitted | `null` | Optional provider usage API to fetch **real** post-run cost (e.g. `eastrouter`). Unset = price from the local table or `unavailable`. | `usage_api: eastrouter` |
 
@@ -76,6 +76,12 @@ which is where a read-only run's guidance belongs.
 |------|---------|--------------|---------|
 | bool \| omitted | `false` | When `false`, `commit_run` / `integrate` pass `git --no-verify` so prompting pre-commit/pre-merge hooks cannot deadlock a headless driver, and so Marshal does not execute possibly **agent-modified** / repo-controlled hook scripts. Set `true` only when hooks are known **non-interactive** *and* you trust their provenance for your threat model. Prompting hooks can hang until the git timeout (`GIT_TERMINAL_PROMPT=0` + closed stdin + timeout still apply). Prefer `verify:` + human/CI review over hooks when unsure. See `SECURITY.md`. | `integrate_run_hooks: true` |
 
+Hooks are resolved the way git resolves them: `core.hooksPath` when the repo sets it (husky and
+lefthook both do), otherwise the common git directory's `hooks/` — so a driver checkout that is
+itself a linked worktree works too. If hooks exist but cannot be copied into the run's clone, the
+run is refused rather than started with a gate that would silently not run. Whether or not you opt
+in, git inside a run's clone never sees the driver's credentials; see `SECURITY.md`.
+
 ### `allow_external_read_paths`
 
 | Type | Default | What it does | Example |
@@ -99,6 +105,47 @@ Optional catalog the driver reads via `list_models` / `marshal models`. Pure met
 | `cost` | string | `""` | Cost provenance hint (`native`, `admin-api`, `unavailable`). | `cost: native` |
 | `quota_type` | string | `""` | Billing shape hint (`metered`, `subscription`, `unavailable`). | `quota_type: subscription` |
 | `notes` | string | `""` | Free-form note for the driver. | `notes: Go subscription` |
+
+### `progress_timeout`
+
+**Off by default.** Optional, opt-in: end a run on evidence of progress rather than on the clock
+alone. Absent or `enabled: false` leaves `timeout_s` behaving exactly as it always has.
+
+A single wall-clock number treats two opposite situations identically — a run that stalled early
+burns its whole cap before anyone notices, and a run still working at the cap is killed with its
+tokens already spent. Elapsed time is not evidence about whether work is happening.
+
+Progress is measured as the **newest mtime under the run's worktree** (`.git` excluded, since git
+writes on its own schedule). That signal is backend-independent and needs no per-backend
+calibration. Its blind spot is deliberate: an agent that reasons for a long time *without writing
+anything* looks idle, which is why `stall_s` must sit comfortably above however long your
+backends legitimately stay quiet — and why this is opt-in rather than the default.
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `false` | Master switch. When false, nothing below applies. |
+| `stall_s` | `300` | Kill once nothing under the worktree has changed for this long. |
+| `soft_deadline_s` | `timeout_s` | First deadline. A run still making progress here is extended rather than killed. |
+| `hard_ceiling_s` | `timeout_s` | The backstop. Never exceeded, whatever progress says — so a `soft_deadline_s` above it never fires. Leave it unset and the client's `timeout_s` is the ceiling. |
+| `poll_interval_s` | `15` | How often progress is re-measured. |
+
+`hard_ceiling_s` is the run's effective outer deadline, so a backend that carries a deadline of
+its own (Antigravity's `--print-timeout`) is given the ceiling rather than `timeout_s` — otherwise
+it would end the run inside the very window the policy grants.
+
+```yaml
+progress_timeout:
+  enabled: true
+  stall_s: 120
+  soft_deadline_s: 900
+  hard_ceiling_s: 1800
+```
+
+**The hard ceiling never goes away.** A silent, hung process must always die — that is the
+invariant this sits underneath, not a replacement for it. The policy may only move a kill
+*earlier* (a stalled run) or extend one *below* the ceiling (a productive run). A run ended for
+lack of progress is reported as `timed_out`, with the same kill, status and partial-usage
+recovery as any other timeout.
 
 ### `budgets[]`
 
