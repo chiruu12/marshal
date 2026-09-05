@@ -30,6 +30,15 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **A refused MCP tool call keeps its reason under `mcp` >= 2.1.** The SDK now redacts the text of
+  any exception that is not a deliberate `ToolError`, so an unknown workspace, an unsafe run id, a
+  run no workspace owns or a malformed `output_schema` reached the driver as the bare line
+  `Error executing tool <name>` - unactionable, and the driver's only channel for the reason. The
+  MCP boundary now re-raises the engine's anticipated `ValueError`/`ConfigError` as `ToolError`,
+  and a tool body that refuses a call raises through one shared `ctx.refuse`, so the reason
+  survives; a genuine crash stays redacted, which is what the SDK's split is for. An AST invariant
+  keeps the next tool body from refusing with a bare `ValueError`.
+
 - **A later workflow phase with no available clients no longer discards the earlier phases.** It
   raised, throwing away every result already produced - finished runs that cost real money and are
   on the ledger - where the runner's own rule for a failing phase is to record it and carry on so

@@ -38,5 +38,11 @@ class ToolContext:
     run_call: Callable[..., Awaitable[dict[str, Any]]]
     #: Stamp a result with the workspace it came from.
     tag: Callable[[dict[str, Any], str], dict[str, Any]]
+    #: Build the exception for a refusal raised in a tool BODY (outside `offload`, which converts
+    #: the engine's own). The SDK keeps a deliberate `ToolError`'s text and redacts everything
+    #: else, and a refusal's text is the only thing telling the driver what to do instead - so it
+    #: must not be raised as a bare `ValueError`. A callable, not a direct import, because `mcp`
+    #: is an optional extra and these modules are imported whether or not it is installed.
+    refuse: Callable[[str], Exception]
     #: Captured ONCE at construction: mid-session os.environ mutation must not widen authority.
     allow_mcp_registration: bool
