@@ -561,7 +561,9 @@ def _newest_mtime(
                     # single flat one (a cache, a build output tree, an unpacked dataset) run to
                     # completion before the deadline was consulted again, which is the overrun
                     # this budget exists to prevent. Amortised over a block of entries so the
-                    # clock read costs nothing on the normal, small worktree.
+                    # clock read costs nothing on the normal, small worktree - so the overrun is
+                    # bounded by one block's stat calls rather than eliminated, which is the
+                    # trade the sampling buys. Previously it was bounded by nothing at all.
                     if seen and not seen % _SCAN_DEADLINE_EVERY and time.monotonic() >= deadline:
                         return newest, False
                     try:

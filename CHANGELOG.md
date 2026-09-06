@@ -42,7 +42,8 @@ versions may include breaking API changes until 1.0.
   dataset - ran to completion before it was checked again. Since the scan sits between the waiter's
   `hard_ceiling_s` checks, that is the overrun the budget exists to prevent. The walk now re-checks
   its deadline within a directory, amortised over a block of entries so the clock read costs
-  nothing on a normal worktree.
+  nothing on a normal worktree. The overrun is therefore bounded by one block rather than
+  eliminated; it was previously bounded by nothing at all.
 
 - **The `info/exclude` lock now covers the write, not just the decision to write.** The entry was
   written into a buffered file object and the lock released in the `finally`, so the flush landed

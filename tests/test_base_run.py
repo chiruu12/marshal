@@ -813,8 +813,13 @@ def test_an_unreadable_directory_is_not_read_as_progress(tmp_path: Path) -> None
         blocked.chmod(0o755)
 
 
-def test_one_huge_directory_cannot_outlast_the_scan_budget(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+def test_one_huge_directory_cannot_run_unchecked_to_its_end(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     """REGRESSION: the budget was consulted per DIRECTORY, so one flat directory ran to the end.
+
+    The bound this buys is a block of entries, not zero: sampling every `_SCAN_DEADLINE_EVERY`
+    leaves the entries after the last checkpoint unchecked. That is the trade - the previous
+    behaviour was bounded by nothing at all, and reading the clock per entry would cost a syscall
+    on every file of every normal worktree.
 
     A cache, a build output tree or an unpacked dataset is a single directory with a very large
     number of entries. Checking the deadline only when popping the next directory meant the walk

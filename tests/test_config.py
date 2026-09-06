@@ -904,3 +904,24 @@ def test_an_unreachable_soft_deadline_is_ignored_while_the_policy_is_off(tmp_pat
         "progress_timeout:\n  soft_deadline_s: 1800\n",
     )
     assert load_config(cfg).progress_timeout.enabled is False
+
+
+def test_a_read_only_clients_timeout_does_not_make_a_soft_deadline_unreachable(
+    tmp_path: Path,
+) -> None:
+    """A read-only client never gets the policy, so its `timeout_s` cannot make one unreachable.
+
+    `fleet.py` withholds `progress` from a read-only run: the only progress signal is the
+    worktree's newest mtime and a read-only agent writes nothing, so it would register no
+    progress and be killed at `stall_s`. Judging reachability against its timeout would hard-fail
+    a legal config over a client the policy never touches - and a short-lived read-only reviewer
+    beside a long-running worker is exactly how a review panel is declared.
+    """
+    cfg = _write(
+        tmp_path,
+        "clients:\n"
+        "  worker:\n    backend: opencode\n    timeout_s: 3600\n"
+        "  reviewer:\n    backend: codex\n    permission: read-only\n    timeout_s: 300\n"
+        "progress_timeout:\n  enabled: true\n  soft_deadline_s: 1800\n",
+    )
+    assert load_config(cfg).progress_timeout.soft_deadline_s == 1800

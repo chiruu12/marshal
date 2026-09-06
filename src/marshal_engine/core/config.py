@@ -400,18 +400,29 @@ def _check_soft_deadline_is_reachable(cfg: FleetConfig) -> None:
     soft deadline above a client's timeout is accepted and then never fires: that client
     silently loses the extension the operator configured, with no error and no log line. The
     policy is fleet-level and `timeout_s` is per-client, so this is the first point where both
-    are known.
+    are known. Best-effort by construction: a per-run `timeout_s` override or an ad-hoc client
+    built at call time is not visible here, so this catches the configured case and the runtime
+    keeps its own ceiling regardless.
     """
     policy = cfg.progress_timeout
     if not policy.enabled or policy.soft_deadline_s is None or policy.hard_ceiling_s is not None:
         return
     unreachable = sorted(
-        name for name, client in cfg.clients.items() if policy.soft_deadline_s > client.timeout_s
+        name
+        for name, client in cfg.clients.items()
+        # Read-only clients are skipped for the same reason the runtime skips them (`fleet.py`:
+        # a read-only agent writes nothing, so it registers no progress and the policy is never
+        # attached). Their `timeout_s` says nothing about whether the deadline is reachable, and
+        # including them would hard-fail a legal config over a short-lived reviewer - which is
+        # how every review panel declares its clients.
+        if client.permission is not PermissionMode.READ_ONLY
+        and policy.soft_deadline_s > client.timeout_s
     )
     if unreachable:
         raise ConfigError(
             f"progress_timeout: soft_deadline_s ({policy.soft_deadline_s}) is above the "
-            f"timeout_s of client(s) {unreachable}, which is the effective ceiling while "
+            f"timeout_s of writable client(s) {unreachable}, which is the effective ceiling "
+            "while "
             "hard_ceiling_s is unset - the soft deadline could never be reached there, so "
             "those runs would silently lose the extension. Set hard_ceiling_s, raise "
             "timeout_s, or lower soft_deadline_s."
