@@ -852,3 +852,55 @@ def test_progress_timeout_rejects_an_unknown_setting(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match="stall_seconds"):
         load_config(cfg)
+
+
+def test_a_soft_deadline_above_a_clients_timeout_is_refused_when_no_ceiling_is_set(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION: the effective ceiling is `hard_ceiling_s or timeout_s`, so validating only
+    against an explicit ceiling let an unreachable soft deadline through.
+
+    That client then silently loses the extension the operator configured - the run just dies at
+    `timeout_s` with no error and no log line saying the policy never applied. Named in review as
+    a blocking finding on #330 and mis-triaged there as already handled: the explicit-ceiling
+    check does exist, but it cannot see this case.
+    """
+    cfg = _write(
+        tmp_path,
+        "clients:\n"
+        "  quick:\n    backend: opencode\n    timeout_s: 600\n"
+        "  slow:\n    backend: codex\n    timeout_s: 3600\n"
+        "progress_timeout:\n  enabled: true\n  soft_deadline_s: 1800\n",
+    )
+    with pytest.raises(ConfigError, match=r"soft_deadline_s \(1800\).*\['quick'\]"):
+        load_config(cfg)
+
+
+def test_a_reachable_soft_deadline_with_no_ceiling_is_accepted(tmp_path: Path) -> None:
+    """The control: the check must refuse only what is actually unreachable.
+
+    A soft deadline at or below every client's timeout is a legal, useful config - refusing it
+    (or refusing whenever `hard_ceiling_s` is unset) would break the documented default.
+    """
+    cfg = _write(
+        tmp_path,
+        "clients:\n"
+        "  quick:\n    backend: opencode\n    timeout_s: 600\n"
+        "  slow:\n    backend: codex\n    timeout_s: 3600\n"
+        "progress_timeout:\n  enabled: true\n  soft_deadline_s: 600\n",
+    )
+    assert load_config(cfg).progress_timeout.soft_deadline_s == 600
+
+
+def test_an_unreachable_soft_deadline_is_ignored_while_the_policy_is_off(tmp_path: Path) -> None:
+    """A disabled policy is inert, so its numbers must not block a load.
+
+    Off by default is the promise; refusing a config for a setting that never runs would make
+    the feature impossible to leave half-written while trying it out.
+    """
+    cfg = _write(
+        tmp_path,
+        "clients:\n  quick:\n    backend: opencode\n    timeout_s: 600\n"
+        "progress_timeout:\n  soft_deadline_s: 1800\n",
+    )
+    assert load_config(cfg).progress_timeout.enabled is False

@@ -30,6 +30,20 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **An unreachable `soft_deadline_s` is refused instead of silently ignored.** The effective
+  ceiling is `hard_ceiling_s or timeout_s`, but the config only compared the soft deadline against
+  an *explicit* `hard_ceiling_s`. With the ceiling unset, a fleet-level soft deadline above a
+  client's `timeout_s` loaded cleanly and then never fired: that client lost the extension the
+  operator had configured, with no error and no log line. `load_config` now checks the deadline
+  against each client's own timeout, which is the first point where both are known.
+
+- **One huge directory can no longer outlast the progress-scan budget.** The deadline was consulted
+  when popping the next directory, so a single flat one - a cache, a build tree, an unpacked
+  dataset - ran to completion before it was checked again. Since the scan sits between the waiter's
+  `hard_ceiling_s` checks, that is the overrun the budget exists to prevent. The walk now re-checks
+  its deadline within a directory, amortised over a block of entries so the clock read costs
+  nothing on a normal worktree.
+
 - **The `info/exclude` lock now covers the write, not just the decision to write.** The entry was
   written into a buffered file object and the lock released in the `finally`, so the flush landed
   afterwards at block close. A concurrent writer admitted in that window read a file that did not

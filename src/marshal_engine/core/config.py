@@ -372,7 +372,7 @@ def load_config(path: Path | str) -> FleetConfig:
         verify=verify,
         allow_unsafe_commands=allow_unsafe_commands,
     )
-    return FleetConfig(
+    cfg = FleetConfig(
         clients=clients,
         context=context,
         worktree_setup=worktree_setup,
@@ -387,6 +387,35 @@ def load_config(path: Path | str) -> FleetConfig:
         budgets=_parse_budgets(raw.get("budgets")),
         progress_timeout=_parse_progress_timeout(raw.get("progress_timeout")),
     )
+    _check_soft_deadline_is_reachable(cfg)
+    return cfg
+
+
+def _check_soft_deadline_is_reachable(cfg: FleetConfig) -> None:
+    """Refuse a `soft_deadline_s` no client could ever reach. Pure.
+
+    `_parse_progress_timeout` can only compare the soft deadline against an EXPLICIT
+    `hard_ceiling_s`. When the ceiling is omitted the effective one is the client's own
+    `timeout_s` (`base.py`: ``policy.hard_ceiling_s or opts.timeout_s``), so a fleet-level
+    soft deadline above a client's timeout is accepted and then never fires: that client
+    silently loses the extension the operator configured, with no error and no log line. The
+    policy is fleet-level and `timeout_s` is per-client, so this is the first point where both
+    are known.
+    """
+    policy = cfg.progress_timeout
+    if not policy.enabled or policy.soft_deadline_s is None or policy.hard_ceiling_s is not None:
+        return
+    unreachable = sorted(
+        name for name, client in cfg.clients.items() if policy.soft_deadline_s > client.timeout_s
+    )
+    if unreachable:
+        raise ConfigError(
+            f"progress_timeout: soft_deadline_s ({policy.soft_deadline_s}) is above the "
+            f"timeout_s of client(s) {unreachable}, which is the effective ceiling while "
+            "hard_ceiling_s is unset - the soft deadline could never be reached there, so "
+            "those runs would silently lose the extension. Set hard_ceiling_s, raise "
+            "timeout_s, or lower soft_deadline_s."
+        )
 
 
 def setup_command_basename(argv0: str) -> str:
