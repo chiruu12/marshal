@@ -811,3 +811,40 @@ def test_an_unreadable_directory_is_not_read_as_progress(tmp_path: Path) -> None
         assert _newest_mtime(tmp_path)[0] == 0.0
     finally:
         blocked.chmod(0o755)
+
+
+def test_one_huge_directory_cannot_run_unchecked_to_its_end(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """REGRESSION: the budget was consulted per DIRECTORY, so one flat directory ran to the end.
+
+    The bound this buys is a block of entries, not zero: sampling every `_SCAN_DEADLINE_EVERY`
+    leaves the entries after the last checkpoint unchecked. That is the trade - the previous
+    behaviour was bounded by nothing at all, and reading the clock per entry would cost a syscall
+    on every file of every normal worktree.
+
+    A cache, a build output tree or an unpacked dataset is a single directory with a very large
+    number of entries. Checking the deadline only when popping the next directory meant the walk
+    could not be stopped inside one - exactly the overrun the budget exists to prevent, and the
+    reason it exists is that this scan sits between the waiter's `hard_ceiling_s` checks.
+
+    Named in review as a blocking finding on #330 and mis-triaged there as already fixed: capping
+    the budget by the time left to the ceiling bounded WHEN the walk starts, not how long a single
+    directory may hold it.
+    """
+    from marshal_engine.backends import base as base_mod
+
+    flat = tmp_path / "cache"
+    flat.mkdir()
+    for i in range(base_mod._SCAN_DEADLINE_EVERY * 2):
+        (flat / f"f{i}.bin").write_text("x")
+
+    # A fake clock rather than a real slow filesystem: the deadline is set from the first read,
+    # stays unreached for the walk's start, then jumps past it once we are inside the directory.
+    ticks = iter([0.0, 0.0] + [1_000.0] * 10_000)
+    monkeypatch.setattr(base_mod.time, "monotonic", lambda: next(ticks))
+
+    _mtime, complete = base_mod._newest_mtime(flat, newer_than=float("inf"), budget_s=10.0)
+
+    assert complete is False, (
+        "the walk ran past its deadline inside a single directory; a scan that cannot be stopped "
+        "there can hold the waiter past hard_ceiling_s"
+    )

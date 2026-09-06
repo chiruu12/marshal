@@ -511,6 +511,9 @@ class CodingAgentBackend(ABC):
 #: Only filesystem clock granularity needs covering; anything wider would let a slightly-ahead
 #: file hide real writes for that long, which is a stall's worth on a short `stall_s`.
 _FUTURE_MTIME_TOLERANCE_S: Final[float] = 2.0
+#: Re-check the scan deadline every N directory entries. Amortises the clock read: per-entry
+#: would cost a syscall each time on a normal worktree, per-directory could not stop a huge one.
+_SCAN_DEADLINE_EVERY = 512
 
 #: How long one progress scan may walk before giving up. The scan runs between the waiter's
 #: ceiling checks, so an unbounded one on a large worktree would hold the run past its hard
@@ -553,7 +556,16 @@ def _newest_mtime(
             return newest, False
         try:
             with os.scandir(stack.pop()) as entries:
-                for entry in entries:
+                for seen, entry in enumerate(entries):
+                    # Also bound the walk WITHIN one directory. Checking only per directory let a
+                    # single flat one (a cache, a build output tree, an unpacked dataset) run to
+                    # completion before the deadline was consulted again, which is the overrun
+                    # this budget exists to prevent. Amortised over a block of entries so the
+                    # clock read costs nothing on the normal, small worktree - so the overrun is
+                    # bounded by one block's stat calls rather than eliminated, which is the
+                    # trade the sampling buys. Previously it was bounded by nothing at all.
+                    if seen and not seen % _SCAN_DEADLINE_EVERY and time.monotonic() >= deadline:
+                        return newest, False
                     try:
                         if entry.is_dir(follow_symlinks=False):
                             if entry.name != ".git":
