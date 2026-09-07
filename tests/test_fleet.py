@@ -7547,3 +7547,34 @@ def test_a_run_that_broke_after_recording_is_not_counted_twice(
     billed = [e for e in events if e.run_id.startswith("double-bill")]
     assert len(billed) == 1, "usage.record already ran; the failure path must not add a second"
     assert real_update is not None
+
+
+def test_shutdown_takes_the_lock_that_publishes_the_executor(repo: Path) -> None:
+    """REGRESSION (F7): `shutdown` read-modify-writes `_bg`, so it must hold `_bg_lock`.
+
+    `_executor` publishes `_bg` under that lock. Unsynchronised, a concurrent `spawn` can build a
+    second executor and store it over the `None` shutdown just wrote - leaving a pool nothing will
+    ever shut down, while `wait=False` has already told the caller the fleet is down.
+    """
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet._executor()  # publish a real pool so shutdown has something to do
+    assert fleet._bg is not None
+
+    acquired: list[str] = []
+    real = fleet._bg_lock
+
+    class _Recording:
+        def __enter__(self) -> None:
+            acquired.append("in")
+            real.acquire()
+
+        def __exit__(self, *exc: object) -> None:
+            real.release()
+
+    fleet._bg_lock = _Recording()  # type: ignore[assignment]
+    try:
+        fleet.shutdown(wait=True)
+    finally:
+        fleet._bg_lock = real
+    assert acquired == ["in"], "shutdown mutated _bg without holding _bg_lock"
+    assert fleet._bg is None

@@ -416,10 +416,18 @@ class Fleet:
         return run_id
 
     def shutdown(self, *, wait: bool = True) -> None:
-        """Shut the background spawn pool (drains in-flight runs). A no-op if none were spawned."""
-        if self._bg is not None:
-            self._bg.shutdown(wait=wait)
-            self._bg = None
+        """Shut the background spawn pool (drains in-flight runs). A no-op if none were spawned.
+
+        Under ``_bg_lock``, which is the lock ``_executor`` already uses to publish ``_bg``.
+        Without it the read-modify-write here races that publish: a concurrent ``spawn`` could
+        build a second executor and store it over the ``None`` this method just wrote, leaving a
+        pool nothing will ever shut down - and with ``wait=False`` the caller has been told the
+        fleet is shut while a live executor is still draining work.
+        """
+        with self._bg_lock:
+            if self._bg is not None:
+                self._bg.shutdown(wait=wait)
+                self._bg = None
 
     def _executor(self) -> ThreadPoolExecutor:
         if self._bg is None:

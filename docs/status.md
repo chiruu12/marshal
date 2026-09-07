@@ -197,8 +197,11 @@ use; `usage.md` carries a launchd/cron recipe.
 Marshal is published on PyPI as [`marshal-agents`](https://pypi.org/project/marshal-agents/) via
 Trusted Publishing/OIDC with a tag-must-match-wheel guard (#86/#121).
 
-Remaining: **progress-aware run timeouts** (#276 - the wall clock cannot tell a stalled run from a
-productive one, and ledger data shows the cap sitting on the p90 of work that was kept); whether to
+**Progress-aware run timeouts** shipped (#276): `progress_timeout` is opt-in per fleet, extends a
+run that is demonstrably still writing, and keeps the hard-kill backstop. See
+[`config.md`](config.md#progress_timeout).
+
+Remaining: whether to
 promote OS-level containment to a first-class flag (#175 - proven to work, documented in
 `SECURITY.md` as an operator-supplied wrapper); Cursor **cost** via the Enterprise Admin API (#168;
 token parsing shipped for both Cursor and Antigravity, Antigravity cost has no upstream path);
