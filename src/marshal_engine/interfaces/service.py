@@ -11,7 +11,7 @@ import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 from ..accounting.ledger import RoutingLedger
 from ..accounting.usage import UsageSummary, UsageWindow
 from ..backends.base import CodingAgentBackend
+from ..core.catalog import DEFAULT_STALE_AFTER_DAYS, ModelCatalogFile, shipped_models
 from ..core.config import (
     ClientConfig,
     ConfigError,
@@ -195,6 +196,15 @@ class ModelList(BaseModel):
     # let a probe drift into looking like configuration.
     backend_models: dict[str, ModelCatalog] = {}
     driver_context: str | None = None
+    # Where `models` came from: `config` (this repo declared its own `models:` block), `shipped`
+    # (Marshal's curated default), or `none` (neither could be read). A driver acting on a review
+    # needs to know whose review it is - the repo's own catalog is tuned to that fleet's accounts
+    # and quotas, while the shipped one is a general recommendation that knows nothing about them.
+    models_source: str = "none"
+    # Catalog entries whose `reviewed_on` is past the catalog's staleness window, as
+    # `id -> reason`. An opinion's age is a fact, and surfacing it here is what keeps a review
+    # nobody has refreshed from reading exactly like one refreshed this morning.
+    stale_reviews: dict[str, str] = {}
 
 
 class MarshalService:
@@ -352,6 +362,15 @@ class MarshalService:
         # Probe CONCURRENTLY. Each probe is a subprocess with its own timeout, so running them
         # serially makes the worst case the SUM of those timeouts - enough to blow past an MCP
         # client's request deadline and turn a slow catalogue into a dead tool.
+        # A repo's own catalog wins outright: it was written against this fleet's actual accounts
+        # and quotas. Marshal's shipped one is the fallback, so a fresh install answers "which
+        # model?" with a review instead of the empty list that sent drivers to a shell.
+        catalog = list(self.config.models)
+        models_source = "config"
+        if not catalog:
+            catalog = shipped_models()
+            models_source = "shipped" if catalog else "none"
+
         probed: dict[str, ModelCatalog] = {}
         if not self.config.models:
             names = sorted({c.backend for c in self._clients.values()})
@@ -368,10 +387,21 @@ class MarshalService:
             if names:
                 with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:
                     probed = dict(pool.map(_probe, names))
+        today = date.today()
         return ModelList(
-            models=list(self.config.models),
+            models=catalog,
             backend_models=probed,
             driver_context=self.config.context.driver,
+            models_source=models_source,
+            stale_reviews={
+                m.id: reason
+                for m, reason in ModelCatalogFile(
+                    catalog, {}, DEFAULT_STALE_AFTER_DAYS, ""
+                ).stale(today)
+                # An entry carrying no opinion at all has nothing to go stale: `{id, backends}` is
+                # a fact sheet, and flagging it would bury the reviews that genuinely have aged.
+                if m.review or m.categories or m.weight
+            },
         )
 
     def client_available(self, client_name: str) -> bool:

@@ -28,6 +28,8 @@ marshal/
 │   │   ├── ids.py           # fail-closed path-segment id rules (task/run/worktree ids)
 │   │   ├── config.py        # fleet.config.yaml loader + Fireworks guard + duration presets
 │   │   ├── retry.py         # transient-failure classifier + backoff for run retries
+│   │   ├── catalog.py       # the shipped model catalog: load models.yaml, enforce review freshness
+│   │   ├── models.yaml      # curated per-model review/weight/categories + reviewed_on/evidence (weekly, Sunday)
 │   │   ├── layout.py        # centralized .marshal directory layout helpers
 │   │   └── _version.py      # package version from installed metadata
 │   ├── backends/            # one adapter per backend, all derive from base.CodingAgentBackend

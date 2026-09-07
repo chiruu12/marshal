@@ -98,6 +98,18 @@ in, git inside a run's clone never sees the driver's credentials; see `SECURITY.
 
 Optional catalog the driver reads via `list_models` / `marshal models`. Pure metadata — does **not** change routing.
 
+**Omit it and you get Marshal's own.** With no `models:` block, `list_models` falls back to the
+shipped catalog at `src/marshal_engine/core/models.yaml` — a curated review, weight and category
+per model — and reports `models_source: shipped`. Declare your own to override it entirely; a
+repo's catalog is tuned to that fleet's accounts and quotas, which the shipped one knows nothing
+about.
+
+**Facts and opinion are separate fields.** `id` / `backends` / `cost` / `quota_type` are what
+Marshal can verify. `weight` / `categories` / `review` are a recommendation — and in prose the two
+look identical, which is how a stale take gets read as a measurement. So an entry carrying an
+opinion must also carry `reviewed_on` and `evidence`, and `marshal drift` **fails** once a review
+is past the catalog's window.
+
 | Key | Type | Default | What it does | Example |
 |-----|------|---------|--------------|---------|
 | `id` | string | *(required)* | Provider/model id (same shape as a client's `model`). | `id: opencode-go/glm-5.2` |
@@ -105,6 +117,15 @@ Optional catalog the driver reads via `list_models` / `marshal models`. Pure met
 | `cost` | string | `""` | Cost provenance hint (`native`, `admin-api`, `unavailable`). | `cost: native` |
 | `quota_type` | string | `""` | Billing shape hint (`metered`, `subscription`, `unavailable`). | `quota_type: subscription` |
 | `notes` | string | `""` | Free-form note for the driver. | `notes: Go subscription` |
+| `weight` | string | `""` | Task weight: `heavy`, `standard`, `light`. Unknown value fails at load. | `weight: standard` |
+| `categories` | list of strings | `[]` | Closed vocabulary: `best`, `cost-effective`, `fast`, `free`, `review-lens`. Filter with `marshal models --category`. | `categories: [cost-effective]` |
+| `review` | string | `""` | Your take on the model — what it is good at and what to watch for. | `review: The default workhorse.` |
+| `reviewed_on` | ISO date | `null` | When the opinion was last checked. Absent counts as **stale**, never as fresh. | `reviewed_on: 2026-09-07` |
+| `evidence` | string | `""` | How strongly the opinion is backed: `measured` (a real run or benchmark), `judgment` (reasoning, not evidence), `unverified` (never exercised here). | `evidence: measured` |
+
+The catalog file's own top-level keys — `stale_after_days` (positive int, default 14),
+`review_cadence` and `categories` (the vocabulary's prose descriptions) — apply to the shipped
+catalog only; a `models:` block inside `fleet.config.yaml` is just the entry list.
 
 ### `progress_timeout`
 

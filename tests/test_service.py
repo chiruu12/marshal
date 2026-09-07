@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import UTC
+from datetime import UTC, date
 from pathlib import Path
 
 import pytest
@@ -1173,12 +1173,46 @@ def test_run_agent_passes_a_metered_model_through(repo: Path) -> None:
 # --- list_models + duration presets ---------------------------------------------------------
 
 
-def test_list_models_empty_catalog_by_default(repo: Path) -> None:
+def test_list_models_falls_back_to_the_shipped_catalog(repo: Path) -> None:
+    """A repo that declares no `models:` block still gets a curated answer, tagged as ours.
+
+    The empty default is what sent drivers to a shell to ask each CLI what it could run. The
+    source tag is the part that must not be dropped: a general recommendation and one written
+    against this fleet's actual accounts are different claims.
+    """
     svc = _svc(repo)  # no models in the config
     result = svc.list_models()
     assert isinstance(result, ModelList)
-    assert result.models == []
+    assert result.models, "the shipped catalog is the default"
+    assert result.models_source == "shipped"
     assert result.driver_context is None  # no context.driver in this config
+
+
+def test_a_repo_catalog_wins_over_the_shipped_one(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repo's own catalog knows its accounts and quotas; Marshal's does not. It must not
+    be merged with, appended to, or overridden by the shipped default."""
+    cfg = FleetConfig(
+        clients={"w": ClientConfig(name="w", backend="echo")},
+        models=[ModelSpec(id="mine", backends=["opencode"])],
+    )
+    result = MarshalService(repo, cfg, backends={"echo": _Echo()}).list_models()
+    assert [m.id for m in result.models] == ["mine"]
+    assert result.models_source == "config"
+
+
+def test_a_stale_review_is_reported_but_a_bare_fact_sheet_is_not(repo: Path) -> None:
+    """An entry with no opinion has nothing to go stale - flagging it would bury the real ones."""
+    cfg = FleetConfig(
+        clients={"w": ClientConfig(name="w", backend="echo")},
+        models=[
+            ModelSpec(id="opinionated", backends=["opencode"], review="great", reviewed_on=date(2000, 1, 1)),
+            ModelSpec(id="just-facts", backends=["opencode"], cost="native"),
+        ],
+    )
+    stale = MarshalService(repo, cfg, backends={"echo": _Echo()}).list_models().stale_reviews
+    assert set(stale) == {"opinionated"}
 
 
 def test_list_models_surfaces_catalog_and_driver_context(repo: Path) -> None:
@@ -1193,8 +1227,12 @@ def test_list_models_surfaces_catalog_and_driver_context(repo: Path) -> None:
     svc = MarshalService(repo, cfg, backends={"echo": _Echo()})
     result = svc.list_models()
     assert [m.model_dump() for m in result.models] == [
-        {"id": "<provider>/<model-a>", "backends": ["opencode"], "cost": "native", "quota_type": "subscription", "notes": ""},
-        {"id": "<provider>/<model-b>", "backends": ["cursor"], "cost": "estimated", "quota_type": "metered", "notes": ""},
+        {"id": "<provider>/<model-a>", "backends": ["opencode"], "cost": "native",
+         "quota_type": "subscription", "notes": "", "weight": "", "categories": [],
+         "review": "", "reviewed_on": None, "evidence": ""},
+        {"id": "<provider>/<model-b>", "backends": ["cursor"], "cost": "estimated",
+         "quota_type": "metered", "notes": "", "weight": "", "categories": [],
+         "review": "", "reviewed_on": None, "evidence": ""},
     ]
     assert result.driver_context == "Use the catalog to pick a model."
 
@@ -1744,7 +1782,7 @@ def test_list_models_proxies_the_backend_when_no_catalog_is_configured(repo: Pat
     cfg = FleetConfig(clients={"w": ClientConfig(name="w", backend="cataloged")})
     svc = MarshalService(repo, cfg, backends={"cataloged": _Cataloged()})
     listing = svc.list_models()
-    assert listing.models == [], "no catalog is configured"
+    assert listing.models_source == "shipped", "no catalog is configured in this repo"
     assert listing.backend_models["cataloged"].models == ["fast-1", "slow-2"]
     assert listing.backend_models["cataloged"].source is ModelSource.PROBED
 

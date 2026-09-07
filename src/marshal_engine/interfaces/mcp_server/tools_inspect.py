@@ -128,14 +128,25 @@ def register(app: MCPServer, ctx: ToolContext) -> None:
     async def list_models(
         workspace: Annotated[str | None, Field(description=_DESC_WORKSPACE)] = None,
     ) -> dict[str, Any]:
-        """List the optional `models:` catalog (id, backends, cost, quota_type, notes) plus the
-        fleet's driver-facing context, for the chosen workspace. When no catalog is configured,
+        """The model catalog for the chosen workspace: per model a review, a task `weight`
+        (heavy/standard/light) and `categories` (best, cost-effective, fast, free, review-lens),
+        alongside the facts (backends, cost, quota_type). Read this before picking what to spawn.
+
+        WEIGH EACH REVIEW BY ITS PROVENANCE, which every entry carries. `evidence` says how
+        strongly the opinion is backed: `measured` (a real run or benchmark produced it),
+        `judgment` (reasoning, not evidence - benchmark before spending on it), `unverified`
+        (never exercised here). `reviewed_on` says when it was last checked, and any id listed in
+        `stale_reviews` is an opinion nobody has re-checked - do not treat it as a current fact.
+        `models_source` is `config` (this repo's own catalog, tuned to its accounts and quotas),
+        `shipped` (Marshal's general one, which knows nothing about your accounts), or `none`.
+
+        Plus the fleet's driver-facing context. When no catalog is configured,
         `backend_models` maps each backend to {models, source}: source `probed` means its CLI
         answered just now, `static` means a curated list (no probe attempted) that may name models
         the account cannot actually run, `probe-failed` means a probe ran and did not answer so
         that same curated list is returned unverified, `unavailable` means it could not be asked
         at all. Do NOT treat a `static` or `probe-failed` list as evidence a model is runnable.
-        Pure data - does NOT influence routing (clients still own backend+model). Returns {models, backend_models, driver_context, workspace}."""
+        Pure data - does NOT influence routing (clients still own backend+model). Returns {models, backend_models, driver_context, models_source, stale_reviews, workspace}."""
         return await ws_call(workspace, lambda svc: svc.list_models())
 
     @app.tool()

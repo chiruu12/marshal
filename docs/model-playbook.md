@@ -28,6 +28,13 @@ Two rules before the tables:
 Pick a model for the *weight*, and note how its cost is known - Marshal never fabricates a cost
 (see [Cost honesty](#cost-honesty)).
 
+**Start with `marshal models`.** It prints Marshal's shipped catalog — a review, a weight and a
+set of categories per model, each stamped with when it was last checked and how strongly it is
+backed. `--category cost-effective` (or `best`, `fast`, `free`, `review-lens`) narrows it;
+`--stale` shows which opinions are overdue a re-check. The catalog is reviewed weekly on Sunday
+and `marshal drift` fails once a review ages out, so what you read there is either current or
+visibly flagged. The tables below are the same picture in prose.
+
 `list_models` / each adapter's `available_models()` surfaces what you can configure. When the CLI
 exposes a headless catalogue the adapter probes it (bounded timeout; never raises); otherwise it
 returns the curated static ids in this table. The answer is always tagged with its `source`, so

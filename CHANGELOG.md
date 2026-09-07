@@ -10,6 +10,21 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **A shipped model catalog, with an enforced review cadence.** `fleet.config.yaml` could always
+  declare a `models:` block and almost no repo did, so `marshal models` answered "which model?"
+  with a bare list of ids from a live probe and nothing to choose between them. Marshal now ships
+  its own catalog (`core/models.yaml`), used whenever a repo declares none: a review, a task
+  weight and a set of categories per model. `marshal models --category best|cost-effective|fast|
+  free|review-lens` narrows it; `--stale` lists what is overdue.
+  The design constraint is that a hand-maintained file of model recommendations is a record that
+  can disagree with reality, and confident prose reads as authority regardless of its age. So
+  facts (`backends`, `cost`, `quota_type`) and opinion (`weight`, `categories`, `review`) are
+  separate fields, every opinion carries `reviewed_on` and an `evidence` tier (`measured` /
+  `judgment` / `unverified`), and **`marshal drift` fails** once a review passes the catalog's
+  window - a skipped review pass is visible rather than silently authoritative. An entry with no
+  `reviewed_on` counts as stale, never as fresh. The catalog is reviewed weekly on Sunday. It
+  still never feeds routing: clients own backend+model, and this is a catalogue you read.
+
 - **New `advisory` run outcome.** The other three verdicts all assume the work was a diff, so a
   read-only review, audit or plan panel - whose findings get used while nothing merges - could only
   be recorded `abandoned`: a judged non-integration that reads as "gave up" and drove the client's
