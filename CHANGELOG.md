@@ -8,6 +8,8 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-08
+
 ### Added
 
 - **A shipped model catalog, with an enforced review cadence.** `fleet.config.yaml` could always
@@ -2744,7 +2746,8 @@ First tagged release: the V1 vertical slice - engine -> service -> CLI -> MCP.
   present, so a fresh install never crashes on connect.
 - **Config** via `fleet.config.yaml` (clients = named backend instances) with an example template.
 
-[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/chiruu12/marshal/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/chiruu12/marshal/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/chiruu12/marshal/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chiruu12/marshal/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chiruu12/marshal/compare/v0.2.3...v0.3.0
