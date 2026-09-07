@@ -20,7 +20,11 @@ from pydantic import BaseModel, ValidationError
 from ..accounting.ledger import RoutingLedger
 from ..accounting.usage import UsageSummary, UsageWindow
 from ..backends.base import CodingAgentBackend
-from ..core.catalog import DEFAULT_STALE_AFTER_DAYS, ModelCatalogFile, shipped_models
+from ..core.catalog import (
+    DEFAULT_STALE_AFTER_DAYS,
+    ModelCatalogFile,
+    load_shipped_catalog,
+)
 from ..core.config import (
     ClientConfig,
     ConfigError,
@@ -367,8 +371,16 @@ class MarshalService:
         # model?" with a review instead of the empty list that sent drivers to a shell.
         catalog = list(self.config.models)
         models_source = "config"
+        # Carry the shipped catalog's OWN staleness window, never a second copy of the default.
+        # Rebuilding it from the constant here made the window two records of one fact: raising
+        # `stale_after_days` in the catalog would move what `marshal drift` fails on while leaving
+        # `stale_reviews` answering from the old number, and the two surfaces would disagree about
+        # whether a review had aged out.
+        stale_after = DEFAULT_STALE_AFTER_DAYS
         if not catalog:
-            catalog = shipped_models()
+            shipped = load_shipped_catalog()
+            if shipped is not None:
+                catalog, stale_after = shipped.models, shipped.stale_after_days
             models_source = "shipped" if catalog else "none"
 
         probed: dict[str, ModelCatalog] = {}
@@ -395,9 +407,7 @@ class MarshalService:
             models_source=models_source,
             stale_reviews={
                 m.id: reason
-                for m, reason in ModelCatalogFile(
-                    catalog, {}, DEFAULT_STALE_AFTER_DAYS, ""
-                ).stale(today)
+                for m, reason in ModelCatalogFile(catalog, {}, stale_after, "").stale(today)
                 # An entry carrying no opinion at all has nothing to go stale: `{id, backends}` is
                 # a fact sheet, and flagging it would bury the reviews that genuinely have aged.
                 if m.review or m.categories or m.weight

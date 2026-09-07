@@ -133,3 +133,52 @@ def test_a_damaged_catalog_degrades_instead_of_breaking_the_listing() -> None:
 
 def test_weights_are_the_three_the_playbook_uses() -> None:
     assert set(MODEL_WEIGHTS) == {"heavy", "standard", "light"}
+
+
+def test_a_future_review_date_is_stale_not_fresh() -> None:
+    """REGRESSION: a future date has a negative age, which can never exceed the window.
+
+    Left alone, one wrong digit opts an entry out of staleness - and the shipped catalog out of
+    its drift failure - until the date arrives. The mechanism would be disabled by a typo.
+    """
+    catalog = load_catalog()
+    catalog.models = _parse_models(
+        [{"id": "m", "backends": ["cursor"], "review": "x", "reviewed_on": "2027-01-01"}]
+    )
+    assert catalog.stale(date(2026, 9, 8))[0][1].startswith("reviewed_on is in the future")
+
+
+def test_the_service_uses_the_catalogs_own_staleness_window(tmp_path: Path) -> None:
+    """REGRESSION: rebuilding the window from the default made it two records of one fact.
+
+    Raising `stale_after_days` in the catalog would move what `marshal drift` fails on while
+    `stale_reviews` kept answering from the constant, and the two surfaces would disagree.
+    """
+    from marshal_engine.core.catalog import load_shipped_catalog
+
+    shipped = load_shipped_catalog()
+    assert shipped is not None
+    assert shipped.stale_after_days == load_catalog(CATALOG_PATH).stale_after_days
+
+
+def test_json_output_honours_the_category_filter(tmp_path: Path) -> None:
+    """REGRESSION: `--json` built its payload before the filter ran, so it returned everything -
+    to the caller most likely to act on the result mechanically."""
+    import json
+
+    from marshal_engine.interfaces import cli
+
+    cfg = tmp_path / "fleet.config.yaml"
+    cfg.write_text("clients:\n  a:\n    backend: cursor\n", encoding="utf-8")
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ret = cli.main(
+            ["models", "--repo", str(tmp_path), "--config", str(cfg), "--json", "--category", "best"]
+        )
+    assert ret == 0
+    ids = [m["id"] for m in json.loads(buf.getvalue())["models"]]
+    assert ids and all("best" in m["categories"] for m in json.loads(buf.getvalue())["models"])
+    assert len(ids) < len(load_catalog().models), "the filter must actually narrow the catalog"

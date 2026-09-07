@@ -79,9 +79,18 @@ def _cmd_models(args: argparse.Namespace) -> int:
         # `run` / `spawn` handling rather than surfacing a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    # Filter BEFORE choosing the output mode. Applying it only to the human path made `--json
+    # --category X` silently return the whole catalog - the caller most likely to act on the
+    # result mechanically, given the answer to a question it did not ask.
+    shown = listing.models
+    if args.category:
+        shown = [m for m in shown if args.category in m.categories]
+    if args.stale:
+        shown = [m for m in shown if m.id in listing.stale_reviews]
+
     if args.json:
         payload = {
-            "models": [m.model_dump() for m in listing.models],
+            "models": [m.model_dump() for m in shown],
             "backend_models": {
                 name: cat.model_dump(mode="json") for name, cat in listing.backend_models.items()
             },
@@ -92,16 +101,16 @@ def _cmd_models(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, default=str))
         return 0
 
-    shown = listing.models
-    if args.category:
-        shown = [m for m in shown if args.category in m.categories]
-    if args.stale:
-        shown = [m for m in shown if m.id in listing.stale_reviews]
-
     if listing.models and args.stale and not shown:
-        # Say it plainly. Printing nothing here is indistinguishable from a broken filter, and
-        # "no reviews are overdue" is the answer the caller actually came for.
-        print(f"no reviews are overdue ({len(listing.models)} entries checked)")
+        # Scope the message to what was actually asked. Reporting "no reviews are overdue" over
+        # the whole catalog while `--category` narrowed it would state something the command did
+        # not check - and would read as an all-clear while other categories are overdue.
+        scope = (
+            f"in category {args.category!r}"
+            if args.category
+            else f"({len(listing.models)} entries checked)"
+        )
+        print(f"no reviews are overdue {scope}")
         return 0
     if listing.models and args.category and not shown:
         # Say which category found nothing, and name the ones that exist. An empty result here

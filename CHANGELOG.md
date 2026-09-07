@@ -45,6 +45,18 @@ versions may include breaking API changes until 1.0.
 
 ### Fixed
 
+- **The usage ledger append is atomic again.** `UsageTracker.record` wrote through a buffered text
+  handle, so an event larger than the 8 KiB buffer was flushed as several `write()` syscalls and a
+  concurrent appender in another process could land between them - splicing two events into one
+  corrupt line. `read_events(strict=True)` fails closed on the ledger, so a single oversized event
+  (a long field is enough) could take the whole cost history down. Now one `os.write` to an
+  `O_APPEND` descriptor. Same defect class as the `info/exclude` appender: the window was in the
+  buffering, not the logic above it.
+- **`Fleet.shutdown` holds the lock that publishes its executor.** It read-modify-wrote `_bg`
+  without `_bg_lock`, racing `_executor`: a concurrent `spawn` could build a second pool and store
+  it over the `None` shutdown had just written, leaving a pool nothing would ever shut down while
+  `wait=False` reported the fleet down.
+
 - **An unreachable `soft_deadline_s` is refused instead of silently ignored.** The effective
   ceiling is `hard_ceiling_s or timeout_s`, but the config only compared the soft deadline against
   an *explicit* `hard_ceiling_s`. With the ceiling unset, a fleet-level soft deadline above a

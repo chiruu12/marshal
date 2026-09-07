@@ -166,10 +166,14 @@ class ModelSpec(BaseModel):
     **Facts and opinion are separate fields, on purpose.** `id`, `backends`, `cost` and
     `quota_type` are what Marshal can verify or has already recorded. `weight`, `categories` and
     `review` are a recommendation - and in prose those two look identical, which is how a stale
-    take ends up read as a measurement. So every entry that carries an opinion also carries
-    `reviewed_on` (when it was last checked) and `evidence` (how strongly it is backed); `marshal
-    drift` fails the catalog once `reviewed_on` goes stale, so a skipped review is visible rather
-    than silently authoritative.
+    take ends up read as a measurement. So an opinion is expected to carry `reviewed_on` (when it
+    was last checked) and `evidence` (how strongly it is backed).
+
+    Those two are NOT required fields, deliberately: rejecting a minimal `weight: light`
+    annotation would fail a legal config over a note. They are enforced by consequence instead -
+    a missing `reviewed_on` counts as stale rather than fresh, so an undated opinion lands in
+    `stale_reviews` at once and fails `marshal drift`, and a missing `evidence` renders as
+    `unstated`. Absent provenance is surfaced, never assumed good.
 
     `id` is a provider+model string (the same one a client would set in its `model:` field).
     `backends` lists the backends that can run it. `cost` / `quota_type` / `notes` are short

@@ -66,6 +66,13 @@ class ModelCatalogFile:
                 out.append((m, "never reviewed"))
                 continue
             age = (today - m.reviewed_on).days
+            if age < 0:
+                # A date in the future is a typo or a review scheduled before it happened, and
+                # either way its negative age can never exceed the window - so left alone it
+                # suppresses this entry's staleness, and the shipped catalog's drift failure with
+                # it, until the date arrives. The whole mechanism is opt-out by one wrong digit.
+                out.append((m, f"reviewed_on is in the future ({m.reviewed_on.isoformat()})"))
+                continue
             if age > self.stale_after_days:
                 out.append((m, f"last reviewed {age} days ago"))
         # Un-dated entries sort last by age but are the worst case, so they lead. Within each
@@ -111,14 +118,24 @@ def load_catalog(path: Path | None = None) -> ModelCatalogFile:
     )
 
 
-def shipped_models() -> list[ModelSpec]:
-    """The shipped catalog's entries, or `[]` if it cannot be read.
+def load_shipped_catalog() -> ModelCatalogFile | None:
+    """The shipped catalog, or `None` if it cannot be read.
+
+    Returns the whole catalog rather than only its entries so a caller inherits its staleness
+    window too. Handing back the models alone forced every consumer to re-derive that window from
+    the default constant, which is how one fact ends up with two records that can disagree.
 
     Degrades rather than raising: a broken catalog must not take down `marshal models` or the
     service, because this is a convenience listing and the caller still has the live probe. The
     suite holds the shipped file valid, so a failure here means a damaged install.
     """
     try:
-        return load_catalog().models
+        return load_catalog()
     except ConfigError:
-        return []
+        return None
+
+
+def shipped_models() -> list[ModelSpec]:
+    """The shipped catalog's entries, or `[]` if it cannot be read."""
+    catalog = load_shipped_catalog()
+    return catalog.models if catalog is not None else []

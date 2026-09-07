@@ -1042,7 +1042,7 @@ def test_models_no_catalog_prints_friendly_message(
 ) -> None:
     # Repo with no config file AND no readable shipped catalog - a damaged install, the only way
     # to reach this message now that Marshal ships a default one.
-    monkeypatch.setattr("marshal_engine.interfaces.service.shipped_models", lambda: [])
+    monkeypatch.setattr("marshal_engine.interfaces.service.load_shipped_catalog", lambda: None)
     ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(tmp_path / "none.yaml")])
     assert ret == 0
     out = capsys.readouterr()[0]
@@ -1075,7 +1075,7 @@ def test_models_reports_what_the_backends_say_when_no_catalog(
     monkeypatch.setattr(OpenCodeBackend, "available_models", lambda self: ModelCatalog())
     # Silence the shipped catalog: this test is about the live probe path, which only renders
     # when there is no catalog of either kind to show instead.
-    monkeypatch.setattr("marshal_engine.interfaces.service.shipped_models", lambda: [])
+    monkeypatch.setattr("marshal_engine.interfaces.service.load_shipped_catalog", lambda: None)
     cfg = tmp_path / "fleet.config.yaml"
     cfg.write_text("clients:\n  a:\n    backend: cursor\n  b:\n    backend: opencode\n")
 
@@ -1099,7 +1099,7 @@ def test_models_json_carries_the_probe_result(
         "available_models",
         lambda self: ModelCatalog(models=["composer"], source=ModelSource.STATIC),
     )
-    monkeypatch.setattr("marshal_engine.interfaces.service.shipped_models", lambda: [])
+    monkeypatch.setattr("marshal_engine.interfaces.service.load_shipped_catalog", lambda: None)
     cfg = tmp_path / "fleet.config.yaml"
     cfg.write_text("clients:\n  a:\n    backend: cursor\n")
 

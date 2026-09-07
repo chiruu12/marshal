@@ -180,9 +180,10 @@ models:
     evidence: measured
     review: >-
       A verified zero-cost path to a frontier-tier model, which makes it the best value in the
-      fleet when it works. The caveats are the backend's: no per-run cost is reported, the
-      catalogue moved to effort-suffixed ids once already, and without a TTY the CLI can swallow
-      stdout and hand back a silently empty run. Worth using; not worth trusting unchecked.
+      fleet. The caveats are the backend's, not the model's: no per-run cost is reported, and the
+      CLI has moved under its adapter more than once - the catalogue went to effort-suffixed ids,
+      and `--print-timeout` silently capped every run at five minutes until it was derived from
+      the run's own timeout. Both are handled now. Run `marshal drift` before a large fan-out.
 
   - id: gemini-3.7-flash-medium
     backends: [antigravity]
@@ -194,8 +195,9 @@ models:
     evidence: judgment
     review: >-
       Free and quick - the natural fan-out tier when you want many opinions and are not paying
-      per opinion. Same empty-run caveat as the rest of this backend, and it matters more here
-      because you will be running a lot of them.
+      per opinion. Note the backend's read-only edge before using it as a review lens: plan mode
+      answers a file write with a plan, but HARD-DENIES a shell command and exits non-zero, so a
+      reviewer prompt that reaches for grep or pytest fails the run rather than degrading.
 
   # ---- copilot -----------------------------------------------------------------------------
   - id: auto
