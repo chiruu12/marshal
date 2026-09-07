@@ -7578,3 +7578,75 @@ def test_shutdown_takes_the_lock_that_publishes_the_executor(repo: Path) -> None
         fleet._bg_lock = real
     assert acquired == ["in"], "shutdown mutated _bg without holding _bg_lock"
     assert fleet._bg is None
+
+
+def test_setup_failure_releases_the_enforce_slot_before_stamping_terminal(repo: Path) -> None:
+    """REGRESSION (#278, spawn path): a terminal record must never be published while its cap is held.
+
+    The run paths adopted this ordering; `_run_deferred_provisioning` - the spawn path's own
+    terminal stamper - did not, so a setup failure stamped `failed` with the enforce slot still
+    held. A driver following the documented loop (poll until terminal, then dispatch) was refused
+    with "wait for it to finish" naming a run that had finished. Only a loaded CI runner lost the
+    race; this pins the ORDER instead of the timing, so it fails deterministically.
+    """
+    fleet = Fleet(
+        repo,
+        {"writer": _Writer()},
+        worktree_setup=[sys.executable, "-c", "import sys; sys.exit(1)"],
+        budgets=[BudgetSpec(backend="writer", window="week", limit_usd=100.0, enforce=True)],
+    )
+    order: list[str] = []
+    real_release = fleet._budget_gate.release_run
+    real_update = fleet.state.update_if
+
+    def spy_release(run_id: str) -> object:
+        order.append(f"release:{run_id}")
+        return real_release(run_id)
+
+    def spy_update(run_id: str, predicate: object, **fields: object) -> object:
+        if fields.get("status") in {RunStatus.FAILED.value, RunStatus.CANCELLED.value}:
+            order.append(f"stamp:{run_id}")
+        return real_update(run_id, predicate, **fields)  # type: ignore[arg-type]
+
+    fleet._budget_gate.release_run = spy_release  # type: ignore[method-assign]
+    fleet.state.update_if = spy_update  # type: ignore[method-assign]
+    try:
+        run_id = fleet.spawn(RunRequest(backend_name="writer", task=TaskSpec(id="ordr", goal="x")))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            rec = fleet.state.get(run_id)
+            if rec and rec.status != "running":
+                break
+            time.sleep(0.05)
+        assert fleet.state.get(run_id).status == "failed"  # type: ignore[union-attr]
+    finally:
+        fleet._budget_gate.release_run = real_release  # type: ignore[method-assign]
+        fleet.state.update_if = real_update  # type: ignore[method-assign]
+        fleet.shutdown()
+
+    stamp = order.index(f"stamp:{run_id}")
+    assert f"release:{run_id}" in order[:stamp], (
+        f"the terminal stamp was published before the cap was released: {order}"
+    )
+
+
+def test_a_shut_down_fleet_refuses_to_build_a_second_pool(repo: Path) -> None:
+    """REGRESSION: clearing `_bg` was not a shutdown boundary, only a lock fix.
+
+    A `spawn` blocked on `_bg_lock` would resume after shutdown, find `_bg` None and build a
+    FRESH executor - so work could be accepted after shutdown returned and outlive the teardown
+    that called it.
+    """
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet._executor()
+    fleet.shutdown()
+    with pytest.raises(RuntimeError, match="has been shut down"):
+        fleet._executor()
+
+
+def test_shutdown_is_still_a_no_op_when_nothing_was_spawned(repo: Path) -> None:
+    """Anti-blanket control: the latch must not turn an unused Fleet's shutdown into an error."""
+    fleet = Fleet(repo, {"writer": _Writer()})
+    fleet.shutdown()
+    fleet.shutdown()  # idempotent
+    assert fleet._bg is None

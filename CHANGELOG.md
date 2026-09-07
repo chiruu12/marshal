@@ -52,6 +52,15 @@ versions may include breaking API changes until 1.0.
   (a long field is enough) could take the whole cost history down. Now one `os.write` to an
   `O_APPEND` descriptor. Same defect class as the `info/exclude` appender: the window was in the
   buffering, not the logic above it.
+- **A spawn that failed in setup published a terminal record while still holding its budget cap.**
+  The run paths adopted release-then-stamp for #278; `_run_deferred_provisioning`, the spawn
+  path's own terminal stamper, did not. A driver following the documented loop - poll until
+  terminal, then dispatch - was refused with "wait for it to finish" naming a run that had already
+  finished. Releasing early cannot overshoot: a run that dies in setup never reached a backend, so
+  it has no spend. Only a loaded CI runner lost the race; the regression test pins the order.
+- **A shut-down `Fleet` refuses new background work.** Clearing `_bg` was a lock fix, not a
+  boundary: a `spawn` blocked on `_bg_lock` would resume, find `_bg` unset and build a fresh pool,
+  so work could be accepted after `shutdown` returned and outlive the teardown that called it.
 - **`Fleet.shutdown` holds the lock that publishes its executor.** It read-modify-wrote `_bg`
   without `_bg_lock`, racing `_executor`: a concurrent `spawn` could build a second pool and store
   it over the `None` shutdown had just written, leaving a pool nothing would ever shut down while
