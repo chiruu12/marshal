@@ -38,10 +38,20 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd")
     pb = sub.add_parser("backends", help="list backends and availability")
     pb.add_argument("--json", action="store_true", help="output JSON")
-    pm = sub.add_parser("models", help="list the optional `models:` catalog from fleet.config.yaml")
+    pm = sub.add_parser(
+        "models", help="list the model catalog: reviews, weights, categories, review freshness"
+    )
     pm.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pm.add_argument("--config", default=None, help="fleet config path (default: <repo>/fleet.config.yaml)")
     pm.add_argument("--json", action="store_true", help="output JSON")
+    pm.add_argument(
+        "--category",
+        default=None,
+        help="only entries in this category (best, cost-effective, fast, free, review-lens)",
+    )
+    pm.add_argument(
+        "--stale", action="store_true", help="only entries whose review is overdue"
+    )
     pu = sub.add_parser("usage", help="show usage summary")
     pu.add_argument("--repo", default=None, help="target repo root (default: $MARSHAL_REPO or cwd)")
     pu.add_argument("--dir", default=None, help="usage ledger directory (default: <repo>/.marshal/usage)")

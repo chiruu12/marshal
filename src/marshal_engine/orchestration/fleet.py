@@ -307,6 +307,9 @@ class Fleet:
         # init so concurrent first spawns don't build two pools (one would leak, undrained).
         self._bg: ThreadPoolExecutor | None = None
         self._bg_lock = threading.Lock()
+        #: Latched by `shutdown`. A torn-down Fleet must refuse new background work rather than
+        #: quietly building a second pool nothing will ever join.
+        self._bg_closed = False
         self._bg_max = 4
         # When this Fleet (the long-lived MCP server) started. The MCP `usage` tool maps a `window`
         # of "session" to this instant, so the driver can see what it has spent THIS session
@@ -416,14 +419,32 @@ class Fleet:
         return run_id
 
     def shutdown(self, *, wait: bool = True) -> None:
-        """Shut the background spawn pool (drains in-flight runs). A no-op if none were spawned."""
-        if self._bg is not None:
-            self._bg.shutdown(wait=wait)
-            self._bg = None
+        """Shut the background spawn pool (drains in-flight runs). A no-op if none were spawned.
+
+        Under ``_bg_lock``, which is the lock ``_executor`` already uses to publish ``_bg``.
+        Without it the read-modify-write here races that publish: a concurrent ``spawn`` could
+        build a second executor and store it over the ``None`` this method just wrote, leaving a
+        pool nothing will ever shut down - and with ``wait=False`` the caller has been told the
+        fleet is shut while a live executor is still draining work.
+        """
+        with self._bg_lock:
+            # Latch closed under the same lock. Clearing `_bg` alone was not a boundary: a
+            # concurrent `spawn` blocked on this lock would resume, find `_bg` None, and build a
+            # FRESH pool - so work could be accepted after shutdown returned and outlive the
+            # teardown that called it. The flag is what makes the boundary durable.
+            self._bg_closed = True
+            if self._bg is not None:
+                self._bg.shutdown(wait=wait)
+                self._bg = None
 
     def _executor(self) -> ThreadPoolExecutor:
         if self._bg is None:
             with self._bg_lock:
+                if self._bg_closed:
+                    raise RuntimeError(
+                        "fleet: this Fleet has been shut down; no new background work can be "
+                        "accepted. Build a new Fleet rather than reusing a torn-down one."
+                    )
                 if self._bg is None:
                     self._bg = ThreadPoolExecutor(
                         max_workers=self._bg_max, thread_name_prefix="marshal-spawn"
@@ -660,16 +681,26 @@ class Fleet:
         ``cancel_requested`` is set when setup exits non-zero, this stamps ``cancelled`` (not
         ``failed``), even when the except path races ahead of ``cancel_run``'s own update_if.
         Pre-pid cancel is cooperative — see ``spawn`` docstring.
+
+        Every terminal stamp here releases the enforce-budget slot FIRST, the same ordering the
+        run paths adopted for #278. This method is the spawn path's own terminal stamper and was
+        not covered by that fix: it published `failed`/`cancelled` while the cap was still held,
+        so a driver following the documented loop - poll until terminal, then dispatch - was
+        refused with "wait for it to finish" naming a run that had already finished. Nothing here
+        can overshoot by releasing early: a run that dies in setup never reached a backend, so it
+        has no spend for the next spawn's ledger re-check to miss. `release_run` is idempotent and
+        the caller's `finally` still runs as the backstop.
         """
+
+        def _terminal(**fields: Any) -> RunRecord | None:
+            self._budget_gate.release_run(run_id)
+            return self.state.update_if(run_id, _still_running, ended_at=_now(), **fields)
+
         if self._cancel_requested(run_id):
             with contextlib.suppress(WorktreeError):
                 self.worktrees.discard(str(wt.path), wt.branch)
-            return self.state.update_if(
-                run_id,
-                _still_running,
-                status=RunStatus.CANCELLED.value,
-                ended_at=_now(),
-                error="fleet: cancelled during setup",
+            return _terminal(
+                status=RunStatus.CANCELLED.value, error="fleet: cancelled during setup"
             )
         try:
             self._provision_worktree(wt, req, run_id=run_id)
@@ -680,23 +711,15 @@ class Fleet:
             # Cancel intent wins even when killpg caused this exception and cancel_run's
             # RUNNING→cancelled update_if has not landed yet (Trace 1).
             if self._cancel_requested(run_id):
-                return self.state.update_if(
-                    run_id,
-                    _still_running,
+                return _terminal(
                     status=RunStatus.CANCELLED.value,
-                    ended_at=_now(),
                     error=(
                         f"fleet: cancelled during setup "
                         f"({_deferred_provision_error(exc)})"
                     ),
                 )
-            err = _deferred_provision_error(exc)
-            return self.state.update_if(
-                run_id,
-                _still_running,
-                status=RunStatus.FAILED.value,
-                ended_at=_now(),
-                error=err,
+            return _terminal(
+                status=RunStatus.FAILED.value, error=_deferred_provision_error(exc)
             )
         if self._cancel_requested(run_id):
             # Setup/provision finished (or was a no-op) but cancel won before the agent —
@@ -705,12 +728,8 @@ class Fleet:
             # method discard never ran.
             with contextlib.suppress(WorktreeError):
                 self.worktrees.discard(str(wt.path), wt.branch)
-            return self.state.update_if(
-                run_id,
-                _still_running,
-                status=RunStatus.CANCELLED.value,
-                ended_at=_now(),
-                error="fleet: cancelled during setup",
+            return _terminal(
+                status=RunStatus.CANCELLED.value, error="fleet: cancelled during setup"
             )
         return None
 

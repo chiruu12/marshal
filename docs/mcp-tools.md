@@ -106,9 +106,20 @@ target repo — it is not a path allowlist. See `SECURITY.md` before turning it 
 |-----------|------|---------|-------------|
 | `workspace` | string \| null | `null` | Target workspace. |
 
-**Returns:** `{ models, backend_models, driver_context, workspace }`
+**Returns:** `{ models, backend_models, driver_context, models_source, stale_reviews, workspace }`
 
-- `models`: `[{ id, backends, cost, quota_type, notes }]` — the optional `models:` catalog (metadata only)
+- `models`: `[{ id, backends, cost, quota_type, notes, weight, categories, review, reviewed_on, evidence }]`
+  — the model catalog (metadata only; it never influences routing). Facts and opinion are separate
+  fields: `backends` / `cost` / `quota_type` are verified or recorded, while `weight`
+  (`heavy`/`standard`/`light`), `categories` (`best`, `cost-effective`, `fast`, `free`,
+  `review-lens`) and `review` are a recommendation. **Weigh a review by its provenance:**
+  `evidence` is `measured` (a real run or benchmark produced it), `judgment` (reasoning, not
+  evidence — benchmark it first) or `unverified` (never exercised here), and `reviewed_on` is when
+  it was last checked. See [`docs/config.md`](config.md#models) for the field census.
+- `models_source`: `config` (this repo declared its own catalog, tuned to its accounts and quotas),
+  `shipped` (Marshal's curated default, which knows nothing about your accounts), or `none`.
+- `stale_reviews`: `{ model_id: reason }` — opinions past the catalog's review window. A stale
+  review is not a current fact; `marshal drift` fails while any are outstanding.
 - `backend_models`: `{ backend: { models: [model_id], source } }` — what each configured backend
   can say about the models it runs, populated **only when no `models:` catalog is configured**.
   `source` is one of:

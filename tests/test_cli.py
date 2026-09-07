@@ -1007,14 +1007,19 @@ def test_models_json_with_catalog(tmp_path: Path, capsys: pytest.CaptureFixture[
     ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(cfg), "--json"])
     assert ret == 0
     data = json.loads(capsys.readouterr()[0])
-    assert set(data) == {"models", "backend_models", "driver_context"}
+    assert set(data) == {
+        "models", "backend_models", "driver_context", "models_source", "stale_reviews",
+    }
+    assert data["models_source"] == "config"
     # A configured catalog is the curated answer, so nothing is probed.
     assert data["backend_models"] == {}
     assert data["models"] == [
         {"id": "<provider>/<model-a>", "backends": ["opencode", "claude-code"],
-         "cost": "native", "quota_type": "subscription", "notes": "placeholder"},
+         "cost": "native", "quota_type": "subscription", "notes": "placeholder",
+         "weight": "", "categories": [], "review": "", "reviewed_on": None, "evidence": ""},
         {"id": "<provider>/<model-b>", "backends": ["cursor"],
-         "cost": "estimated", "quota_type": "", "notes": ""},
+         "cost": "estimated", "quota_type": "", "notes": "",
+         "weight": "", "categories": [], "review": "", "reviewed_on": None, "evidence": ""},
     ]
     assert data["driver_context"] is None
 
@@ -1032,8 +1037,12 @@ def test_models_human_prints_each_row(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "cursor" in out
 
 
-def test_models_no_catalog_prints_friendly_message(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # Repo with no config file: `marshal models` is a no-op-ish view that explains the absence.
+def test_models_no_catalog_prints_friendly_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Repo with no config file AND no readable shipped catalog - a damaged install, the only way
+    # to reach this message now that Marshal ships a default one.
+    monkeypatch.setattr("marshal_engine.interfaces.service.load_shipped_catalog", lambda: None)
     ret = cli.main(["models", "--repo", str(tmp_path), "--config", str(tmp_path / "none.yaml")])
     assert ret == 0
     out = capsys.readouterr()[0]
@@ -1064,6 +1073,9 @@ def test_models_reports_what_the_backends_say_when_no_catalog(
     )
     # A backend that cannot answer reports UNAVAILABLE, which must not read as "has no models".
     monkeypatch.setattr(OpenCodeBackend, "available_models", lambda self: ModelCatalog())
+    # Silence the shipped catalog: this test is about the live probe path, which only renders
+    # when there is no catalog of either kind to show instead.
+    monkeypatch.setattr("marshal_engine.interfaces.service.load_shipped_catalog", lambda: None)
     cfg = tmp_path / "fleet.config.yaml"
     cfg.write_text("clients:\n  a:\n    backend: cursor\n  b:\n    backend: opencode\n")
 
@@ -1087,6 +1099,7 @@ def test_models_json_carries_the_probe_result(
         "available_models",
         lambda self: ModelCatalog(models=["composer"], source=ModelSource.STATIC),
     )
+    monkeypatch.setattr("marshal_engine.interfaces.service.load_shipped_catalog", lambda: None)
     cfg = tmp_path / "fleet.config.yaml"
     cfg.write_text("clients:\n  a:\n    backend: cursor\n")
 

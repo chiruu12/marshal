@@ -10,6 +10,21 @@ versions may include breaking API changes until 1.0.
 
 ### Added
 
+- **A shipped model catalog, with an enforced review cadence.** `fleet.config.yaml` could always
+  declare a `models:` block and almost no repo did, so `marshal models` answered "which model?"
+  with a bare list of ids from a live probe and nothing to choose between them. Marshal now ships
+  its own catalog (`core/models.yaml`), used whenever a repo declares none: a review, a task
+  weight and a set of categories per model. `marshal models --category best|cost-effective|fast|
+  free|review-lens` narrows it; `--stale` lists what is overdue.
+  The design constraint is that a hand-maintained file of model recommendations is a record that
+  can disagree with reality, and confident prose reads as authority regardless of its age. So
+  facts (`backends`, `cost`, `quota_type`) and opinion (`weight`, `categories`, `review`) are
+  separate fields, every opinion carries `reviewed_on` and an `evidence` tier (`measured` /
+  `judgment` / `unverified`), and **`marshal drift` fails** once a review passes the catalog's
+  window - a skipped review pass is visible rather than silently authoritative. An entry with no
+  `reviewed_on` counts as stale, never as fresh. The catalog is reviewed weekly on Sunday. It
+  still never feeds routing: clients own backend+model, and this is a catalogue you read.
+
 - **New `advisory` run outcome.** The other three verdicts all assume the work was a diff, so a
   read-only review, audit or plan panel - whose findings get used while nothing merges - could only
   be recorded `abandoned`: a judged non-integration that reads as "gave up" and drove the client's
@@ -29,6 +44,27 @@ versions may include breaking API changes until 1.0.
   ended for lack of progress is reported as `timed_out` like any other. See `docs/config.md`.
 
 ### Fixed
+
+- **The usage ledger append is atomic again.** `UsageTracker.record` wrote through a buffered text
+  handle, so an event larger than the 8 KiB buffer was flushed as several `write()` syscalls and a
+  concurrent appender in another process could land between them - splicing two events into one
+  corrupt line. `read_events(strict=True)` fails closed on the ledger, so a single oversized event
+  (a long field is enough) could take the whole cost history down. Now one `os.write` to an
+  `O_APPEND` descriptor. Same defect class as the `info/exclude` appender: the window was in the
+  buffering, not the logic above it.
+- **A spawn that failed in setup published a terminal record while still holding its budget cap.**
+  The run paths adopted release-then-stamp for #278; `_run_deferred_provisioning`, the spawn
+  path's own terminal stamper, did not. A driver following the documented loop - poll until
+  terminal, then dispatch - was refused with "wait for it to finish" naming a run that had already
+  finished. Releasing early cannot overshoot: a run that dies in setup never reached a backend, so
+  it has no spend. Only a loaded CI runner lost the race; the regression test pins the order.
+- **A shut-down `Fleet` refuses new background work.** Clearing `_bg` was a lock fix, not a
+  boundary: a `spawn` blocked on `_bg_lock` would resume, find `_bg` unset and build a fresh pool,
+  so work could be accepted after `shutdown` returned and outlive the teardown that called it.
+- **`Fleet.shutdown` holds the lock that publishes its executor.** It read-modify-wrote `_bg`
+  without `_bg_lock`, racing `_executor`: a concurrent `spawn` could build a second pool and store
+  it over the `None` shutdown had just written, leaving a pool nothing would ever shut down while
+  `wait=False` reported the fleet down.
 
 - **An unreachable `soft_deadline_s` is refused instead of silently ignored.** The effective
   ceiling is `hard_ceiling_s or timeout_s`, but the config only compared the soft deadline against

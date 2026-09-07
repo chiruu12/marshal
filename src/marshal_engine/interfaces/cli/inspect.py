@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import textwrap
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -78,27 +79,96 @@ def _cmd_models(args: argparse.Namespace) -> int:
         # `run` / `spawn` handling rather than surfacing a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    # Filter BEFORE choosing the output mode. Applying it only to the human path made `--json
+    # --category X` silently return the whole catalog - the caller most likely to act on the
+    # result mechanically, given the answer to a question it did not ask.
+    shown = listing.models
+    if args.category:
+        shown = [m for m in shown if args.category in m.categories]
+    if args.stale:
+        shown = [m for m in shown if m.id in listing.stale_reviews]
+
     if args.json:
         payload = {
-            "models": [m.model_dump() for m in listing.models],
+            "models": [m.model_dump() for m in shown],
             "backend_models": {
                 name: cat.model_dump(mode="json") for name, cat in listing.backend_models.items()
             },
             "driver_context": listing.driver_context,
+            "models_source": listing.models_source,
+            "stale_reviews": listing.stale_reviews,
         }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, default=str))
         return 0
-    for m in listing.models:
+
+    if listing.models and args.stale and not shown:
+        # Scope the message to what was actually asked. Reporting "no reviews are overdue" over
+        # the whole catalog while `--category` narrowed it would state something the command did
+        # not check - and would read as an all-clear while other categories are overdue.
+        scope = (
+            f"in category {args.category!r}"
+            if args.category
+            else f"({len(listing.models)} entries checked)"
+        )
+        print(f"no reviews are overdue {scope}")
+        return 0
+    if listing.models and args.category and not shown:
+        # Say which category found nothing, and name the ones that exist. An empty result here
+        # otherwise reads as "no models" rather than "no models in THAT category", and the
+        # vocabulary is closed, so the next thing the caller needs is the list of valid names.
+        known = sorted({c for m in listing.models for c in m.categories})
+        print(f"no catalog entry in category {args.category!r} (categories in use: {known})")
+        return 0
+
+    for m in shown:
         backends = ",".join(m.backends)
         cost = m.cost or "-"
         quota = m.quota_type or "-"
-        print(f"{m.id:40} backends={backends:30} cost={cost:12} quota={quota:14} {m.notes}")
+        weight = m.weight or "-"
+        print(f"{m.id:34} backends={backends:26} cost={cost:12} quota={quota:13} weight={weight}")
+        if m.categories:
+            print(f"  categories: {', '.join(m.categories)}")
+        if m.review or m.notes:
+            # Wrapped rather than printed as one long line: a review is a paragraph, and the whole
+            # point of it is that someone reads it before picking a model.
+            for line in textwrap.wrap(" ".join((m.review or m.notes).split()), width=94):
+                print(f"  {line}")
+        if m.review or m.categories or m.weight:
+            # Stamp provenance on every OPINION, right under it. Held apart from the review text
+            # because the two are different kinds of claim: a review reads as authoritative on
+            # its own, and how strongly it is backed and when it was last checked is the part
+            # that decides whether to act on it or benchmark it first.
+            stale = listing.stale_reviews.get(m.id)
+            reviewed = m.reviewed_on.isoformat() if m.reviewed_on else "never"
+            flag = f"  [STALE: {stale}]" if stale else ""
+            print(f"  evidence: {m.evidence or 'unstated'}  reviewed: {reviewed}{flag}")
+        print()
+
+    if listing.models:
+        if listing.models_source == "shipped":
+            print(
+                "source: Marshal's shipped catalog - a general recommendation that knows nothing "
+                "about your accounts or quotas.\nDeclare a top-level `models:` block in "
+                "fleet.config.yaml to keep your own, tuned to this fleet."
+            )
+        if listing.stale_reviews and not args.stale:
+            print(
+                f"{len(listing.stale_reviews)} review(s) are overdue - see `marshal models "
+                "--stale`. An overdue review is an opinion nobody has re-checked, not a fact."
+            )
     if not listing.models:
         repo = _resolve_repo(args)
         cfg_path = Path(
             args.config or os.environ.get("MARSHAL_CONFIG") or repo / "fleet.config.yaml"
         )
-        print(f"no `models:` catalog in {cfg_path} (add a top-level `models:` list to curate one)")
+        # Reaching here means BOTH catalogs are absent: this repo declares no `models:` block and
+        # Marshal's shipped one could not be read, which is a damaged install rather than a
+        # configuration choice. Say so, because "add a catalog" is the wrong instruction if the
+        # one that ships with the package has gone missing.
+        print(
+            f"no `models:` catalog in {cfg_path}, and Marshal's shipped catalog could not be read "
+            "(add a top-level `models:` list to curate your own, or reinstall)"
+        )
         # Always print the source. A curated fallback and a live answer look identical once
         # they are both just a list of ids, and only one of them is evidence the account can
         # actually run those models.

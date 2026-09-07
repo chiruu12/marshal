@@ -33,10 +33,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import date
+from pathlib import Path
 
 from pydantic import BaseModel
 
 from ..backends.base import CodingAgentBackend
+from ..core.catalog import ModelCatalogFile, load_catalog
+from ..core.config import ConfigError
 from ..core.types import ModelSource
 from ..orchestration.registry import default_backends
 
@@ -207,8 +211,55 @@ def _models_finding(name: str, backend: CodingAgentBackend) -> DriftFinding:
     )
 
 
+def _catalog_finding(today: date, catalog: ModelCatalogFile | None) -> DriftFinding:
+    """Report the shipped model catalog's review freshness. Pure given `today` and the catalog.
+
+    **Why an overdue review FAILS rather than warns.** Everything else in this module is a
+    statement about a third-party CLI Marshal does not control, and warning is the honest
+    severity there. This one is a statement about Marshal's own file, and the thing it is
+    checking is the only defence the catalog has: its reviews read as authoritative no matter how
+    old they are, so an unnoticed lapse turns the file into confident, wrong advice about where
+    to spend money. The window is set to span more than one review cycle, so failing here means
+    the file has gone unattended past a skipped review rather than merely being due - which is
+    exactly when someone should be stopped and told.
+    """
+    if catalog is None:
+        return DriftFinding(
+            backend="catalog",
+            kind="reviews",
+            status=WARN,
+            detail="the shipped model catalog could not be read",
+            fix="check src/marshal_engine/core/models.yaml parses - a damaged install drops "
+            "every curated review and leaves `marshal models` with only live probes",
+        )
+    stale = catalog.stale(today)
+    if not stale:
+        return DriftFinding(
+            backend="catalog",
+            kind="reviews",
+            status=OK,
+            detail=f"all {len(catalog.models)} model review(s) are within "
+            f"{catalog.stale_after_days} days",
+        )
+    named = ", ".join(f"{m.id} ({reason})" for m, reason in stale[:_MAX_NAMED_NEW])
+    more = "" if len(stale) <= _MAX_NAMED_NEW else f", +{len(stale) - _MAX_NAMED_NEW} more"
+    return DriftFinding(
+        backend="catalog",
+        kind="reviews",
+        status=FAIL,
+        detail=f"{len(stale)} model review(s) past the {catalog.stale_after_days}-day window: "
+        f"{named}{more}",
+        fix=f"do a review pass ({catalog.cadence or 'weekly'}): re-verify what you can with "
+        "`benchmark`, then bump `reviewed_on` in src/marshal_engine/core/models.yaml. Bumping "
+        "the date without re-checking is the one edit that makes the catalog worse than absent",
+    )
+
+
 def detect_drift(
     backends: Mapping[str, CodingAgentBackend] | None = None,
+    *,
+    today: date | None = None,
+    catalog_path: Path | None = None,
 ) -> DriftReport:
     """Probe every installed backend CLI and report where it has moved away from its adapter.
 
@@ -229,6 +280,14 @@ def detect_drift(
         checked.append(name)
         findings.append(_version_finding(name, backend, observed))
         findings.append(_models_finding(name, backend))
+    # The catalog check is not per-backend and does not depend on any CLI being installed, so it
+    # runs unconditionally - a host with no coding CLI at all still ships the reviews.
+    try:
+        catalog: ModelCatalogFile | None = load_catalog(catalog_path)
+    except ConfigError:
+        catalog = None
+    findings.append(_catalog_finding(today or date.today(), catalog))
+
     fails = sum(1 for f in findings if f.status == FAIL)
     warns = sum(1 for f in findings if f.status == WARN)
     # Version warns leave ok true (nightlies). A models warn means the catalogue of an installed

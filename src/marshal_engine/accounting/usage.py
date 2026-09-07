@@ -250,8 +250,28 @@ class UsageTracker:
         # between them. Racing the check itself is harmless - if the other writer closed the line
         # first, this leaves a blank one, which the parser skips.
         prefix = "\n" if self._ends_mid_line() else ""
-        with self.events_path.open("a", encoding="utf-8") as f:
-            f.write(prefix + event.model_dump_json() + "\n")
+        line = (prefix + event.model_dump_json() + "\n").encode("utf-8")
+        # ONE `os.write` of bytes to an O_APPEND descriptor, not a buffered text write.
+        # `open("a").write(...)` goes through a TextIOWrapper over an 8 KiB BufferedWriter: an
+        # encoded event larger than that buffer is flushed as SEVERAL `write()` syscalls, and a
+        # concurrent appender in another process can land between them. That splices two events
+        # into one corrupt line - and `read_events(strict=True)` fails closed on the ledger, so a
+        # single large event (a long error string is enough) could take the whole cost history
+        # down. O_APPEND makes each `write` seek-and-write atomically, so one call per event is
+        # the boundary. Same defect class as the `info/exclude` appender: the interleaving window
+        # was in the buffering, not in the logic above it.
+        fd = os.open(self.events_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            written = 0
+            while written < len(line):
+                # A short write is legal even for a regular file (a signal, a full disk), though
+                # it is vanishingly rare for one. Resuming writes the remainder rather than
+                # silently dropping it; if an appender in another process lands in that gap the
+                # line can still split, so this is a strictly better loser, not a guarantee. The
+                # atomicity that matters is the common path: one write per event.
+                written += os.write(fd, line[written:])
+        finally:
+            os.close(fd)
 
     def read_events(self, *, strict: bool = False) -> tuple[list[UsageEvent], LedgerCursor]:
         """Read the ledger once; return events plus a cursor for later O(tail) re-reads.

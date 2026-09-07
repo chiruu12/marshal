@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -141,8 +142,38 @@ class ClientConfig(BaseModel):
     usage_api: str | None = None
 
 
+#: Task weights a catalog entry may claim. Closed, and the same three the routing playbook uses -
+#: a fourth tier here would be a tier the driver's own heuristics have no rule for.
+MODEL_WEIGHTS: frozenset[str] = frozenset({"heavy", "standard", "light"})
+
+#: How strongly a catalog entry's OPINION fields (`weight`, `categories`, `review`) are backed.
+#: This is the honesty field, and it exists because a recommendation and a measurement look
+#: identical in prose. ``measured`` = a real run or benchmark produced it; ``judgment`` = our
+#: reasoning, useful but not evidence; ``unverified`` = never exercised here at all.
+MODEL_EVIDENCE: frozenset[str] = frozenset({"measured", "judgment", "unverified"})
+
+#: The closed category vocabulary. Closed on purpose: an open field becomes fifteen near-synonyms
+#: within a month, after which no entry can be found by any of them. The shipped catalog carries
+#: the prose description of each; this is the normative set, and a test holds the two together.
+MODEL_CATEGORIES: frozenset[str] = frozenset(
+    {"best", "cost-effective", "fast", "free", "review-lens"}
+)
+
+
 class ModelSpec(BaseModel):
     """One entry in the optional `models:` catalog the driver can read.
+
+    **Facts and opinion are separate fields, on purpose.** `id`, `backends`, `cost` and
+    `quota_type` are what Marshal can verify or has already recorded. `weight`, `categories` and
+    `review` are a recommendation - and in prose those two look identical, which is how a stale
+    take ends up read as a measurement. So an opinion is expected to carry `reviewed_on` (when it
+    was last checked) and `evidence` (how strongly it is backed).
+
+    Those two are NOT required fields, deliberately: rejecting a minimal `weight: light`
+    annotation would fail a legal config over a note. They are enforced by consequence instead -
+    a missing `reviewed_on` counts as stale rather than fresh, so an undated opinion lands in
+    `stale_reviews` at once and fails `marshal drift`, and a missing `evidence` renders as
+    `unstated`. Absent provenance is surfaced, never assumed good.
 
     `id` is a provider+model string (the same one a client would set in its `model:` field).
     `backends` lists the backends that can run it. `cost` / `quota_type` / `notes` are short
@@ -150,6 +181,9 @@ class ModelSpec(BaseModel):
     (``native`` | ``admin-api`` | ``unavailable``) and quota_type the billing
     shape (``metered`` | ``subscription`` | ``unavailable``). All fields after `id` and
     `backends` are optional so a minimal catalog entry is just ``{id, backends}``.
+
+    This never feeds routing - clients own backend+model, and this is a catalogue you read. That
+    separation is what keeps a weekly opinion edit from quietly becoming configuration.
     """
 
     id: str
@@ -157,6 +191,11 @@ class ModelSpec(BaseModel):
     cost: str = ""
     quota_type: str = ""
     notes: str = ""
+    weight: str = ""
+    categories: list[str] = []
+    review: str = ""
+    reviewed_on: date | None = None
+    evidence: str = ""
 
 
 class FleetContext(BaseModel):
@@ -574,9 +613,59 @@ def _parse_models(value: Any) -> list[ModelSpec]:
                 cost=str(entry.get("cost", "") or ""),
                 quota_type=str(entry.get("quota_type", "") or ""),
                 notes=str(entry.get("notes", "") or ""),
+                weight=_one_of(entry.get("weight"), MODEL_WEIGHTS, f"models[{i}].weight"),
+                categories=_categories_of(entry.get("categories"), i),
+                review=str(entry.get("review", "") or ""),
+                reviewed_on=_reviewed_on(entry.get("reviewed_on"), i),
+                evidence=_one_of(entry.get("evidence"), MODEL_EVIDENCE, f"models[{i}].evidence"),
             )
         )
     return out
+
+
+def _one_of(value: Any, allowed: frozenset[str], where: str) -> str:
+    """Validate one closed-vocabulary catalog field. Absent -> "". Pure.
+
+    Fails fast on an unknown value for the same reason every other config typo does: a `weight:
+    hevy` that parsed to an empty string would drop the entry out of every weight filter with no
+    error, and the operator would read the silence as "no models at that tier".
+    """
+    if value is None or value == "":
+        return ""
+    text = str(value)
+    if text not in allowed:
+        raise ConfigError(f"{where}: unknown value {text!r} (expected one of {sorted(allowed)})")
+    return text
+
+
+def _categories_of(value: Any, i: int) -> list[str]:
+    """Validate an entry's `categories:` against the closed vocabulary. Absent -> []. Pure."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(c, str) for c in value):
+        raise ConfigError(f"models[{i}].categories must be a list of strings, got {value!r}")
+    return [_one_of(c, MODEL_CATEGORIES, f"models[{i}].categories") for c in value]
+
+
+def _reviewed_on(value: Any, i: int) -> date | None:
+    """Parse `reviewed_on`. Absent -> None (never reviewed), which reads as stale. Pure.
+
+    YAML already yields a `date` for an unquoted ISO day; a quoted one arrives as a string and is
+    parsed here so both spellings behave the same. Anything else fails rather than degrading to
+    None - a date that silently became "never reviewed" would show up as a staleness finding
+    against an entry that was in fact reviewed yesterday, and the operator would chase the wrong
+    thing.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ConfigError(
+            f"models[{i}].reviewed_on: expected an ISO date (YYYY-MM-DD), got {value!r}"
+        ) from exc
 
 
 def _duration_subject(client: str) -> str:

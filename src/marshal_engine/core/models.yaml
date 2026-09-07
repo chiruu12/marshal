@@ -1,0 +1,258 @@
+# Marshal's shipped model catalog.
+#
+# This is the answer to "which model should I point a client at?" - the thing a driver reads
+# instead of shelling out to each backend's CLI in turn and guessing. It ships with Marshal and is used
+# whenever a repo's own `fleet.config.yaml` declares no `models:` block of its own.
+#
+# WHAT THIS FILE IS. Two kinds of content, deliberately separated per entry:
+#
+#   * FACTS  - `backends`, `cost`, `quota_type`. What Marshal can verify or has already recorded.
+#   * OPINION - `weight`, `categories`, `review`. Our take. Every one carries `reviewed_on` and
+#     `evidence`, because a recommendation with no date is a claim that cannot be checked.
+#
+# `evidence` is the honesty field and has exactly three values:
+#
+#   measured   - a real Marshal run or benchmark produced this. The strongest claim here.
+#   judgment   - our reasoning from the model's published tier and how it behaves elsewhere.
+#                Useful, not evidence. Benchmark it before you spend real money on it.
+#   unverified - carried over, never run here, or the account could not be exercised at all.
+#
+# This file NEVER feeds routing. Clients own backend+model; this is a catalogue you read. Keeping
+# the two apart is what stops a weekly opinion edit from quietly becoming configuration.
+#
+# UPDATING. Reviewed weekly, on Sunday. `marshal drift` fails on any entry past `stale_after_days`,
+# so a skipped review is visible rather than silently authoritative. To do a pass:
+#   1. `marshal drift`      - a model id the live CLI no longer lists is a defect, fix it first.
+#   2. `marshal models --stale` - what is overdue and why.
+#   3. Re-verify what you can with `benchmark`, and only then bump `reviewed_on`. Bumping the date
+#      without re-checking is the one thing that makes this file worse than not having it.
+
+version: 1
+review_cadence: weekly on Sunday
+
+# How long a review stays current. Set it to more than one review cycle: a single skipped Sunday
+# is a normal week, and failing on that would train everyone to ignore the failure. What it must
+# catch is a file nobody is maintaining, which is when its confident prose starts doing damage.
+stale_after_days: 14
+
+# The vocabulary `categories:` may use. Closed on purpose - an open field turns into fifteen
+# near-synonyms within a month and no entry can then be found by any of them.
+categories:
+  best: Highest quality available on that backend. Reach for open-ended or expensive-to-get-wrong work.
+  cost-effective: The quality-per-dollar pick. Where standard, well-specified work should go by default.
+  fast: Optimised for latency over depth. Mechanical, high-volume, low-judgment work.
+  free: No metered charge on at least one access tier. Read its `review` for what the tier costs you.
+  review-lens: Earned its place on an adversarial review panel. See the `marshal-panel` skill.
+
+models:
+  # ---- claude-code -------------------------------------------------------------------------
+  - id: claude-opus-4-8
+    backends: [claude-code]
+    cost: native
+    quota_type: subscription
+    weight: heavy
+    categories: [best, review-lens]
+    reviewed_on: 2026-09-07
+    evidence: measured
+    review: >-
+      The strongest reasoning in the fleet and the only backend that reports real USD per run, so
+      it is also the only one whose "expensive" is a measured number rather than a feeling. Best
+      evidence discipline of any lens we have run: it enumerates call sites instead of sampling
+      three and generalising. Worth its rate on architecture, cross-file refactors and anything
+      where a wrong approach costs hours. Waste on a rename.
+
+  - id: claude-sonnet-4-6
+    backends: [claude-code, antigravity]
+    cost: native
+    quota_type: subscription
+    weight: standard
+    categories: [cost-effective]
+    reviewed_on: 2026-09-07
+    evidence: measured
+    review: >-
+      The default. Well-specified work with clear acceptance criteria lands here and stays here.
+      Native cost reporting means a benchmark against it ranks on facts, which is why it is the
+      right baseline to measure any cheaper client against rather than the other way round.
+
+  - id: claude-haiku-4-5
+    backends: [claude-code]
+    cost: native
+    quota_type: subscription
+    weight: light
+    categories: [fast]
+    reviewed_on: 2026-09-07
+    evidence: judgment
+    review: >-
+      Bulk tier: docstrings, boilerplate, renames, mechanical test stubs. Do not hand it design
+      work - the rework costs more than the tokens saved. Not yet benchmarked here against the
+      cheap OpenCode models, which is the comparison that would actually settle the light tier.
+
+  # ---- cursor ------------------------------------------------------------------------------
+  - id: composer-2.5
+    backends: [cursor]
+    cost: unavailable
+    quota_type: subscription
+    weight: standard
+    categories: []
+    reviewed_on: 2026-09-07
+    evidence: measured
+    review: >-
+      Capable, but two operational facts dominate the choice. No per-run USD is available, so it
+      cannot anchor a cost benchmark. And `cursor-agent` silently truncates long final messages -
+      11.4k output tokens generated, 266 characters returned - so on anything with a long report,
+      read `report_path` / `read_run_file` and never the returned string. Fine as a second opinion
+      on a review panel; a poor choice when you need the run's own words back.
+
+  # ---- codex -------------------------------------------------------------------------------
+  - id: gpt-5.6-luna
+    backends: [codex]
+    cost: unavailable
+    quota_type: subscription
+    weight: heavy
+    categories: []
+    reviewed_on: 2026-09-07
+    evidence: unverified
+    review: >-
+      Strong on the published tier, but unexercised here since the account hit its usage limit on
+      2026-09-03. Cost is token-only unless the client sets `usage_api: eastrouter`, which buys
+      back a real per-run charge from the router's usage API. Do not route a required review lens
+      at this until the quota resets and a real run confirms it.
+
+  # ---- opencode ----------------------------------------------------------------------------
+  - id: opencode-go/kimi-k2.6
+    backends: [opencode]
+    cost: native
+    quota_type: metered
+    weight: standard
+    categories: [cost-effective]
+    reviewed_on: 2026-09-07
+    evidence: judgment
+    review: >-
+      The standard-tier alternative worth benchmarking against Sonnet, and it reports native cost
+      so that benchmark ranks on facts. Cheap models win well-specified tasks more often than the
+      tier table suggests - which is the whole reason to run the comparison instead of assuming.
+
+  - id: opencode-go/deepseek-v4-flash
+    backends: [opencode]
+    cost: native
+    quota_type: metered
+    weight: light
+    categories: [cost-effective, fast]
+    reviewed_on: 2026-09-07
+    evidence: judgment
+    review: >-
+      The bulk workhorse: cheapest path to high-volume mechanical work with a real cost number
+      attached. Give it work with an unambiguous acceptance criterion and check the diff.
+
+  - id: opencode-go/glm-5.2
+    backends: [opencode, command-code]
+    cost: native
+    quota_type: metered
+    weight: standard
+    categories: []
+    reviewed_on: 2026-09-07
+    evidence: measured
+    review: >-
+      Serviceable, but the OpenCode backend itself is the risk, not the model. A sibling GLM run
+      returned completely empty after 508 seconds and 1.40 USD - clean exit, `has_text: false`.
+      Always check `has_text` on a settled OpenCode run before reporting anything from it: a clean
+      exit with no text is a missing answer, not an answer.
+
+  - id: opencode-go/minimax-m3
+    backends: [opencode]
+    cost: native
+    quota_type: metered
+    weight: standard
+    categories: []
+    reviewed_on: 2026-09-07
+    evidence: unverified
+    review: >-
+      Listed by the backend and never run here. No opinion worth acting on yet - benchmark it
+      against kimi-k2.6 before giving it real work.
+
+  # ---- antigravity -------------------------------------------------------------------------
+  - id: gemini-3.1-pro-high
+    backends: [antigravity]
+    cost: unavailable
+    quota_type: subscription
+    weight: heavy
+    categories: [free]
+    reviewed_on: 2026-09-07
+    evidence: measured
+    review: >-
+      A verified zero-cost path to a frontier-tier model, which makes it the best value in the
+      fleet. The caveats are the backend's, not the model's: no per-run cost is reported, and the
+      CLI has moved under its adapter more than once - the catalogue went to effort-suffixed ids,
+      and `--print-timeout` silently capped every run at five minutes until it was derived from
+      the run's own timeout. Both are handled now. Run `marshal drift` before a large fan-out.
+
+  - id: gemini-3.7-flash-medium
+    backends: [antigravity]
+    cost: unavailable
+    quota_type: subscription
+    weight: light
+    categories: [free, fast]
+    reviewed_on: 2026-09-07
+    evidence: judgment
+    review: >-
+      Free and quick - the natural fan-out tier when you want many opinions and are not paying
+      per opinion. Note the backend's read-only edge before using it as a review lens: plan mode
+      answers a file write with a plan, but HARD-DENIES a shell command and exits non-zero, so a
+      reviewer prompt that reaches for grep or pytest fails the run rather than degrading.
+
+  # ---- copilot -----------------------------------------------------------------------------
+  - id: auto
+    backends: [copilot]
+    cost: unavailable
+    quota_type: subscription
+    weight: standard
+    categories: [free]
+    reviewed_on: 2026-09-07
+    evidence: measured
+    review: >-
+      The only model id the Copilot free tier will accept - naming a specific model there fails
+      the run outright. GitHub picks what actually serves the request, so you cannot pin quality
+      or reproduce a benchmark against it. Take it as a free second opinion, never as a
+      controlled variable.
+
+  # ---- zcode -------------------------------------------------------------------------------
+  - id: glm-5.3
+    backends: [zcode]
+    cost: unavailable
+    quota_type: metered
+    weight: standard
+    categories: []
+    reviewed_on: 2026-09-07
+    evidence: unverified
+    review: >-
+      Adapter ships and its tests are green, but no run has ever completed: the account carries no
+      balance. Unverified end to end. If a run fails here the cause is billing, not the model -
+      do not spend an afternoon re-debugging its auth.
+
+  # ---- command-code ------------------------------------------------------------------------
+  - id: zai-org/glm-5.2
+    backends: [command-code]
+    cost: unavailable
+    quota_type: metered
+    weight: standard
+    categories: []
+    reviewed_on: 2026-09-07
+    evidence: measured
+    review: >-
+      Every run fails on account balance, confirmed across three models on 2026-08-29. The model
+      is not the problem and no amount of retrying will change the outcome. Leave it out of any
+      fan-out until the account is funded.
+
+  # ---- goose -------------------------------------------------------------------------------
+  - id: cursor-agent/auto
+    backends: [goose]
+    cost: unavailable
+    quota_type: subscription
+    weight: standard
+    categories: []
+    reviewed_on: 2026-09-07
+    evidence: judgment
+    review: >-
+      Goose driving Cursor underneath, so it inherits Cursor's truncation behaviour and adds a
+      provider indirection of its own. Cost is reported only when the provider underneath reports
+      one, which this route does not. Reach for Goose when you want its tooling, not for the model.

@@ -645,3 +645,44 @@ def test_from_result_carries_routing_facts() -> None:
     )
     assert ev.task_kind == "docs"
     assert ev.goal_digest == "deadbeefdeadbeef"
+
+
+def test_a_large_event_is_appended_in_one_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """REGRESSION (F5): the ledger append must not be split across syscalls.
+
+    A buffered text write flushes an event larger than the 8 KiB buffer as several `write()`
+    calls, and a concurrent appender in another process can land between them - splicing two
+    events into one corrupt line. `read_events(strict=True)` fails closed on the ledger, so one
+    oversized event (a long error string is enough) could take the whole cost history down.
+    """
+    import os as _os
+
+    from marshal_engine.accounting.usage import UsageTracker
+
+    tracker = UsageTracker(tmp_path)
+    calls: list[int] = []
+    real_write = _os.write
+
+    def counting_write(fd: int, data: bytes) -> int:
+        calls.append(len(data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr("marshal_engine.accounting.usage.os.write", counting_write)
+    event = _ev(run_id="big", task_kind="x" * 40_000)
+    tracker.record(event)
+
+    assert len(calls) == 1, f"the event was split across {len(calls)} writes"
+    assert calls[0] > 8192, "the test must exceed the buffer it is guarding against"
+    events, _ = tracker.read_events(strict=True)
+    assert [e.run_id for e in events] == ["big"]
+
+
+def test_a_small_event_also_takes_the_atomic_path(tmp_path: Path) -> None:
+    """Anti-blanket control: the append still works, and the ledger still parses strictly."""
+    from marshal_engine.accounting.usage import UsageTracker
+
+    tracker = UsageTracker(tmp_path)
+    tracker.record(_ev(run_id="a"))
+    tracker.record(_ev(run_id="b"))
+    events, _ = tracker.read_events(strict=True)
+    assert [e.run_id for e in events] == ["a", "b"]

@@ -80,7 +80,9 @@ def test_a_backend_whose_cli_is_absent_is_skipped_not_failed():
     report = detect_drift({"ghost": _FakeBackend("ghost", version=None)})
     assert report.checked == []
     assert report.skipped == ["ghost"]
-    assert report.findings == []
+    # Narrowed to BACKEND findings: the catalog review check is not about any CLI and runs on
+    # every host, including one with no coding CLI installed at all.
+    assert [f for f in report.findings if f.backend != "catalog"] == []
     assert report.ok is True
 
 
