@@ -1,7 +1,7 @@
 # Marshal's shipped model catalog.
 #
 # This is the answer to "which model should I point a client at?" - the thing a driver reads
-# instead of shelling out to four different CLIs and guessing. It ships with Marshal and is used
+# instead of shelling out to each backend's CLI in turn and guessing. It ships with Marshal and is used
 # whenever a repo's own `fleet.config.yaml` declares no `models:` block of its own.
 #
 # WHAT THIS FILE IS. Two kinds of content, deliberately separated per entry:
@@ -30,8 +30,9 @@
 version: 1
 review_cadence: weekly on Sunday
 
-# Two missed reviews before an entry is called stale. One skipped Sunday is a normal week; two is
-# a file nobody is maintaining, which is exactly when its confident prose starts doing damage.
+# How long a review stays current. Set it to more than one review cycle: a single skipped Sunday
+# is a normal week, and failing on that would train everyone to ignore the failure. What it must
+# catch is a file nobody is maintaining, which is when its confident prose starts doing damage.
 stale_after_days: 14
 
 # The vocabulary `categories:` may use. Closed on purpose - an open field turns into fifteen

@@ -219,9 +219,9 @@ def _catalog_finding(today: date, catalog: ModelCatalogFile | None) -> DriftFind
     severity there. This one is a statement about Marshal's own file, and the thing it is
     checking is the only defence the catalog has: its reviews read as authoritative no matter how
     old they are, so an unnoticed lapse turns the file into confident, wrong advice about where
-    to spend money. The cadence is weekly and the window allows two missed reviews before it
-    trips, so failing here means the file has been unattended for a fortnight - which is exactly
-    when someone should be stopped and told.
+    to spend money. The window is set to span more than one review cycle, so failing here means
+    the file has gone unattended past a skipped review rather than merely being due - which is
+    exactly when someone should be stopped and told.
     """
     if catalog is None:
         return DriftFinding(

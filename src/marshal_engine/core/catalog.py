@@ -27,9 +27,9 @@ from .config import ConfigError, ModelSpec, _parse_models
 #: The shipped catalog, alongside this module so it travels with the installed package.
 CATALOG_PATH = Path(__file__).parent / "models.yaml"
 
-#: Used when the catalog omits `stale_after_days`. Two missed weekly reviews: one skipped Sunday
-#: is a normal week, two is a file nobody is maintaining - which is exactly when it starts doing
-#: damage rather than none.
+#: Used when the catalog omits `stale_after_days`. Chosen to span more than one review cycle: a
+#: single skipped Sunday is a normal week, and failing on that would train everyone to ignore the
+#: failure. What it must catch is a file nobody is maintaining.
 DEFAULT_STALE_AFTER_DAYS = 14
 
 
