@@ -15,6 +15,7 @@ Design rules (see docs/design.md):
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
@@ -40,6 +41,7 @@ from ..core.types import (
     UsageRecord,
 )
 from ..runtime.env import DETACHED_STDIO, child_env, redact_secrets
+from ..runtime.live_output import LiveOutput
 
 _VERSION_PROBE_TIMEOUT_S = 15.0
 
@@ -386,29 +388,46 @@ class CodingAgentBackend(ABC):
             credentials=self.credential_env_vars,
         )
 
+        # The child writes its output straight to files, not to pipes Marshal has to drain. Two
+        # reasons. A supervisor that dies mid-run used to take the whole stream with it, because
+        # it only ever lived in this process's memory; on disk it survives, and the reaper can
+        # recover the session id and usage from it. And with no pipe there is no pipe-buffer
+        # deadlock to defend against, so the wait below is a plain bounded wait on the process.
+        try:
+            live = LiveOutput.open(opts.live_output)
+        except OSError as exc:
+            return AgentResult(
+                status=RunStatus.FAILED,
+                error=f"{self.name}: could not open live output files: {exc}",
+                duration_ms=_elapsed_ms(),
+            )
+
         try:
             proc = subprocess.Popen(
                 argv,
                 cwd=str(opts.cwd),
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+                stdout=live.stdout_fh,
+                stderr=live.stderr_fh,
                 # Carries the process-group split the timeout kill depends on: `_kill_tree`
                 # killpg's this pid, which is the group leader only because of setsid.
                 **DETACHED_STDIO,
             )
         except OSError as exc:
+            live.discard()
             # FileNotFoundError, PermissionError (EACCES), ETXTBSY, etc. — never escape run().
             return AgentResult(
                 status=RunStatus.FAILED,
                 error=_spawn_os_error(self.name, self.binary, exc),
                 duration_ms=_elapsed_ms(),
             )
+        finally:
+            # The child holds its own copies of both descriptors now; ours are never written.
+            live.close_parent_handles()
 
         # Notify the caller of the child pid (for later cancellation via process-group signal).
         # Recording the pid is best-effort: if the callback raises, do NOT let it escape here - that
-        # would skip communicate()/the timeout and leak the live process. The run proceeds (still
+        # would skip the timed wait and leak the live process. The run proceeds (still
         # timed + killed); only later cancel-by-pid is unavailable for this run.
         if opts.on_pid is not None:
             try:
@@ -431,25 +450,22 @@ class CodingAgentBackend(ABC):
                 print(f"[marshal] {self.name}: on_exit callback failed: {exc}", file=sys.stderr)
 
         try:
-            out, err = _wait_for_child(proc, opts)
+            _wait_for_child(proc, opts)
         except subprocess.TimeoutExpired as timeout_exc:
             _kill_process_group(pgid)
-            out, err, drained = _drain(proc)  # bounded: a pipe-holder that escaped can't hang us
+            _reap_bounded(proc)  # bounded: a leader wedged past SIGKILL can't hang us
+            out, err = live.read()
             # Ask whether the kill worked instead of assuming it. `_kill_process_group` swallows
             # every signalling error, so it can return having achieved nothing - a leader wedged in
             # uninterruptible I/O rides out SIGKILL, and a `killpg` refused with EPERM never
-            # escalates at all.
+            # escalates at all. The leader's pid is on the record, so every guard downstream can
+            # re-probe it and stop refusing once it is gone.
             #
-            # Two DIFFERENT things can outlive the kill, and they are not interchangeable. The
-            # leader is one, and it is the one worth recording: its pid is on the record, so every
-            # guard downstream can re-probe it and stop refusing once it is gone. A descendant that
-            # left the group with its own `setsid` is the other, and all we ever learn about it is
-            # that the pipes did not close - no pid, so nothing to probe and nothing that could
-            # ever clear a block. Recording that as the same fact would strand the run's work
-            # behind a refusal with no way out, so it is disclosed in the error instead and the
-            # driver decides.
+            # A descendant that left the group with its own `setsid` is out of reach of both the
+            # kill and this check. With pipes, a drain that never finished was the only trace of
+            # one; with output going to files there is no such trace, and nothing here claims
+            # otherwise.
             survived = proc.poll() is None
-            escaped = not drained
             if not survived:
                 # Only claim the pid is recyclable when it actually is. Saying so over a live agent
                 # tells `cancel_run` the child already exited, so it declines to signal - retiring
@@ -465,7 +481,6 @@ class CodingAgentBackend(ABC):
                     # and nothing said the run had been ended for lack of progress.
                     timeout_exc.timeout if timeout_exc.timeout is not None else opts.timeout_s,
                     survived=survived,
-                    escaped=escaped,
                     kind=getattr(timeout_exc, "_marshal_timeout_kind", None),
                 ),
                 session_id=opts.session_id,
@@ -477,6 +492,7 @@ class CodingAgentBackend(ABC):
             )
 
         _notify_exit()
+        out, err = live.read()
         result = self.parse_output(out, err, proc.returncode)
         result = self.finalize(result)
         result.duration_ms = _elapsed_ms()
@@ -583,22 +599,21 @@ def _newest_mtime(
     return newest, True
 
 
-def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, str]:
+def _wait_for_child(proc: subprocess.Popen[Any], opts: RunOpts) -> None:
     """Wait for the child, ending it early if it stalls and extending it while it works.
 
-    Without a policy this is exactly ``communicate(timeout=opts.timeout_s)`` - the previous
-    behaviour, byte for byte. `communicate` is kept in both paths deliberately: it owns the
-    concurrent draining of stdout and stderr, and replacing it with hand-rolled incremental
-    reads is precisely where a pipe-buffer deadlock comes from. Repeated calls are safe here
-    because stdin is DEVNULL, so no input is ever pending between slices.
+    The child writes its output to files (see ``runtime.live_output``), so this waits on the
+    process and nothing else. There are no pipes to drain, so no pipe-buffer deadlock is possible
+    and the wait can be sliced as finely as the progress policy needs.
 
-    Raises ``TimeoutExpired`` for the caller to handle, exactly as before, in both the stalled
-    and the ceiling cases - a run that is ended for lack of progress IS a timeout, and gets the
-    same kill, the same status and the same partial-usage recovery.
+    Raises ``TimeoutExpired`` for the caller to handle, in both the stalled and the ceiling cases -
+    a run that is ended for lack of progress IS a timeout, and gets the same kill, the same status
+    and the same partial-usage recovery.
     """
     policy = opts.progress
     if policy is None or not policy.enabled:
-        return proc.communicate(timeout=opts.timeout_s)
+        proc.wait(timeout=opts.timeout_s)
+        return
 
     hard_ceiling = policy.hard_ceiling_s or opts.timeout_s
     # A soft deadline above the effective ceiling never fires, because the ceiling ends the run
@@ -620,7 +635,8 @@ def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, st
         if elapsed < soft_deadline:
             slice_s = min(slice_s, max(soft_deadline - elapsed, 1.0), policy.poll_interval_s)
         try:
-            return proc.communicate(timeout=slice_s)
+            proc.wait(timeout=slice_s)
+            return
         except subprocess.TimeoutExpired:
             pass
         # Bounded by whatever is LEFT of the ceiling, not just by its own budget: a full-budget
@@ -654,7 +670,7 @@ def _wait_for_child(proc: subprocess.Popen[str], opts: RunOpts) -> tuple[str, st
 
 
 def _labelled_timeout(
-    proc: subprocess.Popen[str], seconds: float, kind: str
+    proc: subprocess.Popen[Any], seconds: float, kind: str
 ) -> subprocess.TimeoutExpired:
     """A TimeoutExpired that remembers WHICH deadline fired, so the error can say so.
 
@@ -674,8 +690,8 @@ def _kill_process_group(pgid: int, grace_s: float = 0.5) -> None:
     we wait a short grace for cooperative shutdown, then SIGKILL the *whole group* regardless of
     whether the leader itself already exited - escalation must depend on the group dying, not on the
     leader being reaped, or a SIGTERM-ignoring grandchild survives. A grandchild that escaped the
-    session (`setsid`) cannot be reached here; the bounded drain in `run()` is what keeps such a
-    survivor from hanging the engine.
+    session (`setsid`) cannot be reached here. It cannot hang the engine either: output goes to
+    files, so there is no pipe it could hold open.
     """
     try:
         os.killpg(pgid, signal.SIGTERM)
@@ -692,7 +708,7 @@ _DRAIN_TIMEOUT_S = 2.0
 
 
 def _timeout_error(
-    name: str, timeout_s: float, *, survived: bool, escaped: bool, kind: str | None = None
+    name: str, timeout_s: float, *, survived: bool, kind: str | None = None
 ) -> str:
     """The error for a timed-out run, saying what survived the kill.
 
@@ -701,10 +717,8 @@ def _timeout_error(
     moving target and integrating it commits a half-written tree. Reporting every case as "timed
     out after 600s" hands the driver the first plan for the second situation.
 
-    The two survivors are reported differently because only one of them can be waited out. Marshal
-    holds the leader's pid, so a driver (and every guard downstream) can watch it go. An escaped
-    descendant left no pid at all - the sole trace is pipes that never closed - so nothing can
-    report when it stops, and saying so plainly is better than a refusal that would never lift.
+    Only the leader is reported as a survivor, because only the leader can be waited out: Marshal
+    holds its pid, so a driver (and every guard downstream) can watch it go.
     """
     if kind == "soft":
         base = (
@@ -728,32 +742,17 @@ def _timeout_error(
             "process yourself (its pid is on the run record) and re-check before acting on the "
             "worktree."
         )
-    if escaped:
-        return (
-            f"{base}. The agent itself is gone, but something it started had left the process "
-            "group (its own setsid) and was still holding the run's output pipes, so the group "
-            "kill never reached it. Marshal has no pid for it and cannot tell you when it stops. "
-            "It is usually a server or helper rather than an editor, but check the worktree is "
-            "quiet before integrating this run."
-        )
     return base
 
 
-def _drain(proc: subprocess.Popen[str]) -> tuple[str, str, bool]:
-    """Collect remaining output and reap, bounded so a surviving pipe-holder can't block forever.
+def _reap_bounded(proc: subprocess.Popen[Any]) -> None:
+    """Reap the killed leader, bounded so one wedged past SIGKILL cannot block forever.
 
-    The third value says whether the pipes actually closed. Hitting the bound is not just a
-    give-up: the pipes are inherited by every descendant, so something is still holding the write
-    end - a process that escaped the group via its own ``setsid`` and cannot be signalled through
-    the group at all. That is the one signal ``run()`` has that a writer outlived the kill even
-    though the leader it can poll is gone, so it is reported rather than swallowed.
+    Output is on disk, so there is nothing left to collect here - only the zombie to reap. A
+    leader still alive after the bound is reported by the caller's ``poll()``, not hidden.
     """
-    try:
-        out, err = proc.communicate(timeout=_DRAIN_TIMEOUT_S)
-        return out or "", err or "", True
-    except subprocess.TimeoutExpired as exc:
-        proc.poll()  # non-blocking: reap the killed leader now (a setsid'd survivor keeps the pipe)
-        return _as_text(exc.stdout), _as_text(exc.stderr), False
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=_DRAIN_TIMEOUT_S)
 
 
 def _spawn_os_error(name: str, binary: str, exc: OSError) -> str:
@@ -768,14 +767,6 @@ def _spawn_os_error(name: str, binary: str, exc: OSError) -> str:
     if exc.errno is not None:
         return f"{name}: failed to spawn {binary!r}: [Errno {exc.errno}] {detail}"
     return f"{name}: failed to spawn {binary!r}: {detail}"
-
-
-def _as_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
-    return str(value)
 
 
 _AUTH_FAILURE_MARKERS = (

@@ -328,6 +328,10 @@ class RunOpts(BaseModel):
     on_exit: Callable[[], None] | None = None
     #: Opt-in progress policy. None (the default) keeps the plain `timeout_s` wall clock.
     progress: ProgressTimeout | None = None
+    #: Where the child writes stdout/stderr while it runs: `<stem>.stdout` and `<stem>.stderr`.
+    #: The Fleet points this at the run's log directory so the stream survives a supervisor crash.
+    #: None keeps them in unlinked temp files that vanish once read.
+    live_output: Path | None = None
 
 
 class UsageRecord(BaseModel):

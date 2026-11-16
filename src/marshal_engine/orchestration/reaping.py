@@ -21,8 +21,10 @@ rule - a reap can never be authorized by one test and committed against another.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -95,7 +97,22 @@ def _is_reapable(rec: RunRecord, runs_dir: Path) -> bool:
     return not _pid_is_still_ours(rec)
 
 
-def _reap_orphaned_runs(state: FleetState) -> bool:
+#: Recovers what a reaped run left on disk. ``salvage`` reads (never writes) and returns extra
+#: record fields; ``on_reaped`` runs only once the reap has actually committed.
+Salvage = Callable[[RunRecord], dict[str, Any]]
+OnReaped = Callable[[RunRecord], None]
+
+_SALVAGED_NOTE = (
+    "; its output up to that point was recovered from disk (see get_run_log)"
+)
+
+
+def _reap_orphaned_runs(
+    state: FleetState,
+    *,
+    salvage: Salvage | None = None,
+    on_reaped: OnReaped | None = None,
+) -> bool:
     """Terminal-stamp persisted ``running``/``queued`` runs left by a prior Fleet instance.
 
     Returns True when at least one record was left undecided on evidence that will go stale - it
@@ -134,19 +151,36 @@ def _reap_orphaned_runs(state: FleetState) -> bool:
             # was alive at this instant. Both are snapshots, so keep it on the re-check list.
             deferred = True
             continue
+        # Read what the dead run left behind BEFORE committing, so the record that says it failed
+        # carries the session id and usage in the same write. Best-effort: a salvage failure must
+        # never stop a reap, or the run reads RUNNING forever.
+        recovered: dict[str, Any] = {}
+        if salvage is not None:
+            try:
+                recovered = {k: v for k, v in salvage(rec).items() if v is not None}
+            except Exception as exc:  # noqa: BLE001 - salvage is best-effort
+                print(f"[marshal] could not salvage run {rec.run_id}: {exc}", file=sys.stderr)
+        error = _ORPHAN_REAP_ERROR + (_SALVAGED_NOTE if recovered.pop("_salvaged", False) else "")
         try:
             # Re-decide inside update_if, not just "still non-terminal". The scan above read the
             # record without a lock, so between deciding and committing a pid can be stamped, or a
             # pid-less record can be the one another process just started. Re-running the SAME
             # predicate under the per-run lock is what makes the decision and the write atomic.
-            state.update_if(
+            reaped = state.update_if(
                 rec.run_id,
                 lambda r: not _is_terminal(r) and _is_reapable(r, state.dir),
                 status=RunStatus.FAILED.value,
                 pid=None,
                 ended_at=_now(),
-                error=_ORPHAN_REAP_ERROR,
+                error=error,
+                **recovered,
             )
         except Exception as exc:  # noqa: BLE001 - startup reaping must never crash Fleet construction
             print(f"[marshal] failed to reap orphaned run {rec.run_id}: {exc}", file=sys.stderr)
+            continue
+        if on_reaped is not None and reaped.status == RunStatus.FAILED.value and reaped.error == error:
+            try:
+                on_reaped(reaped)
+            except Exception as exc:  # noqa: BLE001 - post-reap cleanup is best-effort
+                print(f"[marshal] post-reap cleanup failed for {rec.run_id}: {exc}", file=sys.stderr)
     return deferred

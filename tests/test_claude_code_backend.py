@@ -36,7 +36,7 @@ def test_build_invocation_basic(backend: ClaudeCodeBackend) -> None:
     argv = backend.build_invocation(
         TaskSpec(id="t1", goal="do the thing"), _opts(permission=PermissionMode.SAFE_EDIT)
     )
-    assert argv[:4] == ["claude", "-p", "--output-format", "json"]
+    assert argv[:5] == ["claude", "-p", "--output-format", "stream-json", "--verbose"]
     assert "--permission-mode" in argv and "acceptEdits" in argv
     assert argv[-1] == "do the thing"  # prompt is the trailing positional
 
@@ -224,3 +224,47 @@ def test_available_models_static_playbook(backend: ClaudeCodeBackend) -> None:
         "claude-haiku-4-5",
     ]
     assert catalog.source is ModelSource.STATIC
+
+
+# Event shapes from a live `claude -p --output-format stream-json --verbose` run (claude 2.1.325).
+_STREAM = [
+    {"type": "system", "subtype": "hook_started", "session_id": "sess-live"},
+    {"type": "system", "subtype": "init", "session_id": "sess-live"},
+    {"type": "assistant", "session_id": "sess-live", "message": {
+        "id": "msg_1", "usage": {"input_tokens": 2, "output_tokens": 5,
+                                 "cache_read_input_tokens": 11254}}},
+    {"type": "assistant", "session_id": "sess-live", "message": {
+        "id": "msg_1", "usage": {"input_tokens": 2, "output_tokens": 5,
+                                 "cache_read_input_tokens": 11254}}},
+    {"type": "rate_limit_event", "session_id": "sess-live"},
+    {"type": "result", "subtype": "success", "is_error": False, "result": "PONG",
+     "session_id": "sess-live", "total_cost_usd": 0.22,
+     "usage": {"input_tokens": 2, "output_tokens": 5, "cache_read_input_tokens": 11254}},
+]
+
+
+def _jsonl(events: list[dict]) -> str:
+    import json
+
+    return "\n".join(json.dumps(e) for e in events) + "\n"
+
+
+def test_a_stream_json_run_parses_from_its_result_event(backend: ClaudeCodeBackend) -> None:
+    res = backend.parse_output(_jsonl(_STREAM), "", 0)
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text == "PONG"
+    assert res.session_id == "sess-live"
+    assert res.usage is not None and res.usage.cost_usd == 0.22
+
+
+def test_a_stream_cut_before_its_result_still_names_the_session_and_tokens(
+    backend: ClaudeCodeBackend,
+) -> None:
+    """What the reaper sees after a supervisor crash: no result event. The session is what a
+    resume needs, and the tokens were spent; a repeated message id is counted once."""
+    res = backend.parse_output(_jsonl(_STREAM[:5]), "", 0)
+    assert res.status is RunStatus.FAILED
+    assert res.session_id == "sess-live"
+    assert res.usage is not None
+    assert (res.usage.input_tokens, res.usage.output_tokens) == (2, 5)
+    assert res.usage.cost_usd == 0.0

@@ -231,3 +231,27 @@ def test_available_models_static_playbook(backend: CodexBackend) -> None:
     assert catalog.models == ["gpt-5.6-luna"]
     # Codex has no probe at all, so this can never be anything but a curated list.
     assert catalog.source is ModelSource.STATIC
+
+
+def test_only_agent_messages_become_the_final_text() -> None:
+    """Event shapes from a live codex-cli run: a non-fatal `error` item and a `reasoning` item
+    arrive as `item.completed` alongside the reply. Only the reply is the run's text."""
+    import json
+
+    from marshal_engine.backends.codex import CodexBackend
+
+    lines = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {"id": "item_0", "type": "error",
+                                            "message": "Skill descriptions were shortened"}},
+        {"type": "item.completed", "item": {"id": "item_1", "type": "reasoning",
+                                            "text": "thinking about it"}},
+        {"type": "item.completed", "item": {"id": "item_2", "type": "agent_message",
+                                            "text": "PONG"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}},
+    ]
+    res = CodexBackend().parse_output("\n".join(json.dumps(x) for x in lines), "", 0)
+    assert res.text == "PONG"
+    assert res.session_id == "t-1"
+    assert res.error is None

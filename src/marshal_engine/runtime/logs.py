@@ -26,6 +26,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .env import redact_secrets
+from .live_output import read_live, remove_live
 from .worktree import validate_run_id
 
 
@@ -120,12 +121,29 @@ class RunLogStore:
             path = self._path(run_id)
         except ValueError:
             return False
+        live_removed = self.remove_live(run_id)
         try:
             path.unlink()
             return True
-        except FileNotFoundError:
-            return False
         except OSError:
+            return live_removed
+
+    def live_stem(self, run_id: str) -> Path:
+        """Stem for the files a running agent writes to (``<run_id>.live.stdout`` / ``.stderr``)."""
+        return self.dir / f"{validate_run_id(run_id)}.live"
+
+    def read_live(self, run_id: str) -> tuple[str, str] | None:
+        """The raw stdout/stderr a run has written so far, or None if it has no live files."""
+        try:
+            return read_live(self.live_stem(run_id))
+        except ValueError:
+            return None
+
+    def remove_live(self, run_id: str) -> bool:
+        """Delete a run's live files if present. Never raises."""
+        try:
+            return remove_live(self.live_stem(run_id))
+        except ValueError:
             return False
 
     def _path(self, run_id: str) -> Path:

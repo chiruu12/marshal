@@ -7650,3 +7650,144 @@ def test_shutdown_is_still_a_no_op_when_nothing_was_spawned(repo: Path) -> None:
     fleet.shutdown()
     fleet.shutdown()  # idempotent
     assert fleet._bg is None
+
+
+# --- live output: the stream is on disk while the run goes, and survives its supervisor ----------
+
+
+class _Sessioned(CodingAgentBackend):
+    """Prints a session event first, the way Claude and Codex do, then a usage line."""
+
+    name = "sessioned"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            (
+                "import json; print(json.dumps({'session': 'sess-123'})); "
+                "print(json.dumps({'in': 7, 'out': 3}))"
+            ),
+        ]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        session = None
+        usage = None
+        for line in raw_stdout.splitlines():
+            obj = json.loads(line)
+            if "session" in obj:
+                session = obj["session"]
+            if "in" in obj:
+                usage = UsageRecord(
+                    backend="sessioned", input_tokens=obj["in"], output_tokens=obj["out"]
+                )
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            session_id=session,
+            usage=usage,
+            exit_code=exit_code,
+            raw_stdout=raw_stdout,
+            raw_stderr=raw_stderr,
+        )
+
+
+def test_a_finished_run_records_its_session_id_and_leaves_no_raw_output(repo: Path) -> None:
+    """The session id is what a later run resumes from, so it belongs on the record. The live
+    files are raw, unredacted output; once the redacted log holds the same stream they go."""
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    rec = fleet.run("sessioned", TaskSpec(id="s", goal="g"))
+    assert rec.session_id == "sess-123"
+    assert "sess-123" in (fleet.logs.read(rec.run_id) or "")
+    assert fleet.logs.read_live(rec.run_id) is None, "raw live output outlived the run"
+
+
+def test_a_reaped_run_recovers_session_and_usage_from_its_live_output(repo: Path) -> None:
+    """The supervisor died mid-run. Its stream was on disk, not in its memory, so the reap can
+    say which conversation the run was in and what it had spent, instead of a bare `failed`."""
+    run_id = "orphan.sessioned.deadbeef"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{run_id}.live.stdout").write_text(
+        '{"session": "sess-abc"}\n{"in": 11, "out": 4}\n', encoding="utf-8"
+    )
+    (logs / f"{run_id}.live.stderr").write_text("", encoding="utf-8")
+
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.status == "failed"
+    assert rec.error and "orphaned at startup" in rec.error and "recovered from disk" in rec.error
+    assert rec.session_id == "sess-abc"
+    assert (rec.input_tokens, rec.output_tokens) == (11, 4)
+    assert "sess-abc" in (fleet.logs.read(run_id) or ""), "the stream did not reach the run log"
+    assert fleet.logs.read_live(run_id) is None
+
+
+def test_a_reaped_run_with_no_live_output_is_reaped_as_before(repo: Path) -> None:
+    run_id = "orphan.sessioned.cafef00d"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None and rec.status == "failed"
+    assert rec.error == reaping_mod._ORPHAN_REAP_ERROR
+    assert rec.session_id is None
+
+
+def test_a_reaped_runs_log_redacts_its_clients_own_env_values(repo: Path) -> None:
+    """A client's `env:` value is not in this process's environment, so the ambient scrub cannot
+    see it. A live run redacts with the env on its request; a reaped run has no request, so the
+    Fleet must look the client's env up by name or the value reaches `get_run_log` verbatim."""
+    run_id = "orphan.sessioned.5ec2e7aa"
+    secret = "client-only-value-9f8e7d6c5b4a"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            client="c1",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{run_id}.live.stdout").write_text('{"session": "s"}\n', encoding="utf-8")
+    (logs / f"{run_id}.live.stderr").write_text(f"debug: token={secret}\n", encoding="utf-8")
+
+    fleet = Fleet(
+        repo, {"sessioned": _Sessioned()}, client_envs={"c1": {"PROVIDER_PROFILE": secret}}
+    )
+    log = fleet.logs.read(run_id) or ""
+    assert "debug: token=" in log, "the stream did not reach the run log"
+    assert secret not in log, "a client-only env value reached the run log unredacted"

@@ -11,6 +11,7 @@ import contextlib
 import errno
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -504,21 +505,14 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
-def test_a_descendant_that_escaped_the_group_counts_as_a_survivor(tmp_path: Path) -> None:
-    """`poll()` answers for the leader only. A grandchild that calls `setsid` leaves the process
-    group, so the group kill never reaches it and the leader's exit proves nothing about it - yet
-    it inherited the pipes and can go on writing to the worktree. The drain is the evidence: it is
-    bounded precisely because such a survivor holds the write end open, so a drain that never
-    finishes means somebody is still there.
-
-    Disclosed rather than blocked. There is no pid for an escaped descendant - held pipes are the
-    entire trace - so a refusal keyed on it could never be lifted, and the run's work would be
-    stranded for good. `agent_survived_kill` stays False because it means the one survivor Marshal
-    can actually watch stop."""
+def test_a_descendant_that_escaped_the_group_cannot_hang_the_run(tmp_path: Path) -> None:
+    """A grandchild that calls `setsid` leaves the process group, so the group kill never reaches
+    it. Output goes to files, so it holds no pipe that could keep `run()` waiting either: the run
+    returns at its deadline. `agent_survived_kill` stays False because it means the one survivor
+    Marshal can actually watch stop - an escaped descendant has no pid on the record."""
     import os
     import signal
 
-    # Leader spawns a setsid'd grandchild that holds the inherited pipes, then exits immediately.
     inner = "import time; time.sleep(30)"
     outer = (
         "import subprocess, sys; "
@@ -527,16 +521,13 @@ def test_a_descendant_that_escaped_the_group_counts_as_a_survivor(tmp_path: Path
     )
     b = _Dummy([sys.executable, "-c", outer])
     child_pid: list[int] = []
+    started = time.monotonic()
     res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1, on_pid=child_pid.append))
 
     try:
         assert res.status is RunStatus.TIMED_OUT
-        assert "had left the process group" in (res.error or ""), (
-            "the leader's exit was reported as proof that everything it started had stopped"
-        )
-        assert res.agent_survived_kill is False, (
-            "an escaped descendant has no pid, so nothing could ever lift a block keyed on it"
-        )
+        assert time.monotonic() - started < 10, "an escaped descendant held the run open"
+        assert res.agent_survived_kill is False
     finally:
         for pid in child_pid:
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
@@ -848,3 +839,65 @@ def test_one_huge_directory_cannot_run_unchecked_to_its_end(tmp_path: Path, monk
         "the walk ran past its deadline inside a single directory; a scan that cannot be stopped "
         "there can hold the waiter past hard_ceiling_s"
     )
+
+
+# --- live output ---------------------------------------------------------------------------------
+
+
+def test_output_is_on_disk_while_the_agent_is_still_running(tmp_path: Path) -> None:
+    """The point of writing to files: a line the agent printed is readable before it exits."""
+    import os
+    import stat
+
+    stem = tmp_path / "logs" / "r.live"
+    seen: list[str] = []
+
+    def _peek(pid: int) -> None:
+        deadline = time.monotonic() + 5
+        out = stem.with_name("r.live.stdout")
+        while time.monotonic() < deadline:
+            if out.exists() and "early" in out.read_text():
+                seen.append(out.read_text())
+                assert stat.S_IMODE(os.stat(out).st_mode) == 0o600
+                return
+            time.sleep(0.05)
+
+    b = _Dummy([sys.executable, "-c", "import time; print('early', flush=True); time.sleep(1)"])
+    peeked: list[threading.Thread] = []
+
+    def _on_pid(pid: int) -> None:
+        t = threading.Thread(target=_peek, args=(pid,))
+        t.start()
+        peeked.append(t)
+
+    res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=10, live_output=stem, on_pid=_on_pid))
+    for t in peeked:
+        t.join()
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert seen and "early" in seen[0], "nothing was on disk while the agent ran"
+    assert res.text == "early"
+
+
+def test_a_timed_out_run_keeps_what_it_printed_before_the_kill(tmp_path: Path) -> None:
+    stem = tmp_path / "r.live"
+    b = _Dummy([sys.executable, "-c", "import time; print('partial', flush=True); time.sleep(30)"])
+    res = b.run(_task(), RunOpts(cwd=tmp_path, timeout_s=1, live_output=stem))
+    assert res.status is RunStatus.TIMED_OUT
+    assert "partial" in res.raw_stdout
+    assert "partial" in stem.with_name("r.live.stdout").read_text()
+
+
+def test_without_a_stem_no_output_file_outlives_the_run(tmp_path: Path) -> None:
+    import tempfile
+
+    before = set(Path(tempfile.gettempdir()).glob("marshal-live-*"))
+    res = _Dummy([sys.executable, "-c", "print('hi')"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.text == "hi"
+    assert set(Path(tempfile.gettempdir()).glob("marshal-live-*")) == before
+
+
+def test_a_bad_byte_in_the_output_does_not_lose_the_stream(tmp_path: Path) -> None:
+    b = _Dummy([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok\\xff\\n')"])
+    res = b.run(_task(), RunOpts(cwd=tmp_path))
+    assert res.status is RunStatus.EXITED_CLEAN
+    assert res.text.startswith("ok")
