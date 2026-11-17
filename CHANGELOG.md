@@ -8,6 +8,35 @@ versions may include breaking API changes until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **A run's output is on disk while it runs, and a crashed supervisor no longer loses it.** The
+  agent writes stdout and stderr straight to `.marshal/logs/<run_id>.live.stdout` / `.stderr`
+  (mode 0600) instead of pipes held in the supervisor's memory. When the run finishes the redacted
+  `<run_id>.log` is written as before and the live files are removed. When the supervisor dies
+  mid-run, the orphan sweep parses the live files with the run's backend, records the session id
+  and the tokens spent so far, folds the output into the run log, and says so in `error`.
+  Folding needs the client's `env:` to redact with, so a Fleet built without it (`marshal clean`)
+  leaves the files for the next configured Fleet. Recovered tokens are never priced.
+- **`RunRecord.session_id`.** The backend's conversation handle from the final attempt, so a run
+  can be resumed rather than started over.
+
+### Changed
+
+- **Claude Code runs with `--output-format stream-json --verbose`.** The session id is on disk
+  from the first line instead of arriving only in the final object. Recorded output in the old
+  single-object format still parses. Run logs are larger: the stream includes hook events.
+- **A clean exit no longer waits for leftover processes holding the agent's stdout.** With pipes,
+  a group member that kept stdout open held the run until its timeout killed the group. A
+  descendant that escaped the group with `setsid` is also no longer reported in the timeout error,
+  since there is no pipe left to detect it by.
+
+### Fixed
+
+- **Codex runs reported a warning as the agent's reply.** Every `item.completed` contributed text,
+  so a non-fatal `error` item ("Skill descriptions were shortened...") came first in `text`. Only
+  `agent_message` items count now.
+
 ## [0.6.0] - 2026-09-08
 
 ### Added

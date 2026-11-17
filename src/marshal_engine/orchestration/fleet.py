@@ -356,9 +356,34 @@ class Fleet:
 
     def _reap(self) -> bool:
         """The orphan sweep, with what a dead run left on disk recovered onto its record."""
-        return _reap_orphaned_runs(
+        deferred = _reap_orphaned_runs(
             self.state, salvage=self._salvage_orphan, on_reaped=self._fold_orphan_log
         )
+        self._fold_leftover_live_output()
+        return deferred
+
+    def _fold_leftover_live_output(self) -> None:
+        """Fold live files that a FINISHED run still has on disk. Best-effort, never raises.
+
+        A fold can be missed: the reaping process died between stamping the record and writing
+        the log, or a Fleet without this client's env (`marshal clean`) declined to write it. The
+        record is terminal by then, so the orphan sweep never looks at it again; this does. A
+        running run is never touched - only a terminal record whose agent was not seen to survive
+        its kill, since that agent may still be writing.
+        """
+        try:
+            stems = sorted(self.logs.dir.glob("*.live.stdout"))
+        except OSError:
+            return
+        for path in stems:
+            run_id = path.name[: -len(".live.stdout")]
+            try:
+                rec = self.state.get(run_id)
+                if rec is None or not _is_terminal(rec) or _agent_may_still_be_writing(rec):
+                    continue
+                self._fold_orphan_log(rec)
+            except Exception as exc:  # noqa: BLE001 - a leftover fold must never break a sweep
+                print(f"[marshal] {run_id}: could not fold leftover output: {exc}", file=sys.stderr)
 
     def _salvage_orphan(self, rec: RunRecord) -> dict[str, Any]:
         """Session id and usage from a reaped run's live output. Reads only; never raises.
@@ -390,7 +415,20 @@ class Fleet:
         live = self.logs.read_live(rec.run_id)
         if live is None:
             return
-        client_env = self._client_envs.get(rec.client or "")
+        if self.logs.path(rec.run_id).exists():
+            # The log is written once, at the end of a run, with every attempt in it. One already
+            # here means the supervisor got that far and died before removing these files, so the
+            # log holds this output and more; rewriting it from the live files alone would erase
+            # the earlier attempts.
+            self.logs.remove_live(rec.run_id)
+            return
+        client = rec.client or ""
+        if client and not client.startswith("adhoc-") and client not in self._client_envs:
+            # This Fleet does not know the client's `env:` (a bare Fleet, as `marshal clean`
+            # builds), so it cannot redact a client-only credential. Leave the raw files for a
+            # Fleet that can; `_fold_leftover_live_output` picks them up on its next sweep.
+            return
+        client_env = self._client_envs.get(client)
         self.logs.write_attempts(rec.run_id, [live], extra_values=client_env or None)
         self.logs.remove_live(rec.run_id)
 

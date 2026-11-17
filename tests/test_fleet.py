@@ -7791,3 +7791,56 @@ def test_a_reaped_runs_log_redacts_its_clients_own_env_values(repo: Path) -> Non
     log = fleet.logs.read(run_id) or ""
     assert "debug: token=" in log, "the stream did not reach the run log"
     assert secret not in log, "a client-only env value reached the run log unredacted"
+
+
+def _orphan_with_live_output(repo: Path, run_id: str, *, client: str | None, stderr: str) -> None:
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            client=client,
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{run_id}.live.stdout").write_text('{"session": "s"}\n', encoding="utf-8")
+    (logs / f"{run_id}.live.stderr").write_text(stderr, encoding="utf-8")
+
+
+def test_a_fleet_without_the_clients_env_leaves_the_raw_output_for_one_that_has_it(
+    repo: Path,
+) -> None:
+    """`marshal clean` builds a bare Fleet. It still reaps, but it cannot redact a client-only
+    credential, so it must not write the log; the next configured Fleet folds it, redacted."""
+    run_id = "orphan.sessioned.defe7ed0"
+    secret = "client-only-value-0a1b2c3d4e5f"
+    _orphan_with_live_output(repo, run_id, client="c1", stderr=f"token={secret}\n")
+
+    bare = Fleet(repo, {})
+    rec = bare.state.get(run_id)
+    assert rec is not None and rec.status == "failed"
+    assert bare.logs.read(run_id) is None, "a Fleet that cannot redact wrote the log"
+    assert bare.logs.read_live(run_id) is not None, "the only copy of the output was deleted"
+
+    configured = Fleet(repo, {"sessioned": _Sessioned()}, client_envs={"c1": {"P": secret}})
+    log = configured.logs.read(run_id) or ""
+    assert "token=" in log and secret not in log
+    assert configured.logs.read_live(run_id) is None
+
+
+def test_folding_never_overwrites_a_log_the_supervisor_already_wrote(repo: Path) -> None:
+    """The supervisor wrote the full log (every attempt) and died before removing the live files.
+    Rewriting the log from the live files alone would erase the earlier attempts."""
+    run_id = "orphan.sessioned.0dd5e7a1"
+    _orphan_with_live_output(repo, run_id, client=None, stderr="last attempt only\n")
+    full = "=== run x ===\n--- attempt 1/2 ---\nfirst\n--- attempt 2/2 ---\nlast attempt only\n"
+    (repo / ".marshal" / "logs" / f"{run_id}.log").write_text(full, encoding="utf-8")
+
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    assert fleet.logs.read(run_id) == full
+    assert fleet.logs.read_live(run_id) is None

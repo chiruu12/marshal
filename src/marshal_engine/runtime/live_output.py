@@ -79,11 +79,13 @@ class LiveOutput:
         Truncating is deliberate: a retried attempt writes over the attempt before it, which the
         Fleet already holds in memory and writes to the run log with every other attempt.
         """
+        private_dir: Path | None = None
         if stem is None:
-            tmp_dir = Path(tempfile.gettempdir())
-            fd, tmp_name = tempfile.mkstemp(prefix="marshal-live-", dir=str(tmp_dir))
-            os.close(fd)
-            base = Path(tmp_name)
+            # A private 0700 directory, not sibling names in the shared temp dir. Names next to a
+            # mkstemp file are not reserved, so another local user could pre-create `.stdout` as a
+            # symlink and have O_TRUNC destroy whatever it points at.
+            private_dir = Path(tempfile.mkdtemp(prefix="marshal-live-"))
+            base = private_dir / "out"
         else:
             stem.parent.mkdir(parents=True, exist_ok=True)
             base = stem
@@ -91,7 +93,10 @@ class LiveOutput:
         handles: list[IO[bytes]] = []
         try:
             for path in (out_path, err_path):
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _LIVE_MODE)
+                # O_NOFOLLOW: a symlink planted at this name is refused, never followed and truncated.
+                fd = os.open(
+                    path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, _LIVE_MODE
+                )
                 # O_CREAT's mode is masked by umask and ignored for a file that already existed;
                 # pin it so a pre-existing world-readable file cannot carry the raw stream.
                 os.fchmod(fd, _LIVE_MODE)
@@ -102,16 +107,14 @@ class LiveOutput:
             for fh in handles:
                 with contextlib.suppress(OSError):
                     fh.close()
-            if stem is None:
-                remove_live(base)
             raise
         finally:
-            if stem is None:
+            if private_dir is not None:
                 # Every handle that will ever exist is open, so the names can go now. The data
                 # stays reachable through the handles and disappears with the last one.
                 remove_live(base)
                 with contextlib.suppress(OSError):
-                    base.unlink()
+                    private_dir.rmdir()
         return cls(handles[0], handles[1], handles[2], handles[3], stem)
 
     def close_parent_handles(self) -> None:

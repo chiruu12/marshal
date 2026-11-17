@@ -901,3 +901,28 @@ def test_a_bad_byte_in_the_output_does_not_lose_the_stream(tmp_path: Path) -> No
     res = b.run(_task(), RunOpts(cwd=tmp_path))
     assert res.status is RunStatus.EXITED_CLEAN
     assert res.text.startswith("ok")
+
+
+def test_temporary_output_lives_in_a_private_directory_that_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sibling names next to a temp file are not reserved, so a planted `.stdout` symlink could
+    have been followed and truncated. Temp output goes in a fresh 0700 directory instead."""
+    import tempfile
+
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(shared))
+    seen: list[int] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def _spy(*args: object, **kwargs: object) -> str:
+        made = real_mkdtemp(*args, **kwargs)  # type: ignore[call-overload]
+        seen.append(Path(made).stat().st_mode & 0o777)
+        return made
+
+    monkeypatch.setattr(tempfile, "mkdtemp", _spy)
+    res = _Dummy([sys.executable, "-c", "print('hi')"]).run(_task(), RunOpts(cwd=tmp_path))
+    assert res.text == "hi"
+    assert seen == [0o700]
+    assert list(shared.iterdir()) == [], "the private directory outlived the run"
