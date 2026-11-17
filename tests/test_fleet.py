@@ -7844,3 +7844,66 @@ def test_folding_never_overwrites_a_log_the_supervisor_already_wrote(repo: Path)
     fleet = Fleet(repo, {"sessioned": _Sessioned()})
     assert fleet.logs.read(run_id) == full
     assert fleet.logs.read_live(run_id) is None
+
+
+def _terminal_with_live(repo: Path, rec: RunRecord, stdout: str) -> None:
+    _write_run_record(repo, rec)
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{rec.run_id}.live.stdout").write_text(stdout, encoding="utf-8")
+    (logs / f"{rec.run_id}.live.stderr").write_text("", encoding="utf-8")
+
+
+def test_output_an_agent_wrote_after_surviving_its_kill_is_kept(repo: Path) -> None:
+    """The agent survived its kill, the supervisor saved the log, and the agent kept writing.
+    Those later bytes exist only in the live files, so they are appended, not deleted."""
+    run_id = "late.sessioned.1a7e0000"
+    _terminal_with_live(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="late",
+            backend="sessioned",
+            status="timed_out",
+            agent_survived_kill=True,
+            started_at="2026-01-01T00:00:00Z",
+        ),
+        "before the log\nafter the log\n",
+    )
+    saved = "=== run x ===\n--- stdout ---\nbefore the log\n--- stderr ---\n"
+    (repo / ".marshal" / "logs" / f"{run_id}.log").write_text(saved, encoding="utf-8")
+
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    log = fleet.logs.read(run_id) or ""
+    assert log.startswith(saved), "the saved log was rewritten"
+    assert "after the log" in log, "output written after the log was saved was lost"
+    assert fleet.logs.read_live(run_id) is None
+
+
+def test_a_cancelled_run_whose_supervisor_is_alive_is_not_folded(repo: Path) -> None:
+    """Cancel stamps the record while its supervisor (another process) is still writing the full
+    log. Folding then would race that write, so the sweep waits until the supervisor is gone."""
+    from marshal_engine.orchestration.liveness import _pid_start_time
+
+    supervisor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_id = "cancel.sessioned.5afe0000"
+        _terminal_with_live(
+            repo,
+            RunRecord(
+                run_id=run_id,
+                task_id="cancel",
+                backend="sessioned",
+                status="cancelled",
+                started_at="2026-01-01T00:00:00Z",
+                supervisor_pid=supervisor.pid,
+                supervisor_start_time=_pid_start_time(supervisor.pid),
+            ),
+            '{"session": "s"}\n',
+        )
+        fleet = Fleet(repo, {"sessioned": _Sessioned()})
+        assert fleet.logs.read(run_id) is None, "folded while its supervisor was still running"
+        assert fleet.logs.read_live(run_id) is not None
+    finally:
+        supervisor.kill()
+        supervisor.wait()

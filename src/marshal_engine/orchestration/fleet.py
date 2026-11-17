@@ -86,6 +86,7 @@ from .liveness import (
     _pid_is_verifiably_ours,
     _pid_start_time,
     _supervisor_identity,
+    _supervisor_is_gone,
     with_liveness,
 )
 from .provisioning import (
@@ -381,6 +382,11 @@ class Fleet:
                 rec = self.state.get(run_id)
                 if rec is None or not _is_terminal(rec) or _agent_may_still_be_writing(rec):
                     continue
+                # A terminal record does not mean its supervisor is done: a cancel stamps
+                # `cancelled` while the supervisor is still writing the full, multi-attempt log.
+                # Folding then would race that write and could replace it with one attempt.
+                if _inflight_in_this_process(self.state.dir, run_id) or not _supervisor_is_gone(rec):
+                    continue
                 self._fold_orphan_log(rec)
             except Exception as exc:  # noqa: BLE001 - a leftover fold must never break a sweep
                 print(f"[marshal] {run_id}: could not fold leftover output: {exc}", file=sys.stderr)
@@ -415,21 +421,24 @@ class Fleet:
         live = self.logs.read_live(rec.run_id)
         if live is None:
             return
-        if self.logs.path(rec.run_id).exists():
-            # The log is written once, at the end of a run, with every attempt in it. One already
-            # here means the supervisor got that far and died before removing these files, so the
-            # log holds this output and more; rewriting it from the live files alone would erase
-            # the earlier attempts.
-            self.logs.remove_live(rec.run_id)
-            return
         client = rec.client or ""
         if client and not client.startswith("adhoc-") and client not in self._client_envs:
             # This Fleet does not know the client's `env:` (a bare Fleet, as `marshal clean`
             # builds), so it cannot redact a client-only credential. Leave the raw files for a
             # Fleet that can; `_fold_leftover_live_output` picks them up on its next sweep.
             return
-        client_env = self._client_envs.get(client)
-        self.logs.write_attempts(rec.run_id, [live], extra_values=client_env or None)
+        client_env = self._client_envs.get(client) or None
+        if self.logs.path(rec.run_id).exists():
+            # The log is written once, at the end of a run, with every attempt in it, so it is
+            # never rewritten from the live files alone - that would erase the earlier attempts.
+            # Normally it already holds this output (the supervisor died before removing the
+            # files) and they just go. The exception is an agent that survived its kill: it kept
+            # writing after the log was saved, and those later bytes exist only here.
+            if rec.agent_survived_kill:
+                self.logs.append_late_output(rec.run_id, live, extra_values=client_env)
+            self.logs.remove_live(rec.run_id)
+            return
+        self.logs.write_attempts(rec.run_id, [live], extra_values=client_env)
         self.logs.remove_live(rec.run_id)
 
     def run(
