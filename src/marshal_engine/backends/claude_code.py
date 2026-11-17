@@ -2,17 +2,23 @@
 
 Invocation reference (claude 2.1.170):
 
-    claude -p --output-format json [--model MODEL]
+    claude -p --output-format stream-json --verbose [--model MODEL]
               --permission-mode <plan|acceptEdits|bypassPermissions>
               [--resume SESSION] <PROMPT>
 
 Run with `cwd` set to the worktree (the shared runner does this), so edits land in the
-isolated worktree. `--output-format json` emits a single JSON result object on stdout:
+isolated worktree. `--output-format stream-json` emits JSONL events as the run goes (`--verbose`
+is required for it in `-p` mode). Every event carries `session_id`, starting with the first, and the
+last event is the same result object `--output-format json` would have printed on its own:
 
     {"type":"result","subtype":"success","is_error":false,"result":"<final text>",
      "session_id":"<uuid>","total_cost_usd":0.0123,"duration_ms":4567,"num_turns":3,
      "usage":{"input_tokens":100,"output_tokens":200,
               "cache_creation_input_tokens":50,"cache_read_input_tokens":1000}}
+
+Streaming matters because Marshal writes the child's stdout to disk as it arrives: a run whose
+supervisor dies mid-turn still has its session id and per-message usage on disk for the reaper.
+With `json` there was nothing until the very end.
 
 Claude Code reports `total_cost_usd` directly, so usage is `native` (honest cost, no
 estimation) - unlike Cursor. The shared runner closes stdin, so any interactive prompt hits
@@ -45,7 +51,7 @@ from ..core.types import (
     UsageSource,
 )
 from ..runtime.env import DETACHED_STDIO
-from .base import CodingAgentBackend
+from .base import CodingAgentBackend, parse_jsonl
 
 #: Static list — ``claude`` has no dedicated headless models subcommand.
 #: Sourced from docs/model-playbook.md (claude-code rows).
@@ -114,7 +120,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
         return ModelCatalog(models=list(self.static_models), source=ModelSource.STATIC)
 
     def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
-        argv = [self.binary, "-p", "--output-format", "json"]
+        argv = [self.binary, "-p", "--output-format", "stream-json", "--verbose"]
         argv += self.map_permission(opts.permission)
         if opts.model:
             argv += ["--model", opts.model]
@@ -126,10 +132,14 @@ class ClaudeCodeBackend(CodingAgentBackend):
     def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
         obj = _parse_result(raw_stdout)
         if obj is None:
-            # No parseable result object (auth failure, crash, empty). base.run() fills the reason
-            # from the exit code + stderr tail, so a failure is never a silent success.
+            # No result event (auth failure, crash, a run killed mid-turn, empty). base.run() fills
+            # the reason from the exit code + stderr tail, so a failure is never a silent success.
+            # What the stream did carry is kept: the session to resume and the tokens spent so far.
+            events = parse_jsonl(raw_stdout)
             return AgentResult(
                 status=RunStatus.FAILED,
+                session_id=_first_session_id(events),
+                usage=_partial_usage(events, self.name),
                 exit_code=exit_code,
                 raw_stdout=raw_stdout,
                 raw_stderr=raw_stderr,
@@ -179,10 +189,17 @@ def _parse_auth_status(raw: str) -> dict[str, str] | None:
 
 
 def _parse_result(raw: str) -> dict[str, Any] | None:
-    """Parse the single JSON result object `--output-format json` emits. None if unparseable."""
+    """The run's result object. None if there is none.
+
+    Reads the last ``type: result`` event of a stream-json run, and still accepts the single
+    object ``--output-format json`` prints, so recorded output from before the switch parses.
+    """
     raw = raw.strip()
     if not raw:
         return None
+    results = [ev for ev in parse_jsonl(raw) if ev.get("type") == "result"]
+    if results:
+        return results[-1]
     try:
         obj = json.loads(raw)
         return obj if isinstance(obj, dict) else None
@@ -196,6 +213,47 @@ def _parse_result(raw: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
         return obj if isinstance(obj, dict) else None
+
+
+def _first_session_id(events: list[dict[str, Any]]) -> str | None:
+    for ev in events:
+        sid = ev.get("session_id")
+        if isinstance(sid, str) and sid:
+            return sid
+    return None
+
+
+def _partial_usage(events: list[dict[str, Any]], backend_name: str) -> UsageRecord | None:
+    """Tokens from the assistant messages of a run that never reached its result event.
+
+    One message can arrive as several events (one per content block) repeating the same usage,
+    so each message id counts once. Never priced: there is no `total_cost_usd` until the result,
+    and estimating one is what Marshal does not do.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        if ev.get("type") != "assistant":
+            continue
+        msg = ev.get("message")
+        if not isinstance(msg, dict) or not isinstance(msg.get("usage"), dict):
+            continue
+        seen[str(msg.get("id") or len(seen))] = msg["usage"]
+    if not seen:
+        return None
+    total = {"in": 0, "out": 0, "cache": 0}
+    for usage in seen.values():
+        total["in"] += int(usage.get("input_tokens", 0) or 0)
+        total["out"] += int(usage.get("output_tokens", 0) or 0)
+        total["cache"] += int(usage.get("cache_read_input_tokens", 0) or 0)
+    if total["in"] + total["out"] <= 0:
+        return None
+    return UsageRecord(
+        backend=backend_name,
+        input_tokens=total["in"],
+        output_tokens=total["out"],
+        cache_read_tokens=total["cache"],
+        source=UsageSource.UNAVAILABLE,
+    )
 
 
 def _extract_usage(obj: dict[str, Any], backend_name: str) -> UsageRecord | None:

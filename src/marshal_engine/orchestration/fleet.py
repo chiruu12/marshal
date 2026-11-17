@@ -86,6 +86,7 @@ from .liveness import (
     _pid_is_verifiably_ours,
     _pid_start_time,
     _supervisor_identity,
+    _supervisor_is_gone,
     with_liveness,
 )
 from .provisioning import (
@@ -223,7 +224,15 @@ class Fleet:
         budget_gate: EnforceBudgetGate | None = None,
         session_start: datetime | None = None,
         progress_timeout: ProgressTimeout | None = None,
+        client_envs: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
+        # Each configured client's `env:` block, by client name. A live run redacts with the env
+        # its request carried; a REAPED run has no request any more, so folding its raw output into
+        # the run log looks the values up here instead. Without it a client-only credential (one
+        # not in this process's environment) reached `get_run_log` unredacted.
+        self._client_envs: dict[str, dict[str, str]] = {
+            name: dict(env) for name, env in (client_envs or {}).items()
+        }
         # Recover the user's interactive PATH so a Fleet constructed in a context that didn't
         # source the user's rc files (an MCP server with a stripped PATH) still spawns agent
         # CLIs from user-managed locations (Homebrew, npm-global, ~/.local/bin). mcp_server.main
@@ -326,7 +335,7 @@ class Fleet:
         self._owns_fleet_lock = _claim_fleet_lock(self._fleet_lock_path)
         with self._reap_lock:  # same mutual exclusion the later re-checks use
             if self._owns_fleet_lock:
-                _reap_orphaned_runs(self.state)
+                self._reap()
 
     def reconcile_orphans(self) -> None:
         """Re-run reconciliation. Read surfaces call this - exactly when a stale record is believed.
@@ -344,7 +353,93 @@ class Fleet:
             if not self._owns_fleet_lock:
                 self._owns_fleet_lock = _claim_fleet_lock(self._fleet_lock_path)
             if self._owns_fleet_lock:
-                _reap_orphaned_runs(self.state)
+                self._reap()
+
+    def _reap(self) -> bool:
+        """The orphan sweep, with what a dead run left on disk recovered onto its record."""
+        deferred = _reap_orphaned_runs(
+            self.state, salvage=self._salvage_orphan, on_reaped=self._fold_orphan_log
+        )
+        self._fold_leftover_live_output()
+        return deferred
+
+    def _fold_leftover_live_output(self) -> None:
+        """Fold live files that a FINISHED run still has on disk. Best-effort, never raises.
+
+        A fold can be missed: the reaping process died between stamping the record and writing
+        the log, or a Fleet without this client's env (`marshal clean`) declined to write it. The
+        record is terminal by then, so the orphan sweep never looks at it again; this does. A
+        running run is never touched - only a terminal record whose agent was not seen to survive
+        its kill, since that agent may still be writing.
+        """
+        try:
+            stems = sorted(self.logs.dir.glob("*.live.stdout"))
+        except OSError:
+            return
+        for path in stems:
+            run_id = path.name[: -len(".live.stdout")]
+            try:
+                rec = self.state.get(run_id)
+                if rec is None or not _is_terminal(rec) or _agent_may_still_be_writing(rec):
+                    continue
+                # A terminal record does not mean its supervisor is done: a cancel stamps
+                # `cancelled` while the supervisor is still writing the full, multi-attempt log.
+                # Folding then would race that write and could replace it with one attempt.
+                if _inflight_in_this_process(self.state.dir, run_id) or not _supervisor_is_gone(rec):
+                    continue
+                self._fold_orphan_log(rec)
+            except Exception as exc:  # noqa: BLE001 - a leftover fold must never break a sweep
+                print(f"[marshal] {run_id}: could not fold leftover output: {exc}", file=sys.stderr)
+
+    def _salvage_orphan(self, rec: RunRecord) -> dict[str, Any]:
+        """Session id and usage from a reaped run's live output. Reads only; never raises.
+
+        The supervisor died, so nothing parsed this stream. The backend's own parser reads it now,
+        on a partial stream, the same way a timed-out run's usage is recovered. A backend no longer
+        configured simply yields nothing beyond the fact that output survived.
+        """
+        live = self.logs.read_live(rec.run_id)
+        if live is None:
+            return {}
+        out, err = live
+        fields: dict[str, Any] = {"_salvaged": bool(out.strip() or err.strip())}
+        backend = self.backends.get(rec.backend)
+        if backend is None or not out.strip():
+            return fields
+        try:
+            parsed = backend.parse_output(out, err, 0)
+        except Exception:  # noqa: BLE001 - a partial stream may not parse; that is not an error
+            return fields
+        fields["session_id"] = parsed.session_id
+        if parsed.usage is not None and rec.input_tokens is None and rec.output_tokens is None:
+            fields["input_tokens"] = parsed.usage.input_tokens
+            fields["output_tokens"] = parsed.usage.output_tokens
+        return fields
+
+    def _fold_orphan_log(self, rec: RunRecord) -> None:
+        """After a reap commits: move the raw live files into the redacted run log."""
+        live = self.logs.read_live(rec.run_id)
+        if live is None:
+            return
+        client = rec.client or ""
+        if client and not client.startswith("adhoc-") and client not in self._client_envs:
+            # This Fleet does not know the client's `env:` (a bare Fleet, as `marshal clean`
+            # builds), so it cannot redact a client-only credential. Leave the raw files for a
+            # Fleet that can; `_fold_leftover_live_output` picks them up on its next sweep.
+            return
+        client_env = self._client_envs.get(client) or None
+        if self.logs.path(rec.run_id).exists():
+            # The log is written once, at the end of a run, with every attempt in it, so it is
+            # never rewritten from the live files alone - that would erase the earlier attempts.
+            # Normally it already holds this output (the supervisor died before removing the
+            # files) and they just go. The exception is an agent that survived its kill: it kept
+            # writing after the log was saved, and those later bytes exist only here.
+            if rec.agent_survived_kill:
+                self.logs.append_late_output(rec.run_id, live, extra_values=client_env)
+            self.logs.remove_live(rec.run_id)
+            return
+        self.logs.write_attempts(rec.run_id, [live], extra_values=client_env)
+        self.logs.remove_live(rec.run_id)
 
     def run(
         self,
@@ -822,6 +917,9 @@ class Fleet:
                 client_env=req.client_env,
                 on_pid=_record_pid,
                 on_exit=_record_exit,
+                # On disk from the first byte, so a supervisor that dies mid-run leaves the stream
+                # (and the session id in it) for the reaper instead of taking it along.
+                live_output=self.logs.live_stem(run_id),
                 # Never for a read-only run. The only progress signal is the worktree's newest
                 # mtime, and a read-only agent writes nothing by construction - so an actively
                 # working reviewer registers no progress at all and is killed at `stall_s`, which
@@ -949,6 +1047,9 @@ class Fleet:
                 verify_passed=verify_passed,
                 verify_output=verify_output,
                 agent_survived_kill=result.agent_survived_kill,
+                # The final attempt's handle: an earlier, retried-away attempt's session is not
+                # the conversation that produced this outcome.
+                session_id=result.session_id,
             )
             record = self.state.update_if(
                 run_id, _still_running, status=status.value, artifacts=artifacts, **measured
@@ -1324,6 +1425,11 @@ class Fleet:
             )
         except Exception as exc:  # noqa: BLE001 - log persistence is best-effort, never breaks a run
             print(f"[marshal] {run_id}: failed to persist run log: {exc}", file=sys.stderr)
+            return
+        # The redacted log now holds everything the live files did, so the raw, unredacted copy
+        # goes. Kept only while an agent that survived its kill may still be writing to it.
+        if not result.agent_survived_kill:
+            self.logs.remove_live(run_id)
 
     def _run_request(self, req: RunRequest) -> RunRecord:
         """run_request one request, capturing any failure as a FAILED record so a batch survives it."""

@@ -26,6 +26,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .env import redact_secrets
+from .live_output import read_live, remove_live
 from .worktree import validate_run_id
 
 
@@ -103,6 +104,38 @@ class RunLogStore:
                 os.unlink(tmp)
             raise
 
+    def append_late_output(
+        self,
+        run_id: str,
+        live: tuple[str, str],
+        *,
+        extra_values: Mapping[str, str] | None = None,
+    ) -> None:
+        """Add output an agent wrote AFTER its log was saved, keeping everything already there.
+
+        Only for an agent that survived its kill. The live files hold its whole stream, so the
+        section repeats what the log already has before the late part; duplication is the price
+        of never cutting the stream at a guessed offset. Atomic, redacted, like `write_attempts`.
+        """
+        existing = self.read(run_id) or ""
+        stdout, stderr = live
+        self.dir.mkdir(parents=True, exist_ok=True)
+        path = self._path(run_id)
+        fd, tmp = tempfile.mkstemp(dir=str(self.dir), prefix=f"{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(existing)
+                fh.write("\n--- live output, including what was written after this log was saved ---\n")
+                fh.write("--- stdout ---\n")
+                fh.write(redact_secrets(stdout, extra_values=extra_values))
+                fh.write("\n--- stderr ---\n")
+                fh.write(redact_secrets(stderr, extra_values=extra_values))
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
     def read(self, run_id: str) -> str | None:
         """The stored log text, or None if no log has been written for this run."""
         path = self._path(run_id)
@@ -120,12 +153,29 @@ class RunLogStore:
             path = self._path(run_id)
         except ValueError:
             return False
+        live_removed = self.remove_live(run_id)
         try:
             path.unlink()
             return True
-        except FileNotFoundError:
-            return False
         except OSError:
+            return live_removed
+
+    def live_stem(self, run_id: str) -> Path:
+        """Stem for the files a running agent writes to (``<run_id>.live.stdout`` / ``.stderr``)."""
+        return self.dir / f"{validate_run_id(run_id)}.live"
+
+    def read_live(self, run_id: str) -> tuple[str, str] | None:
+        """The raw stdout/stderr a run has written so far, or None if it has no live files."""
+        try:
+            return read_live(self.live_stem(run_id))
+        except ValueError:
+            return None
+
+    def remove_live(self, run_id: str) -> bool:
+        """Delete a run's live files if present. Never raises."""
+        try:
+            return remove_live(self.live_stem(run_id))
+        except ValueError:
             return False
 
     def _path(self, run_id: str) -> Path:

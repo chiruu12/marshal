@@ -283,6 +283,14 @@ tracebacks, and stderr noise after the fact. Writes are atomic (unique temp + `o
 idiom as `FleetState`); a write failure is swallowed in `Fleet._execute` and stderr-logged, so
 the log store is best-effort and never breaks a finished run.
 
+**Live output** (`logs/<run_id>.live.stdout` / `.stderr`): while a run is going the agent writes
+straight to these two files (0600), not to pipes. They exist so a supervisor crash cannot take the
+stream with it: the orphan sweep reads them with the run's backend parser, stamps `session_id` and
+the tokens spent so far onto the reaped record, and folds the output into the redacted `.log`. A
+Fleet that does not know the run's client `env:` (e.g. the bare one `marshal clean` builds) leaves
+them for a configured Fleet rather than writing credentials it cannot redact. Backends that print
+only at exit (none now; Claude Code moved to `stream-json` for this) recover nothing beyond stderr.
+
 **Tag every record `source`** so unknown costs are never presented as ground truth.
 Surface a `usage` MCP tool / `<name> usage` CLI that prints all breakdowns (backend/client/model + compound backend/model) with token columns, time-windowed via the shared `session|day|week|month|all` vocabulary (`usage_window_since` in `usage.py`). MCP `session` maps to the Fleet's `session_start` (stamped at process start); CLI `session` is since that invocation (no long-lived Fleet). A driver can ask "what have I spent since the MCP server woke up?" without restating the timestamp.
 

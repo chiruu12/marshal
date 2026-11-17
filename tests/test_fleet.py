@@ -7650,3 +7650,260 @@ def test_shutdown_is_still_a_no_op_when_nothing_was_spawned(repo: Path) -> None:
     fleet.shutdown()
     fleet.shutdown()  # idempotent
     assert fleet._bg is None
+
+
+# --- live output: the stream is on disk while the run goes, and survives its supervisor ----------
+
+
+class _Sessioned(CodingAgentBackend):
+    """Prints a session event first, the way Claude and Codex do, then a usage line."""
+
+    name = "sessioned"
+    binary = "python"
+    capabilities = Capabilities()
+
+    def check_available(self) -> bool:
+        return True
+
+    def build_invocation(self, task: TaskSpec, opts: RunOpts) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            (
+                "import json; print(json.dumps({'session': 'sess-123'})); "
+                "print(json.dumps({'in': 7, 'out': 3}))"
+            ),
+        ]
+
+    def map_permission(self, mode: PermissionMode) -> list[str]:
+        return []
+
+    def parse_output(self, raw_stdout: str, raw_stderr: str, exit_code: int) -> AgentResult:
+        session = None
+        usage = None
+        for line in raw_stdout.splitlines():
+            obj = json.loads(line)
+            if "session" in obj:
+                session = obj["session"]
+            if "in" in obj:
+                usage = UsageRecord(
+                    backend="sessioned", input_tokens=obj["in"], output_tokens=obj["out"]
+                )
+        return AgentResult(
+            status=RunStatus.EXITED_CLEAN if exit_code == 0 else RunStatus.FAILED,
+            session_id=session,
+            usage=usage,
+            exit_code=exit_code,
+            raw_stdout=raw_stdout,
+            raw_stderr=raw_stderr,
+        )
+
+
+def test_a_finished_run_records_its_session_id_and_leaves_no_raw_output(repo: Path) -> None:
+    """The session id is what a later run resumes from, so it belongs on the record. The live
+    files are raw, unredacted output; once the redacted log holds the same stream they go."""
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    rec = fleet.run("sessioned", TaskSpec(id="s", goal="g"))
+    assert rec.session_id == "sess-123"
+    assert "sess-123" in (fleet.logs.read(rec.run_id) or "")
+    assert fleet.logs.read_live(rec.run_id) is None, "raw live output outlived the run"
+
+
+def test_a_reaped_run_recovers_session_and_usage_from_its_live_output(repo: Path) -> None:
+    """The supervisor died mid-run. Its stream was on disk, not in its memory, so the reap can
+    say which conversation the run was in and what it had spent, instead of a bare `failed`."""
+    run_id = "orphan.sessioned.deadbeef"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{run_id}.live.stdout").write_text(
+        '{"session": "sess-abc"}\n{"in": 11, "out": 4}\n', encoding="utf-8"
+    )
+    (logs / f"{run_id}.live.stderr").write_text("", encoding="utf-8")
+
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None
+    assert rec.status == "failed"
+    assert rec.error and "orphaned at startup" in rec.error and "recovered from disk" in rec.error
+    assert rec.session_id == "sess-abc"
+    assert (rec.input_tokens, rec.output_tokens) == (11, 4)
+    assert "sess-abc" in (fleet.logs.read(run_id) or ""), "the stream did not reach the run log"
+    assert fleet.logs.read_live(run_id) is None
+
+
+def test_a_reaped_run_with_no_live_output_is_reaped_as_before(repo: Path) -> None:
+    run_id = "orphan.sessioned.cafef00d"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    rec = fleet.state.get(run_id)
+    assert rec is not None and rec.status == "failed"
+    assert rec.error == reaping_mod._ORPHAN_REAP_ERROR
+    assert rec.session_id is None
+
+
+def test_a_reaped_runs_log_redacts_its_clients_own_env_values(repo: Path) -> None:
+    """A client's `env:` value is not in this process's environment, so the ambient scrub cannot
+    see it. A live run redacts with the env on its request; a reaped run has no request, so the
+    Fleet must look the client's env up by name or the value reaches `get_run_log` verbatim."""
+    run_id = "orphan.sessioned.5ec2e7aa"
+    secret = "client-only-value-9f8e7d6c5b4a"
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            client="c1",
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{run_id}.live.stdout").write_text('{"session": "s"}\n', encoding="utf-8")
+    (logs / f"{run_id}.live.stderr").write_text(f"debug: token={secret}\n", encoding="utf-8")
+
+    fleet = Fleet(
+        repo, {"sessioned": _Sessioned()}, client_envs={"c1": {"PROVIDER_PROFILE": secret}}
+    )
+    log = fleet.logs.read(run_id) or ""
+    assert "debug: token=" in log, "the stream did not reach the run log"
+    assert secret not in log, "a client-only env value reached the run log unredacted"
+
+
+def _orphan_with_live_output(repo: Path, run_id: str, *, client: str | None, stderr: str) -> None:
+    _write_run_record(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="orphan",
+            backend="sessioned",
+            client=client,
+            status="running",
+            started_at="2026-01-01T00:00:00Z",
+            pid=424242,
+        ),
+    )
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{run_id}.live.stdout").write_text('{"session": "s"}\n', encoding="utf-8")
+    (logs / f"{run_id}.live.stderr").write_text(stderr, encoding="utf-8")
+
+
+def test_a_fleet_without_the_clients_env_leaves_the_raw_output_for_one_that_has_it(
+    repo: Path,
+) -> None:
+    """`marshal clean` builds a bare Fleet. It still reaps, but it cannot redact a client-only
+    credential, so it must not write the log; the next configured Fleet folds it, redacted."""
+    run_id = "orphan.sessioned.defe7ed0"
+    secret = "client-only-value-0a1b2c3d4e5f"
+    _orphan_with_live_output(repo, run_id, client="c1", stderr=f"token={secret}\n")
+
+    bare = Fleet(repo, {})
+    rec = bare.state.get(run_id)
+    assert rec is not None and rec.status == "failed"
+    assert bare.logs.read(run_id) is None, "a Fleet that cannot redact wrote the log"
+    assert bare.logs.read_live(run_id) is not None, "the only copy of the output was deleted"
+
+    configured = Fleet(repo, {"sessioned": _Sessioned()}, client_envs={"c1": {"P": secret}})
+    log = configured.logs.read(run_id) or ""
+    assert "token=" in log and secret not in log
+    assert configured.logs.read_live(run_id) is None
+
+
+def test_folding_never_overwrites_a_log_the_supervisor_already_wrote(repo: Path) -> None:
+    """The supervisor wrote the full log (every attempt) and died before removing the live files.
+    Rewriting the log from the live files alone would erase the earlier attempts."""
+    run_id = "orphan.sessioned.0dd5e7a1"
+    _orphan_with_live_output(repo, run_id, client=None, stderr="last attempt only\n")
+    full = "=== run x ===\n--- attempt 1/2 ---\nfirst\n--- attempt 2/2 ---\nlast attempt only\n"
+    (repo / ".marshal" / "logs" / f"{run_id}.log").write_text(full, encoding="utf-8")
+
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    assert fleet.logs.read(run_id) == full
+    assert fleet.logs.read_live(run_id) is None
+
+
+def _terminal_with_live(repo: Path, rec: RunRecord, stdout: str) -> None:
+    _write_run_record(repo, rec)
+    logs = repo / ".marshal" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{rec.run_id}.live.stdout").write_text(stdout, encoding="utf-8")
+    (logs / f"{rec.run_id}.live.stderr").write_text("", encoding="utf-8")
+
+
+def test_output_an_agent_wrote_after_surviving_its_kill_is_kept(repo: Path) -> None:
+    """The agent survived its kill, the supervisor saved the log, and the agent kept writing.
+    Those later bytes exist only in the live files, so they are appended, not deleted."""
+    run_id = "late.sessioned.1a7e0000"
+    _terminal_with_live(
+        repo,
+        RunRecord(
+            run_id=run_id,
+            task_id="late",
+            backend="sessioned",
+            status="timed_out",
+            agent_survived_kill=True,
+            started_at="2026-01-01T00:00:00Z",
+        ),
+        "before the log\nafter the log\n",
+    )
+    saved = "=== run x ===\n--- stdout ---\nbefore the log\n--- stderr ---\n"
+    (repo / ".marshal" / "logs" / f"{run_id}.log").write_text(saved, encoding="utf-8")
+
+    fleet = Fleet(repo, {"sessioned": _Sessioned()})
+    log = fleet.logs.read(run_id) or ""
+    assert log.startswith(saved), "the saved log was rewritten"
+    assert "after the log" in log, "output written after the log was saved was lost"
+    assert fleet.logs.read_live(run_id) is None
+
+
+def test_a_cancelled_run_whose_supervisor_is_alive_is_not_folded(repo: Path) -> None:
+    """Cancel stamps the record while its supervisor (another process) is still writing the full
+    log. Folding then would race that write, so the sweep waits until the supervisor is gone."""
+    from marshal_engine.orchestration.liveness import _pid_start_time
+
+    supervisor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_id = "cancel.sessioned.5afe0000"
+        _terminal_with_live(
+            repo,
+            RunRecord(
+                run_id=run_id,
+                task_id="cancel",
+                backend="sessioned",
+                status="cancelled",
+                started_at="2026-01-01T00:00:00Z",
+                supervisor_pid=supervisor.pid,
+                supervisor_start_time=_pid_start_time(supervisor.pid),
+            ),
+            '{"session": "s"}\n',
+        )
+        fleet = Fleet(repo, {"sessioned": _Sessioned()})
+        assert fleet.logs.read(run_id) is None, "folded while its supervisor was still running"
+        assert fleet.logs.read_live(run_id) is not None
+    finally:
+        supervisor.kill()
+        supervisor.wait()

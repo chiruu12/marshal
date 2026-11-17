@@ -188,6 +188,12 @@ def _extract_text(ev: dict[str, Any]) -> str | None:
             return val
     item = ev.get("item")
     if isinstance(item, dict):
+        # `item.completed` carries every item kind, not just replies: a non-fatal `error` (e.g.
+        # "Skill descriptions were shortened..."), `reasoning`, `command_execution`. Their text is
+        # not the agent's answer, and joining it in made a warning the run's final message. An
+        # item with no type at all predates typed items and is still taken.
+        if item.get("type", "agent_message") != "agent_message":
+            return None
         for key in ("text", "message", "content"):
             val = item.get(key)
             if isinstance(val, str) and val.strip():

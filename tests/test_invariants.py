@@ -263,8 +263,8 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
 
     wait_src = inspect.getsource(_wait_for_child)
 
-    # No policy => the previous behaviour, byte for byte.
-    assert "communicate(timeout=opts.timeout_s)" in wait_src
+    # No policy => one wait bounded by timeout_s.
+    assert "proc.wait(timeout=opts.timeout_s)" in wait_src
     # With a policy the wait is still bounded, and the ceiling is what bounds it. A progress
     # signal may only move the kill earlier or extend BELOW this - never remove it.
     assert "hard_ceiling = policy.hard_ceiling_s or opts.timeout_s" in wait_src
@@ -275,8 +275,9 @@ def test_run_loop_closes_stdin_owns_a_group_times_out_and_kills() -> None:
     assert "subprocess.TimeoutExpired(proc.args, seconds)" in label_src
     built = _labelled_timeout(subprocess.Popen(["true"]), 1.0, "ceiling")
     assert isinstance(built, subprocess.TimeoutExpired) and built.timeout == 1.0
-    # Every `communicate` in the waiter carries a timeout - none may block unbounded.
-    assert "communicate()" not in wait_src
+    # Every wait in the waiter carries a timeout - none may block unbounded.
+    assert "wait()" not in wait_src
+    assert "communicate(" not in wait_src
 
 
 # --- every child process is detached from our stdin and our controlling terminal --------------

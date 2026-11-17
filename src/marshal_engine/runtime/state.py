@@ -92,6 +92,11 @@ class RunRecord(BaseModel):
     outcome_at: str | None = None
     outcome_note: str | None = None
     commit: str | None = None  # branch tip after commit_run froze the work (for chaining/integrate)
+    # The backend's own handle for the agent's conversation (Claude session, Codex thread, ...),
+    # when it reported one. Recorded so a run can be resumed later instead of starting over - and
+    # recovered from the live output for a run whose supervisor died, which is exactly the run
+    # that most needs resuming. None when the backend reports none or never got that far.
+    session_id: str | None = None
     pid: int | None = None  # OS process id of the agent subprocess, for cancel
     # The run timed out AND the agent was observed still alive after its process group was
     # signalled. Absent/False means no such observation - either the kill worked, or this is not a

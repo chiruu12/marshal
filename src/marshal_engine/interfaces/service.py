@@ -327,6 +327,7 @@ class MarshalService:
             # rebuild doesn't fork enforce-budget state or reset session-window accounting.
             budget_gate=budget_gate,
             session_start=session_start,
+            client_envs={n: c.env for n, c in config.clients.items()},
         )
         # Serializes lazy ad-hoc backend registration (_ensure_backend) so concurrent MCP tool
         # threads don't race the fleet.backends mutation or a doctor() snapshot of it.

@@ -617,6 +617,7 @@ driver's playbook for authoring and running them; starter templates live in `exa
 ├── worktrees/<task>.<backend>.<id>/   # isolated checkout per run (kept until you integrate)
 ├── runs/<run_id>.json            # one file per run: status + cost (single writer per run)
 ├── logs/<run_id>.log             # one file per run: full raw stdout/stderr (success or failure)
+├── logs/<run_id>.live.stdout|.stderr  # while a run is going: raw output, removed once the .log is written
 └── usage/
     ├── events.jsonl              # one line per run
     └── summary.json              # rolled-up totals
