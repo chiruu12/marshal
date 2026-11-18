@@ -27,11 +27,13 @@ from marshal_engine.interfaces.drift import detect_drift as _detect_drift
 
 # These tests are about backend CLI drift. `detect_drift` also checks the shipped catalog's review
 # dates against `today`, so on the real clock every one of them started failing the day a review
-# fell due, whatever the code did. Pin `today` to the earliest review in the catalog - the day on
-# which every entry is fresh by construction - unless a test chooses its own date.
+# fell due, whatever the code did. Pin `today` to the latest review in the catalog unless a test
+# chooses its own date. Not the earliest: `stale()` rejects a review dated after `today`, so that
+# breaks the moment one entry is re-reviewed. The latest date is the one
+# `test_the_shipped_catalog_is_reviewed_on_a_real_clock` already holds the catalog fresh against.
 _CATALOG = load_catalog(None)
 assert _CATALOG is not None and all(m.reviewed_on for m in _CATALOG.models)
-_ALL_REVIEWS_FRESH_ON = min(m.reviewed_on for m in _CATALOG.models if m.reviewed_on)
+_ALL_REVIEWS_FRESH_ON = max(m.reviewed_on for m in _CATALOG.models if m.reviewed_on)
 
 
 def detect_drift(*args, **kwargs):  # type: ignore[no-untyped-def]
