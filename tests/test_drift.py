@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from marshal_engine.backends.base import CodingAgentBackend
+from marshal_engine.core.catalog import load_catalog
 from marshal_engine.core.types import (
     AgentResult,
     Capabilities,
@@ -21,8 +22,23 @@ from marshal_engine.interfaces.drift import (
     INFO,
     OK,
     WARN,
-    detect_drift,
 )
+from marshal_engine.interfaces.drift import detect_drift as _detect_drift
+
+# These tests are about backend CLI drift. `detect_drift` also checks the shipped catalog's review
+# dates against `today`, so on the real clock every one of them started failing the day a review
+# fell due, whatever the code did. Pin `today` to the latest review in the catalog unless a test
+# chooses its own date. Not the earliest: `stale()` rejects a review dated after `today`, so that
+# breaks the moment one entry is re-reviewed. The latest date is the one
+# `test_the_shipped_catalog_is_reviewed_on_a_real_clock` already holds the catalog fresh against.
+_CATALOG = load_catalog(None)
+assert _CATALOG is not None and all(m.reviewed_on for m in _CATALOG.models)
+_ALL_REVIEWS_FRESH_ON = max(m.reviewed_on for m in _CATALOG.models if m.reviewed_on)
+
+
+def detect_drift(*args, **kwargs):  # type: ignore[no-untyped-def]
+    kwargs.setdefault("today", _ALL_REVIEWS_FRESH_ON)
+    return _detect_drift(*args, **kwargs)
 
 
 class _FakeBackend(CodingAgentBackend):
